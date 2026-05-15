@@ -25,6 +25,9 @@ logs/
 # Backup dumps
 backup/
 
+# Pre-rewrite originals: local migration reference only, carry personal-info fragments
+archive/
+
 # Local dev artefacts
 *.swp
 *.swo
