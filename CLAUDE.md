@@ -62,8 +62,8 @@ Reporting:
 - No silent editing. Surface lingering bugs, modified config, moved files. File refs: full path with :N.
 
 Commit / git:
-- One logical unit per commit. Commit autonomously at every logical unit — never ask Lumi for commit approval. Private GitHub repo (github.com/Jaynechu/marrow) is the remote ledger.
-- Push only with Lumi's confirmation. Lumi's hooks block reset / clear; commit and local history are safe to manage freely.
+- One logical unit per commit. Commit autonomously at every logical unit. Private GitHub repo (github.com/Jaynechu/marrow) is the remote ledger.
+- Push at the end of the session or when you think essential. No confirm needed unless destructive
 - Never bypass hooks, signing, or pre-commit checks unless explicitly told.
 
 Tools:
