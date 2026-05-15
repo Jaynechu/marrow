@@ -1,6 +1,6 @@
 # Marrow Future Ideas Inbox
 
-Marrow build backlog only — features/fixes that get built into the memory/workflow system. Personal tasks, standalone tools, buddy-internal work, and old-weclaude-bridge bugs do not belong here; they live in `~/Desktop/NY/code/_pit.md` (which migrates to the dashboard Projects/pit page at Phase 1, DESIGN line 95).
+Marrow build backlog only. WeClaude is in scope — it gets a deep rebuild in a late phase (replace/refit on cyberboss or full rewrite, TBD). Out of scope: personal tasks, standalone tools, buddy-internal work — those live in `~/Desktop/NY/code/_pit.md` (migrates to the dashboard Projects/pit page at Phase 1, DESIGN line 95).
 
 Not prioritized. Read before adding a feature to confirm whether an interface should be reserved in Phase 1.
 
@@ -29,12 +29,27 @@ Not prioritized. Read before adding a feature to confirm whether an interface sh
 - **Stellan_push_inbox_file_or_macOS_notif** — Write `~/.claude/inbox.md` + SessionStart inject; macOS notification; reuse weclaude `client.send_text` push to WeChat (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:75-77`)
 - **Stellan_no_cold_start_old_session** — Don't cold-start in already-large old session (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:70-71`)
 
+## WeClaude (deep rebuild — late phase)
+
+- **WeClaude_interrupt** — `subprocess.Popen` + `_inflight_procs` registry; `/stop`/停/闭嘴/中断 → SIGINT; ret -2 silent (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:73`)
+- **WeClaude_rewind** — Truncate jsonl tail from last external (non-WeChat) turn (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:74`)
+- **WeClaude_resume_sees_sessions** — Inject synthetic summary record so CC /resume sees weclaude jsonl (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:75`)
+- **WeClaude_auto_compact** — Auto-manage context length to avoid manual /compact in long sessions (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:47-49`)
+- **WeClaude_stellan_media_send** — Stellan proactively sends images/voice/files via cyberboss or mrliuzhiyu pattern; image/sticker collection (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:56-61`)
+- **time_injection_anchor_repair** — Test Option A stdin prefix `[time: X | gap: Y]`; B (≥4h no `--resume`) + C `<system-reminder>` tag fallbacks (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:40-43`)
+- **ret_neg2_quota_diagnosis** — `sendmessage` ret=-2 likely batch rate/quota, not ctx_token; scrape mrliuzhiyu fork (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:35-38`)
+- **WeClaude_6_15_migration** — stream-json path confirmed; runtime decision pending foundation build (source: `/Users/Gabrielle/Desktop/NY/memory/3d.md:17`)
+- **group_chat_support** — Currently only ClawBot private chat (source: `/Users/Gabrielle/cc-lab/WeClaude/README.md:308-311`)
+- **media_retention_cleanup** — `~/.config/wechat-claude-bridge/media/` no retention; persist forever, plaintext (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:38-41`)
+- **iLink_webhook_alternative** — Polling model not webhook; bridge dies between polls = missed messages, no retry (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:27`)
+- **subprocess_timeout_blocking** — 30min subprocess timeout; one slow message stalls all users (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:26`)
+- **macOS_sleep_iOS_Sleep_Focus_combo** — Stacking bug → ClawBot link stale ~16min; workaround add WeChat to iOS Focus allow list (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:51-54`)
+- **WeClaude_upstream_revival_strategy** — If upstream revives, drop local patches; fallback `_patches.py` monkey-patch keeps `bridge.py` pristine (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:8-10`)
+
 ## Migration / Retire old system
 
-- **WeClaude_6_15_migration** — stream-json path confirmed; runtime decision pending foundation build (source: `/Users/Gabrielle/Desktop/NY/memory/3d.md:17`)
 - **profile_md_deletion** — `memory/profile.md` pending delete, content already moved to reference + global (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:20`)
 - **MEMORY_md_old_path_cleanup** — `~/.claude/projects/-Users-Gabrielle-Desktop-NY/memory/MEMORY.md` pending manual delete (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:539-541`)
-- **/config_auto_memory_off** — Lumi pending manual `/config` to disable user-level auto memory (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:646`)
 - **transcript_path_mismatch** — `cc-jsonl-to-md.py` writes elsewhere than `memory/transcript/`, fix in Phase 4 (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:25`)
 - **summ_skill_deprecation** — Confirm dropping summ skill, ss skill, goose-slim overlap, legacy carryover-load.sh (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:22`)
 - **R18_md_relocation_outstanding** — `r18.md` placement (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:9`)

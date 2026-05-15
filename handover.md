@@ -4,12 +4,16 @@ Read CLAUDE.md first (it lists when to read what). DESIGN.md is source of truth.
 
 ## Pending Lumi decision (do not action without her)
 
-- _pit.md block #3 "关 auto memory + 重写 memory/ 文件夹 [high]" (`~/Desktop/NY/code/_pit.md:3`) — kept, flagged. Marrow genesis note; live sliver preserved in FUTURE `/config_auto_memory_off` + DESIGN Cheatsheet. Delete-or-keep is Lumi's call. _pit.md is NOT git-backed; backup at `~/Desktop/NY/memory/backup/_pit.md.bak-2026-05-16`.
-- WeClaude scope: FUTURE.md re-scope (commit 672b539) cut ~12 weclaude-internal-bridge items, treating WeClaude as a sibling project not Marrow. If Lumi rules WeClaude is part of Marrow, recover them from git pre-672b539.
+- GitHub history purge: `archive/DESIGN-original.md` (personal health/identity fragments) + `archive/SCHEMA-original.md` are in pushed commit `ae23fc4`. Local archive/ deleted, but GitHub history still has them. Full removal = git-filter-repo strip + force-push to main (destructive, rewrites 6 commits). Awaiting Lumi's explicit go for the force-push.
+
+## Resolved this session
+
+- _pit #3 auto-memory genesis: Lumi deleted it herself. _pit no longer managed by Marrow sessions for now.
+- WeClaude scope: Lumi ruled WeClaude IS in Marrow (deep rebuild late phase, cyberboss-refit-or-rewrite TBD). 14 weclaude items restored to FUTURE.md.
+- /config_auto_memory_off dropped — auto memory off for a week, moot.
 
 ## Parked (carry-over, do not action)
 
-- archive/ history rewrite: DESIGN-original.md personal fragments still in commit ae23fc4 on GitHub; full removal = force-push history rewrite. Lumi said leave it.
 - reference.md dir tree stale (`ny/`, lists deleted README). Lumi said don't bother — Marrow's Cheatsheet / convention-injection absorbs it later.
 
 ## State
