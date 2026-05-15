@@ -1,376 +1,220 @@
-# NY Foundation Design v1
+# Marrow Foundation Design
 
-Last revised 2026-05-15. Status: under review before code.
+> Status: design under review, no code yet. This is a frame-level spec — intended effect plus a method direction, not code-level detail.
+> Please always writing in English and no comment for scripts
 
-## Source of truth (read FIRST)
+## How to read this doc
 
-This document + SCHEMA.md + FUTURE.md are the only design source.
+- Holds: goals, the outcome Lumi should experience, core mechanism, and the blocks already decided.
+- Does not hold: field-by-field schemas, exact timeouts, code structure. Those are decided when that step is built.
+- Pending — decided-to-defer. Do not invent a value; leave it named and marked Pending.
+- Idea — exploratory, not committed.
+- If something here is unclear, ask Lumi. Do not infer the answer from the old ny-memm system — copying its shape is the trap that made it need replacing.
 
-**Do NOT** read `~/Desktop/NY/memory/*.md`, `~/Desktop/NY/code/*.md`, or the existing `ny-memm-*` scripts as design reference. They are historical snapshots from the system being replaced and contain accumulated drift, abandoned decisions, and per-session Sonnet hallucinations. They are kept only for migration (see Migration section), not for guidance.
+## Source of truth
 
-If something is unclear here, ask Lumi. Do not infer from the old system or extrapolate from its structure. The old system needed replacing — copying its shape is the trap.
+- This doc + SCHEMA.md + FUTURE.md are the only design source. The old `~/Desktop/NY/memory/*.md`, `~/Desktop/NY/code/*.md`, and `ny-memm-*` scripts are historical snapshots of the system being replaced —    kept for migration only, never as design reference.
+- You will need to reference memm_agent_manual for prompt format writing - check with lumi where to use.
 
-## Lumi's six goals (short form, verbatim intent from Start again.md L10–16)
+## Lumi's goals
 
-1. Migration-friendly — easy swap to Codex / Claude / local small model. cyberboss pattern as proof.
-2. CLI ↔ WeChat parity — seamless cross-channel switching, command consistency, permission yes/no from WeChat.
-3. Semi-permanent memory + lightweight reference recall — no repeating context; auto-resurface long-term facts on mention; FTS5 fast cold recall.
-4. Workflow + study carryover across sessions — assignment context, where I left off, lesson capture, self-correcting on past mistakes.
-5. Writing-prompt compliance — no extra detail, no Chinese leaks in English docs, no example pollution. Sub-Claude with strict system prompt for prompt-class md.
-6. Emotional continuity across sessions / platforms / models — Stellan persona density carries through.
+Every decision below must trace to one of these. If it cannot, it is scope creep.
 
-Every design decision below must trace to one of these. If it cannot, it is scope creep.
+1. Migration-friendly — swap to Codex / Claude / local small model by config, never Anthropic-locked; cyberboss is the proof; open-sourceable at the end.
+2. Cross-channel parity — CLI and WeChat switch and resume mid-thread without losing the thread; commands align, interrupt/stop/rewind, and permission yes/no behave identically; WeChat is interaction-only, not heavy coding.
+3. Semi-permanent memory - major life events permanent, emotion consistent, recent context is never repeated - can drop if unused for a while.
+4. Workflow + build carryover — work and study state (where I left off, next step) and the outcome-level build narrative (repo to finished feature, not which line changed) survive across sessions; past mistakes self-summarise into avoided rules.
+5. Emotional continuity — relationship and persona density transfer losslessly across sessions, platforms, and models without depending on a timeline file or model-native memory.
+6. High auto, low maintenance — Lumi never routinely reviews anything anywhere; memory quality and cost stay balanced; every surface is hand-readable and editable on the dashboard or Obsidian including subpages, though she never has to.
+7. Perfect, expandable base — the foundation is small but flawless; new capability arrives as an addon or extension, never a base rewrite; the old system's high cost and maintenance burden is the failure being designed out.
 
-## Goal (one-line)
-Personal AI memory + workflow system. Replaces existing ny-memm pipeline. Built for the six goals above.
+## One-line goal
+
+Personal AI memory + workflow system. Replaces the ny-memm pipeline. SQLite-backed, model-agnostic, one dashboard.
+
+## Outcome — what Lumi experiences when it works
+
+- Opens one file (`~/Desktop/NY/dashboard.md`), sees what is open and what broke, nothing else demanded.
+- Never repeats context — past facts resurface on mention; cold recall is fast.
+- Never manually clears a marker, triggers catchup, or retries a failed step.
+- Owns her own memory — anything recorded wrong can be corrected at a point, deterministically. Not a black box she has to beg to forget.
+- Switches CLI to WeChat mid-thought without losing the thread.
+- Swaps the model/vendor by editing one config line.
 
 ## Hard constraints
-- No anthropic API key. All LLM calls go through `claude` CLI subprocess (OAuth subscription) or local Ollama for backend tagging
-- No cloud embeddings. Local sqlite-vec + sentence-transformers MiniLM
-- Atomic writes for all md (`tempfile + os.replace()`)
-- Subprocess timeout 900s default
-- Hook scripts ≤ 100 lines each
-- try/except + alerts row on every scheduled job
-- Data lives in `~/.config/ny/`, code lives in `~/cc-lab/ny/`. Always separate
-- All input/output prompt templates and writing templates require explicit Lumi review before commit. Assistant must surface a draft for confirmation; no template body lands via assistant inference alone
-- LLM call tiering (dedicated-credit-pool aware, post-2026-06-15):
-  - Default Haiku — compression, classification, dedup, routing, format normalization. Target ~80% of pipeline calls.
-  - Sonnet — complex narrative only (diary writing, weekly curator migration, retire mention check).
-  - Opus — weclaude main user conversation only, with automatic fallback to Sonnet when dedicated credit nears the monthly cap.
-  - Subscription channel reserved for user-facing turns. Pipeline never touches subscription.
-  - Monthly dedicated burn target ≤ 30% of plan. Excess triggers Haiku-only degrade mode.
-- Emotion breath frequency: once per SessionStart, OR every N=10 user turns within a long session — whichever lands first. Never per-turn (rejects Ombre Brain's per-turn breath as token waste).
+
+- No Anthropic API key. LLM calls go through the `claude` CLI subprocess (OAuth subscription) or local Ollama for backend tagging.
+- Subscription-first: pipeline soaks the unused Max headroom via stream-json subprocess (cyberboss pattern). Dedicated credit pool is fallback only, steady-state burn ≈ 0%.
+- No cloud embeddings — local sqlite-vec + a small local sentence model.
+- Atomic writes for every rendered md (temp + replace).
+- Every scheduled job: try/except + an alert row on failure. No silent failure.
+- Data and code live apart: data under `~/.config/`, code under `~/cc-lab/marrow/`.
+- Hook scripts stay small (target ≤ 100 lines each).
+- All prompt/template bodies require explicit Lumi review before commit. No template lands by assistant inference alone.
+- Three LLM tiers: cheap/local for compression-classification-routing (the bulk), mid for narrative (diary, weekly curate), top for the user-facing conversation only.
+- Emotion breath at most once per SessionStart or every N user turns — never per-turn.
 
 ## Architecture
-- daemon — Python MCP server (FastMCP) at `~/cc-lab/ny/src/ny/daemon.py`. Serves CLI + WeChat clients
-- storage — SQLite at `~/.config/ny/ny.db`. FTS5 + sqlite-vec extensions loaded at boot
-- runtime — subprocess spawn `claude --output-format stream-json --input-format stream-json --permission-prompt-tool stdio --resume <sid>`. Inherits user OAuth subscription. cyberboss pattern verified
-- bridge — Unix socket at `~/.config/ny/ipc.sock` for permission yes/no routing across channels (Phase 4)
-- frontend — auto-generated dashboard.md + fixed CLAUDE.md family + profile.md
-- supervisor — daemon health watchdog. systemd-style restart on crash; healthcheck endpoint at `~/.config/ny/health.sock`; alert on > 3 restarts in 5 min
 
-## Fault tolerance + operational invariants
+A long-running local daemon serving both the CLI and the WeChat client off one SQLite store. Roles:
 
-What Lumi never has to do in steady state (post Phase 1 ship):
-- No manual `rm <marker>` to clear failed stamps — failed markers auto-expire on next successful run or after 7 days.
-- No manual catchup invocation — daemon watches `~/.claude/projects/-Users-Gabrielle-*/*.jsonl` directly; SessionEnd hook is a fast path, not the only path. If hook misses, daemon picks it up within the next scan cycle (≤ 5 min).
-- No manual retry — every LLM call has retry-once policy baked in (see LLM topology table); after retry, accept-as-is or fall back to a degrade tier.
-- No manual compress — daily / monthly compress steps from the old pipeline do NOT exist. SQLite stores forever; reads filter by date / scope. The only "compression" is SessionEnd diary render (per-day narrative), which is an LLM call by necessity.
+- daemon — Python MCP server. Serves CLI + WeChat clients.
+- storage — SQLite with full-text + vector search.
+- runtime — spawns `claude` as a stream-json subprocess inheriting the OAuth subscription (cyberboss pattern; pass-tested 2026-05-15: no `-p`, consumes the five-hour subscription window with no overage — re-test on 6-15 when the credit split lands).
+- bridge — local socket for permission yes/no routing across channels (Phase 4).
+- frontend — auto-generated `dashboard.md` + the static CLAUDE.md family (persona, family, MCP usage guide); memory itself is pulled via MCP, never injected here.
+- supervisor — daemon health watchdog; restart on crash; alert on restart storm.
 
-Idempotency:
-- jsonl → events ingest uses content hash per (session_id, turn_index, content_hash) unique constraint. Re-running ingestion never duplicates rows.
-- Diary render is per-date; re-render overwrites by `date` PK. Safe to re-trigger.
-- Lesson promotion is by `lesson_id`; `promoted_to_rule = 1` is a sticky flag, re-promote is a no-op with audit log entry.
+Exact paths, module layout, and the MCP tool list are decided when the daemon is built — not pinned here.
 
-Supervisor:
-- Daemon launched via launchd KeepAlive. Crash → relaunch within 10s.
-- 3 restarts in 5 min → systemd-style backoff + write alert. Lumi sees on next dashboard load.
-- Health endpoint `~/.config/ny/health.sock` polled by hook every SessionStart; if unreachable, hook falls back to direct SQLite read (degrade-mode read).
+## Core mechanism — one pipeline, not many
 
-Lumi's only steady-state manual actions:
-- `ny lesson promote <id>` / `dismiss <id>` (lesson curation)
-- `ny lesson promote <id>` is auto-suggested via Open Threads `[lesson]` surface
-- Audit dashboard occasionally (the system never demands it; surface is on-demand)
+This is the answer to "what's the difference between blocks". There mostly isn't one.
 
-## LLM call topology
+milestone, pit, vocab, project, memes all run the same pipeline: scan a signal in the session → write one table → render one view. They differ only by which table and which view name. Spec one of them and the rest are "same as above". Do not write one to product level and leave the next bare.
 
-Maps every pipeline LLM event to model tier + credit channel + retry policy. New events must declare these fields before merge.
+lesson is the single exception — it needs manual curation (Lumi promotes or dismisses), so it gets its own short section, not the shared pipeline.
 
-Trigger / Caller / Model / Credit / Timeout / Retry
-- User turn cli / claude main loop / Opus 4.7 / subscription / n/a / n/a
-- User turn wechat / weclaude bridge claude --stream-json / Opus 4.7 then Sonnet fallback / subscription then dedicated / 480s / 1 retry then fallback
-- SessionEnd diary render / daemon claude -p / Sonnet / dedicated / 480s / 1 retry then accept first attempt
-- Compress event batch / daemon claude -p / Haiku / dedicated / 240s / 1 retry then accept
-- Vocab routing decision / daemon claude -p / Haiku / dedicated / 60s / 1 retry then drop
-- Emotion tag phase 2 / daemon / rule-scan first Haiku fallback / dedicated / 60s / 1 retry then null
-- Weekly migrate phase 2+ / daemon claude -p / Sonnet / dedicated / 480s / 1 retry then alert
-- Writer-tool phase 3 short / PreToolUse claude -p / Haiku / dedicated / 240s / 1 retry then surface diff
-- Writer-tool phase 3 long / PreToolUse claude -p / Sonnet / dedicated / 480s / 1 retry then surface diff
+## Dashboard — the single entry
 
-Notes (plaintext, no inline-code in the table above to avoid stacked-card rendering):
-- subscription = $100/mo Max plan OAuth. Pre-2026-06-15 stream-json subprocess routes here. Post-6/15 verification = V2.
-- dedicated = monthly programmatic credit pool announced 2026-05-14 (effective 6/15).
-- All claude -p calls inherit `WECLAUDE_BRIDGE=0` (or absent) so they do not trigger NY pipeline recursion.
+`~/Desktop/NY/dashboard.md`. Lumi edits one file; everything else is system-managed or rendered from SQLite.
 
-## User-facing files
+Top, system zones, top to bottom:
 
-Single dashboard entry. Everything else lives in SQLite or in sub-md rendered from SQLite. User edits one file only: the scratch zone of `dashboard.md` (below system-managed markers). Everything else is read-only / system-managed.
+1. Alerts — bug reports + newly captured lessons. Functional state phrases, short. Pipeline-failure alerts self-clear on the next successful run; bug / lesson alerts are cleared by Lumi after she acts (Alerts is a writable zone — delete the line, or `ny` command). Never accumulates unbounded.
+    Lesson - 短期的设计目标是手动修改，长期改为半自动/全自动
+2. Open Threads — the only zone looked at every session. Four classes: daily / study / project / lesson. Row format follows Lumi's existing `### Open-Threads` style, due-first then entry-date.
 
-### Always-imported (CLAUDE.md family, combined < 100 lines)
+Sub-page links (Obsidian internal links, click to drill in). Each is rendered from one table — same render contract, differing only by table and view (Cheatsheet is the exception: disk-rendered, read-only):
 
-- `~/.claude/CLAUDE.md` — global. Identity (Lumi + Stellan persona), interaction rules, output style. Hard cap < 100 lines.
-- `~/Desktop/NY/CLAUDE.md` — NY project rules + coding rules (former `code/rule.md` content folded in) + the `<lessons>` block for promoted lessons. Target ~150 lines. After Phase 1 migration, `code/rule.md` itself is deleted; this file is the single always-import for NY work.
-- `~/Desktop/Study/CLAUDE.md` — Study project rules. Short.
+- Diary — month-grouped, drill into per-day narrative
+- Milestone — life events (## Us + ## Me).
+- Memes — hot vocabulary + sticker thumbnails.
+- 铁锅 goose-bites (Best of the day)
+- Study — folder: one page per unit, current rule (progress / due / submitted). Notion stays primary; this is the CC-visible mirror.
+- Projects — folder: an index of active + done projects, a pit page (deferred backlog not in Open Threads), one page per project. A sub-page's own sub-pages do not appear on the dashboard — they are reached by jumping into the project page.
+- Cheatsheet — scripts / hooks / skills / aliases plus a directory map (roots: marrow code, `~/.config` data, NY), all rendered from disk reality. Read-only: disk is the source of truth, hand-edits are meaningless and overwritten on next render.
 
-### Trigger-loaded, not always imported
 
-Static facts that should NOT eat the always-import budget but should resurface on mention. Loaded by SessionStart / UserPromptSubmit hook on keyword hit:
-- People — family / friends roster → SQLite `people` table. Hook injects on name mention.
-- Lifestyle / preferences — taste / habits → SQLite `preferences` table. Hook injects on relevant turn.
-- Profile (me + us + Stellan persona) — see PENDING below.
+Monitor Zone — bottom, read-only, last N system writes (target table + summary + time). Single purpose: Lumi sees where each piece of information landed and fixes the prompt directly. Not lesson-related; not a scratch pad.
 
-### Dashboard — the single entry
+There is no user scratch zone. (An earlier draft invented one — removed.)
 
-`~/Desktop/NY/dashboard.md`. Three system-managed zones at top + hyperlinks to sub-pages + scratch zone below.
+## Editing & correction — how Lumi changes anything
 
-System-managed top (wrapped in `<!-- SYSTEM-MANAGED-START -->` / `<!-- SYSTEM-MANAGED-END -->`, hook overwrites on regen). Order from top to bottom:
-1. Open Threads — the only zone Lumi looks at every session. Format `[Next|Soon] [YYYY-MM-DD] <task> <progress> [Due YYYY-MM-DD]`. Due-first then entry-date. Unpromoted lesson rows surface here with `[lesson]` tag so Lumi can promote / dismiss without leaving the dashboard.
-2. Alerts — system bug / hook failure / script exception. Functional state phrases, max 3.
+This is a product, not an AI toy. Lumi must be able to fix anything she can see, by hand, without touching code and without being forced through an LLM. She organizes her own files — sees clutter or waste, she cleans it — so the system must let her.
 
-Hyperlinks to sub-pages (obsidian internal links, click to drill in):
-- Diary — `~/Desktop/NY/diary/index.md` month-grouped, drill into per-day narrative.
-- Milestone — `~/Desktop/NY/milestone.md` rendered from `milestones` table (## Us + ## Me).
-- Memes — `~/Desktop/NY/memes.md` rendered from `vocab` + `stickers` tables, sticker thumbnails inline.
-- Cheatsheet — `~/Desktop/NY/cheatsheet.md` rendered from scripts / hooks / skills / aliases on disk.
-- Projects — `~/Desktop/NY/projects/` folder. `index.md` (completed + active project list with status), `pit.md` (deferred backlog: features not started and not in Open Threads), one `<project>.md` per project (outcome / changed / updated + maintenance bullets). Rendered from `threads` table where `category=project`. Near-term bugs and next steps live in Open Threads, NOT here.
-- Study — `~/Desktop/NY/study/` folder. One `<unit_code>.md` per unit (current progress / due dates / submitted items). No pit. Notion remains primary; this is a CC-visible mirror. Rendered from `threads` table where `category=study`.
+Principle (replaces the earlier read-only-sub-page split): every rendered file Lumi can see is writable. A hand-edit is reconciled back into the store, never silently overwritten. The read-only surfaces are the Monitor Zone (audit-log mirror) and the Cheatsheet (disk mirror) — editing them is meaningless, so they are display-only.
 
-Audit trace zone — bottom of dashboard, below sub-page hyperlinks, above scratch zone. Last 10 system writes (target table + summary + time). Temporary monitoring channel while Lumi tunes prompts. Removed once write quality is stable (~Phase 2 end).
+Three hand-run paths, all without code or a required LLM, pick whichever fits:
 
-Scratch zone — below all system-managed markers. Free zone for Lumi's own notes; hook never touches.
+- Edit the md directly — primary for structured views, supported for narrative views. Open in Obsidian, change / trim / delete, save. Before the next render the hook reconciles back to SQLite, old values to backup, then re-renders. Output matches what she wrote, no visible jump.
+- `ny` CLI — precise single point. Edit or remove one record by id. Deterministic, scriptable, no LLM.
+- Tell Claude in plain language — convenience. "tighten this diary" / "education's wrong, Bendigo 3y not Melbourne". Claude finds the record, shows current vs new, on confirm writes it, old value to backup.
 
-### Visual styling
+Reconcile is split by view type — not one parser for all:
 
-Emoji headers / icons on dashboard.md and sub-page render templates are Lumi's call. The render templates live in `~/cc-lab/ny/templates/dashboard.md.template` (and per-sub-page equivalents); Lumi edits the template once, every hook render picks it up. The design doc body intentionally carries no emoji to stay readable as a spec.
+- Structured views (Open Threads, milestone, vocab, pit, alerts): each row carries a visible short id at line/block end. id present + text changed → update; id deleted with the row → delete/abandon; new block with no id → insert. md edit is the primary path here.
+- Narrative views (diary, goose-bites): row boundary is the date heading only, never a blank line. Two operations only: edit text inside a date block → update (whole content overwritten by id, internals not parsed, system-only columns preserved by id); delete the whole date block including its heading → delete that day. Clearing the body while keeping the heading is not a delete. Splitting narrative into new rows by blank line / dot points is not supported — re-organising history goes through the `ny` CLI or telling Claude, which is the primary path for narrative.
 
-### Backend, user never reads
+The reconcile semantics above are fixed, not Pending. Only the anchor's character format + per-view render template are Pending (set when each view is built). Conflict guard unchanged: hash-compare before overwrite; if Lumi changed it, back up + one Alert, never silent.
 
-- `~/.config/ny/ny.db` — SQLite
-- `~/.config/ny/stickers/` — visual meme assets (gif / jpg / png)
-- `~/cc-lab/ny/src/ny/` — daemon code
-- `~/cc-lab/ny/hooks/` — hook scripts
+Conflict guard: before any overwrite, hash-compare; if Lumi changed it, back up the old file and raise one Alert. Never overwrite in silence.
 
-### Decided (2026-05-15)
+Why this beats a black-box model memory: the memory IS Lumi's own SQLite + files, not the model's hidden state. Correction is deterministic, reversible, point-targeted — never begging a model to forget. This is how semi-permanent memory and migration-friendliness land.
 
-- Profile content: `~/Desktop/NY/profile.md` will NOT exist. CLAUDE.md glob keeps its current shape (identity / persona / interaction rules / output style) — no edits in Phase 1. The only things that ever leave CLAUDE.md are `people` and `lifestyle/preferences`, both moving to SQLite trigger-load tables in Phase 2. Everything else stays in CLAUDE.md glob.
+## Hooks (four)
 
-## Hooks (three total)
-SessionStart:
-- Pull dashboard top block, inject summary into Claude system prompt
-- Phase 2: also breath top-N high-decay unresolved emotions into prompt
+- SessionStart — calls the daemon once for the cold-start handoff (minimal who-I-am, where-I-left-off, open-alerts); also Phase 2 emotion breath.
+- UserPromptSubmit — must-never-fade injection; plus the optional config-gated deterministic recall fallback (local-embedding vector search → top-K into additionalContext). Default off for a strong model.
+- SessionEnd — async: archive session turns to the store; render the day's diary; capture lessons; (Phase 2) emotion tag + decay update; regen the dashboard top + the day's diary entry.
+- PreToolUse — write_guard. Phase 1: mirror the existing prompt-guard (English-only on prompt-class .md, no pipe tables). Phase 3: route writes to prompt-class md to the writer sub-Claude; main Claude loses direct write there.
 
-SessionEnd:
-- Async archive session turns → events table
-- Phase 2: emotion tag (rule scan first, Ollama fallback)
-- Phase 2: decay update
-- Regen dashboard top block
-- Regen diary entry for the date
+## Injection
 
-PreToolUse:
-- write_guard.py
-- Phase 1: pass-through behaviour mirroring existing prompt-guard.py (English-only on `.md` under `~/.claude/` and `~/Desktop/NY/`, no pipe tables)
-- Phase 3: route writes to prompt-class paths (`CLAUDE.md`, `skills/**/SKILL.md`, `code/*.md`) to writer-tool. Main Claude loses direct write on these paths
+Pull, not push. Memory lives in SQLite and is read on demand via MCP tool calls — the daemon is the MCP server. Tool results return on the MCP channel, not hook stdout, so the ~10000-char hook cap never applies and context never carries unused memory. This is what makes the base expandable: a new memory class is a new table plus a tool, with zero change to the injection path.
 
-## MCP tools exposed by daemon
-- `memory_query(keyword, type?, limit?)` — top-K from events + vocab + milestones via FTS5 + sqlite-vec hybrid
-- `memory_append(table, content, tags?)` — row id
-- `memory_query_dir(keyword)` — file path + description
-- `vocab_lookup(term)` — vocab row by key or value match
-- `thread_update(thread_id, next_step, summary)` — next-session pointer
-- `writer_invoke(spec)` — Phase 3. Returns md content from subprocess Claude with strict English system prompt
-- `lesson_capture(scope, lesson_text, session_id)` — append row to `lessons` table when SessionEnd detects a Lumi correction pattern
-- `people_lookup(name)` — Phase 2. Trigger-load hook hits this on name mention; returns roster row for context injection
-- `preference_lookup(topic)` — Phase 2. Same shape, for lifestyle / taste recall
+- On-demand recall — Claude calls a recall tool when a turn references the past; the daemon returns only the matched rows under a token budget. Scales with the DB without bloating context; always reads the live store.
+- Cold-start handoff — SessionStart calls the daemon once for the minimal who-I-am, where-I-left-off, open-alerts set (Ombre session_breath pattern); short and fixed-size, never a growing md.
+- CLAUDE.md holds the static layer only — persona, family, and one short MCP usage guide for when to call which tool. It never grows with data; it is not an @import pile.
+- @import is not the memory path — it loads once at launch and does not re-read mid-session, which disqualifies it for live recall.
+- UserPromptSubmit per-turn injection covers two cases: the rare must-never-fade item, and an optional deterministic recall fallback (config flag, default off for a strong model). When on, the hook runs the user turn through the same local-embedding vector search the model would call and injects the top-K hits into additionalContext. The retrieval engine is identical to model-pulled recall; only the trigger changes from model judgement to deterministic per-turn. It uses the local sentence-embedding model (a fixed local component, no token / subscription / cloud cost, independent of the conversation model — exact model Pending, set at build), never the conversation model and never keyword match. Steady-state cost stays near zero for a strong model with the flag off.
 
-## Lessons capture (closes Goal 4 — Phase 1 minimal version)
+Weak-model mitigation, layered: SessionStart cold-start handoff is already deterministic and model-independent; the config-gated UserPromptSubmit fallback covers mid-session; recall call count goes to audit_log / Monitor Zone; an Alert (dashboard top, not Monitor Zone) fires only when a session references the past yet recall stayed 0 for the whole session — gate tuned at build/test. A silent memory miss becomes visible without polluting an otherwise-empty Alerts zone. The residual open risk (a strong model still calling recall on cue without the fallback) stays honestly logged; cyberboss in production is the only evidence so far.
 
-Lessons span multiple scopes (coding / study / interaction / emotional / prompt / memory). Auto-promotion into specific destinations was over-engineered before the scope distribution is even observed. Phase 1 ships the thinnest viable layer; auto-promote is held until categories stabilize.
+## LLM provider abstraction
 
-Phase 1 flow:
-1. SessionEnd detection (Sonnet pattern scan on Lumi corrections — "missed X" / "wrong, should be Y" / "我没说过这种话" / "你这个理解错了") writes a lessons table row with `promoted_to_rule = 0` and free-text `scope` field (Sonnet's best guess, not enforced).
-2. SessionStart hook reads all `promoted_to_rule = 0` rows and renders them into Open Threads with `[lesson]` tag, e.g. `[Next] [lesson] [2026-05-15] don't merge lesson destinations across coding+study+emotional scopes`.
-3. Lumi acts manually. No auto-routing. Three actions:
-   - Decide it belongs somewhere → manually edit the target file (CLAUDE.md / rule.md / a project md / wherever fits), then run `ny lesson mark-promoted <id> <path>` to flip `promoted_to_rule=1` and record reverse-pointer.
-   - `ny lesson dismiss <id>` — mark inactive, stays in DB for audit.
-   - No action → keeps surfacing as passive nag.
+All pipeline LLM calls route through one client interface in the daemon. Callers pass intent only (role + body); provider, subprocess flags, model, and credit channel are config, never call-site concerns. Providers plug in behind it: stream-json subscription (default), `claude -p` on dedicated pool (fallback), local Ollama (emergency); Codex/others written only when a real migration needs them.
 
-Held for later (post-Phase 1, after watching real lesson distribution for 2-4 weeks):
-- Auto-routing by scope to specific destinations (the previous draft's three-way fork).
-- Whether lessons need scope-typed sub-tables.
-- Whether chat-lint feeds into lessons table for language-class items.
+Selection is a default → fallback → emergency chain in one config file. Swap = edit one line + ensure the named class exists; callers don't change. Auto-rotation: default blocked → fallback + one alert; fallback fails → emergency + second alert; whole chain fails → halt + big alert, no silent degrade.
 
-Chat-lint hook clarification: `~/.claude/hooks/chat-lint.py` + `~/Desktop/NY/forbidden.yaml` is a separate Stop-event system catching in-flight forbidden phrases. It is post-hoc (Stop fires after output already shipped) so cannot prevent the phrase from reaching Lumi's screen, only emit feedback. Recommended change (pending Lumi decision): switch from "emit feedback → Claude re-writes" to "silent log → audit_log row + monthly review", to avoid double-noise from the model apology turn. Lessons system and chat-lint do not write to each other.
-
-Existing `~/Desktop/NY/memory/3d.md` `### Lessons` block (currently empty) migrates as no-op on Phase 1.
-
-## dir indexing — PENDING
-
-Held until Phase 2 or 3. Provisional approach: Layer 1 (high-level tree) maintained by hand from current `~/Desktop/NY/memory/reference.md <directories>` block as the starting state. Leaf-level file lookup uses macOS `mdfind` (Spotlight), not watchdog. Reasons:
-- watchdog cost on the large `~/Desktop/Study/` tree is unverified (V3 in verification list)
-- `mdfind` already indexes all user-readable files via Spotlight, returns near-instant
-- cold `grep -r` on a deep tree is slow and easily mis-targeted
-
-Re-design only when a concrete "where is X" need arises more than N times. Schema for `dir` table stays in SCHEMA.md as a placeholder; do not implement the table or watchdog in Phase 1.
-
-## CLI
-Entry at `~/cc-lab/ny/scripts/ny`, symlink at `~/.local/bin/ny`:
-- `ny dashboard` — print top block
-- `ny diary <date>` — show date entry
-- `ny show <type> [filter]` — milestones / vocab / pit / threads / alerts / dir / audit
-- `ny add <type> [...]` — thread / milestone / vocab / pit / lesson
-- `ny lesson <list | promote <id> | retire <id>>` — manage lessons (review + rule promotion)
-- `ny migrate` — import existing ny-memm md
-- `ny gc --backup` — vacuum + sqlite dump
-- `ny help` — print cheatsheet
-
-## Existing templates to preserve
-
-> **PENDING Lumi audit.** The five template blocks below were drafted by the previous session's assistant without Lumi confirmation. They paraphrase `~/Desktop/NY/code/memm_agent_manual.md` TASK 1 fields. Before Phase 1 ship: re-read the manual end-to-end with Lumi, decide which sub-fields survive into the new system (likely fewer, since craft pipeline + 4-tag monthly need rethinking), and rewrite this section as the single source. Keep / rewrite / drop each block explicitly — do not silently inherit.
-
-Daily entry — Chinese, narrative-first:
-- Include: my day, our chats, feelings, insights, anything funny or unexpected, anything worth recording for future
-- Exclude: technical detail, project outcome, study progress. Anything already in memes / craft / study
-- Work / study appear as one-sentence scene + emotion
-- English terms kept as-is (Mounjaro / GAMSAT / reference)
-
-Craft entry — English ONLY, technical:
-- Format: `<subject 1> [did 1 2 3...], [process/detail], [outcome 1 2 ...]; <subject 2> ...`
-- Keep process concise, drop entirely if resolved
-- Pure facts + essential detail
-
-Study entry — English ONLY, factual:
-- Deakin / GAMSAT / S1-S3 pure facts + outcome
-- Terse format similar to Craft
-
-Open Thread row — follows Lumi's existing `### Open-Threads` style in 3d.md:
-- Format: `[Soon|Next|Later] [YYYY-MM-DD] <task> <progress notes> [Due YYYY-MM-DD]`
-- One row per thread, due-sorted then entry-date
-
-Alert row — English, short pipeline-state phrase, follows Lumi's existing `### Alerts` style in 3d.md:
-- Format: `- [YYYY-MM-DD] <kind> <state>: <detail> [(retry: <command>)]`
-- `<kind>` = pipeline component name (cleanup / weekly / monthly / session / catchup / entry / hook)
-- `<state>` = miss / failed / capped / fired / over cap
-- `<detail>` = one-line specifics, sid optional
-- Retry hint in parens when manual fix is needed
-- Functional state, not severity level
-
-## Repo structure
-```
-~/cc-lab/ny/
-  DESIGN.md  SCHEMA.md  FUTURE.md  README.md  .gitignore
-  src/ny/
-    __init__.py  daemon.py  cli.py
-    memory/        SQLite CRUD + FTS5 + sqlite-vec
-    emotion/       Phase 2 stub
-    bridge/        Phase 4 stub
-    writer/        Phase 3 stub
-    scheduler/     Phase 5+ stub
-    tools/         MCP tool implementations
-    dir_watcher/   watchdog + cron
-    utils/
-      atomic_write.py     tempfile + os.replace
-      subprocess_safe.py  timeout + try/except wrapper
-      logging.py          structured log to alerts table
-  hooks/
-    session_start.sh  session_end.sh  write_guard.py
-  templates/
-    dashboard.md.template  profile.md.template
-    writer_system_prompt.txt  emotion_rules.yaml  alerts_format.txt
-  scripts/
-    ny  migrate.py
-  tests/
-    unit/  integration/
-```
-
-External:
-```
-~/.config/ny/
-  ny.db  ny.yaml  ipc.sock  stickers/  backup/
-```
-
-## Git workflow
-- repo `~/cc-lab/ny/`
-- remote github private. Phase 1 optional, Phase 2 mandatory
-- main = production
-- Phase branches `phase-2-emotion`, `phase-3-writer`, etc. — created only when starting that phase. No pre-built worktrees.
-- DB backup via cron daily: `sqlite3 ny.db .dump > ~/.config/ny/backup/ny-$(date +%Y%m%d).sql`. Retention 30 days
-- Commit on every dashboard regen blocked (regen writes to filesystem, not repo)
+The per-event topology (which trigger uses which tier, timeout, retry) is a Pending table — filled when each event is built, not pinned now.
 
 ## Phase plan
 
-### Phase 0 — Verification (1–2 days, no code yet)
-- V1 sqlite-vec install + load on macOS 25.4. If fails, fall back to FTS5-only for Phase 1; vec moves to Phase 2.
-- V2 `claude --output-format stream-json` subscription routing pre- AND post-2026-06-15.
-- V3 FastMCP + `claude --mcp-config <path>` parity with cyberboss reference.
-- V4 Haiku diary-rendering quality test on 5 historical sessions. Compare against current Sonnet output. If quality gap > 30%, escalate diary tier to Sonnet permanently (LLM topology table updates).
-- V5 watchdog cost on Study tree baseline — only run if dir indexing returns to scope; otherwise V5 deferred.
+Each phase ships one outcome.
 
-### Phase 1 — Memory core (3–5 days target ship)
-- SQLite schema (events / threads / milestones / vocab / stickers / lessons / alerts / audit_log; emotions + diary + dir + people + preferences are placeholders for Phase 2+)
-- FTS5 indexes shipped; sqlite-vec gated on V1 outcome
-- Daemon (FastMCP) — minimum viable: 3 MCP tools (`memory_query`, `thread_update`, `vocab_lookup`)
-- Hooks:
-  - SessionStart — inject dashboard top + active threads. Trigger-load hook for `people` / `preferences` keyword mention.
-  - SessionEnd — async events archive (batched), diary render via Haiku → Sonnet escalation on V4 outcome, lessons capture.
-  - PreToolUse — chat-lint port from current system (CJK on .md + forbidden phrase scan). Writer-tool stub for Phase 3.
-- Dashboard render — system-managed top zone only (Open Threads + Alerts + Recent Writes). Sub-pages start empty links to be filled in Phase 2.
-- `migrate.py` — events / vocab / milestones / threads / lessons / stickers from existing md.
-- `ny` CLI — `dashboard`, `diary <date>`, `show <type>`, `add <type>`, `lesson <list|promote|retire>`, `migrate`, `gc`.
-- Parallel run with existing ny-memm for 2-week observation; then retire old pipeline.
+- Phase 1 — Memory core: SQLite + full-text, the daemon with a minimal MCP tool set, three hooks, dashboard top render, migrate.py, the `ny` CLI. Runs in parallel with old ny-memm ~2 weeks, then retire it. Stream-json subscription routing is pass-tested (2026-05-15). The remaining unknowns — local vector ext on this macOS, MCP parity with cyberboss, cheap-tier diary quality — are not pre-verified; each surfaces and is settled at first build of its module, no separate verify phase.
+- Phase 2 — Emotion + decay + sub-page render fills out; people/preferences trigger-load tables live.
+- Phase 3 — Writer authority: prompt-class md writes go through the writer sub-Claude.
+- Phase 4 — Cross-channel parity (see weclaude + cyberboss Pending below).
+- Phase 5 — Addons + open source.
 
-### Phase 2 — Emotion + decay + sub-page render
-- `emotions` table at per-session granularity
-- Decay scoring daily cron
-- Breath inject at SessionStart (top-N high-decay unresolved); per-N=10 turn re-inject as well
-- Sub-page render fills out: diary / milestone / memes / projects / study hyperlinks
-- `people` + `preferences` tables live; trigger-load hooks active
+Stub policy: each phase creates only the modules it uses. No empty skeletons. Placeholder tables in schema are allowed (commented); stub classes in code are banned.
 
-### Phase 3 — Writer authority
-- PreToolUse intercepts writes to prompt-class md (CLAUDE.md / `skills/**/SKILL.md` / `code/*.md`)
-- Routes to writer-tool subprocess (Haiku for short / Sonnet for long) with strict English + format system prompt
-- Main Claude loses direct write on these paths
+## Migration
 
-### Phase 4 — Cross-channel parity
-- Unix socket IPC daemon ↔ clients
-- WeChat permission yes/no routing
-- weclaude rewrite on stream-json with `/stop` + `rewind` + `/resume` parity
-- Bidirectional sid resume (cli ↔ wechat handoff)
+Phase 1 ships SQLite alongside the running ny-memm; both run in parallel ~2 weeks; old pipeline retires once stable. `migrate.py` imports historical md into tables (per-file source→target mapping in SCHEMA.md). Old `memory/` md and the `code/` folder move to archive read-only, then are removed after the parallel window. `code/rule.md` folds into `~/Desktop/NY/CLAUDE.md` and is deleted post-merge.
 
-### Phase 5 — Addons + open source
-- Random pulse, memes vision tagging, proactive followup, Stellan autonomous push
-- README, license, contribution guide
+## Safety nets (Lumi's section — do not cut)
 
-## Stub policy
-No empty class skeletons for future phases. Each phase only creates the modules it actually uses. Reduces dead code and forces honest scoping. Stubs in code = banned; stubs in schema (placeholder tables) = allowed but commented.
+Baseline effect: Lumi never manually clears markers, never triggers catchup, never retries. No silent failure. Token bounded. Originals always recoverable.
 
-## Migration from existing ny-memm
-Current production pipeline:
-- 8 scripts at `~/Toolkit/scripts/ny-memm-*.py`
-- 5 launchd plists (rotate / curator / compress / retire / cleanup)
-- 5 memory md files at `~/Desktop/NY/memory/`
+- backup — DB never lost — daily dump + iCloud offsite — method agreed; retention Pending.
+- retry — transient LLM/IO failure self-heals — one retry then degrade tier — method agreed; thresholds Pending.
+- catchup — a missed endhook is recovered — background watcher rescans for unprocessed sessions — method agreed; scan window/cap Pending.
+- failure alert — no silent fail — any step writes an alert row to dashboard top with a recovery hint — agreed.
+- concurrent-write lock — parallel session-ends never corrupt the DB — serialize writers — REQUIRED, mechanism Pending.
+- atomic write — a crash mid-write never leaves a half file — temp + replace on every rendered md — REQUIRED, mechanism Pending.
+- idempotency — catchup re-run never double-inserts — content/source-hash dedup — method agreed.
+- timeout brake — a hung agent cannot stall the pipeline or burn tokens — hard subprocess timeout + kill — REQUIRED, mechanism Pending.
+- edit safety — every visible rendered file is writable; structured views reconcile by row id, narrative views by date block (whole-content overwrite or full-block delete); hand-edits never lost; conflict = back up + alert before overwrite — agreed; anchor char format + render template Pending.
+- migrate safety — old data never destroyed — parallel run ~2 weeks + originals archived read-only — agreed.
 
-Migration approach:
-- Phase 1 ships SQLite alongside existing pipeline. Both run in parallel
-- `migrate.py` imports historical content into SQLite tables. See SCHEMA.md mapping
-- Two-week observation period after Phase 1 ship
-- Retire ny-memm-* scripts and unload launchd plists once SQLite stable
-- Old `~/Desktop/NY/memory/` md files move to `archive/`, kept read-only as historical fallback
+## Pending — weclaude + cyberboss fusion
 
-## Migration from existing code/ folder
+After the memory core ships, the WeChat side gets rebuilt. Not decided whether to adopt cyberboss or upgrade weclaude. This is NOT just swapping `claude -p` for another spawn — it carries a real workload, all Pending design:
 
-`~/Desktop/NY/code/` currently mixes long-term reference, active projects, and obsolete memm docs. Migration target per file:
+- multi-message send + 铁锅 rewrite on the new runtime
+- `/stop` / `/resume` / interrupt / rewind parity
+- WeChat permission yes/no routed to the daemon bridge
+- bidirectional resume (CLI ↔ WeChat handoff on one thread)
+- the cyberboss migration path as the model-swap proof for the migration-friendly goal
 
-- `code/rule.md` → contents folded into `~/Desktop/NY/CLAUDE.md`; file deleted post-merge.
-- `code/_pit.md` → projects/pit.md (rendered from `threads` rows with `category=project AND status IN (idea, planned, parked)`).
-- `code/buddy.md` → projects/buddy.md (rendered from `threads` row for buddy project; maintenance bullets ride in `threads.outcome_log`). Original md decomposed by Sonnet during migrate.py.
-- `code/weclaude.md` → projects/weclaude.md, same shape.
-- `code/debug.md` → kept as-is. Long-form reference (7–8 principles + examples). NOT imported into CLAUDE.md (would push the always-import budget past 100+ lines). NOT decomposed into lessons table — different artifact class: lesson = one-line rule, debug.md = page-length methodology. Read on-demand when coding is stuck. Lumi compresses it directly when she feels it's bloating.
-- `code/system_guide.md`, `memm_agent_manual.md`, `roadmap.md`, `mid-point-rv.md` → archived. These describe the system being replaced; retained read-only as fallback during the 2-week parallel-run window, then removed.
-- `code/README.md` → folded into projects/index.md.
+Design this when Phase 4 starts, not before.
 
-Post-migration the `~/Desktop/NY/code/` folder is empty and removed (or renamed to `code-archive/` if Lumi wants the archive readable from obsidian). Same pattern as `~/Desktop/NY/memory/` md fate.
+## Pending — dir indexing
 
-## Data flow
-Write side:
-- User turn → Claude responds → Claude calls `thread_update` for explicit carryover → SessionEnd async pipeline: events archive (batched, Python only, no LLM) → diary render (Haiku → Sonnet) → lessons capture (Sonnet pattern detect) → emotion tag (Phase 2, Haiku) → dashboard regen reads latest threads/alerts/audit
+Deferred to Phase 2/3. Provisional direction: a hand-maintained high-level tree as the starting state, leaf lookup via macOS Spotlight rather than a file watcher. Re-design only when a concrete "where is X" need recurs. Schema keeps a placeholder table; not implemented in Phase 1.
 
-Read side:
-- SessionStart hook pulls dashboard top + active threads + (Phase 2) top-N breath emotions → injects into Claude system prompt
-- UserPromptSubmit hook scans turn for keyword (Phase 2: people / preferences trigger) → injects matching row into context
-- User mentions term Claude doesn't know → Claude calls `vocab_lookup` → injects definition
-- User asks "where is X" → Phase 2+: Claude calls `mdfind` wrapper or `memory_query_dir` → returns absolute path
-- User opens dashboard.md → reads system-managed top block + clicks hyperlink to drill into sub-page
+## Pending — data lifecycle
 
-## Open verification
+Backup direction: iCloud owns offsite copies; restore on a fresh Mac without touching code. Retention window + prune cadence Pending. Cleanup: per-source retention rules + executor Pending.
 
-See Phase 0 above for the full list (V1–V5). This section originally held verification items as a footnote; they are now Phase 0 first-class deliverables and gate Phase 1 code.
+Tier split (fixed, not Pending) — three tiers:
+
+- Permanent keepsake — milestones, diary, goose-bites, projects, study, lessons, major life facts. Add-only, never decays.
+- Demote-sink — low-value reference + cold vocab (use_count / last_seen long idle). Weight decays, row sinks below the active set, a keyword hit revives it (Ombre weight-pool: resolved → sink → keyword-recall). Not deleted.
+- Raw-stream — detailed event rows, resolved alerts, audit_log, DB dumps, orphaned jsonl, low-use stickers. Real retention + prune.
+
+Effect target: no growth alerts, no manual rm, no DB bloat.
+
+## Pending — open items
+
+Decided to defer, do not invent:
+
+- sub-page hyperlink concrete paths
+- how lessons are intaken (detection pattern + intake flow)
+- which columns each view's SQL extracts (e.g. milestone)
+- the md render template behind each view
+- per-event LLM topology table

@@ -1,4 +1,4 @@
-# NY Future Ideas Inbox
+# Marrow Future Ideas Inbox
 
 Captured 2026-05-15 by background agent scan of:
 - `~/Desktop/NY/code/*.md` — manual, roadmap, system_guide, mid-point-rv, _pit, buddy, rule
@@ -43,6 +43,8 @@ Not prioritized. Read this before adding new features to confirm whether an inte
 - **Clawd_on_Desk_desktop_pet** — Mouse-following eye tracking, crab/calico forms, hook-based permission bubbles (source: `/Users/Gabrielle/Desktop/NY/code/README.md:9-11`)
 - **CLI_3line_inline_in_README** — Items ≤3 lines stay in README, not own md file (source: `/Users/Gabrielle/Desktop/NY/code/README.md:3-4`)
 - **File_hygiene_rules_finalisation** — Complete path/naming rules pending merge with dir block (source: `/Users/Gabrielle/.claude/CLAUDE.md:116-119`)
+- **monitor_zone_mini_viz** — Small visualisation in/above Monitor Zone, statusline-bar style: diary count, project count, days-together, system-ops health; cyberboss heatmap-timeline as reference; possible top-of-dashboard placement (source: grill-with-docs 2026-05-15)
+- **html_readonly_dashboard_layer** — Phase 5 addon: daemon serves a local HTTP HTML view for read-only surfaces only (Cheatsheet, Monitor Zone, diary browse, milestone), Notion-style styling without Obsidian plugins; writable surfaces (Open Threads, structured correction) stay md + reconcile — never replace the md edit-reconcile core, layer on top (source: grill-with-docs 2026-05-15)
 
 ## Backup / Retry Mechanisms
 
@@ -70,7 +72,7 @@ Not prioritized. Read this before adding new features to confirm whether an inte
 - **ret_neg2_quota_diagnosis** — `sendmessage` ret=-2 likely batch rate/quota, not ctx_token; scrape mrliuzhiyu fork (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:35-38`)
 - **WeClaude_6_15_migration** — stream-json path confirmed; runtime decision pending foundation build (source: `/Users/Gabrielle/Desktop/NY/memory/3d.md:17`)
 - **group_chat_support** — Currently only ClawBot private chat (source: `/Users/Gabrielle/cc-lab/WeClaude/README.md:308-311`)
-- **Codex_alternative_swap** — Anthropic 6/15 SDK + claude-p moves to extra credit; cyberboss uses other swamp; migration plan needed (source: `/Users/Gabrielle/Desktop/NY/Start again.md:2`)
+- **Codex_alternative_swap** — Anthropic 6/15 SDK + claude-p moves to extra credit; cyberboss uses other swamp; migration plan needed 
 - **media_retention_cleanup** — `~/.config/wechat-claude-bridge/media/` no retention; persist forever, plaintext (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:38-41`)
 - **iLink_webhook_alternative** — Polling model not webhook; bridge dies between polls = missed messages, no retry (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:27`)
 - **subprocess_timeout_blocking** — 30min subprocess timeout; one slow message stalls all users (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:26`)
@@ -101,10 +103,10 @@ Not prioritized. Read this before adding new features to confirm whether an inte
 
 ## Cross-channel
 
-- **WeChat_permission_yesno** — Approve/reject CC permission requests from WeChat (cyberboss has /stop and yes/no permission) (source: `/Users/Gabrielle/Desktop/NY/Start again.md:11,19`)
-- **bidirectional_resume** — Morning WeChat chat → meal break → continue on CC; sid consistent OR resume independent of sid (source: `/Users/Gabrielle/Desktop/NY/Start again.md:11,19`)
-- **command_parity_across_channels** — All commands consistent CLI ↔ WeChat ↔ desktop ↔ web (source: `/Users/Gabrielle/Desktop/NY/Start again.md:11`)
-- **migration_path_codex_local** — Easy migration to Codex/Claude/local small model (cyberboss already did) (source: `/Users/Gabrielle/Desktop/NY/Start again.md:10`)
+- **WeChat_permission_yesno** — Approve/reject CC permission requests from WeChat (cyberboss has /stop and yes/no permission) 
+- **bidirectional_resume** — Morning WeChat chat → meal break → continue on CC; sid consistent OR resume independent of sid 
+- **command_parity_across_channels** — All commands consistent CLI ↔ WeChat ↔ desktop ↔ web 
+- **migration_path_codex_local** — Easy migration to Codex/Claude/local small model (cyberboss already did) 
 - **Stellan_proactive_followup_emotional** — Next session proactively asks how meal/event went; proactive recall mechanism (source: `/Users/Gabrielle/Desktop/NY/code/system_guide.md:18`)
 - **Stellan_push_inbox_file_or_macOS_notif** — Write `~/.claude/inbox.md` + SessionStart inject; macOS notification; reuse weclaude `client.send_text` push to WeChat (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:75-77`)
 - **Stellan_no_cold_start_old_session** — Don't cold-start in already-large old session (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:70-71`)
@@ -113,7 +115,7 @@ Not prioritized. Read this before adding new features to confirm whether an inte
 
 - **gh_stars_categorization** — OSS used/borrowed gets starred then sorted into matching list (source: `/Users/Gabrielle/Desktop/NY/code/rule.md:75`)
 - **WeClaude_upstream_revival_strategy** — If upstream revives, drop local patches; fallback `_patches.py` monkey-patch keeps `bridge.py` pristine (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:8-10`)
-- **Memes_optimization** — Sonnet doesn't know real memes vs random quotes; want only hot vocabulary + memorable new memes (source: `/Users/Gabrielle/Desktop/NY/Start again.md:22-23`)
+- **Memes_optimization** — Sonnet doesn't know real memes vs random quotes; want only hot vocabulary + memorable new memes 
 - **profile_md_deletion** — `memory/profile.md` pending delete, content already moved to reference + global (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:20`)
 - **transcript_path_mismatch** — `cc-jsonl-to-md.py` writes elsewhere than `memory/transcript/`, fix in Phase 4 (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:25`)
 - **MEMORY_md_old_path_cleanup** — `~/.claude/projects/-Users-Gabrielle-Desktop-NY/memory/MEMORY.md` pending manual delete (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:539-541`)
