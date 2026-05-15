@@ -136,7 +136,7 @@ Pull, not push. Memory lives in SQLite and is read on demand via MCP tool calls 
 
 - On-demand recall — Claude calls a recall tool when a turn references the past; the daemon returns only the matched rows under a token budget. Scales with the DB without bloating context; always reads the live store.
 - Cold-start handoff — SessionStart calls the daemon once for the minimal who-I-am, where-I-left-off, open-alerts set (Ombre session_breath pattern); short and fixed-size, never a growing md.
-- CLAUDE.md holds the static layer only — persona, family, and one short MCP usage guide for when to call which tool. It never grows with data; it is not an @import pile.
+- CLAUDE.md holds the static layer plus a daemon-rendered marker block: persona, family, one short MCP usage guide (hand-written zone), and the must-never-fade convention layer in the marker block (see "Pending — dir, drift sweep, convention injection"). The hand-written zone never grows with data; it is not an @import pile.
 - @import is not the memory path — it loads once at launch and does not re-read mid-session, which disqualifies it for live recall.
 - UserPromptSubmit per-turn injection covers two cases: the rare must-never-fade item, and an optional deterministic recall fallback (config flag, default off for a strong model). When on, the hook runs the user turn through the same local-embedding vector search the model would call and injects the top-K hits into additionalContext. The retrieval engine is identical to model-pulled recall; only the trigger changes from model judgement to deterministic per-turn. It uses the local sentence-embedding model (a fixed local component, no token / subscription / cloud cost, independent of the conversation model — exact model Pending, set at build), never the conversation model and never keyword match. Steady-state cost stays near zero for a strong model with the flag off.
 
@@ -179,6 +179,8 @@ Baseline effect: Lumi never manually clears markers, never triggers catchup, nev
 - idempotency — catchup re-run never double-inserts — content/source-hash dedup — method agreed.
 - timeout brake — a hung agent cannot stall the pipeline or burn tokens — hard subprocess timeout + kill — REQUIRED, mechanism Pending.
 - edit safety — every visible rendered file is writable; structured views reconcile by row id, narrative views by date block (whole-content overwrite or full-block delete); hand-edits never lost; conflict = back up + alert before overwrite — agreed; anchor char format + render template Pending.
+- drift sweep — a moved/renamed/deleted/merged file never leaves dangling references — git-diff-triggered deterministic ripgrep + key-indirection + cheap-model free-text fallback — REQUIRED, mechanism Pending.
+- claude.md render guard — the daemon-rendered marker block never destroys the hand-written zone — marker partition + hash-compare + reconcile + backup + atomic + Alert — REQUIRED, mechanism Pending.
 - migrate safety — old data never destroyed — parallel run ~2 weeks + originals archived read-only — agreed.
 
 ## Pending — weclaude + cyberboss fusion
@@ -193,9 +195,16 @@ After the memory core ships, the WeChat side gets rebuilt. Not decided whether t
 
 Design this when Phase 4 starts, not before.
 
-## Pending — dir indexing
+## Pending — dir, drift sweep, convention injection
 
-Deferred to Phase 2/3. Provisional direction: a hand-maintained high-level tree as the starting state, leaf lookup via macOS Spotlight rather than a file watcher. Re-design only when a concrete "where is X" need recurs. Schema keeps a placeholder table; not implemented in Phase 1.
+Dropped: file-level full index (dir table, hand-maintained tree, macOS Spotlight) — conflicts portability + low-maintenance. "Where is X" = daemon on-demand ripgrep over authorized roots. SCHEMA dir placeholder table to be removed.
+
+Two real needs survive the drop. Both REQUIRED; mechanism detail Pending:
+
+- drift sweep — Lumi moves / renames / deletes / merges a file; every reference follows without her reminding anyone. Trigger = a path-change event (git diff detects it). Three layers: (1) deterministic ripgrep over authorized roots finds every reference to the old path — primary, no model, never misses; (2) key-indirection — docs/scripts reference a key, not a hardcoded path, so a move edits one registry entry and references stay correct; (3) cheap local model sweeps free-text mentions as fallback — never lets the model touch key paths.
+- convention injection — naming / folder-placement rules sit in the every-turn injection layer, never a sub-page (Claude does not read sub-pages on its own; a rule there is a dead rule). Single source → drift sweep maintains the source → daemon renders it into a marker block in CLAUDE.md → SessionEnd renders, next SessionStart applies. Lumi edits the source once or not at all; she never hand-manages it.
+
+CLAUDE.md render: daemon writes via Python file IO, not the cc Write tool — cc permission / bypass and the 10000-char hook cap never apply (same path as diary render). Marker-block partition: the daemon rewrites only its marker block; the hand-written zone (persona, coding discipline) is never touched. This deliberately removes Anthropic's default block on cc editing CLAUDE.md (a high-weight every-turn file), so the guard set is the compensating safety net, REQUIRED not optional: hash-compare before overwrite, marker-outside never overwritten, marker-inside hand-edit reconciles + backup + one Alert, atomic write.
 
 ## Pending — data lifecycle
 

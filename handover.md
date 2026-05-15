@@ -25,3 +25,4 @@ Grill round complete. All decisions committed + pushed. Private repo: github.com
 ## Done this session
 
 - DESIGN data-lifecycle 3-tier; reconcile split by view; injection weak-model fallback + session recall=0 alert gate; README removed (folded into CLAUDE.md); CONTEXT.md + ADR-0001; CONVENTIONS.md + project CLAUDE.md (with read-order) + PROGRESS.md; handoff rule changed to fixed-name overwrite; aliases study + mm added.
+- Grill round 2 written into DESIGN: dir full-index dropped; drift sweep 3-layer (ripgrep + key-indirection + cheap-model fallback); convention injection (single source → drift sweep → CLAUDE.md marker block, daemon Python-IO render not cc tool); marker-partition render guard as compensation for removing Anthropic's CLAUDE.md write block. Safety nets + Injection + dir section all updated. All mechanism detail Pending.
