@@ -1,28 +1,29 @@
-# Marrow Handoff — 2026-05-15 (next window)
+# Marrow Handoff — 2026-05-16 (next window)
 
-Grill round complete. All decisions committed + pushed. Private repo: github.com/Jaynechu/marrow. Read CLAUDE.md first (it lists when to read what). Do not re-derive. Delete this file after use.
+Read CLAUDE.md first (it lists when to read what). DESIGN.md is source of truth. PROGRESS.md has this session's 4 entries — do not re-derive. This file is fixed-name persistent: act on it, never delete it; it is overwritten at next session end.
 
-## Next window task
+## Pending Lumi decision (do not action without her)
 
-- FUTURE.md sweep: ~80 items, agent-scraped from old _pit/roadmap. Judge each: still-applies-to-marrow / superseded-by-rebuild / dead. One commit. Do before Phase 1 build.
+- _pit.md block #3 "关 auto memory + 重写 memory/ 文件夹 [high]" (`~/Desktop/NY/code/_pit.md:3`) — kept, flagged. Marrow genesis note; live sliver preserved in FUTURE `/config_auto_memory_off` + DESIGN Cheatsheet. Delete-or-keep is Lumi's call. _pit.md is NOT git-backed; backup at `~/Desktop/NY/memory/backup/_pit.md.bak-2026-05-16`.
+- WeClaude scope: FUTURE.md re-scope (commit 672b539) cut ~12 weclaude-internal-bridge items, treating WeClaude as a sibling project not Marrow. If Lumi rules WeClaude is part of Marrow, recover them from git pre-672b539.
 
-## Pending Lumi decision (parked — do not action)
+## Parked (carry-over, do not action)
 
-- archive/ history rewrite: archive/ untracked + gitignored (no-loss done), but DESIGN-original.md (personal health/identity fragments) still in commit ae23fc4 on GitHub. Full removal = force-push history rewrite. Lumi said leave it for now.
+- archive/ history rewrite: DESIGN-original.md personal fragments still in commit ae23fc4 on GitHub; full removal = force-push history rewrite. Lumi said leave it.
+- reference.md dir tree stale (`ny/`, lists deleted README). Lumi said don't bother — Marrow's Cheatsheet / convention-injection absorbs it later.
 
-## Architecture — decided this session
+## State
 
-- Build Marrow inside ~/cc-lab/marrow (alias: mm). Persona/relationship continuity is global (~/.claude/CLAUDE.md), loads in any dir.
-- Do NOT import old ny-memm docs (rule, system_guide, manual, roadmap) into Marrow context.
-- Work continuity = CLAUDE.md + PROGRESS.md + git log. Not 3d/10d.
-- 3d/10d/reference/timeline all still exist in ~/Desktop/NY/memory/ (not deleted). They are migrate.py sources. Do not delete; just do not load into Marrow context.
-- NY CLAUDE.md old-system index: keep while the old system runs in parallel; clear when Phase 1 retires it.
-
-## Drift to fix (not this session's scope)
-
-- reference.md directory tree still calls the repo `ny/` and lists README.md (now deleted). The whole marrow subtree there is stale — rewrite in one pass later, not piecemeal.
+- grill round 2 already DONE (commit 5972174). Phase 1 build gate is open.
+- 3d.md Open-Threads [Next] still lists "grill round 2 pending" + "grill-with-docs skill redesign pending" — both stale; drop on next memm run.
+- Commit + push are autonomous (CLAUDE.md Commit/git, Lumi-edited). Remote up to date through 672b539.
 
 ## Done this session
 
-- DESIGN data-lifecycle 3-tier; reconcile split by view; injection weak-model fallback + session recall=0 alert gate; README removed (folded into CLAUDE.md); CONTEXT.md + ADR-0001; CONVENTIONS.md + project CLAUDE.md (with read-order) + PROGRESS.md; handoff rule changed to fixed-name overwrite; aliases study + mm added.
-- Grill round 2 written into DESIGN: dir full-index dropped; drift sweep 3-layer (ripgrep + key-indirection + cheap-model fallback); convention injection (single source → drift sweep → CLAUDE.md marker block, daemon Python-IO render not cc tool); marker-partition render guard as compensation for removing Anthropic's CLAUDE.md write block. Safety nets + Injection + dir section all updated. All mechanism detail Pending.
+- See PROGRESS.md [2026-05-16] x4: docs consolidation (CONVENTIONS folded into CLAUDE.md + rule.md discipline), ny→mw rename, handover overwrite model, global naming law, FUTURE 106→66→30, _pit memm prune.
+- Out-of-repo (not in marrow git): `~/.claude/CLAUDE.md` File hygiene → naming law; `~/.claude/skills/handoff/SKILL.md` overwrite model; `~/.claude/settings.json` +`~/Desktop/NY` additionalDirectory; `~/cc-lab/marrow.code-workspace` (Raycast ⌥V via `~/Toolkit/scripts/raycast/vs-ny.sh`).
+
+## Next task
+
+- Start Phase 1 (DESIGN: Memory core — SQLite + full-text, daemon + minimal MCP tool set, three hooks, dashboard top render, migrate.py, `mw` CLI). Resolve the two Lumi decisions above first if she engages them.
+- Suggested skills: grill-with-docs (more design stress before code), tdd (Phase 1 build), diagnose (bugs).
