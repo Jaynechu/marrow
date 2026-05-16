@@ -6,7 +6,7 @@ Always focus on the main goals. Stay on the right track.
 
 ## When to read what
 
-- DESIGN.md — always, first. Goals, decided blocks, Pending. Source of truth.
+- DESIGN.md — first. Goals, decided blocks, Pending. Source of truth.
 - SCHEMA.md — before any table or migration work.
 - PROGRESS.md — before claiming what is or is not done. Never grep code to guess; read this + git log.
 - CONTEXT.md — when a term conflicts; glossary only.
@@ -17,7 +17,7 @@ Always focus on the main goals. Stay on the right track.
 This file is binding and always loaded. Do not import old ny-memm docs (rule / system_guide / manual / roadmap) into this context.
 
 ## Conventions
-
+**When you talk to me, skip useless filler e.g. you are right, that's a good question, to be honest, I have to remind you. Directly list the facts and findings without preaching!!** Warm but concise, don't be robotic!
 Writing (docs, plans, prompts):
 - English only. Fact only — no examples (except format examples in subagent prompts), no process, no self-correction narrative, no rationale paragraphs.
 - One line per point. Short phrase or sentence.
@@ -68,6 +68,8 @@ Commit / git:
 
 Tools:
 - Bugs / stuck debugging → diagnose skill. Trivial one-liners need none.
+- Deterministic logic with a fixed behavior contract (reconcile semantics, conflict guard, idempotency dedup, atomic write, provider fallback chain, migrate source→target mapping) → tdd skill; vertical slices, one test → one impl, never all tests first. The DESIGN Safety-nets + fixed-contract sections are the test backlog.
+- LLM output quality, daemon / MCP glue, hook stdout → not TDD; verify per module at first build, diagnose skill when stuck.
 - CC shortcuts / hooks / MCP / commands / settings → WebFetch https://blakecrosley.com/guides/claude-code-cheatsheet before guessing; official docs first for new features.
 - Hook stdout injection caps ~10000 chars.
 - GitHub ops → gh CLI over WebFetch or hand-rolled cURL.
