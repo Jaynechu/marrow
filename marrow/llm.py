@@ -4,6 +4,10 @@ over an ordered list so a fallback link is a config edit, not code.
 
 claude_cli isolation is built in and non-negotiable: a pipeline call must
 never inherit persona / user MCP / output-style.
+
+WHY no-`-p` stream-json = the OAuth 5h subscription window (not the 6/15
+credit pool), what each flag does, and when `-p` is the fallback:
+see docs/adr/0003-subscription-window-stream-json.md. Do not re-derive.
 """
 from __future__ import annotations
 
