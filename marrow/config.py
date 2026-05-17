@@ -24,10 +24,18 @@ def load() -> dict:
     paths = cfg.setdefault("paths", {})
     db = paths.get("db") or str(DATA_DIR / "marrow.db")
     backup = paths.get("backup_dir") or str(DATA_DIR / "backup")
+    dash = paths.get("dashboard") or str(
+        Path.home() / "Desktop" / "NY" / "dashboard.md"
+    )
     paths["db"] = db
     paths["backup_dir"] = backup
+    paths["dashboard"] = dash
     Path(backup).mkdir(parents=True, exist_ok=True)
     return cfg
+
+
+def dashboard_path() -> str:
+    return load()["paths"]["dashboard"]
 
 
 def db_path() -> str:

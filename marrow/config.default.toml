@@ -5,6 +5,8 @@
 # Empty = use defaults under ~/.config/marrow/
 db = ""
 backup_dir = ""
+# Dashboard renders here (Obsidian vault). Empty = ~/Desktop/NY/dashboard.md
+dashboard = ""
 
 [llm]
 # Selection chain: default -> emergency. Callers pass intent only.
