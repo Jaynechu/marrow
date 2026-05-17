@@ -34,6 +34,3 @@ archive/
 .vscode/
 .idea/
 *.tmp
-
-# prompt-lint pre-trim originals (rollback only)
-*.bak
