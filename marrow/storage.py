@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS goose_bites (
   session_id TEXT,
   bites TEXT NOT NULL,
   best INTEGER NOT NULL DEFAULT 0,
+  source_hash TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE TABLE IF NOT EXISTS alerts (
@@ -176,5 +177,13 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         conn.executescript(_TABLES)
         conn.executescript(_FTS)
         conn.execute(_vec_table(dim))
+        # Schema-evolution backfill: a column added after a db already
+        # exists is not applied by CREATE IF NOT EXISTS. Idempotent —
+        # duplicate-column ALTER is swallowed; add a row per new column.
+        for tbl, col, decl in (("goose_bites", "source_hash", "TEXT"),):
+            try:
+                conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn

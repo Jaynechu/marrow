@@ -30,16 +30,19 @@ Full-text and vector search structures are daemon-built on top of these tables. 
 
 ## Migration mapping (source → target)
 
-- `memory/3d.md` per-day entries → events; `10d.md` / `2026.md` blocks → events (compressed=1)
-- `memory/timeline.md` ## Me / ## Us → milestones (scope = me / us)
-- `memory/reference.md` cipher / event blocks → vocab
-- `memory/reference.md` lifestyle block → preferences (Phase 2, manual review)
-- `memory/reference.md` family + friend mentions → people (Phase 2, manual review)
-- `code/_pit.md` items → pit
-- `memory/3d.md` Open-Threads → threads; Alerts → alerts; Lessons → lessons (currently empty, no migration weight)
-- `铁锅/语录/*.md` + `memory/3d.md` [goose-bites] blocks → goose_bites; `Garden/` images (manual review) → stickers
+Scope: only clean keepsake sources. 3d/10d dropped (mostly memm-system story, low value).
 
-migrate.py is a Phase 1 deliverable. Idempotent: re-run skips already-imported rows by source-hash.
+- `memory/2026.md` log lines → events (one row per line, role=log, compressed=1)
+- `memory/timeline.md` ## Us → milestones (scope=us, date=YYYY-MM-DD); ## Me → milestones (scope=me, date=calendar year, birth 1995 + age-range start)
+- Lighthouse → one hand-written milestone (scope=me): Marrow memory-system rebuild
+- `memory/reference.md` <cipher> → vocab (type=cipher)
+- `code/_pit.md` ## blocks → pit (status=idea)
+- `铁锅/语录/*.md` → goose_bites (one row per ### date)
+- Dropped: Open-Threads / Alerts / Lessons (empty or stale); <lifestyle> / <family> (Phase 2); Garden HTML keepsakes + stickers (no Phase 1 source — WeChat stickers are Phase 4 / cyberboss)
+
+scope values = me / us only. ## Me has no exact date so the calendar year is stored (e.g. Age 0–10 → 1995), range-queryable.
+
+migrate.py is a Phase 1 deliverable. Default dry-run; --apply writes. Idempotent: re-run skips already-imported rows by source_hash.
 
 ## Backup
 
