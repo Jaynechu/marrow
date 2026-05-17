@@ -14,7 +14,7 @@ Read CLAUDE.md → DESIGN.md → PROGRESS.md first. Fixed-name persistent file: 
 
 ## prompt-lint — test phase, watch then decide
 
-- Live global hook. Scope `~/.claude/` + `~/cc-lab/marrow/`, whitelist meta-doc + `docs/adr/*` + `.claude/rules/*`. Not yet extended to NY / all-CLAUDE.md — Lumi decides after observing.
+- Live global hook. Scope: all `.md` under `~/cc-lab/marrow/`, `~/.claude/` (`CLAUDE.md`-family + `rules/*`). NY untouched, test phase — Lumi decides whether to widen.
 - Inherent side effect: Write trims on disk to a compressed version; an immediate Edit using the pre-trim text as `old_string` mis-matches and that Edit passes through. After writing a whitelisted meta-doc, re-read disk before editing the same spot.
 - Rollback: `.bak` per file; remove = settings.json PreToolUse drop 2 lines + rm hook.
 
