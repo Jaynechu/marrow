@@ -12,7 +12,7 @@ Phase 2 placeholder — schema reserved, NOT created in Phase 1: emotions, peopl
 
 Full-text and vector search structures are daemon-built on top of these tables. Which columns get indexed or embedded is a build-time decision, not fixed in this doc.
 
-- events — every session turn archived. Key: session_id, timestamp, role, content, channel, compressed (1 = imported from old 10d/2026 archives).
+- events — every session turn archived. content = cleaned human dialogue (tool/fetch/system noise stripped at SessionEnd), never raw RPC. Key: session_id, timestamp, role, content, channel, compressed (1 = imported from old 10d/2026 archives). Day-digest haiku is routine-internal; raw events stay, catchup recomputes.
 - threads — next-session work tracking; backs Open Threads. Key: category (daily / study / project), title, due, status (active / done / abandoned), next_step, last_session_summary, context_pointers, outcome_log (append-only project log). The lesson class shown in Open Threads is rendered by merging unpromoted `lessons` rows — it is not a category here.
 - milestones — life events; backs the Milestone view. Key: scope (me / us), date, title, description, theme, pinned.
 - vocab — text memes / cipher / event / news. Key: type, key (trigger phrase), value (meaning / source), context, use_count, last_seen.
