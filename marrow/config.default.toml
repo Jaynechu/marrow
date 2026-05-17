@@ -1,0 +1,40 @@
+# Marrow config. Live copy: ~/.config/marrow/config.toml
+# Swap the conversation/pipeline provider by editing one chain entry below.
+
+[paths]
+# Empty = use defaults under ~/.config/marrow/
+db = ""
+backup_dir = ""
+
+[llm]
+# Selection chain: default -> fallback -> emergency. Callers pass intent only.
+default = "stream_json"
+fallback = "claude_p"
+emergency = "ollama"
+
+[llm.stream_json]
+# cyberboss pattern: claude CLI as stream-json subprocess on OAuth subscription.
+kind = "claude_cli"
+mode = "stream_json"
+timeout_s = 120
+
+[llm.claude_p]
+# claude -p on the dedicated credit pool. Fallback only.
+kind = "claude_cli"
+mode = "print"
+timeout_s = 120
+
+[llm.ollama]
+# Local emergency. No subscription, no pool.
+kind = "ollama"
+model = "qwen2.5:7b"
+timeout_s = 180
+
+[embedding]
+# Local sentence model for vector recall. Pending pick; recall fallback off in Phase 1.
+model = ""
+dim = 384
+
+[recall]
+# Phase 1: FTS5 always on. Vector path wired when embedding.model is set.
+vector = false

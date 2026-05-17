@@ -1,0 +1,18 @@
+[project]
+name = "marrow"
+version = "0.1.0"
+description = "Personal AI memory + workflow system. SQLite-backed, model-agnostic, one dashboard."
+requires-python = ">=3.12"
+dependencies = [
+    "sqlite-vec>=0.1.9",
+]
+
+[project.scripts]
+mw = "marrow.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["marrow*"]
