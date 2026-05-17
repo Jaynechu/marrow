@@ -12,6 +12,7 @@ Prompt bodies below were reviewed and hand-edited by Lumi 2026-05-17
 from __future__ import annotations
 
 import datetime as _dt
+from zoneinfo import ZoneInfo
 
 from . import config, repo, storage
 from .llm import LLMClient
@@ -91,30 +92,67 @@ CATCHUP_WINDOW_DAYS = 7
 CATCHUP_MAX = 3
 
 
-def _yesterday() -> str:
-    return (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+# Diary day boundary: a "day" is local [D 04:00, D+1 04:00). 00:00-04:00
+# counts as the previous day (late-night spillover); the 04:00 routine
+# writes the day that just fully closed. events.timestamp is UTC, so the
+# boundary is computed in local time, not by UTC substr.
+_TZ = ZoneInfo("Australia/Melbourne")  # auto AEST/AEDT
+_CUTOFF_H = 4
+
+# Per-session map-reduce: one haiku per session, never the whole day in one
+# shot. A session over this many chars is chunked and each chunk summarised
+# first (oversized-session guard). Heuristic, tunable.
+_SESSION_CHAR_CAP = 40000
+_CHUNK_CHARS = 30000
+
+
+def _to_local(utc_iso: str) -> _dt.datetime:
+    s = utc_iso.strip().replace("Z", "+00:00")
+    d = _dt.datetime.fromisoformat(s)
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_dt.timezone.utc)
+    return d.astimezone(_TZ)
+
+
+def _diary_day(utc_iso: str) -> str:
+    return (_to_local(utc_iso)
+            - _dt.timedelta(hours=_CUTOFF_H)).date().isoformat()
+
+
+def _routine_target() -> str:
+    # The just-closed day at routine time = current diary day minus 1.
+    now = _dt.datetime.now(_TZ)
+    cur = (now - _dt.timedelta(hours=_CUTOFF_H)).date()
+    return (cur - _dt.timedelta(days=1)).isoformat()
+
+
+def _scan_rows(conn, window_days: int) -> list[dict]:
+    # UTC-bounded pull (window + 2d slack for tz/cutoff), diary day in Python.
+    cutoff = (_dt.date.today()
+              - _dt.timedelta(days=window_days + 2)).isoformat()
+    rows = conn.execute(
+        "SELECT session_id, role, content, timestamp FROM events "
+        "WHERE timestamp >= ? AND timestamp != '' ORDER BY timestamp, id",
+        (cutoff,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def pending_days(conn, window_days: int = CATCHUP_WINDOW_DAYS) -> list[str]:
-    # event-days inside the window with no diary yet, oldest first.
-    cutoff = (_dt.date.today()
-              - _dt.timedelta(days=window_days)).isoformat()
-    rows = conn.execute(
-        "SELECT DISTINCT substr(timestamp,1,10) d FROM events "
-        "WHERE substr(timestamp,1,10) NOT IN (SELECT date FROM diary) "
-        "AND d >= ? AND d != '' ORDER BY d ASC",
-        (cutoff,),
-    ).fetchall()
-    return [r["d"] for r in rows]
+    floor = (_dt.date.today()
+             - _dt.timedelta(days=window_days)).isoformat()
+    done = {r["date"] for r in conn.execute("SELECT date FROM diary")}
+    days = {_diary_day(r["timestamp"]) for r in _scan_rows(conn, window_days)}
+    return sorted(d for d in days if d >= floor and d not in done)
 
 
 def day_events(conn, date: str) -> list[dict]:
-    rows = conn.execute(
-        "SELECT session_id, role, content FROM events "
-        "WHERE substr(timestamp,1,10) = ? ORDER BY timestamp, id",
-        (date,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in _scan_rows(conn, CATCHUP_WINDOW_DAYS + 1):
+        if _diary_day(r["timestamp"]) == date:
+            out.append({"session_id": r["session_id"], "role": r["role"],
+                        "content": r["content"]})
+    return out
 
 
 def _has_diary(conn, date: str) -> bool:
@@ -123,18 +161,63 @@ def _has_diary(conn, date: str) -> bool:
     ).fetchone() is not None
 
 
+def _sessions(evs: list[dict]) -> list[tuple[str, str]]:
+    # group by session_id, first-seen order; value = joined turn text.
+    order: list[str] = []
+    buf: dict[str, list[str]] = {}
+    for e in evs:
+        sid = e["session_id"] or "_"
+        if sid not in buf:
+            buf[sid] = []
+            order.append(sid)
+        buf[sid].append(f"[{e['role']}] {e['content']}")
+    return [(sid, "\n".join(buf[sid])) for sid in order]
+
+
+def _chunks(text: str, size: int) -> list[str]:
+    cur, n, out = [], 0, []
+    for ln in text.split("\n"):
+        # a single oversize line (one huge paste) is hard-split by chars
+        for piece in ([ln] if len(ln) <= size
+                      else [ln[i:i + size] for i in range(0, len(ln), size)]):
+            if n + len(piece) > size and cur:
+                out.append("\n".join(cur))
+                cur, n = [], 0
+            cur.append(piece)
+            n += len(piece) + 1
+    if cur:
+        out.append("\n".join(cur))
+    return out
+
+
+def _session_digest(llm: LLMClient, date: str, sid: str, text: str) -> str:
+    if len(text) <= _SESSION_CHAR_CAP:
+        return llm.call("day-digest",
+                        DIGEST_PROMPT.format(date=date, events=text),
+                        tier="cheap")
+    parts = [
+        llm.call("day-digest",
+                 DIGEST_PROMPT.format(date=f"{date} (session {sid} part)",
+                                      events=c), tier="cheap")
+        for c in _chunks(text, _CHUNK_CHARS)
+    ]
+    return "\n".join(parts)
+
+
 def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None) -> bool:
     if _has_diary(conn, date):
         return False
     evs = day_events(conn, date)
     if not evs:
         return False
-    text = "\n".join(f"[{e['role']}] {e['content']}" for e in evs)
-    sids = sorted({e["session_id"] for e in evs if e["session_id"]})
+    sessions = _sessions(evs)
+    sids = sorted(s for s, _ in sessions if s != "_")
 
-    digest = llm.call("day-digest",
-                      DIGEST_PROMPT.format(date=date, events=text),
-                      tier="cheap")
+    # MAP: one digest per session (oversized sessions chunked internally).
+    per = [f"## session {sid}\n{_session_digest(llm, date, sid, txt)}"
+           for sid, txt in sessions]
+    # REDUCE: merged session digests = the day digest.
+    digest = "\n\n".join(per)
     narrative = llm.call("diary",
                          DIARY_PROMPT.format(date=date, digest=digest),
                          tier="mid")
@@ -146,7 +229,7 @@ def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None) -> bool:
         conn.execute(
             "INSERT INTO audit_log (target_table, target_id, action, summary) "
             "VALUES ('diary', ?, 'insert', ?)",
-            (date, f"diary written for {date}"),
+            (date, f"diary written for {date} ({len(sessions)} sessions)"),
         )
 
     raw = llm.call("lessons", LESSONS_PROMPT.format(digest=digest),
@@ -173,9 +256,10 @@ def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None) -> bool:
 
 def run(conn, llm: LLMClient, *, db: str | None = None,
         day: str | None = None, catchup: bool = False) -> list[str]:
-    # Single scheduled trigger (16:00, Lumi online). catchup scans the last
-    # CATCHUP_WINDOW_DAYS, writes at most CATCHUP_MAX, alerts on overflow so
-    # claude -p volume is hard-bounded. Explicit day / yesterday bypass.
+    # Two independent triggers, decoupled so a failure of one never starves
+    # the other: routine (04:00) writes the just-closed day; catchup (16:00)
+    # scans the last CATCHUP_WINDOW_DAYS for any day still missing a diary,
+    # writes at most CATCHUP_MAX, alerts on overflow. Idempotent by date.
     if day:
         days = [day]
     elif catchup:
@@ -190,7 +274,7 @@ def run(conn, llm: LLMClient, *, db: str | None = None,
             )
         days = miss[:CATCHUP_MAX]
     else:
-        days = [_yesterday()]
+        days = [_routine_target()]
     return [d for d in days if run_day(conn, d, llm, db=db)]
 
 
@@ -198,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     import sys
     args = argv if argv is not None else sys.argv[1:]
     catchup = "--catchup" in args
+    mode = "catchup" if catchup else "routine"
     db = config.db_path()
     conn = storage.connect(db)
     llm = LLMClient(on_alert=lambda s, t, m, src: repo.add_alert(
@@ -207,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as e:
         repo.add_alert("critical", "routine",
-                       f"diary routine failed (catchup={catchup}): {e}",
+                       f"diary {mode} failed: {e}",
                        source="diary.py", db=db)
         return 1
     finally:

@@ -24,9 +24,16 @@ Evidence: Haiku returned PONG in 2.7s, `rate_limit_event` with `rateLimitType:"f
 
 `_run_claude_p` (config `[llm.claude_cli] mode = "p"`) uses `-p --output-format json`, credit-pool billing. One-line switch, callers unchanged. Ollama available (local, no cost). Use `-p` only if stream breaks.
 
-**Scheduling**
+**Day boundary + map-reduce**
 
-Catchup runs locally via macOS launchd (`~/Library/LaunchAgents/mw-diary-catchup.plist`, `StartCalendarInterval` 16:00 local, DST auto-followed). `marrow.diary --catchup` scans last 7 days (cap 3, overflow alert). Do NOT use Anthropic `/schedule` skill — cloud sandbox has no local SQLite, .venv, or OAuth `claude`.
+A diary day = local `[D 04:00, D+1 04:00)` (00:00-04:00 = previous day). Computed via `zoneinfo Australia/Melbourne` (auto AEST/AEDT), not UTC substr. `run_day` is per-session map-reduce: one haiku digest per session (oversized session chunked first), merged digests then sonnet diary + haiku lessons — never the whole day in one prompt.
+
+**Scheduling (two independent launchd jobs, decoupled)**
+
+- `mw-diary-routine.plist` — 04:00 local, `marrow.diary` (no flag), writes the just-closed day.
+- `mw-diary-catchup.plist` — 16:00 local, `marrow.diary --catchup`, scans last 7 days (cap 3, overflow alert), backfills anything the routine missed.
+- Separate so one job failing never starves the other; both idempotent by `diary.date`. Sources in `deploy/`, installed to `~/Library/LaunchAgents/`, DST auto-followed.
+- Do NOT use Anthropic `/schedule` skill — cloud sandbox has no local SQLite, .venv, or OAuth `claude`.
 
 **Consequences**
 
