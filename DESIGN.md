@@ -121,6 +121,17 @@ The reconcile semantics above are fixed, not Pending. Only the anchor's characte
 
 Conflict guard: before any overwrite, hash-compare; if Lumi changed it, back up the old file and raise one Alert. Never overwrite in silence.
 
+## Fact corrections — conflict priority
+
+A corrected fact lands in a corrections store, never by overwriting an event (events are append-only raw stream, not the fact authority). Capture reuses the lesson intake pipeline; facts skip promote-to-rule (a fact updates truth, not a rule).
+
+Hard rules:
+- Lumi's current input is top truth; stored memory never rebuts her. The store exists to stop the assistant's own mis-recall, not to validate or correct her. On conflict she wins — at most "my record says X, updating to your Y", never "let me remind you". Shorthand or stale wording is not an error to push back on.
+- Serial facts = append state-sequence + latest pointer, not single-value overwrite. A new state supersedes the old (old kept, marked superseded, history-queryable); recall returns latest only; a superseded state is never raised against new input.
+- Conflict priority: Lumi current input > Lumi-confirmed structured > system structured (milestone / preference) > raw event; same layer newer > older; an event is a lead, never the arbiter.
+
+corrections table = Phase 2 placeholder (design fixed here, not built Phase 1).
+
 Why this beats a black-box model memory: the memory IS Lumi's own SQLite + files, not the model's hidden state. Correction is deterministic, reversible, point-targeted — never begging a model to forget. This is how semi-permanent memory and migration-friendliness land.
 
 ## Hooks (four)
@@ -229,3 +240,5 @@ Decided to defer, do not invent:
 - which columns each view's SQL extracts (e.g. milestone)
 - the md render template behind each view
 - per-event LLM topology table
+- schema-evolution mechanism (user_version + ordered patch chain, replaces the interim hand-written ALTER)
+- doc auto-render upkeep (DESIGN / SCHEMA / README / dir map) — no manual maintenance

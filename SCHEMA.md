@@ -8,7 +8,7 @@ DB lives under `~/.config/` (exact path finalized at build). snake_case names. T
 
 Phase 1 first-class: events, threads, milestones, vocab, stickers, lessons, pit, diary, goose_bites, alerts, audit_log.
 
-Phase 2 placeholder — schema reserved, NOT created in Phase 1: emotions, people, preferences, dir.
+Phase 2 placeholder — schema reserved, NOT created in Phase 1: emotions, people, preferences, dir, corrections.
 
 Full-text and vector search structures are daemon-built on top of these tables. Which columns get indexed or embedded is a build-time decision, not fixed in this doc.
 
@@ -27,6 +27,7 @@ Full-text and vector search structures are daemon-built on top of these tables. 
 - people — Phase 2 placeholder. Family + friends roster, trigger-loaded on name mention. Key: name, aliases, relation, short_bio.
 - preferences — Phase 2 placeholder. Lifestyle + taste facts, trigger-loaded on relevant turn. Key: topic, detail.
 - dir — Phase 2 placeholder, see DESIGN "dir indexing — Pending". File path index. Key: path, project, category, description.
+- corrections — Phase 2 placeholder, see DESIGN "Fact corrections — conflict priority". Append state-sequence of Lumi-corrected facts. Key: topic, value, supersedes_id, is_latest, source_session, captured_at.
 
 ## Migration mapping (source → target)
 
