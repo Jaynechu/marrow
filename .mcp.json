@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "marrow": {
+      "command": "/Users/Gabrielle/cc-lab/marrow/.venv/bin/python",
+      "args": ["-m", "marrow.daemon"]
+    }
+  }
+}
