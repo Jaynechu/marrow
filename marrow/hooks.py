@@ -80,7 +80,12 @@ def session_end() -> int:
             repo.archive_events(conn, rows)
         state = str(config.DATA_DIR / "state")
         dash = inp.get("marrow_dashboard") or config.dashboard_path()
-        dashboard.write_dashboard(dash, conn, state_dir=state, db=db)
+        try:
+            dashboard.write_dashboard(dash, conn, state_dir=state, db=db)
+        except PermissionError:
+            pass  # TCC-protected Desktop / unauthorized context: skip this
+            # full re-render (lossless — next authorized session_end rewrites
+            # it). Sibling of alert#11's clean() FileNotFoundError no-op.
     finally:
         conn.close()
     return 0

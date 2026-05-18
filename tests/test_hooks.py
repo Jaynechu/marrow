@@ -66,6 +66,57 @@ def test_session_end_archives_and_renders(env, monkeypatch, tmp_path):
     assert "GAMSAT plan" in txt and hooks.dashboard.M0 in txt
 
 
+def test_session_end_dashboard_eperm_degrades_no_alert(env, monkeypatch, tmp_path):
+    """TCC-protected Desktop write -> PermissionError must skip dashboard
+    regen only; events still archived; no alert (mirrors alert#11)."""
+    db, dash, _ = env
+    jl = tmp_path / "s.jsonl"
+    jl.write_text("\n".join(json.dumps(o) for o in [
+        {"type": "user", "sessionId": "s1", "timestamp": "2026-05-17T01:00:00Z",
+         "message": {"role": "user", "content": "build phase 1"}},
+        {"type": "assistant", "sessionId": "s1",
+         "timestamp": "2026-05-17T01:00:09Z",
+         "message": {"role": "assistant",
+                     "content": [{"type": "text", "text": "on it"}]}},
+    ]))
+
+    def boom(*a, **k):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(hooks.dashboard, "write_dashboard", boom)
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": str(jl)})
+    rc = hooks.main(["session_end"])
+    assert rc == 0
+    conn = storage.connect(db)
+    try:
+        n = conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
+        alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
+    finally:
+        conn.close()
+    assert n == 2  # events archive leg still succeeded
+    assert alerts == 0  # degraded silently, no handoff pollution
+
+
+def test_session_end_real_error_still_alerts(env, monkeypatch, tmp_path):
+    """A non-permission failure must still surface an alert (no broad catch)."""
+    db, dash, _ = env
+    jl = tmp_path / "s.jsonl"
+    jl.write_text(json.dumps(
+        {"type": "user", "sessionId": "s1", "timestamp": "2026-05-17T01:00:00Z",
+         "message": {"role": "user", "content": "hi"}}))
+
+    def boom(*a, **k):
+        raise ValueError("genuine bug")
+    monkeypatch.setattr(hooks.dashboard, "write_dashboard", boom)
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": str(jl)})
+    assert hooks.main(["session_end"]) == 0
+    conn = storage.connect(db)
+    try:
+        alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
+    finally:
+        conn.close()
+    assert alerts == 1
+
+
 def test_session_end_no_transcript_is_safe(env, monkeypatch):
     _stdin(monkeypatch, {"session_id": "s1"})
     assert hooks.main(["session_end"]) == 0

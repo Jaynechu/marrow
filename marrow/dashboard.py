@@ -27,7 +27,7 @@ def render_top(conn) -> str:
     if alerts:
         for a in alerts:
             src = f" ({a['source']})" if a.get("source") else ""
-            out.append(f"- [{a['severity']}] {a['message']}{src} #{a['id']}")
+            out.append(f"- #{a['id']} [{a['severity']}] {a['message']}{src}")
     else:
         out.append("- none")
     out += ["", "## Open Threads"]
