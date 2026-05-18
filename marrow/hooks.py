@@ -70,6 +70,8 @@ def session_end() -> int:
     tpath = inp.get("transcript_path")
     if not tpath:
         return 0
+    if transcript.is_headless(tpath):
+        return 0  # spawned claude -p fires SessionEnd too; not our session
     db = config.db_path()
     conn = storage.connect(db)
     try:

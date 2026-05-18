@@ -76,3 +76,39 @@ def test_skips_malformed_lines(tmp_path):
     p.write_text('{"broken\n{"type":"user","sessionId":"s1","timestamp":"t",'
                  '"message":{"role":"user","content":"ok"}}')
     assert [r["content"] for r in transcript.clean(str(p))] == ["ok"]
+
+
+def test_headless_sdk_session_is_dropped(tmp_path):
+    # prompt-lint / diary-digest spawn `claude -p` -> entrypoint "sdk-cli".
+    # SessionEnd fires for it too; it must never reach events.
+    jl = _w(tmp_path / "h.jsonl", [
+        {"type": "user", "sessionId": "h1", "timestamp": "t",
+         "entrypoint": "sdk-cli",
+         "message": {"role": "user", "content": "Compress this file"}},
+        {"type": "assistant", "sessionId": "h1", "timestamp": "t",
+         "entrypoint": "sdk-cli",
+         "message": {"role": "assistant",
+                     "content": [{"type": "text", "text": "trimmed text"}]}},
+    ])
+    assert transcript.is_headless(jl) is True
+    assert transcript.clean(jl) == []
+
+
+def test_interactive_cli_session_kept(tmp_path):
+    jl = _w(tmp_path / "i.jsonl", [
+        {"type": "user", "sessionId": "i1", "timestamp": "t",
+         "entrypoint": "cli",
+         "message": {"role": "user", "content": "real prompt"}},
+    ])
+    assert transcript.is_headless(jl) is False
+    assert [r["content"] for r in transcript.clean(jl)] == ["real prompt"]
+
+
+def test_absent_entrypoint_treated_as_real(tmp_path):
+    # legacy CC with no entrypoint field -> don't silently drop
+    jl = _w(tmp_path / "l.jsonl", [
+        {"type": "user", "sessionId": "l1", "timestamp": "t",
+         "message": {"role": "user", "content": "legacy"}},
+    ])
+    assert transcript.is_headless(jl) is False
+    assert [r["content"] for r in transcript.clean(jl)] == ["legacy"]

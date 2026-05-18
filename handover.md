@@ -20,11 +20,11 @@ Verified: `b1f6c86b` 22-turn Phase-1 session no longer SKIP-vanishes — heavy-w
 
 Test: clear `diary`/`lessons` row for 2026-05-17 in `~/.config/marrow/marrow.db`, run `diary.run(day="2026-05-17")`, show diary text + KEEP/SKIP/DROP table. Token est only — llm.py records no usage (FUTURE).
 
-## Open — root fix (code, next round)
+## Done — events headless-pollution root fix
 
-Events table polluted by spawn-`claude` hooks: prompt-lint.py bare `claude -p` creates jsonl; transcript.clean ingests as 9 fake sessions (2026-05-17).
+Resolved (`f08e08e`..this). Structural marker: CC tags user/assistant lines `entrypoint` — interactive="cli", spawned `claude -p`="sdk-cli". `transcript.is_headless()` reads it (absent=legacy→keep); `clean()` returns [] for headless; `hooks.session_end()` no-ops before DB/dashboard. DB cleaned 518→464 (backup `marrow.db.bak-20260518-220058`).
 
-Fix (two layers): exclude transcript by jsonl **metadata structure** (headless `-p` marker, not payload) + rule that hook's claude call must not land in project jsonl. Verify leaked jsonl in `~/.claude/projects/-Users-Gabrielle-cc-lab-marrow/` carries headless `-p` structural marker.
+Not done (cosmetic, optional): headless jsonl still physically lands in `~/.claude/projects/-Users-Gabrielle-cc-lab-marrow/` (~200 junk files). `CLAUDE_CONFIG_DIR` redirect works but a fresh dir loses auth (keychain account-state tied to config dir) — needs a seeded parallel config dir, fragile. Data pollution fully fixed without it; only disk clutter remains.
 
 ## Suggested skills
 
