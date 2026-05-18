@@ -66,6 +66,11 @@ def test_strips_buddy_end_of_turn_comment(tmp_path):
     assert [r["content"] for r in rows] == ["PONG"]
 
 
+def test_missing_file_returns_empty(tmp_path):
+    # SessionEnd may pass an unflushed/headless transcript_path -> no-op, no raise
+    assert transcript.clean(str(tmp_path / "never-written.jsonl")) == []
+
+
 def test_skips_malformed_lines(tmp_path):
     p = tmp_path / "s.jsonl"
     p.write_text('{"broken\n{"type":"user","sessionId":"s1","timestamp":"t",'

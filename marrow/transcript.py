@@ -32,7 +32,11 @@ def _text(content) -> str:
 
 def clean(jsonl_path: str) -> list[dict]:
     rows: list[dict] = []
-    with open(jsonl_path, encoding="utf-8") as f:
+    try:
+        fh = open(jsonl_path, encoding="utf-8")
+    except FileNotFoundError:
+        return rows  # unflushed/headless transcript: nothing to clean, not an error
+    with fh as f:
         for line in f:
             line = line.strip()
             if not line:
