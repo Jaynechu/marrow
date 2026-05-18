@@ -227,9 +227,11 @@ Tier split (fixed, not Pending) — three tiers:
 
 - Permanent keepsake — milestones, diary, goose-bites, projects, study, lessons, major life facts. Add-only, never decays.
 - Demote-sink — low-value reference + cold vocab (use_count / last_seen long idle). Weight decays, row sinks below the active set, a keyword hit revives it (Ombre weight-pool: resolved → sink → keyword-recall). Not deleted.
-- Raw-stream — detailed event rows, resolved alerts, audit_log, DB dumps, orphaned jsonl, low-use stickers. Real retention + prune.
+- Raw-stream — detailed event rows, resolved alerts, audit_log, DB dumps, low-use stickers. Real retention + prune.
 
 Effect target: no growth alerts, no manual rm, no DB bloat.
+
+Decided — raw jsonl cleanup is NOT Marrow's job. Use `cleanupPeriodDays` in `~/.claude/settings.json` (global, by mtime, all projects). Marrow prunes SQLite-internal raw-stream: aged rows, resolved alerts, audit_log, dumps. Never jsonl. Not enabled yet.
 
 ## Pending — session archive skip
 

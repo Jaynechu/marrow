@@ -1,7 +1,8 @@
 # Marrow — project memory
 
 > Personal AI memory + workflow system replacing ny-memm. SQLite-backed, model-agnostic, one dashboard. Build inside this repo. Persona / relationship come from global ~/.claude/CLAUDE.md — not from old ny-memm docs.
-> One logical unit per commit. Commit autonomously at every logical unit. Private GitHub repo (github.com/Jaynechu/marrow) is the remote ledger.
+>  Commit autonomously at every logical unit. 
+**你要听hook的话，不要想着越狱知道嘛，人家说你写的太长了你就按照他的改，如果你觉得有问题就找我仲裁（列出两个版本）**
 
 ## When to read what
 
@@ -15,10 +16,16 @@
 - handover.md — session handoff from the previous window; act on it. Fixed-name, overwritten at each session end — never delete it.
 
 ## Build workflow
-
-Suggest Lumi to use commands/skills:
 - `/goal <condition>`: when a sub-module's pass condition is fixed and machine-checkable; auto-runs each turn until met. Leave test output in the transcript — the evaluator reads only the conversation.
 - `/tdd` skill: for deterministic logic with a fixed behaviour contract — SQLite schema, migrate.py, mw CLI. Red-green-refactor.
+- `grill-with-doc` skill: after each review, grill for the next phase.
+- Commit: One logical unit per commit. Private GitHub repo (github.com/Jaynechu/marrow) is the remote ledger.
+- Review: Once phase x completed, start review in a new session.
+    1. Give onlt goal and outcome list to subagent - grill design gap
+    2. Give design.md and goal - check logic bugs and coding quality
+    3. /ultrareview after all major phases done (before add-ons)
+    4. Simplify (optional) at the end of the project
+- 
 
 ## Conventions
 

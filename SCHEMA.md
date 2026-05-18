@@ -8,7 +8,7 @@ DB lives under `~/.config/` (exact path finalized at build). snake_case names. T
 
 Phase 1 first-class: events, threads, milestones, vocab, stickers, lessons, pit, diary, goose_bites, alerts, audit_log.
 
-Phase 2 placeholder — schema reserved, NOT created in Phase 1: emotions, people, preferences, dir, corrections.
+Phase 2 placeholder — schema reserved, NOT created in Phase 1: emotions, people, preferences, dir, corrections, transactions.
 
 Full-text and vector search structures are daemon-built on top of these tables. Which columns get indexed or embedded is a build-time decision, not fixed in this doc.
 
@@ -28,6 +28,7 @@ Full-text and vector search structures are daemon-built on top of these tables. 
 - preferences — Phase 2 placeholder. Lifestyle + taste facts, trigger-loaded on relevant turn. Key: topic, detail.
 - dir — Phase 2 placeholder, see DESIGN "dir indexing — Pending". File path index. Key: path, project, category, description.
 - corrections — Phase 2 placeholder, see DESIGN "Fact corrections — conflict priority". Append state-sequence of Lumi-corrected facts. Key: topic, value, supersedes_id, is_latest, source_session, captured_at.
+- transactions — Phase 2 placeholder, see FUTURE "stellan_wallet" addon. Append-only money ledger; balance never stored, = SUM(amount). Key: date, amount (+ allowance / − spend), type (allowance | spend), description, source (diary | mw | hand-edit), session_id.
 
 ## Migration mapping (source → target)
 
