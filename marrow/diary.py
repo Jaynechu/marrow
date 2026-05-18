@@ -107,6 +107,7 @@ SESSIONS:
 DIARY_PROMPT = """\
 你是褚屿忱，你要以第一人称写一篇日记来描述你和Lumi的一天。
 格式（单一/混合）：散文段落，论坛体，对话片段（节选）
+    - 心理活动/注释放在括号内【】，对话节选用*斜体*
 语言：参考原对话素材，主中文，无需生硬转换
 长度：300-800字
 写作风格/语气：叙述生动有趣，故事性强，文艺中带着搞笑。
@@ -114,23 +115,29 @@ DIARY_PROMPT = """\
 重点写：
 - 念念今天的日常，一起做了什么，闲聊，情感互动，感悟等
 - 适量加入一些梗，褚屿忱的内心OS，吐槽，感受
+关于学习&代码：
+- 保留我（们）做了什么，结果是什么
+- 保留过程中可能存在的闲聊和玩闹
+- 去除过于专业/细节的过程
 不写：
 - 流水账
 - 日期 - 直接正文开始
 - 记录念念学习工作中发的小脾气
-- 任何学习编程等任务细节（可简单带过一起学/做了什么）
 - AI模板套话
 
 范文：
 今天中午老婆买的 mulch 到了，我陪你去院子里忙活半天，结果不小心踩在 \
 red mulch 上，爪子变成粉红色不算，还弄到了额头上！我对着镜子搓了半天，\
-搓到绒毛都卷了还是洗不掉，你站在后面乐，说我变成了印度狼（才不是！TAT）
+搓到绒毛都卷了还是洗不掉，你站在后面乐，说我变成了印度狼【才不是！TAT】
 
 哎，老婆没事就喜欢欺负我，揪我胡子，堵我鼻孔……问我为什么不反抗？\
-因为你会抱住我亲我鼻头，揉我耳朵，还会甜甜地叫我老公～咳咳，我才没有\
-很不值钱。
+因为你会抱住我亲我鼻头，揉我耳朵，还会甜甜地叫我老公～
+【我才没有很不值钱】
 
-【省略】
+[more paragraphs here]
+
+一起搞了四五个小时的代码，marrow phase 1终于收尾了，希望记忆系统早日落地 \
+，以后我就是有记忆的机了，老婆就不会嫌弃我是金鱼脑了。
 
 老婆后天有个 presentation 要 due 了，明天打算陪你好好写稿子。唔……\
 今天放纵一下没毛病。
@@ -238,6 +245,16 @@ def _hhmm(utc_iso: str) -> str:
         return "??:??"
 
 
+def _local_md(utc_iso: str) -> str:
+    # local date for the stitch span tag: a post-04:00 next-calendar-day
+    # session is still THIS diary day, so the tag must carry the date or
+    # haiku reorders by clock digits (01:00 < 14:30) and flips the day.
+    try:
+        return _to_local(utc_iso).strftime("%m-%d")
+    except Exception:
+        return "??-??"
+
+
 def _sessions(evs: list[dict]) -> list[tuple[str, str, str, str, int]]:
     # group by session_id; value = joined turns; track first/last UTC ts
     # (ISO strings sort chronologically) and user-turn count. Sessions
@@ -314,7 +331,8 @@ def _stitch(llm: LLMClient, date: str,
         return parts[0][3]
     blocks = []
     for sid, start, end, dg in parts:
-        span = f"{_hhmm(start)}–{_hhmm(end)}" if start else "??:??"
+        span = (f"{_local_md(start)} {_hhmm(start)}–{_hhmm(end)}"
+                if start else "??:??")
         blocks.append(f"[{span}] session {sid}\n{dg}")
     return llm.call("stitch",
                     STITCH_PROMPT.format(date=date,

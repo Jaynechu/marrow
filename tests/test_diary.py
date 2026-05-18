@@ -19,6 +19,7 @@ class FakeLLM:
         self.digest = digest
         self.calls: list[str] = []
         self.digest_bodies: list[str] = []
+        self.stitch_bodies: list[str] = []
 
     def call(self, role, body, *, tier="cheap"):
         self.calls.append(role)
@@ -26,6 +27,7 @@ class FakeLLM:
             self.digest_bodies.append(body)
             return self.digest
         if role == "stitch":
+            self.stitch_bodies.append(body)
             return "woven strand with X"
         if role == "diary":
             return "今天我们一起把 X 做完了。"
@@ -126,6 +128,27 @@ def test_single_session_skips_stitch(tmp_path):
     assert f.n("day-digest") == 1
     assert f.n("stitch") == 0              # nothing to weave, digest is strand
     assert f.n("diary") == 1
+
+
+def test_stitch_span_tag_carries_local_date(tmp_path):
+    # Two sessions in ONE diary day (2026-05-16) but different local dates:
+    # an afternoon one (local 05-16) and a post-midnight one (local 05-17,
+    # still <04:00 so same diary day). Tag must carry the date so haiku
+    # keeps real order instead of sorting 01:00 before 14:00.
+    p = str(tmp_path / "cross.db")
+    conn = storage.init_db(p)
+    for i in range(4):  # afternoon: UTC 04:00 -> local 14:00
+        _ev(conn, "pm", f"2026-05-16T04:0{i}:00Z", "user", f"a{i}")
+        _ev(conn, "pm", f"2026-05-16T04:0{i}:30Z", "assistant", "ok")
+    for i in range(4):  # next-midnight: UTC 15:00 -> local 01:00 (05-17)
+        _ev(conn, "am", f"2026-05-16T15:0{i}:00Z", "user", f"b{i}")
+        _ev(conn, "am", f"2026-05-16T15:0{i}:30Z", "assistant", "ok")
+    conn.commit()
+    f = FakeLLM()
+    assert diary.run_day(conn, "2026-05-16", f, db=p) is True
+    body = f.stitch_bodies[0]
+    assert "05-16 14:00" in body and "05-17 01:00" in body
+    assert body.index("05-16 14:00") < body.index("05-17 01:00")
 
 
 def test_oversized_session_is_chunked(db):
