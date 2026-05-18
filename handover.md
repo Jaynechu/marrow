@@ -1,49 +1,40 @@
-# Marrow Handoff — 2026-05-18 (Phase 1 complete)
+# Marrow handover
 
-Read CLAUDE.md → DESIGN.md → SCHEMA.md → PROGRESS.md → ADRs → this. Fixed-name, act on it, never delete; overwritten at session end.
+> Diary pipeline rebuilt + committed. Lumi prompt-tuning + events-pollution root fix pending. Read DESIGN/PROGRESS next.
 
-## Status: Phase 1 DONE
+## State (committed, not pushed)
 
-All Phase-1 units shipped. See PROGRESS.md + `git log` — do not restate. This session's commits (all pushed, main synced): #6 mw CLI, #7 code hooks + #8 dashboard, subscription-window provider, diary pipeline, launchd + ADR-0003, day-boundary/map-reduce/split-jobs. `~/.claude` settings (marrow hooks) = local commit only, not pushed (per rule).
+- `bcde095` feat(diary): turn-routed digest SHORT/LONG, 3-tier skip, lessons dropped
+- `9d179ea` docs: jsonl cleanup decided, transactions placeholder, lesson rework parked
+- pytest 83/83 ✓
 
-## Live now (parallel with ny-memm ~2 weeks, then ny-memm retires)
+Route by turn count: ≤3 code-drop, 4–10 `DIGEST_SHORT` (may SKIP a no-outcome chore), >10 `DIGEST_LONG` (never SKIP, stub if haiku disobeys). `run_day` kept-filter + trivial placeholder. lessons extraction removed (parked: FUTURE `lesson_extraction_rework`).
 
-- marrow SessionStart (handoff additionalContext) + SessionEnd (clean→archive→dashboard) hooks active GLOBALLY, all projects, appended alongside ny-memm groups in `~/.claude/settings.json`. Code-only, no LLM.
-- Two launchd jobs registered (`state = not running`, waiting): `com.marrow.diary-routine` 04:00, `com.marrow.diary-catchup` 16:00. Sources `deploy/`, installed `~/Library/LaunchAgents/`.
+Verified: `b1f6c86b` 22-turn Phase-1 session no longer SKIP-vanishes — heavy-work craft now kept in digest.
 
-## ONLY unverified thing — next window MUST check
+## Open — Lumi prompt calls (diary.py prompts are hers)
 
-The launchd→diary full path has NOT run end-to-end yet (the stream LLM call itself IS live-verified separately; see ADR-0003 evidence). First real fires: routine 2026-05-18 04:00, catchup 16:00. After they fire, verify:
-- `~/Library/Logs/mw-diary-routine.log` / `mw-diary-catchup.log` — clean exit, no "claude not found", no traceback.
-- `diary` table has a row for 2026-05-17 (today's session is huge → first real-world stress test of per-session map-reduce + oversized-session chunking).
-- `alerts` table: no `critical`/`routine` failure rows; `info` lesson rows expected.
-- If routine failed, catchup at 16:00 should backfill it — confirm that fallback actually worked.
-- Compression ratio unknown (not measured). Add instrumentation to `run_day`: raw chars vs merged-digest chars into the audit_log summary (rough prior: digest ~5–15% of raw, unverified).
+1. `DIARY_PROMPT` rule "no study/coding task detail" too weak — sonnet drops ALL work. Strengthen to "must write one line: what done + outcome".
+2. `DIGEST_SHORT` (4–10 turns) may mis-SKIP sessions with real outcome. Review vs. `8a9d1efd` (5-turn schedule session with outcome).
+3. `DIGEST_LONG` haiku wraps unwanted meta shell ("per diary compress rules…", "which day this belongs…"). Fix prompt wording; core craft unaffected.
 
-## Locked — do not relitigate
+Test: clear `diary`/`lessons` row for 2026-05-17 in `~/.config/marrow/marrow.db`, run `diary.run(day="2026-05-17")`, show diary text + KEEP/SKIP/DROP table. Token est only — llm.py records no usage (FUTURE).
 
-- ADR-0003: subscription-window no-`-p` stream-json; flag meanings; `-p` fallback (config `mode="p"`); local-04:00 day boundary; dual launchd jobs; `/schedule` (cloud) rejected for local pipeline. Read it instead of re-deriving cyberboss.
-- diary prompt bodies = Lumi-reviewed/hand-edited (DESIGN L53 satisfied).
-- catchup hard bounds: 7-day window, cap 3, overflow warn alert.
-- Diary day = local `[D 04:00, D+1 04:00)`; 00:00–04:00 is previous-day spillover.
+## Open — root fix (code, next round)
 
-## Deferred (by design, NOT gaps)
+Events table polluted by spawn-`claude` hooks: prompt-lint.py bare `claude -p` creates jsonl; transcript.clean ingests as 9 fake sessions (2026-05-17).
 
-- UserPromptSubmit must-never-fade: no Phase-1 content source (convention-injection layer is DESIGN Pending). No hook wired until that lands.
-- `corrections` table: Phase 2 placeholder (SCHEMA + DESIGN fixed, not built).
-- ny-memm runs in parallel ~2 weeks then retires; old `memory/` + `code/` archive→remove after.
+Fix (two layers): exclude transcript by jsonl **metadata structure** (headless `-p` marker, not payload) + rule that hook's claude call must not land in project jsonl. Verify leaked jsonl in `~/.claude/projects/-Users-Gabrielle-cc-lab-marrow/` carries headless `-p` structural marker.
 
-## Gotchas
+## Suggested skills
 
-- `CLAUDE.md` (M) and `docs/notes/` (untracked) were pre-existing at session start, NOT this session's work — left untouched. Do not commit/sweep them unless Lumi rules.
-- `prompt-lint` hook trims meta-`.md` writes (ADR-0003 was trimmed once; obeyed, re-sent verbatim). Obey trim; escalate to Lumi only on real semantic loss.
-- CN in prompt-class `.md` must be inside `( )` or code or it is blocked by PreToolUse prompt-guard.
-- subagents must never git commit/push/config (subagents.md) — state in every dispatch prompt.
-- `mw` CLI: symlink `~/.local/bin/mw` -> `.venv/bin/mw` (on PATH; #6 was venv-only). Fresh Mac: recreate symlink after `pip install -e`.
-- env: `.venv` py3.14 editable install (`python -m marrow.X` works any cwd); `claude` real bin `/Users/Gabrielle/.local/bin/claude`; launchd PATH carries `.local/bin`+venv; ollama absent.
+- `tdd` — transcript hook-pollution filter (deterministic, fixed contract).
+- `diagnose` — if structural-ID of leaked jsonl needs repro.
+- `/loop` — if Lumi re-enters diary prompt-tuning cycle.
 
-## Next window
+## Don't redo
 
-- Phase 1 has no build work left — first task is the launchd first-run verification above (use `diagnose` skill if a job failed).
-- Session archive skip (DESIGN "Pending — session archive skip"): small code-only Phase-1 follow-up, non-blocking. Manual skip stamp + auto-skip below a turn threshold, gating SessionEnd archive.
-- Phase 2 (DESIGN L171): emotion + decay + sub-page render fill-out; people/preferences trigger-load tables; corrections table build. Use `/tdd` for the deterministic table/logic work; NOT `/tdd` for hook/daemon glue. `/goal` if a sub-module pass condition is machine-checkable.
+- /clear does NOT change session_id (same jsonl). New sid = new cc process / window / resume.
+- lessons removal is intentional (Lumi). Don't re-add without FUTURE redesign.
+- diary.py prompts (DIGEST_SHORT/LONG, STITCH, DIARY_PROMPT) are Lumi-owned — restore from `bcde095` if reverted; don't rewrite.
+- CC pinned to 2.1.142 (parse-bug); see `docs/notes/2026-05-18_cc-2143-toolcall-parse-bug.md`.
