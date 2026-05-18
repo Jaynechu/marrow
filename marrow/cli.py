@@ -140,7 +140,7 @@ def cmd_ls(args) -> int:
         for row in conn.execute(sql, params).fetchall():
             head = "id" if "id" in cols else cols[0]
             label = next(
-                (row[c] for c in ("title", "key", "message", "lesson_text",
+                (row[c] for c in ("title", "key", "message",
                                   "date", "content") if c in cols), ""
             )
             print(f"[{row[head]}] {label}")

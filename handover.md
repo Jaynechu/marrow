@@ -22,8 +22,7 @@ Phase-1 DONE (pytest 129, pushed). Current: grill round 3, emotion branch DONE (
 - embedder = fork #1 (still open)
 
 ## Residual (non-blocking)
-- #8 lessons 2 stale rows — safe, leave (Lumi-intentional)
-- All marrow launchd jobs (diary routine/catchup, jsonl-cleanup, db-backup) NOT launchctl-loaded — Lumi gate
+- Lessons subsystem retired (backup: marrow-2026-05-19.db); 4 launchd jobs loaded + disk plists restored; lesson refs parked for Phase-2 grill
 
 ## Phase-1 shipped (verified on main, pushed)
 - blocker: `is_headless` = assistant model-set ⊆ config `worker_models` (ADR-0004); `entrypoint` abandoned

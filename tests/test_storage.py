@@ -5,7 +5,7 @@ import pytest
 from marrow import storage
 
 PHASE1_TABLES = {
-    "events", "threads", "milestones", "vocab", "stickers", "lessons",
+    "events", "threads", "milestones", "vocab", "stickers",
     "pit", "diary", "goose_bites", "alerts", "audit_log",
 }
 PHASE2_ABSENT = {"emotions", "people", "preferences", "dir"}
