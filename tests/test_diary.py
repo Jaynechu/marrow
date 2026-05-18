@@ -30,7 +30,9 @@ class FakeLLM:
             self.stitch_bodies.append(body)
             return "woven strand with X"
         if role == "diary":
-            return "今天我们一起把 X 做完了。"
+            # echo the digest so a re-run with a different digest yields
+            # different diary text (force-overwrite test depends on this)
+            return f"今天我们一起把 X 做完了。[{self.digest}]"
         return ""
 
     def n(self, role):
@@ -170,6 +172,124 @@ def test_idempotent_skip(db):
     f2 = FakeLLM()
     assert diary.run_day(conn, "2026-05-16", f2, db=p) is False
     assert f2.calls == []
+
+
+# ── same-day correction (force overwrite) vs catchup idempotency ──────────────
+
+def test_force_overwrites_existing_diary(db):
+    # A late session closes after the 04:00 routine already wrote the day.
+    # An explicit forced re-run MUST replace the row + lessons-free content,
+    # keeping date PK stable; catchup default path stays skip-if-exists.
+    p, conn = db
+    diary.run_day(conn, "2026-05-16", FakeLLM(digest="first pass"), db=p)
+    first = conn.execute(
+        "SELECT content FROM diary WHERE date='2026-05-16'").fetchone()
+    f2 = FakeLLM()
+    assert diary.run_day(conn, "2026-05-16", f2, db=p, force=True) is True
+    assert f2.n("diary") == 1                       # actually re-wrote
+    rows = conn.execute(
+        "SELECT COUNT(*) c FROM diary WHERE date='2026-05-16'").fetchone()
+    assert rows["c"] == 1                           # PK stable, no dup
+    row = conn.execute(
+        "SELECT content,updated_at,created_at FROM diary "
+        "WHERE date='2026-05-16'").fetchone()
+    assert row["content"] != first["content"]       # overwritten
+    aud = conn.execute(
+        "SELECT action FROM audit_log WHERE target_table='diary' "
+        "AND target_id='2026-05-16' ORDER BY id DESC LIMIT 1").fetchone()
+    assert aud["action"] == "update"                # not a silent insert
+
+
+def test_catchup_default_still_idempotent(db):
+    # Without force, an existing row is never overwritten — unattended
+    # catchup/routine stays idempotent (no LLM spent).
+    p, conn = db
+    diary.run_day(conn, "2026-05-16", FakeLLM(), db=p)
+    f2 = FakeLLM()
+    assert diary.run_day(conn, "2026-05-16", f2, db=p) is False
+    assert f2.calls == []
+    assert diary.run(conn, f2, db=p, catchup=True) == []
+    assert f2.calls == []
+
+
+def test_run_force_flag_threads_to_run_day(db):
+    p, conn = db
+    diary.run_day(conn, "2026-05-16", FakeLLM(), db=p)
+    out = diary.run(conn, FakeLLM(), db=p, day="2026-05-16", force=True)
+    assert out == ["2026-05-16"]
+
+
+# ── multi-process app-lock ────────────────────────────────────────────────────
+
+def test_lock_serializes_separate_holders(tmp_path):
+    import os
+    lf = str(tmp_path / "diary.lock")
+    with diary._app_lock(lf):
+        # a second non-blocking acquire from another fd must fail while held
+        with pytest.raises(BlockingIOError):
+            with diary._app_lock(lf, blocking=False):
+                pass
+    # released after the block — re-acquire succeeds
+    with diary._app_lock(lf, blocking=False):
+        pass
+    assert os.path.exists(lf)
+
+
+def test_lock_releases_on_exception(tmp_path):
+    lf = str(tmp_path / "diary.lock")
+    with pytest.raises(RuntimeError):
+        with diary._app_lock(lf):
+            raise RuntimeError("boom")
+    # lock must be free again despite the exception
+    with diary._app_lock(lf, blocking=False):
+        pass
+
+
+def test_main_holds_lock_around_run(db, monkeypatch, tmp_path):
+    # main() must wrap run() in the app-lock so routine/catchup/manual
+    # serialize instead of colliding on the diary date PK.
+    p, conn = db
+    seen = {}
+    real = diary._app_lock
+
+    def spy(path=None, blocking=True):
+        from pathlib import Path
+        seen["path"] = path or str(
+            Path(diary.config.DATA_DIR) / "diary.lock")
+        return real(path, blocking=blocking)
+
+    monkeypatch.setattr(diary, "_app_lock", spy)
+    monkeypatch.setattr(diary.config, "db_path", lambda: p)
+    monkeypatch.setattr(diary.config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(diary.storage, "connect", lambda _p: conn)
+    monkeypatch.setattr(diary, "LLMClient", lambda **k: FakeLLM())
+    # main() closes conn in finally; assertions only read `seen`
+    assert diary.main(["--day", "2026-05-16"]) == 0
+    assert "path" in seen and seen["path"].endswith(".lock")
+
+
+# ── _routine_target boundary (00:00–03:59 belongs to previous diary day) ──────
+
+def _freeze_now(monkeypatch, when):
+    class _DT(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+
+    monkeypatch.setattr(diary._dt, "datetime", _DT)
+
+
+def test_routine_target_at_0359_is_two_days_back(monkeypatch):
+    # 03:59 May 18 local is still inside diary day May 17's window
+    # ([May17 04:00, May18 04:00)); the last FULLY closed day is May 16.
+    _freeze_now(monkeypatch, dt.datetime(2026, 5, 18, 3, 59, tzinfo=diary._TZ))
+    assert diary._routine_target() == "2026-05-16"
+
+
+def test_routine_target_at_0401_is_just_closed_day(monkeypatch):
+    # 04:01 May 18: diary day May 17 just closed at 04:00 -> target May 17.
+    _freeze_now(monkeypatch, dt.datetime(2026, 5, 18, 4, 1, tzinfo=diary._TZ))
+    assert diary._routine_target() == "2026-05-17"
 
 
 

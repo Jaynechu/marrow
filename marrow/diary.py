@@ -14,7 +14,10 @@ error raises one alert.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
+import fcntl
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import config, repo, storage
@@ -205,10 +208,34 @@ def _diary_day(utc_iso: str) -> str:
 
 
 def _routine_target() -> str:
-    # The just-closed day at routine time = current diary day minus 1.
+    # Last FULLY-closed diary day. The diary day in progress now is
+    # (now-4h).date() (00:00-03:59 still belongs to the previous calendar
+    # day's window [D 04:00, D+1 04:00)); the just-closed day is the one
+    # before it. Correct for both the 04:00 routine and an off-hour manual
+    # run (e.g. 02:00 still targets the day that closed at the last 04:00).
     now = _dt.datetime.now(_TZ)
     cur = (now - _dt.timedelta(hours=_CUTOFF_H)).date()
     return (cur - _dt.timedelta(days=1)).isoformat()
+
+
+@contextlib.contextmanager
+def _app_lock(path: str | None = None, *, blocking: bool = True):
+    # Serialize separate diary processes (routine 04:00 / catchup 16:00 /
+    # manual) so they never collide on the diary date PK. flock is held
+    # for the fd's lifetime and freed by the OS on close/exit, so it
+    # releases on exception too. blocking=False raises BlockingIOError if
+    # another process holds it (used in tests / fail-fast callers).
+    lf = path or str(Path(config.DATA_DIR) / "diary.lock")
+    Path(lf).parent.mkdir(parents=True, exist_ok=True)
+    flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+    fd = open(lf, "a")
+    try:
+        fcntl.flock(fd.fileno(), flags)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        fd.close()
 
 
 def _scan_rows(conn, window_days: int) -> list[dict]:
@@ -349,9 +376,20 @@ def _stitch(llm: LLMClient, date: str,
                     tier="cheap")
 
 
-def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None) -> bool:
-    if _has_diary(conn, date):
+def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None,
+            force: bool = False) -> bool:
+    # Idempotent by default: an existing row is skipped, so unattended
+    # catchup/routine never re-spends LLM or double-writes. force=True is
+    # the explicit same-day-correction path: a late session closed after
+    # the 04:00 routine already wrote -> deliberately overwrite the row
+    # (date PK stays, audit logged as 'update', not a silent insert).
+    existed = _has_diary(conn, date)
+    if existed and not force:
         return False
+    if existed and force:
+        with conn:
+            conn.execute("DELETE FROM diary WHERE date = ?", (date,))
+    _act = "update" if existed else "insert"
     evs = day_events(conn, date)
     if not evs:
         return False
@@ -380,9 +418,9 @@ def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None) -> bool:
                 "VALUES (?, ?, ?)", (date, "—", ""))
             conn.execute(
                 "INSERT INTO audit_log (target_table, target_id, "
-                "action, summary) VALUES ('diary', ?, 'insert', ?)",
-                (date, f"diary placeholder for {date} "
-                       f"(all {len(sessions)} sessions trivial)"))
+                "action, summary) VALUES ('diary', ?, ?, ?)",
+                (date, _act, f"diary placeholder for {date} "
+                             f"(all {len(sessions)} sessions trivial)"))
         return True
 
     # STITCH: weave kept digests onto one timeline (haiku, cheap).
@@ -393,19 +431,22 @@ def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None) -> bool:
                          tier="mid")
     with conn:
         conn.execute(
-            "INSERT INTO diary (date, content, session_ids) VALUES (?, ?, ?)",
+            "INSERT INTO diary (date, content, session_ids, updated_at) "
+            "VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
             (date, narrative.strip(), ",".join(sids)),
         )
         conn.execute(
             "INSERT INTO audit_log (target_table, target_id, action, summary) "
-            "VALUES ('diary', ?, 'insert', ?)",
-            (date, f"diary written for {date} ({len(sessions)} sessions)"),
+            "VALUES ('diary', ?, ?, ?)",
+            (date, _act, f"diary written for {date} ({len(sessions)} "
+                         f"sessions)"),
         )
     return True
 
 
 def run(conn, llm: LLMClient, *, db: str | None = None,
-        day: str | None = None, catchup: bool = False) -> list[str]:
+        day: str | None = None, catchup: bool = False,
+        force: bool = False) -> list[str]:
     # Two independent triggers, decoupled so a failure of one never starves
     # the other: routine (04:00) writes the just-closed day; catchup (16:00)
     # scans the last CATCHUP_WINDOW_DAYS for any day still missing a diary,
@@ -425,20 +466,30 @@ def run(conn, llm: LLMClient, *, db: str | None = None,
         days = miss[:CATCHUP_MAX]
     else:
         days = [_routine_target()]
-    return [d for d in days if run_day(conn, d, llm, db=db)]
+    return [d for d in days
+            if run_day(conn, d, llm, db=db, force=force)]
 
 
 def main(argv: list[str] | None = None) -> int:
     import sys
     args = argv if argv is not None else sys.argv[1:]
     catchup = "--catchup" in args
+    force = "--force" in args
+    day = None
+    if "--day" in args:
+        i = args.index("--day")
+        if i + 1 < len(args):
+            day = args[i + 1]
     mode = "catchup" if catchup else "routine"
     db = config.db_path()
     conn = storage.connect(db)
     llm = LLMClient(on_alert=lambda s, t, m, src: repo.add_alert(
         s, t, m, src, db=db))
     try:
-        run(conn, llm, db=db, catchup=catchup)
+        # App-lock so routine/catchup/manual never collide on the diary
+        # date PK; released on exit even if run() raises.
+        with _app_lock():
+            run(conn, llm, db=db, day=day, catchup=catchup, force=force)
         return 0
     except Exception as e:
         repo.add_alert("critical", "routine",
