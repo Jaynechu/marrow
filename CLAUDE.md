@@ -25,11 +25,17 @@
     1. Blind design-gap: subagent gets goal + outcome list (forbidden repo access, no DESIGN/code) — reasons from results.
     2a. DESIGN traceability: each phase-subset item DONE / DEFERRED-by-plan / MISSING / DRIFT; evidence = code, not PROGRESS.
     2b. Code quality + logic bugs: subagent with DESIGN + goal.
-    3. /ultrareview on `main` (user-triggered, billed) — after major phases, before add-ons.
+    3. /ultrareview after major phases.
     4. Main session adjudicates: findings material, not verdict; never trust self-report — double-check stop-bleed/fix claims; fix → pytest + dashboard green → PROGRESS delta.
     5. Simplify (optional) at project end.
-- Review subagents: opus for blind + code passes; sonnet ok for blind only; no git/config writes.
-- DB-only output Lumi can't see (diary text, dry-run narrative, anything living only in marrow.db): after the run push the FULL body to her via PushNotification — full text, not a summary.
+
+### Parallel build (Marrow pilot)
+- Delegate by default: main session only splits / dispatches / adjudicates / commits. No large implementation in main — subagent does it, main reads conclusion + diff summary.
+- Worktree by default for parallel / risky / experimental work: `Agent` with `isolation:"worktree"`, independent units dispatched in one message.
+- Serialize first (main, in order, commit): schema / migrate.py / shared CLI skeleton / common module.
+- Parallelize after (one worktree subagent each): feature modules on a frozen schema. Main merges in report order; main adjudicates conflicts.
+- Review steps 1 / 2a / 2b run as concurrent subagents in one message; main only adjudicates.
+- Context: implementation never expands in main; long diff / test output / research scratch stay in subagent → docs/notes/; main at ~200k → /handoff.
 
 ## Conventions
 
