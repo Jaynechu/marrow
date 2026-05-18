@@ -254,3 +254,4 @@ Decided to defer, do not invent:
 - per-event LLM topology table
 - schema-evolution mechanism (user_version + ordered patch chain, replaces the interim hand-written ALTER)
 - doc auto-render upkeep (DESIGN / SCHEMA / README / dir map) — no manual maintenance
+- retrieval fusion — how full-text + vector + recency merge into ranked top-K (RRF / weighted blend; claude-imprint = ref), settled at recall-module first build
