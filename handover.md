@@ -22,7 +22,7 @@ Bleed-stop (`24830a3`): launchctl bootout, `is_headless()` hard-False, cleanup v
 - `8f2747f`+`b46deb1` cleanup.py reaper + launchd (premise reversed)
 - `acafd60` fix(transcript): entrypoint headless marker (REVERSED by 24830a3)
 - `~/.claude`: prompt-lint.py `-p`→stream-json — unpushed
-- worktree-phase1-review: `eccc1df` DESIGN mm+/mm-, `ea9e24c` CLAUDE.md review flow, this handover — unmerged
+- review doc commits `eccc1df` DESIGN mm+/mm-, `ea9e24c` CLAUDE.md review flow, this handover — fast-forwarded onto main, push pending
 
 pytest 91/91. events 479 (backup `marrow.db.bak-20260518-220058`, was 518).
 
@@ -51,11 +51,10 @@ Minor:
 Done: mm+/mm- recorded (DESIGN `eccc1df`).
 Close rule: subagent findings are material not verdict; fix → pytest+dashboard green → PROGRESS delta.
 
-## Worktree merge (review window does before close)
+## Worktree merge — DONE
 
-- `worktree-phase1-review` rebased onto `39fbbff`: `eccc1df` + `ea9e24c` + this handover. Linear, doc-only, no code.
-- Land: fast-forward main to branch HEAD (or cherry-pick the doc commits). No conflict with neighbour bleed-stop expected.
-- After merge main carries them so next window's /ultrareview + handover see them.
+- Doc commits fast-forwarded to local main, linear, no conflict with neighbour bleed-stop. Next window's /ultrareview + handover see them.
+- Push pending: 3 doc commits ahead of origin.
 
 ## Ops note — next session restart
 
