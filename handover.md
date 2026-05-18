@@ -16,9 +16,9 @@ Phase-1 DONE (pytest 129, pushed). Current: grill round 3, emotion branch DONE (
 - Method: do not connector-interview; subagent produces blind designs → converge to TWO versions → Lumi adjudicates (trigger: "两支")
 
 ## Phase 2 entry
-- recall-module (vector + RRF fusion + embedder) — fusion = recency+arousal+importance blend
+- recall-module = claude-imprint (RRF over vector+FTS+recency) + embedder; k/weights at build. ADR-0007
 - #6 events_vec embedder-id/dim provenance: add WITH embedder at recall-module build → FUTURE `events_vec_embedder_provenance` (~/Desktop/NY/CLAUDE.md:5)
-- Refs: Ombre-Brain (DESIGN weight-pool), claude-imprint (RRF), cyberboss
+- claude-imprint = recall scheme (CHOSEN); Ombre = ONLY decay shape, not recall engine; cyberboss = subscription/migration
 - embedder = fork #1 (still open)
 
 ## Residual (non-blocking)
@@ -37,6 +37,7 @@ Phase-1 DONE (pytest 129, pushed). Current: grill round 3, emotion branch DONE (
 ## Don't redo / decided
 - feel layer NOT a Marrow concept (ADR-0005) — do not reintroduce feel table or session-start dream-write
 - lesson NOT a base concept (ADR-0006) — FUTURE addon only, do not re-add to dashboard/Open-Threads/SCHEMA
+- emotion/recall (ADR-0007): generic recall (event+targeted diary, SQLite, Claude self-pulls in-session, UNBOUNDED) vs SessionStart emotional entry (ONCE, fused-rank top-N over diary, no re-pull) = TWO, never fuse. breath = Ombre's recall engine, N/A. recall scheme = claude-imprint. decay = importance×e^(-λ·days_idle) ONLY, not Ombre's full formula
 - DESIGN is overturnable working design, not T&C — override by engineering argument; only uncrossable technical/cost wall is hard constraint
 - `entrypoint` NOT a headless marker (ADR-0004); #7 `_routine_target` correct under 04:00 boundary — do not "fix"
 - #6 waits for embedder — never add empty provenance column to Phase-1 schema
