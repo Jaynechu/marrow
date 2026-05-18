@@ -1,40 +1,50 @@
 # Marrow handover
 
-> Diary pipeline rebuilt + committed. Lumi prompt-tuning + events-pollution root fix pending. Read DESIGN/PROGRESS next.
+> Events headless-pollution root-fixed structurally + DB cleaned; data layer firewalled. Two windows merged here. What's left: cosmetic disk backlog, `-p`→stream migration, Lumi prompt-tuning. Read DESIGN/PROGRESS next.
 
-## State (committed, not pushed)
+## State (committed, not pushed — 5 commits on main)
 
-- `bcde095` feat(diary): turn-routed digest SHORT/LONG, 3-tier skip, lessons dropped
-- `9d179ea` docs: jsonl cleanup decided, transactions placeholder, lesson rework parked
-- pytest 83/83 ✓
+- `acafd60` fix(transcript): drop headless `claude -p` via `entrypoint` marker (neighbour window)
+- `f08e08e` fix(diary): strict-discard digest + banned-phrase guard in prompts (Lumi prompt-tuning)
+- `6d96dc8` docs(claude): push DB-only output full body to Lumi after a run
+- `2fb88bd` fix(diary): stitch span tag carries local date for cross-04:00 days
+- `b6febbd` fix(hooks): session_end no-op on unflushed/missing transcript
+- uncommitted: `FUTURE.md` (dashboard_customization addon) — committed with this handover
 
-Route by turn count: ≤3 code-drop, 4–10 `DIGEST_SHORT` (may SKIP a no-outcome chore), >10 `DIGEST_LONG` (never SKIP, stub if haiku disobeys). `run_day` kept-filter + trivial placeholder. lessons extraction removed (parked: FUTURE `lesson_extraction_rework`).
+pytest 88/88. events 518→464 (fake Compress-NEW = 0). backup `~/.config/marrow/marrow.db.bak-20260518-220058`.
 
-Verified: `b1f6c86b` 22-turn Phase-1 session no longer SKIP-vanishes — heavy-work craft now kept in digest.
+## Done & verified (both windows)
 
-## Open — Lumi prompt calls (diary.py prompts are hers)
+- Events headless pollution root-fixed structurally: `transcript.is_headless()` reads CC `entrypoint` (interactive="cli", spawned `claude -p`="sdk-cli", absent=legacy→keep); `clean()` → [] for headless; `hooks.session_end()` no-ops before DB/dashboard. DB cleaned 518→464. Verified: 3-state correct, fake-row=0, 88/88.
+- Alert #11 fake-warn: `transcript.clean` FileNotFound → []; stale alert resolved; 15 lesson-type alerts deleted; dashboard regenerated clean.
+- Stitch cross-04:00 ordering: `_local_md()` adds date to span tag; verified on real 5-17 data.
+- 5-17 diary overwritten with reviewed dry-run narrative (4 kept sessions). Dry-run script kept at `/tmp/mw_dryrun_diary.py` (no DB write; arg=date).
+- `CLAUDE.md` rule added: push full DB-only body to Lumi after a run.
 
-1. `DIARY_PROMPT` rule "no study/coding task detail" too weak — sonnet drops ALL work. Strengthen to "must write one line: what done + outcome".
-2. `DIGEST_SHORT` (4–10 turns) may mis-SKIP sessions with real outcome. Review vs. `8a9d1efd` (5-turn schedule session with outcome).
-3. `DIGEST_LONG` haiku wraps unwanted meta shell ("per diary compress rules…", "which day this belongs…"). Fix prompt wording; core craft unaffected.
+## Open — Lumi prompt-tuning (diary.py prompts are hers)
 
-Test: clear `diary`/`lessons` row for 2026-05-17 in `~/.config/marrow/marrow.db`, run `diary.run(day="2026-05-17")`, show diary text + KEEP/SKIP/DROP table. Token est only — llm.py records no usage (FUTURE).
+1. `DIARY_PROMPT` "no study/coding detail" was too weak (sonnet dropped all work). `f08e08e` added strict-discard + banned-phrase — confirm with Lumi whether this is now resolved or needs the "one line: what done + outcome" rule.
+2. `DIGEST_SHORT` mis-SKIP concern — **CLOSED**: this window empirically confirmed `8a9d1efd` (5-turn /schedule discussion, no outcome) is a *correct* SKIP, not a miss. Not a bug.
+3. `DIGEST_LONG` haiku still wraps a meta shell ("per diary compress rules…"). Prompt wording fix, core craft unaffected.
 
-## Done — events headless-pollution root fix
+Test loop: clear `diary` row for a date in `~/.config/marrow/marrow.db`, `diary.run(day=…)`, show diary text + KEEP/SKIP/DROP. (llm.py records no usage — FUTURE.)
 
-Resolved (`f08e08e`..this). Structural marker: CC tags user/assistant lines `entrypoint` — interactive="cli", spawned `claude -p`="sdk-cli". `transcript.is_headless()` reads it (absent=legacy→keep); `clean()` returns [] for headless; `hooks.session_end()` no-ops before DB/dashboard. DB cleaned 518→464 (backup `marrow.db.bak-20260518-220058`).
+## Open — next window (priority order)
 
-Not done (cosmetic, optional): headless jsonl still physically lands in `~/.claude/projects/-Users-Gabrielle-cc-lab-marrow/` (~200 junk files). `CLAUDE_CONFIG_DIR` redirect works but a fresh dir loses auth (keychain account-state tied to config dir) — needs a seeded parallel config dir, fragile. Data pollution fully fixed without it; only disk clutter remains.
+1. **Disk cleanup (cosmetic, main task).** 142 sdk-cli `.jsonl` physically in `~/.claude/projects/` (/643) cluttering CC project list (Lumi does not want extra projects). Data already firewalled — disk/UX only. Build: standalone weekly launchd job, pure code, NOT inside diary routine (decouple per "separate routines" lesson); delete jsonl whose head carries `"entrypoint":"sdk-cli"` + one-time sweep of the 142. Template: `deploy/mw-diary-catchup.plist`. Use `tdd`.
+2. **`-p` → stream-json migration.** Audit (Lumi recorded): `~/.claude/hooks/prompt-lint.py:126` (high-freq, burns 6/15 pool, NOT in marrow repo — keep dependency-free, add `--setting-sources ""` + no-`-p` stream-json) is the one worth doing; `~/Toolkit/scripts/ny_lib.py:61` (confirm caller/freq); `weclaude/bridge.py:165` (already FUTURE WeClaude_6_15_migration); `marrow/llm.py:138` (fallback, low priority).
+3. **Push** the 5 commits (private ledger github.com/Jaynechu/marrow).
+4. **CC version drift.** PATH `claude` is 2.1.143; docs pin 2.1.142 (parse-bug, `docs/notes/2026-05-18_cc-2143-toolcall-parse-bug.md`). Decide: re-pin or update note.
+
+## Don't redo / decided
+
+- entrypoint-marker is THE root fix. Earlier "pin cwd + path-exclude" plan is **superseded** (entrypoint is payload- and location-independent) — do not re-add cwd pinning for pollution.
+- `CLAUDE_CONFIG_DIR` redirect rejected: fresh config dir loses OAuth/keychain auth (verified empirically + agent + neighbour, three-way). Don't reopen.
+- Cleanup must be a standalone job, never inside diary routine/catchup.
+- diary.py prompts (DIGEST_SHORT/LONG, STITCH, DIARY_PROMPT) Lumi-owned; restore from `f08e08e`/`bcde095` if reverted; don't rewrite.
+- /clear does NOT change session_id (same jsonl). lessons removal intentional (Lumi).
 
 ## Suggested skills
 
-- `tdd` — transcript hook-pollution filter (deterministic, fixed contract).
-- `diagnose` — if structural-ID of leaked jsonl needs repro.
-- `/loop` — if Lumi re-enters diary prompt-tuning cycle.
-
-## Don't redo
-
-- /clear does NOT change session_id (same jsonl). New sid = new cc process / window / resume.
-- lessons removal is intentional (Lumi). Don't re-add without FUTURE redesign.
-- diary.py prompts (DIGEST_SHORT/LONG, STITCH, DIARY_PROMPT) are Lumi-owned — restore from `bcde095` if reverted; don't rewrite.
-- CC pinned to 2.1.142 (parse-bug); see `docs/notes/2026-05-18_cc-2143-toolcall-parse-bug.md`.
+- `tdd` — cleanup module (deterministic: delete jsonl iff entrypoint=sdk-cli).
+- `/loop` — if Lumi re-enters diary prompt-tuning.
