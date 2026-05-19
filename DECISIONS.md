@@ -31,7 +31,7 @@
 - [reasoned] entities/entity_facts merged (kind person|pref|place, append-only superseded_by); trigger-load, never resident in SessionStart · goal7 · Lumi ok
 - [hold] entity pipeline (M6 — 04:00 contract widen for entity / trigger-load impl) suspended pending pipeline-bug fix; this round writes no mechanism · B
 - [reasoned] de-risk (goes in DESIGN Safety-nets do-not-cut zone) = SessionStart code heartbeat assertion (latest affect >48h OR a gap day in last 7d → inject block first line [⚠ 情感记录可能中断: YYYY-MM-DD]) + affect bad/missing-JSON code fallback inserts neutral row (V0.5/A0.3/imp3) + idempotent catchup (pick days with events but no affect, missed run self-heals, same code as backfill) · goal6 · desktop §4 M8
-- [reasoned] corrections table = Phase 2 placeholder, design fixed (Fact-corrections conflict priority: Lumi current input > Lumi-confirmed structured > system structured > raw event), not built · goal3 · DESIGN Fact corrections
+- [reasoned] corrections table = Phase 2 placeholder, design fixed (Fact-corrections conflict priority: Lumi current input > Lumi-confirmed structured > system structured > raw event), not built · goal3 · FUTURE Phase 2
 
 ## Doc system (this round C)
 - [verified] doc system: DESIGN = goal+structure+hard-constraints+sub-pages (no still-changing decisions); DECISIONS = single current-truth entry, overwrite-in-place, read first; FUTURE = unbuilt plans by phase; PROGRESS = append-only action log; handover = next-session only, overwrite; docs/notes = hard-problem memo / research scratch, NOT a truth source; docs/adr deleted (conclusions folded into DECISIONS); CONTEXT = glossary maintained by grill-with-doc skill, outside this system but its conflicts get fixed each round · goal7 · this round C

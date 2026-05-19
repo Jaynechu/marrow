@@ -130,7 +130,7 @@ See DECISIONS.md — per-event affect table, two-band SessionStart entry, single
 
 - SessionStart — injects open threads + open alerts (no who-i-am; persona in static CLAUDE.md); (Phase 2) emotional entry — see DECISIONS. Diary-catchup not here: 16:00 launchd (see DECISIONS).
 - UserPromptSubmit — must-never-fade injection; plus the optional config-gated deterministic recall fallback (local-embedding vector search → top-K into additionalContext). Default off for a strong model.
-- SessionEnd — async, code-only (no LLM): pass an archive-skip gate (see Pending — session archive skip), then clean this session's transcript (strip tool/fetch/system noise, keep the full human dialogue verbatim) and archive turns to events; regen the dashboard top. Diary is NOT here — see diary scheduling. Emotion is NOT here either (see Emotion).
+- SessionEnd — async, code-only (no LLM): pass an archive-skip gate (see FUTURE Phase 2 — session_archive_skip), then clean this session's transcript (strip tool/fetch/system noise, keep the full human dialogue verbatim) and archive turns to events; regen the dashboard top. Diary is NOT here — see diary scheduling. Emotion is NOT here either (see Emotion).
 - PreToolUse — write_guard. Phase 1: the existing global `~/.claude/hooks/prompt-guard.py` (English-only + no pipe tables on prompt-class .md), scope extended to cover `~/cc-lab/marrow/` — one global hook, not a Marrow-local copy. Phase 3: route writes to prompt-class md to the writer sub-Claude; main Claude loses direct write there.
 
 Diary scheduling — see DECISIONS (04:00 routine + 16:00 catchup, per-session map-reduce, haiku digest → sonnet). Buddy end-of-turn comments stripped at transcript clean; no lesson extraction.
@@ -141,7 +141,7 @@ Pull, not push. Memory lives in SQLite and is read on demand via MCP tool calls 
 
 - On-demand recall — Claude calls a recall tool when a turn references the past; the daemon returns only the matched rows under a token budget. Scales with the DB without bloating context; always reads the live store.
 - Session-start handoff — SessionStart renders open threads + alerts into daemon-rendered CLAUDE.md marker block; short and fixed-size, never a growing md.
-- CLAUDE.md holds the static layer plus a daemon-rendered marker block: persona, family, one short MCP usage guide (hand-written zone), and the must-never-fade convention layer in the marker block (see "Pending — dir, drift sweep, convention injection"). The hand-written zone never grows with data; it is not an @import pile.
+- CLAUDE.md holds the static layer plus a daemon-rendered marker block: persona, family, one short MCP usage guide (hand-written zone), and the must-never-fade convention layer in the marker block (see FUTURE Phase 3 — drift/convention infra). The hand-written zone never grows with data; it is not an @import pile.
 - @import is not the memory path — it loads once at launch and does not re-read mid-session, which disqualifies it for live recall.
 - UserPromptSubmit per-turn injection covers two cases: the rare must-never-fade item, and an optional deterministic recall fallback (config flag, default off for a strong model). When on, the hook runs the user turn through the same local-embedding vector search the model would call and injects the top-K hits into additionalContext. The retrieval engine is identical to model-pulled recall; only the trigger changes from model judgement to deterministic per-turn. It uses the local sentence-embedding model (a fixed local component, no token / subscription / cloud cost, independent of the conversation model — exact model Pending, set at build), never the conversation model and never keyword match. Steady-state cost stays near zero for a strong model with the flag off.
 
@@ -162,7 +162,7 @@ Each phase ships one outcome.
 - Phase 1 — Memory core: SQLite + full-text, the daemon with a minimal MCP tool set, all four hooks at phase-1 subset (SessionStart open-threads+alerts handoff only; UserPromptSubmit must-never-fade inject, recall fallback default off; SessionEnd code-only clean+archive + dashboard-top regen, no LLM/emotion/decay; diary via nightly 04:00 routine + 16:00 catchup launchd job; PreToolUse mirrors prompt-guard only), dashboard top render, migrate.py, the `mw` CLI. Runs in parallel with old ny-memm ~2 weeks, then retire it. Stream-json subscription routing is pass-tested (2026-05-15). The remaining unknowns — local vector ext on this macOS, MCP parity with cyberboss, cheap-tier diary quality — are not pre-verified; each surfaces and is settled at first build of its module, no separate verify phase.
 - Phase 2 — Emotion (affect) + decay + sub-page render fills out; entity (people/pref) pipeline HOLD pending pipeline-bug — see DECISIONS. Sub-page render config-driven (goal 7); stellan_wallet first opt-in addon.
 - Phase 3 — Writer authority: prompt-class md writes go through the writer sub-Claude.
-- Phase 4 — Cross-channel parity (see weclaude + cyberboss Pending below).
+- Phase 4 — Cross-channel parity (see FUTURE Phase 4 — weclaude_runtime_rebuild).
 - Phase 5 — Addons + open source.
 
 Stub policy: each phase creates only the modules it uses. No empty skeletons. Placeholder tables in schema are allowed (commented); stub classes in code are banned.

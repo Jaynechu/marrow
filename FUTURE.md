@@ -1,28 +1,43 @@
 # Marrow Future Ideas Inbox
 
-Marrow build backlog only. WeClaude is in scope — it gets a deep rebuild in a late phase (replace/refit on cyberboss or full rewrite, TBD). Out of scope: personal tasks, standalone tools, buddy-internal work — those live in `~/Desktop/NY/code/_pit.md` (migrates to the dashboard Projects/pit page at Phase 1, DESIGN line 95).
+Marrow build backlog only. WeClaude is in scope — deep rebuild in a late phase (replace/refit on cyberboss or full rewrite, TBD). Out of scope: personal tasks, standalone tools, buddy-internal work — those live in `~/Desktop/NY/code/_pit.md` (migrates to dashboard Projects/pit at Phase 1, DESIGN line 95).
 
-Not prioritized. Read before adding a feature to confirm whether an interface should be reserved in Phase 1.
+Not prioritized within a section. Read before adding a feature to confirm whether an interface should be reserved in Phase 1. Order: Phase-1 closeout first, then by phase, addons (Phase 5) last, unphased ops + misc at the tail.
 
-## Phase 2
+## Phase-1 closeout (migration / retire old ny-memm)
 
-- **events_vec_embedder_provenance** — events_vec lacks embedder-id/dim columns (review #6). DEFERRED to Phase 2 recall-module first build (DESIGN:259): embedder deferred (fork #1); add provenance with embedder so a model swap re-embeds without a base-schema rewrite (goal 1/7). Fusion refs: Ombre-Brain github.com/P0luz/Ombre-Brain (DESIGN:229 weight-pool sink/recall), claude-imprint github.com/Qizhan7/claude-imprint (RRF vector/FTS/recency), cyberboss github.com/WenXiaoWendy/cyberboss.
+- **profile_md_deletion** — `memory/profile.md` pending delete, content already moved to reference + global (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:20`)
+- **MEMORY_md_old_path_cleanup** — `~/.claude/projects/-Users-Gabrielle-Desktop-NY/memory/MEMORY.md` pending manual delete (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:539-541`)
+- **summ_skill_deprecation** — Confirm dropping summ skill, ss skill, goose-slim overlap, legacy carryover-load.sh (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:22`)
+- **R18_md_relocation_outstanding** — `r18.md` placement (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:9`)
 
-## Phase 3 (writer authority)
+## Phase 2 (emotion + recall + sub-page render)
 
-(none parked)
+- **events_vec_embedder_provenance** — events_vec lacks embedder-id/dim columns (review #6). Add provenance with embedder at recall-module first build so a model swap re-embeds without a base-schema rewrite (goal 1/7). Fusion refs: Ombre-Brain github.com/P0luz/Ombre-Brain (weight-pool sink/recall), claude-imprint github.com/Qizhan7/claude-imprint (RRF vector/FTS/recency), cyberboss github.com/WenXiaoWendy/cyberboss.
+- **corrections** — Phase 2 placeholder; design fixed in DECISIONS:34 (conflict priority: Lumi current input > Lumi-confirmed structured > system structured > raw event; serial fact = append state-sequence + supersede, never single-value overwrite; an event is a lead, never the arbiter). Lands in its own corrections store, never overwrites an event. Not built Phase 1.
+- **session_archive_skip** — SessionEnd archive-skip gate detail (DESIGN:133). Manual: stamp file / `mw` command / in-session trigger; `mm+` force-include into diary (overrides ≤3 / SHORT drop), `mm-` force-skip (30+ turns still skip). Auto-skip turn threshold Pending. Idempotent (skip = noop; raw-stream cleanup is a separate tier). Code-only, non-blocking.
+- **build_time_deferred** — Decided to defer to each module's build, do not invent now: sub-page hyperlink concrete paths · per-view SQL columns (e.g. milestone) · md render template per view · per-event LLM topology table (tier/timeout/retry) · schema-evolution mechanism (user_version + ordered patch chain, replaces interim hand ALTER) · doc auto-render upkeep (DESIGN/DECISIONS/README/dir map, no manual maintenance) · retrieval fusion k/weights (single weighted scalar per DECISIONS:27, not RRF).
+
+## Phase 3 (writer authority + drift / convention infra)
+
+All three REQUIRED, mechanism Pending. They share one base: daemon writes CLAUDE.md via Python file IO (not the cc Write tool, so cc permission + the 10000-char hook cap never apply, same path as diary render), marker-block partitioned.
+
+- **drift_sweep** — Lumi moves/renames/deletes/merges a file; every reference follows without her reminding anyone. Trigger = path-change (git diff detects). Three layers: (1) deterministic ripgrep over authorized roots — primary, no model, never misses; (2) key-indirection — docs/scripts reference a key not a hardcoded path, a move edits one registry entry; (3) cheap local model sweeps free-text mentions as fallback, never touches key paths. Dropped: file-level full index / hand-tree / Spotlight ("where is X" = daemon on-demand ripgrep).
+- **convention_injection** — naming + folder-placement rules sit in the every-turn injection layer, never a sub-page (Claude does not read sub-pages on its own — a rule there is dead). Single source → drift_sweep maintains it → daemon renders it into a CLAUDE.md marker block → SessionEnd renders, next SessionStart applies. Lumi edits the source once or never; never hand-manages it.
+- **claude_md_render_guard** — the daemon-rendered marker block never destroys the hand-written zone. Compensating safety net (REQUIRED, not optional, because this removes Anthropic's default block on cc editing CLAUDE.md): hash-compare before overwrite · marker-outside never overwritten · marker-inside hand-edit reconciles + backup + one Alert · atomic write.
 
 ## Phase 4 (cross-channel + weclaude deep rebuild)
 
-- **WeChat_permission_yesno** — Approve/reject CC permission requests from WeChat (cyberboss has /stop and yes/no permission) 
-- **bidirectional_resume** — Morning WeChat chat → meal break → continue on CC; sid consistent OR resume independent of sid 
-- **command_parity_across_channels** — All commands consistent CLI ↔ WeChat ↔ desktop ↔ web 
-- **migration_path_codex_local** — Easy migration to Codex/Claude/local small model (cyberboss already did) 
-- **Codex_alternative_swap** — Anthropic 6/15 SDK + claude-p moves to extra credit; cyberboss uses other swamp; migration plan needed 
+- **weclaude_runtime_rebuild** — multi-message send + `铁锅` rewrite on the new runtime; `/stop` / `/resume` / interrupt / rewind parity; cyberboss-vs-weclaude-rewrite TBD (header). Design when Phase 4 starts, not before. This is NOT just swapping `claude -p` for another spawn — real workload.
+- **WeChat_permission_yesno** — Approve/reject CC permission requests from WeChat (cyberboss has /stop and yes/no permission)
+- **bidirectional_resume** — Morning WeChat chat → meal break → continue on CC; sid consistent OR resume independent of sid
+- **command_parity_across_channels** — All commands consistent CLI ↔ WeChat ↔ desktop ↔ web
+- **migration_path_codex_local** — Easy migration to Codex/Claude/local small model (cyberboss already did)
+- **Codex_alternative_swap** — Anthropic 6/15 SDK + claude-p moves to extra credit; cyberboss uses other swap; migration plan needed
 - **stellan_autonomous_push** — launchd `claude -p` short session `闲逛模式` + WebSearch/WebFetch; `SKIP` / `<send>` parsed; cyberboss system-checkin-poller + reminder-service references (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:63-80`)
 - **Stellan_proactive_followup_emotional** — Next session proactively asks how meal/event went; proactive recall mechanism (source: `/Users/Gabrielle/Desktop/NY/code/system_guide.md:18`)
 - **Stellan_push_inbox_file_or_macOS_notif** — Write `~/.claude/inbox.md` + SessionStart inject; macOS notification; reuse weclaude `client.send_text` push to WeChat (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:75-77`)
-- **Stellan_no_cold_start_old_session** — Don't cold-start in already-large old session (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:70-71`)
+- **Stellan_no_cold_start_old_session** — Don't cold-start in an already-large old session (source: `/Users/Gabrielle/Desktop/NY/code/_pit.md:70-71`)
 - **WeClaude_interrupt** — `subprocess.Popen` + `_inflight_procs` registry; `/stop`/`停`/`闭嘴`/`中断` → SIGINT; ret -2 silent (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:73`)
 - **WeClaude_rewind** — Truncate jsonl tail from last external (non-WeChat) turn (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:74`)
 - **WeClaude_resume_sees_sessions** — Inject synthetic summary record so CC /resume sees weclaude jsonl (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:75`)
@@ -39,7 +54,7 @@ Not prioritized. Read before adding a feature to confirm whether an interface sh
 - **WeClaude_upstream_revival_strategy** — If upstream revives, drop local patches; fallback `_patches.py` monkey-patch keeps `bridge.py` pristine (source: `/Users/Gabrielle/Desktop/NY/code/weclaude.md:8-10`)
 - **transcript_path_mismatch** — `cc-jsonl-to-md.py` writes elsewhere than `memory/transcript/`, fix in Phase 4 (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:25`)
 
-## Phase 5 (addons + OSS)
+## Phase 5 (addons + OSS) — addons live here, sink to the bottom of the phase line
 
 - **stellan_wallet** — Opt-in dashboard addon: monthly allowance auto-credit + spend auto-debit. `transactions` table only, balance = SUM(amount) never stored; bank-statement sub-page, month-grouped. Auto-credit piggybacks the diary 04:00 routine (idempotent per month, catchup-safe, no new launchd job); spend-detection: haiku-lessons hook gone (see DECISIONS), settled at wallet grill; `mw set`/`rm` + md reconcile = correction path, no new code. Risk: per-session keep-soul digest may drop a small spend before merge — Phase 2 resolves by digest retaining spend leads or sinking extraction into the per-session map step; prompt body needs Lumi review (DESIGN L53). First opt-in addon, exercises the config-driven selectable sub-page contract. Render anchor: top `Balance` figure (= SUM, computed not stored) then a month-grouped bank-statement table, columns Date / Type (Credit|Debit) / Description / Amount (signed) / running Balance-after; row-tail short id for structured-view reconcile (source: Lumi 2026-05-18)
 - **lesson_addon** — Out of base (see DECISIONS), not Phase 1/2; opt-in addon, revisited if real recurring need appears. Behavioural-failure-mode only (recurring "how I work" corrections: interaction / prompt / coding habit / verification discipline). `lessons` table dropped 2026-05-19, recreated on revival. NOTE: stellan_wallet spend-detection void — wallet needs own path. (source: Lumi 2026-05-18; DECISIONS 2026-05-19)
@@ -52,97 +67,18 @@ Not prioritized. Read before adding a feature to confirm whether an interface sh
 - **README_public_facing** — Full open-source README sections: philosophy, install, 5-script overview, customisation hooks (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:62`)
 - **monorepo_or_split_decision** — NY memory + weclaude bridge + claude-buddy MCP: monorepo or split (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:64`)
 
-## Backup / monitor (unphased ops)
+## Unphased ops (backup / monitor)
 
-- **Script_health_monitor** — Monthly plist scans audit logs for "did script actually run when expected?" gaps (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:31`)
-- **retry_trend_alert** — Alert fires on retry!=ok only; high-ratio trend has no alert (source: `/Users/Gabrielle/Desktop/NY/memory/3d.md:21`)
-- **subagent_usage_logging** — `llm.py` records no per-call usage. Capture token/cost per LLM call (which tier/subagent, in/out tokens) into audit_log so each pipeline call's spend is visible in logs / Monitor Zone (source: Lumi 2026-05-18, diary test-loop note)
-
-## Migration / retire old ny-memm (Phase-1 closeout)
-
-- **profile_md_deletion** — `memory/profile.md` pending delete, content already moved to reference + global (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:20`)
-- **MEMORY_md_old_path_cleanup** — `~/.claude/projects/-Users-Gabrielle-Desktop-NY/memory/MEMORY.md` pending manual delete (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:539-541`)
-- **summ_skill_deprecation** — Confirm dropping summ skill, ss skill, goose-slim overlap, legacy carryover-load.sh (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:22`)
-- **R18_md_relocation_outstanding** — `r18.md` placement (source: `/Users/Gabrielle/Desktop/NY/memory/reference.md:9`)
+- **retention_prune_executor** — per-source retention rules + a prune executor for the SQLite raw-stream tier only: aged event rows / resolved alerts / audit_log / DB dumps. Never jsonl (jsonl uses global `~/.claude/settings.json` `cleanupPeriodDays`, by mtime, not enabled yet). Retention window + prune cadence Pending. Already settled, not here: iCloud offsite backup shipped (DECISIONS:14); tier decay = read-time lazy FLOOR (DECISIONS:28). Effect target: no growth alerts, no manual rm, no DB bloat. · est. Phase 2 — pairs with tier decay (DECISIONS:28)
+- **Script_health_monitor** — Monthly plist scans audit logs for "did script actually run when expected?" gaps (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:31`) · est. Phase 2+, uncertain
+- **retry_trend_alert** — Alert fires on retry!=ok only; high-ratio trend has no alert (source: `/Users/Gabrielle/Desktop/NY/memory/3d.md:21`) · est. uncertain
+- **subagent_usage_logging** — `llm.py` records no per-call usage. Capture token/cost per LLM call (which tier/subagent, in/out tokens) into audit_log so each pipeline call's spend is visible in logs / Monitor Zone (source: Lumi 2026-05-18, diary test-loop note) · est. uncertain
 
 ## Misc backlog
 
-- **diff_open_threads_audit** — Weekly curator diffs Open-Threads week-over-week, audit-logs silent drops (source: `/Users/Gabrielle/Desktop/NY/code/mid-point-rv.md:76`)
-- **memes_dedup_evaluation** — Re-evaluate effectiveness 2 weeks post inventory + DEDUP rule shipped 5/11 (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:77`)
-- **monthly_late_promote_check** — Late-promote channel withdrawn; observe `5月` input before 6/10 (source: `/Users/Gabrielle/Desktop/NY/memory/3d.md:16`)
-- **Memes_optimization** — Sonnet doesn't know real memes vs random quotes; want only hot vocabulary + memorable new memes 
-- **v2_year_rollup_to_timeline** — 2026 full year compressed into 1 timeline view section (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:615`)
-- **backup_audit_transparency** — rotate/curator/retire backup files have no source SID identifier (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:658`)
-
----
-
-[Moved from design - not sorted yet]
-
-## Pending - DECISIONS.md:34
-corrections table = Phase 2 placeholder (design fixed here, not built Phase 1).
-- Lumi's current input is top truth; stored memory never rebuts her. The store exists to stop the assistant's own mis-recall, not to validate or correct her. On conflict she wins — at most "my record says X, updating to your Y", never "let me remind you". Shorthand or stale wording is not an error to push back on.
-- Serial facts = append state-sequence + latest pointer, not single-value overwrite. A new state supersedes the old (old kept, marked superseded, history-queryable); recall returns latest only; a superseded state is never raised against new input.
-- Conflict priority: Lumi current input > Lumi-confirmed structured > system structured (milestone / preference) > raw event; same layer newer > older; an event is a lead, never the arbiter.
-
-
-
-## Pending — weclaude + cyberboss fusion
-
-After the memory core ships, the WeChat side gets rebuilt. Not decided whether to adopt cyberboss or upgrade weclaude. This is NOT just swapping `claude -p` for another spawn — it carries a real workload, all Pending design:
-
-- multi-message send + 铁锅 rewrite on the new runtime
-- `/stop` / `/resume` / interrupt / rewind parity
-- WeChat permission yes/no routed to the daemon bridge
-- bidirectional resume (CLI ↔ WeChat handoff on one thread)
-- the cyberboss migration path as the model-swap proof for the migration-friendly goal
-
-Design this when Phase 4 starts, not before.
-
-## Pending — dir, drift sweep, convention injection
-
-Dropped: file-level full index (dir table, hand-maintained tree, macOS Spotlight) — conflicts portability + low-maintenance. "Where is X" = daemon on-demand ripgrep over authorized roots.
-
-Two real needs survive the drop. Both REQUIRED; mechanism detail Pending:
-
-- drift sweep — Lumi moves / renames / deletes / merges a file; every reference follows without her reminding anyone. Trigger = a path-change event (git diff detects it). Three layers: (1) deterministic ripgrep over authorized roots finds every reference to the old path — primary, no model, never misses; (2) key-indirection — docs/scripts reference a key, not a hardcoded path, so a move edits one registry entry and references stay correct; (3) cheap local model sweeps free-text mentions as fallback — never lets the model touch key paths.
-- convention injection — naming / folder-placement rules sit in the every-turn injection layer, never a sub-page (Claude does not read sub-pages on its own; a rule there is a dead rule). Single source → drift sweep maintains the source → daemon renders it into a marker block in CLAUDE.md → SessionEnd renders, next SessionStart applies. Lumi edits the source once or not at all; she never hand-manages it.
-
-CLAUDE.md render: daemon writes via Python file IO, not the cc Write tool — cc permission / bypass and the 10000-char hook cap never apply (same path as diary render). Marker-block partition: the daemon rewrites only its marker block; the hand-written zone (persona, coding discipline) is never touched. This deliberately removes Anthropic's default block on cc editing CLAUDE.md (a high-weight every-turn file), so the guard set is the compensating safety net, REQUIRED not optional: hash-compare before overwrite, marker-outside never overwritten, marker-inside hand-edit reconciles + backup + one Alert, atomic write.
-
-## Pending — data lifecycle
-
-Backup direction: iCloud owns offsite copies; restore on a fresh Mac without touching code. Retention window + prune cadence Pending. Cleanup: per-source retention rules + executor Pending.
-
-Tier split (fixed, not Pending) — three tiers:
-
-- Permanent keepsake — milestones, diary, goose-bites, projects, study, major life facts. Add-only, never decays.
-- Demote-sink — low-value reference + cold vocab (use_count / last_seen long idle). Weight decays, row sinks below the active set, a keyword hit revives it (Ombre weight-pool: resolved → sink → keyword-recall). Not deleted.
-- Raw-stream — detailed event rows, resolved alerts, audit_log, DB dumps, low-use stickers. Real retention + prune.
-
-Effect target: no growth alerts, no manual rm, no DB bloat.
-
-Decided — raw jsonl cleanup is NOT Marrow's job. Use `cleanupPeriodDays` in `~/.claude/settings.json` (global, by mtime, all projects). Marrow prunes SQLite-internal raw-stream: aged rows, resolved alerts, audit_log, dumps. Never jsonl. Not enabled yet.
-
-## Pending — session archive skip
-
-Skipped sessions excluded from diary/recall. (Legacy: `summ-skip` stamp; trigger: `ssmmm` skill.)
-
-- Manual skip: stamp file, `mw` command, or in-session trigger
-- `mm+` force-include — into diary regardless of turn count (overrides ≤3 drop / SHORT auto-skip)
-- `mm-` force-skip — excluded regardless of turn count (30+ turns still skip)
-- Auto skip: turn threshold (Pending)
-- Idempotent: skip = do nothing; raw-stream cleanup is separate tier
-
-Phase 1: code-only, non-blocking.
-
-## Pending — open items
-
-Decided to defer, do not invent:
-
-- sub-page hyperlink concrete paths
-- which columns each view's SQL extracts (e.g. milestone)
-- the md render template behind each view
-- per-event LLM topology table
-- schema-evolution mechanism (user_version + ordered patch chain, replaces the interim hand-written ALTER)
-- doc auto-render upkeep (DESIGN / DECISIONS / README / dir map) — no manual maintenance
-- retrieval fusion — single weighted scalar (copy claude-imprint lane engineering, not RRF); k/weights at recall-module build
+- **diff_open_threads_audit** — Weekly curator diffs Open-Threads week-over-week, audit-logs silent drops (source: `/Users/Gabrielle/Desktop/NY/code/mid-point-rv.md:76`) · Phase 2+ (weekly curator not yet built)
+- **memes_dedup_evaluation** — Re-evaluate effectiveness 2 weeks post inventory + DEDUP rule shipped 5/11 (source: `/Users/Gabrielle/Desktop/NY/code/roadmap.md:77`) · time-triggered (~2wk post 5/11), not phase-bound
+- **monthly_late_promote_check** — Late-promote channel withdrawn; observe `5月` input before 6/10 (source: `/Users/Gabrielle/Desktop/NY/memory/3d.md:16`) · time-triggered (before 6/10), not phase-bound
+- **Memes_optimization** — Sonnet doesn't know real memes vs random quotes; want only hot vocabulary + memorable new memes · Phase 2 (memes curate/render quality)
+- **v2_year_rollup_to_timeline** — 2026 full year compressed into 1 timeline view section (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:615`) · Phase 2+ sub-page render or year-end-driven
+- **backup_audit_transparency** — rotate/curator/retire backup files have no source SID identifier (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:658`) · any phase (small metadata); natural Phase 2
