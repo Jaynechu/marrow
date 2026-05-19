@@ -47,14 +47,49 @@ def test_parse_empty_raises():
         LLMClient._parse_claude(_json_out(""), "json")
 
 
-def test_chain_rotates_to_emergency_and_alerts(monkeypatch):
+def test_ollama_muted_by_default_chain_is_claude_only():
+    c = LLMClient(CFG)
+    assert c.chain == ["claude_cli"]
+
+
+def test_retry_absorbs_transient_miss_no_alert(monkeypatch):
     alerts = []
     c = LLMClient(CFG, on_alert=lambda *a: alerts.append(a))
+    calls = []
 
-    def boom_cli(spec, model, prompt):
-        raise LLMError("cli down")
+    def flaky(spec, model, prompt):
+        calls.append(1)
+        if len(calls) == 1:
+            raise LLMError("transient")
+        return "ok-2nd"
 
-    monkeypatch.setattr(c, "_run_claude_cli", boom_cli)
+    monkeypatch.setattr(c, "_run_claude_cli", flaky)
+    assert c.call("diary", "body", tier="cheap") == "ok-2nd"
+    assert len(calls) == 2  # one retry, same provider
+    assert alerts == []  # transient miss never alerts
+
+
+def test_claude_only_exhausted_is_critical(monkeypatch):
+    alerts = []
+    c = LLMClient(CFG, on_alert=lambda *a: alerts.append(a))
+    monkeypatch.setattr(
+        c, "_run_claude_cli",
+        lambda s, m, p: (_ for _ in ()).throw(LLMError("cli down")))
+    with pytest.raises(LLMError, match="all providers failed"):
+        c.call("diary", "body", tier="cheap")
+    assert alerts and alerts[-1][0] == "critical"
+    assert "chain exhausted" in alerts[-1][2]
+
+
+def test_rotation_path_intact_when_unmuted(monkeypatch):
+    # ollama code path is retained; flipping the mute restores claude->ollama.
+    monkeypatch.setattr("marrow.llm._MUTE_OLLAMA", False)
+    alerts = []
+    c = LLMClient(CFG, on_alert=lambda *a: alerts.append(a))
+    assert c.chain == ["claude_cli", "ollama"]
+    monkeypatch.setattr(
+        c, "_run_claude_cli",
+        lambda s, m, p: (_ for _ in ()).throw(LLMError("cli down")))
     monkeypatch.setattr(c, "_run_ollama", lambda spec, prompt: "from-ollama")
     assert c.call("diary", "body", tier="cheap") == "from-ollama"
     assert alerts and alerts[0][0] == "warn"

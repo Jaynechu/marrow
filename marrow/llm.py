@@ -24,6 +24,14 @@ from . import config
 
 _ISOLATION = ["--setting-sources", "", "--strict-mcp-config"]
 
+# ollama is chronically down on this host; while muted it is dropped from the
+# chain entirely so a transient claude miss does not rotate into a guaranteed
+# "unreachable" critical-alert storm. Code path (_run_ollama) kept intact —
+# flip to False to bring it back. Provider-level retry absorbs the kind of
+# transient claude miss that previously needed the fallback.
+_MUTE_OLLAMA = True
+_RETRIES = 1  # per provider, before rotating
+
 
 class LLMError(Exception):
     pass
@@ -49,8 +57,12 @@ class LLMClient:
     def __init__(self, cfg: dict | None = None, on_alert=None):
         self.cfg = cfg or config.load()
         llm = self.cfg.get("llm", {})
-        self.chain = [llm[k] for k in ("default", "fallback", "emergency")
-                      if llm.get(k)]
+        self.chain = [
+            nm for k in ("default", "fallback", "emergency")
+            if (nm := llm.get(k))
+            and not (_MUTE_OLLAMA
+                     and (llm.get(nm) or {}).get("kind") == "ollama")
+        ]
         self.specs = llm
         self.tiers = self.cfg.get("tiers", {})
         self._on_alert = on_alert
@@ -69,18 +81,21 @@ class LLMClient:
             spec = self.specs.get(name)
             if not spec:
                 continue
-            try:
-                return self._run(spec, model, body)
-            except Exception as e:
-                last = e
-                terminal = i == len(self.chain) - 1
-                self._alert(
-                    "critical" if terminal else "warn",
-                    "llm_provider",
-                    f"{role}: provider {name} failed ({e}); "
-                    + ("chain exhausted" if terminal else "rotating"),
-                    f"llm.py:{name}",
-                )
+            for attempt in range(_RETRIES + 1):
+                try:
+                    return self._run(spec, model, body)
+                except Exception as e:
+                    last = e
+                    if attempt < _RETRIES:
+                        continue  # transient miss — one retry, same provider
+                    terminal = i == len(self.chain) - 1
+                    self._alert(
+                        "critical" if terminal else "warn",
+                        "llm_provider",
+                        f"{role}: provider {name} failed ({e}); "
+                        + ("chain exhausted" if terminal else "rotating"),
+                        f"llm.py:{name}",
+                    )
         raise LLMError(f"{role}: all providers failed; last: {last}")
 
     def _run(self, spec: dict, model: str, prompt: str) -> str:

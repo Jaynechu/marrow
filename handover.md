@@ -43,3 +43,4 @@ Phase-1 DONE (pytest 129, pushed). Current: grill round 3, emotion branch DONE (
 - #6 waits for embedder — never add empty provenance column to Phase-1 schema
 - `isolation:"worktree"` subagents branch from origin baseline → cherry-pick to main, real-run pytest there
 - dashboard lives in ~/Desktop/NY (Obsidian, TCC zone) — EPERM degrade is the fix, not relocation
+- no-p stream-json is NOT a diary failure cause — replay of 5-18 (claude 2.1.141) ran 21/21 on no-p; 2026-05-19 failure transient (claude miss × zero-retry × ollama), fixed via fence + `_MUTE_OLLAMA` + `_RETRIES=1`. Do not re-suspect no-p; ADR-0003 stands — docs/notes/2026-05-19_diary-no-p-exoneration.md
