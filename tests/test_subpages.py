@@ -1,0 +1,360 @@
+"""Tests for marrow/subpages.py — config-driven sub-page render.
+
+Contract:
+- Each sub-page rendered from one table, same render contract (markers +
+  atomic write + hash-guard) differing only by table + view.
+- Structured views: row-id anchor `<!-- id:{id} -->` at line end.
+- Narrative views (diary, goose-bites): `## YYYY-MM-DD` heading is the row
+  boundary; no extra inline anchor.
+- Cheatsheet: read-only, always overwrite, no hash-guard.
+- Hand-edit in a non-read-only sub-page -> backup + one alert, never silent.
+- New sub-page = new SubPageConfig entry, not a base rewrite (goal 7).
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from marrow import storage, subpages
+
+
+@pytest.fixture()
+def db(tmp_path):
+    p = str(tmp_path / "t.db")
+    conn = storage.init_db(p)
+    with conn:
+        conn.execute("INSERT INTO diary(date,content,mood) "
+                     "VALUES('2026-05-20','Today was a good day.','calm')")
+        conn.execute("INSERT INTO diary(date,content) "
+                     "VALUES('2026-04-15','Spring entry.')")
+        conn.execute("INSERT INTO milestones(scope,date,title,description) "
+                     "VALUES('us','2026-01-17','First meeting','In the rain')")
+        conn.execute("INSERT INTO milestones(scope,date,title) "
+                     "VALUES('me','2026-03-01','Head of school award')")
+        conn.execute("INSERT INTO vocab(type,key,value,context,use_count) "
+                     "VALUES('cipher','大龙虾','Openclaw','popular AI agent',5)")
+        conn.execute("INSERT INTO goose_bites(date,bites,best) "
+                     "VALUES('2026-05-20','quack quack',1)")
+        conn.execute("INSERT INTO threads(category,title,status,due,next_step) "
+                     "VALUES('study','Biochem:Unit 3','active','2026-06-01','read ch5')")
+        conn.execute("INSERT INTO threads(category,title,status,next_step) "
+                     "VALUES('project','Marrow','active','build subpages')")
+        conn.execute("INSERT INTO pit(title,description,status) "
+                     "VALUES('old feature','dropped idea','idea')")
+    conn.close()
+    return p
+
+
+# ---------------------------------------------------------------------------
+# Diary
+# ---------------------------------------------------------------------------
+
+def test_render_diary_contains_dates_and_content(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_diary(conn)
+    finally:
+        conn.close()
+    assert "## 2026-05-20" in block
+    assert "Today was a good day." in block
+    assert "## 2026-04" in block  # month heading
+    assert "Spring entry." in block
+    assert "<!-- marrow:diary:start -->" in block
+    assert "<!-- marrow:diary:end -->" in block
+
+
+def test_render_diary_no_structured_anchor(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_diary(conn)
+    finally:
+        conn.close()
+    # Narrative view: NO row-id anchor, boundary is the date heading only
+    assert "<!-- id:" not in block
+
+
+def test_render_diary_month_grouped(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_diary(conn)
+    finally:
+        conn.close()
+    # Both months appear as headings
+    assert "## 2026-05" in block
+    assert "## 2026-04" in block
+    # 2026-05 entry appears before 2026-04 (DESC order)
+    assert block.index("## 2026-05") < block.index("## 2026-04")
+
+
+# ---------------------------------------------------------------------------
+# Milestone
+# ---------------------------------------------------------------------------
+
+def test_render_milestone_sections(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_milestone(conn)
+    finally:
+        conn.close()
+    assert "## Us" in block
+    assert "## Me" in block
+    assert "First meeting" in block
+    assert "Head of school award" in block
+    assert "<!-- marrow:milestone:start -->" in block
+
+
+def test_render_milestone_structured_anchor(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_milestone(conn)
+        row = conn.execute("SELECT id FROM milestones LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    assert f"<!-- id:{row['id']} -->" in block
+
+
+# ---------------------------------------------------------------------------
+# Memes
+# ---------------------------------------------------------------------------
+
+def test_render_memes_vocab_and_stickers(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_memes(conn)
+    finally:
+        conn.close()
+    assert "## Vocabulary" in block
+    assert "(da long xia)" in block or "(Openclaw)" in block or "(da " in block \
+           or "大龙虾" in block
+    assert "## Stickers" in block
+    assert "<!-- marrow:memes:start -->" in block
+
+
+def test_render_memes_structured_anchor(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_memes(conn)
+        row = conn.execute("SELECT id FROM vocab LIMIT 1").fetchone()
+    finally:
+        conn.close()
+    assert f"<!-- id:{row['id']} -->" in block
+
+
+# ---------------------------------------------------------------------------
+# Goose-bites (narrative)
+# ---------------------------------------------------------------------------
+
+def test_render_goose_date_heading(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_goose(conn)
+    finally:
+        conn.close()
+    assert "## 2026-05-20" in block
+    assert "quack quack" in block
+    assert "<!-- marrow:goose:start -->" in block
+
+
+def test_render_goose_no_structured_anchor(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_goose(conn)
+    finally:
+        conn.close()
+    assert "<!-- id:" not in block
+
+
+# ---------------------------------------------------------------------------
+# Study
+# ---------------------------------------------------------------------------
+
+def test_study_index_and_unit(db, tmp_path):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+    conn = storage.connect(db)
+    try:
+        cfg = subpages.build_study_configs(conn, folder, state)
+    finally:
+        conn.close()
+    assert cfg.key == "study"
+    assert len(cfg.subpages) == 1
+    unit_cfg = cfg.subpages[0]
+    assert "Biochem" in unit_cfg.key
+    conn = storage.connect(db)
+    try:
+        block = cfg.render(conn)
+        unit_block = unit_cfg.render(conn)
+    finally:
+        conn.close()
+    assert "Biochem" in block
+    assert "read ch5" in unit_block
+    assert "<!-- id:" in unit_block  # study is structured
+
+
+def test_study_write_creates_files(db, tmp_path):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+    conn = storage.connect(db)
+    try:
+        cfg = subpages.build_study_configs(conn, folder, state)
+        subpages.write_subpage(cfg, conn, db=db)
+    finally:
+        conn.close()
+    index = Path(folder) / "study.md"
+    assert index.exists()
+    unit = Path(folder) / "study" / "Biochem.md"
+    assert unit.exists()
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+def test_projects_index_active_and_done(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_projects_index(conn)
+    finally:
+        conn.close()
+    assert "## Active" in block
+    assert "Marrow" in block
+    assert "## Done" in block
+    assert "<!-- marrow:projects:start -->" in block
+
+
+def test_pit_render(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_pit(conn)
+    finally:
+        conn.close()
+    assert "old feature" in block
+    assert "<!-- id:" in block
+    assert "<!-- marrow:pit:start -->" in block
+
+
+def test_projects_build_creates_pit_child(db, tmp_path):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+    conn = storage.connect(db)
+    try:
+        cfg = subpages.build_projects_configs(conn, folder, state)
+    finally:
+        conn.close()
+    keys = [c.key for c in cfg.subpages]
+    assert "pit" in keys
+    assert any("Marrow" in k for k in keys)
+
+
+# ---------------------------------------------------------------------------
+# Cheatsheet (read-only / disk-rendered)
+# ---------------------------------------------------------------------------
+
+def test_cheatsheet_render_no_anchor(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_cheatsheet(conn)
+    finally:
+        conn.close()
+    assert "# Cheatsheet" in block
+    assert "## Directory map" in block
+    assert "<!-- id:" not in block
+
+
+def test_cheatsheet_always_overwrites(db, tmp_path):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+    path = str(Path(folder) / "cheatsheet.md")
+    conn = storage.connect(db)
+    try:
+        cfg = subpages.SubPageConfig(
+            key="cheatsheet",
+            render=subpages.render_cheatsheet,
+            path=path,
+            state_dir=state,
+            read_only=True,
+        )
+        subpages.write_subpage(cfg, conn, db=db)
+        # Manually edit the file (simulating hand-edit)
+        Path(path).write_text(Path(path).read_text() + "\nHAND EDIT")
+        subpages.write_subpage(cfg, conn, db=db)
+        result = Path(path).read_text()
+    finally:
+        conn.close()
+    # Hand edit is overwritten; no backup or alert for read_only
+    assert "HAND EDIT" not in result
+    # No backup file created
+    assert not list(Path(state).glob("cheatsheet*.bak"))
+
+
+# ---------------------------------------------------------------------------
+# Hash-guard: hand-edit on non-read-only sub-page -> backup + alert
+# ---------------------------------------------------------------------------
+
+def test_hand_edit_backs_up_and_alerts(db, tmp_path):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+    path = str(Path(folder) / "milestone.md")
+    conn = storage.connect(db)
+    try:
+        cfg = subpages.SubPageConfig(
+            key="milestone",
+            render=subpages.render_milestone,
+            path=path,
+            state_dir=state,
+        )
+        subpages.write_subpage(cfg, conn, db=db)
+        # Lumi hand-edits inside the system block
+        t = Path(path).read_text().replace(
+            "First meeting", "First meeting EDITED"
+        )
+        Path(path).write_text(t)
+        subpages.write_subpage(cfg, conn, db=db)
+        alerts = [a["message"] for a in
+                  __import__("marrow.repo", fromlist=["x"]).open_alerts(conn)]
+    finally:
+        conn.close()
+    assert any("milestone" in m.lower() or "sub-page" in m.lower()
+               for m in alerts)
+    assert list(Path(state).glob("milestone*.bak"))
+
+
+# ---------------------------------------------------------------------------
+# build_all_configs / write_all_subpages
+# ---------------------------------------------------------------------------
+
+def test_build_all_configs_returns_expected_keys(db, tmp_path):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+    conn = storage.connect(db)
+    try:
+        cfgs = subpages.build_all_configs(
+            conn, folder=folder, state_dir=state
+        )
+    finally:
+        conn.close()
+    keys = {c.key for c in cfgs}
+    assert "diary" in keys
+    assert "milestone" in keys
+    assert "memes" in keys
+    assert "goose" in keys
+    assert "cheatsheet" in keys
+    assert "study" in keys
+    assert "projects" in keys
+
+
+def test_write_all_subpages_creates_files(db, tmp_path):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+    conn = storage.connect(db)
+    try:
+        subpages.write_all_subpages(
+            conn, folder=folder, state_dir=state, db=db
+        )
+    finally:
+        conn.close()
+    for name in ("diary.md", "milestone.md", "memes.md",
+                  "goose.md", "cheatsheet.md", "study.md", "projects.md"):
+        assert (Path(folder) / name).exists(), f"Missing {name}"
+    assert (Path(folder) / "projects" / "pit.md").exists()
