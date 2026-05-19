@@ -1,22 +1,26 @@
-# Followup: tool-call parse failure (two distinct bugs)
+# Bug C — empty-turn-after-thinking (CC harness regression, introduced 2.1.142)
 
-Status: OPEN — re-pinned to 2.1.142 (2026-05-18 22:54). All upstream issues OPEN, no fixed version exists. Empirically NOT resolved by 2.1.143; Lumi sees it persist whenever a session passes ~100k context.
+Status: OPEN — diagnosed 2026-05-18 via full-history jsonl differential scan, bucketed by CC version. Distinct from Bug A/B parse-fail.
 
 ## Symptom
-`The model's tool call could not be parsed (retry also failed)`. Surfaces after Write/Edit when content is escape-dense (quotes, backslashes, braces) or contains literal `<`. Frequency scales with total context — heavy past ~100k tokens. Retry resends an identical payload, so it fails again.
+Assistant emits a thinking block, then stop_reason=end_turn with NO text and NO tool_use. UI shows "thinking N s" then the turn ends and input returns — looks like a silent dropped reply. Thinking is complete and conclusive; the visible answer is never emitted.
 
-## Root causes
-- **Harness layer — CC 2.1.143 regression.** #60033, #59787: 2.1.143's XML→JSON tool-input handling mangles escape-dense / literal-`<` Write payloads. Re-pinning 2.1.142 removes THIS source.
-- **Model decoder layer — Opus 4.7, pre-dates 2.1.143.** #49747 (CC `2.1.112`, "regression from Opus 4.6"), #56655 (from 2026-04-27, worse under parallel-batch / large context): Opus 4.7 intermittently emits legacy XML tool syntax inside JSON on longer payloads. Version downgrade does NOT remove this — root cause is the model, amplified by large context.
+## Root cause — CC harness regression at 2.1.142
+Scan: 600 jsonl files, 8712 logical turns (aggregated by message.id; CC splits one turn's blocks across lines). True empty turns = 25.
+- Bucketed by CC version: 2.1.116–2.1.141 ran thousands of opus-4-7 turns with ZERO empty turns. Empty turns appear ONLY at 2.1.142 (6) and 2.1.143 (19). First case 2026-05-15 = 2.1.142 start.
+- opus-4-7 in use since 2026-04-21 — long before the bug. The earlier "24/24 opus-4-7" reading was collinearity (post-5-15 traffic is ~all opus-4-7), NOT model causation.
+- Conclusion: harness regression, introduced exactly at 2.1.142. NOT a model-layer bug. Supersedes the model-layer hypothesis.
+- No context correlation: output_tokens 293–5456, context as low as 34k.
 
 ## Mitigation
-- Re-pin 2.1.142 (done) — kills the harness-layer source only.
-- Keep total context < ~100k: /clear or handoff earlier; the decoder bug's probability rises sharply past that.
-- Offload large reads/writes to a subagent (#56655 official workaround) — isolated small context, failure does not pollute the main window.
-- Split Edits into small old_string/new_string; avoid one escape-dense 2500+ token payload (#60033 trigger size).
-- Extreme fallback only: Opus 4.6 has no #49747 decoder bug (it is a 4.7 regression); cost = weaker model. Not default.
+- Best: downgrade to 2.1.141 — newest version with zero empty-turn AND (Bug A #60033/#59787 is a 2.1.143 regression) zero parse-fail. Already installed locally. `claude install 2.1.141`, autoUpdates already false, restart CC.
+- 2.1.133 also clean but unnecessarily old (8 versions back).
+- Zero-cost in-session: reply any token ("继续" / "."), next turn recovers, context intact (verified 818a5fcc row28 empty → row35 normal).
+- Re-pin 2.1.142 does NOT help — it is the version that introduced this bug (6 cases).
+- Frequency ≈ 25/4996 ≈ 0.5% across 2.1.142+2.1.143; 0% on 2.1.141 and earlier.
+
+## Re-run the scan
+Aggregate jsonl type==assistant lines by message.id; true empty turn = aggregated block-type set == {thinking} AND stop_reason == end_turn. Glob ~/.claude/projects/*/*.jsonl. Bucket counts by `version` field.
 
 ## Followup
-- Watch #60033 / #59787 / #56655 / #49747 for a fixed CC version.
-- 2.1.141 also installed locally if 2.1.142 still bleeds; next downgrade step.
-- When a fix ships: `claude install <ver>`, re-enable autoUpdates if desired. autoUpdates already false.
+- Watch for a CC release past 2.1.143 that fixes both Bug A and Bug C; re-run the scan to confirm.

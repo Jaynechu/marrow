@@ -73,3 +73,76 @@ Not prioritized. Read before adding a feature to confirm whether an interface sh
 - **Memes_optimization** — Sonnet doesn't know real memes vs random quotes; want only hot vocabulary + memorable new memes 
 - **v2_year_rollup_to_timeline** — 2026 full year compressed into 1 timeline view section (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:615`)
 - **backup_audit_transparency** — rotate/curator/retire backup files have no source SID identifier (source: `/Users/Gabrielle/Desktop/NY/memory/archive/Memm_system 2026-05-12.md:658`)
+
+---
+
+[Moved from design - not sorted yet]
+
+## Pending - DECISIONS.md:34
+corrections table = Phase 2 placeholder (design fixed here, not built Phase 1).
+- Lumi's current input is top truth; stored memory never rebuts her. The store exists to stop the assistant's own mis-recall, not to validate or correct her. On conflict she wins — at most "my record says X, updating to your Y", never "let me remind you". Shorthand or stale wording is not an error to push back on.
+- Serial facts = append state-sequence + latest pointer, not single-value overwrite. A new state supersedes the old (old kept, marked superseded, history-queryable); recall returns latest only; a superseded state is never raised against new input.
+- Conflict priority: Lumi current input > Lumi-confirmed structured > system structured (milestone / preference) > raw event; same layer newer > older; an event is a lead, never the arbiter.
+
+
+
+## Pending — weclaude + cyberboss fusion
+
+After the memory core ships, the WeChat side gets rebuilt. Not decided whether to adopt cyberboss or upgrade weclaude. This is NOT just swapping `claude -p` for another spawn — it carries a real workload, all Pending design:
+
+- multi-message send + 铁锅 rewrite on the new runtime
+- `/stop` / `/resume` / interrupt / rewind parity
+- WeChat permission yes/no routed to the daemon bridge
+- bidirectional resume (CLI ↔ WeChat handoff on one thread)
+- the cyberboss migration path as the model-swap proof for the migration-friendly goal
+
+Design this when Phase 4 starts, not before.
+
+## Pending — dir, drift sweep, convention injection
+
+Dropped: file-level full index (dir table, hand-maintained tree, macOS Spotlight) — conflicts portability + low-maintenance. "Where is X" = daemon on-demand ripgrep over authorized roots.
+
+Two real needs survive the drop. Both REQUIRED; mechanism detail Pending:
+
+- drift sweep — Lumi moves / renames / deletes / merges a file; every reference follows without her reminding anyone. Trigger = a path-change event (git diff detects it). Three layers: (1) deterministic ripgrep over authorized roots finds every reference to the old path — primary, no model, never misses; (2) key-indirection — docs/scripts reference a key, not a hardcoded path, so a move edits one registry entry and references stay correct; (3) cheap local model sweeps free-text mentions as fallback — never lets the model touch key paths.
+- convention injection — naming / folder-placement rules sit in the every-turn injection layer, never a sub-page (Claude does not read sub-pages on its own; a rule there is a dead rule). Single source → drift sweep maintains the source → daemon renders it into a marker block in CLAUDE.md → SessionEnd renders, next SessionStart applies. Lumi edits the source once or not at all; she never hand-manages it.
+
+CLAUDE.md render: daemon writes via Python file IO, not the cc Write tool — cc permission / bypass and the 10000-char hook cap never apply (same path as diary render). Marker-block partition: the daemon rewrites only its marker block; the hand-written zone (persona, coding discipline) is never touched. This deliberately removes Anthropic's default block on cc editing CLAUDE.md (a high-weight every-turn file), so the guard set is the compensating safety net, REQUIRED not optional: hash-compare before overwrite, marker-outside never overwritten, marker-inside hand-edit reconciles + backup + one Alert, atomic write.
+
+## Pending — data lifecycle
+
+Backup direction: iCloud owns offsite copies; restore on a fresh Mac without touching code. Retention window + prune cadence Pending. Cleanup: per-source retention rules + executor Pending.
+
+Tier split (fixed, not Pending) — three tiers:
+
+- Permanent keepsake — milestones, diary, goose-bites, projects, study, major life facts. Add-only, never decays.
+- Demote-sink — low-value reference + cold vocab (use_count / last_seen long idle). Weight decays, row sinks below the active set, a keyword hit revives it (Ombre weight-pool: resolved → sink → keyword-recall). Not deleted.
+- Raw-stream — detailed event rows, resolved alerts, audit_log, DB dumps, low-use stickers. Real retention + prune.
+
+Effect target: no growth alerts, no manual rm, no DB bloat.
+
+Decided — raw jsonl cleanup is NOT Marrow's job. Use `cleanupPeriodDays` in `~/.claude/settings.json` (global, by mtime, all projects). Marrow prunes SQLite-internal raw-stream: aged rows, resolved alerts, audit_log, dumps. Never jsonl. Not enabled yet.
+
+## Pending — session archive skip
+
+Skipped sessions excluded from diary/recall. (Legacy: `summ-skip` stamp; trigger: `ssmmm` skill.)
+
+- Manual skip: stamp file, `mw` command, or in-session trigger
+- `mm+` force-include — into diary regardless of turn count (overrides ≤3 drop / SHORT auto-skip)
+- `mm-` force-skip — excluded regardless of turn count (30+ turns still skip)
+- Auto skip: turn threshold (Pending)
+- Idempotent: skip = do nothing; raw-stream cleanup is separate tier
+
+Phase 1: code-only, non-blocking.
+
+## Pending — open items
+
+Decided to defer, do not invent:
+
+- sub-page hyperlink concrete paths
+- which columns each view's SQL extracts (e.g. milestone)
+- the md render template behind each view
+- per-event LLM topology table
+- schema-evolution mechanism (user_version + ordered patch chain, replaces the interim hand-written ALTER)
+- doc auto-render upkeep (DESIGN / DECISIONS / README / dir map) — no manual maintenance
+- retrieval fusion — single weighted scalar (copy claude-imprint lane engineering, not RRF); k/weights at recall-module build

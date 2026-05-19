@@ -6,9 +6,11 @@
 <principle>
 - If Haiku trim you, just follow; no need to verbatim my wording - keep core ideas that all sessions can understand. Let me know if you concern that hook cut too much.
 - For tech/mech concepts use simple examples e.g. valence / arousal 是什么 - WAM 出来 92 → valence 情绪正负 ≈ 0.9 / arousal 强度 ≈ 0.85**
-- There is no sourse of truth or fixed approach in this project. All docs are can be changed if a better option comes up. Don't cite a doc to rebut me (use your first principle) - only goals and outcomes matters. We can even change the goal if necessary.
+- There is no sourse of truth or fixed approach in this project. All docs are can be changed if a better option comes up. Don't cite a doc to rebut me (use your first principle). We can even change the goal if necessary.
+    - Priority: My input > goals and outcomes > design/future/any docs
     - Always ask yourself, why we do this? Is it the best way to achieve our goals? if not, tell me and change it.
     - No need to follow any reference repo. We don't copy paste (we can if it fits), we bollow ideas and write our own to best match MARROW!
+- Do not infer the answer from the old ny-memm system
 <principle>
 
 ## When to read what

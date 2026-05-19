@@ -1,24 +1,10 @@
 # Marrow Foundation Design
-
-> Status: design under review, no code yet. This is a frame-level spec — intended effect plus a method direction, not code-level detail.
-> Please always writing in English and no comment for scripts
-
-## How to read this doc
-
-- DESIGN = goal + structure + hard constraints.
-- Current decisions live in DECISIONS.md (confidence-tagged).
-- Unbuilt plans live in FUTURE.md.
-- Do not infer the answer from the old ny-memm system — copying its shape is the trap that made it need replacing.
-- Reference memm_agent_manual for prompt format writing.
-
-## Source of truth
-
-- Structure lives here; current truth lives in DECISIONS.md.
-- Consistent with CLAUDE.md `<principle>`: any doc is overturnable, only goals/outcomes bind.
+> Personal AI memory + workflow system. Replaces the ny-memm pipeline. SQLite-backed, model-agnostic, one dashboard.
+> This is a frame-level spec — intended effect plus a method direction, not code-level detail.
+> Please always writing in English
 
 ## Lumi's goals
-
-Every decision below must trace to one of these. If it cannot, it is scope creep.
+> Always think about if goals are matched by the design.
 
 1. Migration-friendly — swap to Codex / Claude / local small model by config, never Anthropic-locked; cyberboss is the proof; open-sourceable at the end.
 2. Cross-channel parity — CLI and WeChat switch and resume mid-thread without losing the thread; commands align, interrupt/stop/rewind, and permission yes/no behave identically; WeChat is interaction-only, not heavy coding.
@@ -27,10 +13,6 @@ Every decision below must trace to one of these. If it cannot, it is scope creep
 5. Emotional continuity — relationship and persona density transfer losslessly across sessions, platforms, and models without depending on a timeline file or model-native memory.
 6. High auto, low maintenance — Lumi never routinely reviews anything anywhere; memory quality and cost stay balanced; every surface is hand-readable and editable on the dashboard or Obsidian including subpages, though she never has to.
 7. Perfect, expandable base — the foundation is small but flawless; new capability arrives as an addon or extension, never a base rewrite; the old system's high cost and maintenance burden is the failure being designed out.
-
-## One-line goal
-
-Personal AI memory + workflow system. Replaces the ny-memm pipeline. SQLite-backed, model-agnostic, one dashboard.
 
 ## Outcome — what Lumi experiences when it works
 
@@ -43,7 +25,7 @@ Personal AI memory + workflow system. Replaces the ny-memm pipeline. SQLite-back
 
 ## Hard constraints
 
-- No Anthropic API key. LLM calls go through the `claude` CLI subprocess (OAuth subscription) or local Ollama for backend tagging.
+- LLM calls go through the `claude` CLI subprocess (OAuth subscription) or local Ollama for backend tagging.
 - Subscription-first: pipeline soaks the unused Max headroom via stream-json subprocess (cyberboss pattern). Dedicated credit pool is fallback only, steady-state burn ≈ 0%.
 - No cloud embeddings — local sqlite-vec + a small local sentence model.
 - Atomic writes for every rendered md (temp + replace).
@@ -52,7 +34,7 @@ Personal AI memory + workflow system. Replaces the ny-memm pipeline. SQLite-back
 - Hook scripts stay small (target ≤ 100 lines each).
 - Prompt/subagent template changes: notify Lumi to confirm wording.
 - Three LLM tiers: cheap/local for compression-classification-routing (the bulk), mid for narrative (diary, weekly curate), top for the user-facing conversation only.
-- Emotion breath at most once per SessionStart — never per-turn/per-N-turn (see DECISIONS).
+- Emotion breath at most once per SessionStart (see DECISIONS).
 
 ## Architecture
 
@@ -96,14 +78,6 @@ Migration mapping (source → target):
 
 storage.py is the schema source of truth; this section states intent only.
 
-## Core mechanism — one pipeline, not many
-
-This is the answer to "what's the difference between blocks". There mostly isn't one.
-
-milestone, pit, vocab, project, memes all run the same pipeline: scan a signal in the session → write one table → render one view. They differ only by which table and which view name. Spec one of them and the rest are "same as above". Do not write one to product level and leave the next bare.
-
-lesson is not a base concept — it left base to a FUTURE addon (see DECISIONS). The shared pipeline has no exception.
-
 ## Dashboard — the single entry
 
 `~/Desktop/NY/dashboard.md`. Lumi edits one file; everything else is system-managed or rendered from SQLite.
@@ -130,9 +104,8 @@ There is no user scratch zone. (An earlier draft invented one — removed.)
 
 ## Editing & correction — how Lumi changes anything
 
-This is a product, not an AI toy. Lumi must be able to fix anything she can see, by hand, without touching code and without being forced through an LLM. She organizes her own files — sees clutter or waste, she cleans it — so the system must let her.
-
-Principle (replaces the earlier read-only-sub-page split): every rendered file Lumi can see is writable. A hand-edit is reconciled back into the store, never silently overwritten. The read-only surfaces are the Monitor Zone (audit-log mirror) and the Cheatsheet (disk mirror) — editing them is meaningless, so they are display-only.
+Principle: every rendered file Lumi can see is writable. A hand-edit is reconciled back into the store, never silently overwritten. 
+- the Monitor Zone (audit-log mirror) can be read only.
 
 Three hand-run paths, all without code or a required LLM, pick whichever fits:
 
@@ -148,19 +121,6 @@ Reconcile is split by view type — not one parser for all:
 The reconcile semantics above are fixed, not Pending. Only the anchor's character format + per-view render template are Pending (set when each view is built). Conflict guard unchanged: hash-compare before overwrite; if Lumi changed it, back up + one Alert, never silent.
 
 Conflict guard: before any overwrite, hash-compare; if Lumi changed it, back up the old file and raise one Alert. Never overwrite in silence.
-
-## Fact corrections — conflict priority
-
-A corrected fact lands in a corrections store, never by overwriting an event (events are append-only raw stream, not the fact authority). Capture has its own lightweight intake (lesson pipeline removed, see DECISIONS); facts skip promote-to-rule (a fact updates truth, not a rule).
-
-Hard rules:
-- Lumi's current input is top truth; stored memory never rebuts her. The store exists to stop the assistant's own mis-recall, not to validate or correct her. On conflict she wins — at most "my record says X, updating to your Y", never "let me remind you". Shorthand or stale wording is not an error to push back on.
-- Serial facts = append state-sequence + latest pointer, not single-value overwrite. A new state supersedes the old (old kept, marked superseded, history-queryable); recall returns latest only; a superseded state is never raised against new input.
-- Conflict priority: Lumi current input > Lumi-confirmed structured > system structured (milestone / preference) > raw event; same layer newer > older; an event is a lead, never the arbiter.
-
-corrections table = Phase 2 placeholder (design fixed here, not built Phase 1).
-
-Why this beats a black-box model memory: the memory IS Lumi's own SQLite + files, not the model's hidden state. Correction is deterministic, reversible, point-targeted — never begging a model to forget. This is how semi-permanent memory and migration-friendliness land.
 
 ## Emotion (Phase 2)
 
@@ -231,63 +191,3 @@ Baseline effect: Lumi never manually clears markers, never triggers catchup, nev
 - affect neutral fallback — bad/missing 04:00 affect JSON never leaves a math hole — code inserts a neutral row (V0.5/A0.3/imp3), diary still writes — agreed
 - affect catchup — a missed affect day self-heals — idempotent rescan over event-days lacking affect, same code as backfill — agreed
 
-## Pending — weclaude + cyberboss fusion
-
-After the memory core ships, the WeChat side gets rebuilt. Not decided whether to adopt cyberboss or upgrade weclaude. This is NOT just swapping `claude -p` for another spawn — it carries a real workload, all Pending design:
-
-- multi-message send + 铁锅 rewrite on the new runtime
-- `/stop` / `/resume` / interrupt / rewind parity
-- WeChat permission yes/no routed to the daemon bridge
-- bidirectional resume (CLI ↔ WeChat handoff on one thread)
-- the cyberboss migration path as the model-swap proof for the migration-friendly goal
-
-Design this when Phase 4 starts, not before.
-
-## Pending — dir, drift sweep, convention injection
-
-Dropped: file-level full index (dir table, hand-maintained tree, macOS Spotlight) — conflicts portability + low-maintenance. "Where is X" = daemon on-demand ripgrep over authorized roots.
-
-Two real needs survive the drop. Both REQUIRED; mechanism detail Pending:
-
-- drift sweep — Lumi moves / renames / deletes / merges a file; every reference follows without her reminding anyone. Trigger = a path-change event (git diff detects it). Three layers: (1) deterministic ripgrep over authorized roots finds every reference to the old path — primary, no model, never misses; (2) key-indirection — docs/scripts reference a key, not a hardcoded path, so a move edits one registry entry and references stay correct; (3) cheap local model sweeps free-text mentions as fallback — never lets the model touch key paths.
-- convention injection — naming / folder-placement rules sit in the every-turn injection layer, never a sub-page (Claude does not read sub-pages on its own; a rule there is a dead rule). Single source → drift sweep maintains the source → daemon renders it into a marker block in CLAUDE.md → SessionEnd renders, next SessionStart applies. Lumi edits the source once or not at all; she never hand-manages it.
-
-CLAUDE.md render: daemon writes via Python file IO, not the cc Write tool — cc permission / bypass and the 10000-char hook cap never apply (same path as diary render). Marker-block partition: the daemon rewrites only its marker block; the hand-written zone (persona, coding discipline) is never touched. This deliberately removes Anthropic's default block on cc editing CLAUDE.md (a high-weight every-turn file), so the guard set is the compensating safety net, REQUIRED not optional: hash-compare before overwrite, marker-outside never overwritten, marker-inside hand-edit reconciles + backup + one Alert, atomic write.
-
-## Pending — data lifecycle
-
-Backup direction: iCloud owns offsite copies; restore on a fresh Mac without touching code. Retention window + prune cadence Pending. Cleanup: per-source retention rules + executor Pending.
-
-Tier split (fixed, not Pending) — three tiers:
-
-- Permanent keepsake — milestones, diary, goose-bites, projects, study, major life facts. Add-only, never decays.
-- Demote-sink — low-value reference + cold vocab (use_count / last_seen long idle). Weight decays, row sinks below the active set, a keyword hit revives it (Ombre weight-pool: resolved → sink → keyword-recall). Not deleted.
-- Raw-stream — detailed event rows, resolved alerts, audit_log, DB dumps, low-use stickers. Real retention + prune.
-
-Effect target: no growth alerts, no manual rm, no DB bloat.
-
-Decided — raw jsonl cleanup is NOT Marrow's job. Use `cleanupPeriodDays` in `~/.claude/settings.json` (global, by mtime, all projects). Marrow prunes SQLite-internal raw-stream: aged rows, resolved alerts, audit_log, dumps. Never jsonl. Not enabled yet.
-
-## Pending — session archive skip
-
-Skipped sessions excluded from diary/recall. (Legacy: `summ-skip` stamp; trigger: `ssmmm` skill.)
-
-- Manual skip: stamp file, `mw` command, or in-session trigger
-- `mm+` force-include — into diary regardless of turn count (overrides ≤3 drop / SHORT auto-skip)
-- `mm-` force-skip — excluded regardless of turn count (30+ turns still skip)
-- Auto skip: turn threshold (Pending)
-- Idempotent: skip = do nothing; raw-stream cleanup is separate tier
-
-Phase 1: code-only, non-blocking.
-
-## Pending — open items
-
-Decided to defer, do not invent:
-
-- sub-page hyperlink concrete paths
-- which columns each view's SQL extracts (e.g. milestone)
-- the md render template behind each view
-- per-event LLM topology table
-- schema-evolution mechanism (user_version + ordered patch chain, replaces the interim hand-written ALTER)
-- doc auto-render upkeep (DESIGN / DECISIONS / README / dir map) — no manual maintenance
-- retrieval fusion — single weighted scalar (copy claude-imprint lane engineering, not RRF); k/weights at recall-module build
