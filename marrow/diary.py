@@ -255,7 +255,13 @@ def pending_days(conn, window_days: int = CATCHUP_WINDOW_DAYS) -> list[str]:
              - _dt.timedelta(days=window_days)).isoformat()
     done = {r["date"] for r in conn.execute("SELECT date FROM diary")}
     days = {_diary_day(r["timestamp"]) for r in _scan_rows(conn, window_days)}
-    return sorted(d for d in days if d >= floor and d not in done)
+    # Upper bound: never the diary day still in progress. catchup at 16:00
+    # must stop at the last fully-closed day (same as the routine target),
+    # else it writes half a day and the next 04:00 routine is idempotent-
+    # skipped, freezing the stub. floor..ceil both inclusive ISO dates.
+    ceil = _routine_target()
+    return sorted(d for d in days
+                  if floor <= d <= ceil and d not in done)
 
 
 def day_events(conn, date: str) -> list[dict]:
@@ -392,7 +398,18 @@ def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None,
     _act = "update" if existed else "insert"
     evs = day_events(conn, date)
     if not evs:
-        return False
+        # No session at all on this diary day. Stamp a stub so catchup /
+        # routine never re-scans this empty day forever (date PK present
+        # -> pending_days excludes it via `d not in done`).
+        with conn:
+            conn.execute(
+                "INSERT INTO diary (date, content, session_ids) "
+                "VALUES (?, ?, ?)", (date, "—", ""))
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, "
+                "action, summary) VALUES ('diary', ?, ?, ?)",
+                (date, _act, f"diary stub for {date} (no sessions)"))
+        return True
     sessions = _sessions(evs)
 
     # FILTER + MAP. <=DROP_MAX turns: code-only drop, never reach haiku.
@@ -485,13 +502,17 @@ def main(argv: list[str] | None = None) -> int:
     conn = storage.connect(db)
     llm = LLMClient(on_alert=lambda s, t, m, src: repo.add_alert(
         s, t, m, src, db=db))
+    ts = _dt.datetime.now(_TZ).strftime("%Y-%m-%d %H:%M:%S")
     try:
         # App-lock so routine/catchup/manual never collide on the diary
         # date PK; released on exit even if run() raises.
         with _app_lock():
-            run(conn, llm, db=db, day=day, catchup=catchup, force=force)
+            wrote = run(conn, llm, db=db, day=day, catchup=catchup,
+                        force=force)
+        print(f"[{ts}] diary {mode} ok: wrote={wrote or '[]'}", flush=True)
         return 0
     except Exception as e:
+        print(f"[{ts}] diary {mode} FAILED: {e}", flush=True)
         repo.add_alert("critical", "routine",
                        f"diary {mode} failed: {e}",
                        source="diary.py", db=db)
