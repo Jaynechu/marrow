@@ -4,9 +4,14 @@
 
 
 <principle>
+- Auto Commit: One logical unit per commit. Push at the end of each session / phase.
+    - If you see something modify by me just commit together
+    - Each session commit their own part pls
 - If Haiku trim you, just follow; no need to verbatim my wording - keep core ideas that all sessions can understand. Let me know if you concern that hook cut too much.
+- For Chinese input - use () to bypass CJK guard.
 - For tech/mech concepts use simple examples e.g. valence / arousal 是什么 - WAM 出来 92 → valence 情绪正负 ≈ 0.9 / arousal 强度 ≈ 0.85**
-- There is no sourse of truth or fixed approach in this project. All docs are can be changed if a better option comes up. Don't cite a doc to rebut me (use your first principle). We can even change the goal if necessary.
+- When a tech decision needs Lumi's call: lead with effect/impact; name each option by its effect, not unfamiliar tech terms; explanations go last for optional learning. (反例: 上来就问 fastembed+bge-m3 vs X — 名词不认识无法选)
+- There is no source of truth or fixed approach in this project. All docs can be changed if a better option comes up. Don't cite a doc to rebut me (use your first principle). We can even change the goal if necessary.
     - Priority: My input > goals and outcomes > design/future/any docs
     - Always ask yourself, why we do this? Is it the best way to achieve our goals? if not, tell me and change it.
     - No need to follow any reference repo. We don't copy paste (we can if it fits), we bollow ideas and write our own to best match MARROW!
@@ -27,7 +32,6 @@
 - `/goal <condition>`: when a sub-module's pass condition is fixed and machine-checkable; auto-runs each turn until met. Leave test output in the transcript — the evaluator reads only the conversation.
 - `/tdd` skill: for deterministic logic with a fixed behaviour contract — SQLite schema, migrate.py, mw CLI. Red-green-refactor.
 - `grill-with-doc` skill: after each review, grill for the next phase.
-- Commit: One logical unit per commit. Private GitHub repo (github.com/Jaynechu/marrow) is the remote ledger.
 - Review: once a phase completes, run in a new clean session.
     0. Fact-check: PROGRESS + git log + pytest + dashboard vs outcome list; feed step 1 only verified facts.
     1. Blind design-gap: subagent gets goal + outcome list (forbidden repo access, no DESIGN/code) — reasons from results.
@@ -52,4 +56,7 @@ PROGRESS.md:
 - Format: [YYYY-MM-DD] <unit> done | <delta vs DESIGN, or "as designed"> | verify: <cmd/test>
 
 ## References
-> [P0luz / Ombre-Brain](https://github.com/P0luz/Ombre-Brain);  [WenXiaoWendy / cyberboss](https://github.com/WenXiaoWendy/cyberboss);  [Qizhan7 / claude-imprint](https://github.com/Qizhan7/claude-imprint) — borrow: RRF + vector/FTS5/recency retrieval fusion recipe
+> [P0luz / Ombre-Brain](https://github.com/P0luz/Ombre-Brain)
+- [WenXiaoWendy / cyberboss](https://github.com/WenXiaoWendy/cyberboss)
+- current weclaude see ny/code/weclaude or repo (in my star folder)
+- [Qizhan7 / claude-imprint](https://github.com/Qizhan7/claude-imprint) — borrow: RRF + vector/FTS5/recency retrieval fusion recipe
