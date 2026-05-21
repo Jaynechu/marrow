@@ -159,9 +159,13 @@ CREATE VIEW IF NOT EXISTS entities_live AS
 """
 
 # FTS5 over the bulk recall surface (events.content), kept in sync by triggers.
+# tokenize=trigram is the only built-in tokenizer that splits CJK; the default
+# unicode61 emits zero CJK tokens, so CN event_hint match silently returns []
+# (Phase 1 bug — see review-phase-2.md). Trigram requires ≥3-char phrase
+# queries for CN, acceptable for event_hint short phrases.
 _FTS = """
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-  content, content='events', content_rowid='id'
+  content, content='events', content_rowid='id', tokenize='trigram'
 );
 CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
   INSERT INTO events_fts(rowid, content) VALUES (new.id, new.content);
@@ -214,17 +218,37 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
     dim = int(cfg.get("embedding", {}).get("dim", 1024))
     with conn:
         conn.executescript(_TABLES)
+        # FTS5 tokenizer migration: Phase 1 shipped unicode61 (CJK tokenless).
+        # Drop + rebuild with trigram when stale; rebuild only on migration.
+        r = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='events_fts'"
+        ).fetchone()
+        need_fts_rebuild = bool(r and r[0] and "trigram" not in r[0])
+        if need_fts_rebuild:
+            conn.execute("DROP TABLE events_fts")
         conn.executescript(_FTS)
+        if need_fts_rebuild:
+            conn.execute(
+                "INSERT INTO events_fts(events_fts) VALUES('rebuild')")
         conn.executescript(_VIEWS)
         # Vector dim change (e.g. 384 placeholder -> 1024 bge-m3): vec0 has
         # no ALTER. Empty -> drop+rebuild (lossless). Non-empty -> leave the
-        # old table untouched; never silently discard embeddings.
+        # old table untouched + alert; never silently discard embeddings.
         cur_dim = _ondisk_vec_dim(conn)
         if cur_dim is not None and cur_dim != dim:
             n = conn.execute(
                 "SELECT count(*) FROM events_vec").fetchone()[0]
             if n == 0:
                 conn.execute("DROP TABLE events_vec")
+            else:
+                conn.execute(
+                    "INSERT INTO alerts (severity, type, message, source)"
+                    " VALUES (?, ?, ?, ?)",
+                    ("warn", "embedding_dim_mismatch",
+                     f"events_vec dim={cur_dim} != config {dim}; "
+                     f"{n} rows preserved, manual re-embed required",
+                     "storage.py:init_db"),
+                )
         conn.execute(_vec_table(dim))
         # Schema-evolution backfill: a column added after a db already
         # exists is not applied by CREATE IF NOT EXISTS. Idempotent —

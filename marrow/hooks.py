@@ -82,10 +82,16 @@ def session_end() -> int:
         dash = inp.get("marrow_dashboard") or config.dashboard_path()
         try:
             dashboard.write_dashboard(dash, conn, state_dir=state, db=db)
-        except PermissionError:
-            pass  # TCC-protected Desktop / unauthorized context: skip this
-            # full re-render (lossless — next authorized session_end rewrites
-            # it). Sibling of alert#11's clean() FileNotFoundError no-op.
+        except PermissionError as e:
+            # TCC-protected Desktop / unauthorized context: skip the full
+            # re-render (lossless — next authorized session_end rewrites it).
+            # Alert so the operator sees the TCC block instead of a silent
+            # stale dashboard (DESIGN L33: every step writes alert on fail).
+            repo.add_alert(
+                "warn", "dashboard",
+                f"session_end skipped dashboard write: {e}",
+                source="hooks.py", db=db,
+            )
     finally:
         conn.close()
     return 0

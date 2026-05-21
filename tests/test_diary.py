@@ -296,8 +296,25 @@ def test_routine_target_at_0401_is_just_closed_day(monkeypatch):
 
 # ── dual triggers ─────────────────────────────────────────────────────────────
 
-def test_catchup_caps_and_alerts(db):
+def test_catchup_caps_and_alerts(db, monkeypatch):
+    # Pin "today" to 2026-05-17 so the 7d window deterministically covers
+    # the fixture's 2026-05-16 base + 5 days before it, independent of when
+    # the test runs.
     p, conn = db
+    pinned = dt.date(2026, 5, 17)
+
+    class _D(dt.date):
+        @classmethod
+        def today(cls):
+            return pinned
+
+    class _DT(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 5, 17, 4, 30, tzinfo=diary._TZ)
+
+    monkeypatch.setattr(diary._dt, "date", _D)
+    monkeypatch.setattr(diary._dt, "datetime", _DT)
     base = dt.date(2026, 5, 16)
     for i in range(1, 6):  # 5 extra missing diary days
         d = base - dt.timedelta(days=i)

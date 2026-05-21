@@ -25,8 +25,10 @@ from . import storage
 
 _ISOLATION = ["--setting-sources", "", "--strict-mcp-config"]
 
-# Lowercase prefixes of policy-refusal prose (defense-in-depth; primary
-# signal is stop_reason=="refusal"). Keep short — match intent, not wording.
+# Prefixes of policy-refusal prose (defense-in-depth; primary signal is
+# stop_reason=="refusal"). Keep short — match intent, not wording. CN entries
+# are case-invariant so lower() match is fine for both. Lumi's content is
+# mostly CN; EN-only fingerprints would miss the common refusal path.
 _REFUSAL_FINGERPRINTS = (
     "i'm not able to",
     "i am not able to",
@@ -40,6 +42,15 @@ _REFUSAL_FINGERPRINTS = (
     "i will not be able to",
     "i'm going to decline",
     "i must decline",
+    "很抱歉，我无法",
+    "很抱歉，我不能",
+    "抱歉，我无法",
+    "抱歉，我不能",
+    "对不起，我无法",
+    "对不起，我不能",
+    "我不能帮",
+    "我无法协助",
+    "我恐怕无法",
 )
 
 # ollama is chronically down on this host; while muted it is dropped from the

@@ -17,10 +17,29 @@ def ensure_data_dir() -> Path:
     return DATA_DIR
 
 
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursive merge: overlay keys win, dict-valued keys merge in-place.
+    Lists/scalars are replaced, not concatenated. Needed so a new
+    config.default.toml key (e.g. [recall]) lands on existing installs
+    without forcing users to hand-edit ~/.config/marrow/config.toml.
+    """
+    out = dict(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def load() -> dict:
     ensure_data_dir()
-    with CONFIG_PATH.open("rb") as f:
+    with _DEFAULT.open("rb") as f:
         cfg = tomllib.load(f)
+    if CONFIG_PATH.exists():
+        with CONFIG_PATH.open("rb") as f:
+            user = tomllib.load(f)
+        cfg = _deep_merge(cfg, user)
     paths = cfg.setdefault("paths", {})
     db = paths.get("db") or str(DATA_DIR / "marrow.db")
     backup = paths.get("backup_dir") or str(DATA_DIR / "backup")

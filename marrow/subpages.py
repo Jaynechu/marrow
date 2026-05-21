@@ -99,7 +99,7 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
     Path(cfg.state_dir).mkdir(parents=True, exist_ok=True)
     hash_file = Path(cfg.state_dir) / f"{key}.hash"
 
-    existing = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    existing = Path(path).read_text(encoding="utf-8") if os.path.exists(path) else ""
 
     if cfg.read_only:
         _atomic_write(path, block + "\n")
@@ -120,8 +120,11 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
             new = block + "\n\n" + existing
         else:
             new = block + "\n"
+        # Both writes atomic: a crash between bare write_text and atomic_write
+        # would leave the md newer than the hash and trigger a false
+        # "hand-edited" alert on the next render.
         _atomic_write(path, new)
-        hash_file.write_text(_hash(block))
+        _atomic_write(str(hash_file), _hash(block))
 
     for child in cfg.subpages:
         write_subpage(child, conn, db=db)

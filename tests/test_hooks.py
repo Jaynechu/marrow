@@ -66,9 +66,10 @@ def test_session_end_archives_and_renders(env, monkeypatch, tmp_path):
     assert "GAMSAT plan" in txt and hooks.dashboard.M0 in txt
 
 
-def test_session_end_dashboard_eperm_degrades_no_alert(env, monkeypatch, tmp_path):
+def test_session_end_dashboard_eperm_alerts_warn(env, monkeypatch, tmp_path):
     """TCC-protected Desktop write -> PermissionError must skip dashboard
-    regen only; events still archived; no alert (mirrors alert#11)."""
+    regen only; events still archived; a warn alert fires so the operator
+    sees the TCC block instead of a silent stale dashboard (DESIGN L33)."""
     db, dash, _ = env
     jl = tmp_path / "s.jsonl"
     jl.write_text("\n".join(json.dumps(o) for o in [
@@ -89,11 +90,15 @@ def test_session_end_dashboard_eperm_degrades_no_alert(env, monkeypatch, tmp_pat
     conn = storage.connect(db)
     try:
         n = conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
-        alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
+        row = conn.execute(
+            "SELECT severity, type, message FROM alerts").fetchone()
     finally:
         conn.close()
     assert n == 2  # events archive leg still succeeded
-    assert alerts == 0  # degraded silently, no handoff pollution
+    assert row is not None
+    assert row["severity"] == "warn"  # not critical, doesn't pollute handoff
+    assert row["type"] == "dashboard"
+    assert "session_end" in row["message"]
 
 
 def test_session_end_real_error_still_alerts(env, monkeypatch, tmp_path):
