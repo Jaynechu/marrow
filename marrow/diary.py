@@ -418,6 +418,17 @@ def _local_md(utc_iso: str) -> str:
         return "??-??"
 
 
+# Persona-anchored speaker labels. Raw [user]/[assistant] role tags collide
+# with sonnet's training-default identity (assistant = self), causing the
+# diary to flip 屿忱's lines into 3rd person and 念念's into 1st person.
+# Semantic labels keep persona stable. (Phase 2 review fix.)
+_SPEAKER_LABELS = {"user": "念念", "assistant": "屿忱"}
+
+
+def _speaker(role: str) -> str:
+    return _SPEAKER_LABELS.get(role, role)
+
+
 def _sessions(evs: list[dict]) -> list[tuple[str, str, str, str, int]]:
     # group by session_id; value = joined turns; track first/last UTC ts
     # (ISO strings sort chronologically) and user-turn count. Sessions
@@ -427,7 +438,7 @@ def _sessions(evs: list[dict]) -> list[tuple[str, str, str, str, int]]:
     turns: dict[str, int] = {}
     for e in evs:
         sid = e["session_id"] or "_"
-        buf.setdefault(sid, []).append(f"[{e['role']}] {e['content']}")
+        buf.setdefault(sid, []).append(f"[{_speaker(e['role'])}] {e['content']}")
         turns[sid] = turns.get(sid, 0) + (1 if e["role"] == "user" else 0)
         t = e.get("timestamp") or ""
         if sid not in span:
