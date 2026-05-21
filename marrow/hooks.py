@@ -253,42 +253,59 @@ def session_end() -> int:
 
 
 def user_prompt_submit() -> int:
-    """Deterministic vector recall fallback — SCAFFOLD only, default off.
+    """Inject top-K recall hits as UserPromptSubmit additionalContext.
 
-    Config flag: [recall] vector = true  (config.default.toml, default false)
-
-    When enabled this hook fires on every user turn and injects top-K recall
-    hits as additionalContext via the UserPromptSubmit hook protocol.
-
-    TODO: wire to recall.py embedder after worktree C (recall module) merges.
-          Call site: embed(prompt_text) -> query_vec -> recall.vector_search(query_vec)
-          The embedding fn and recall.vector_search are NOT available yet.
+    Config flag: [recall] vector = true (default on). Set false to disable.
+    Fusion weights come from [recall] in config; recall.recall_fusion blends
+    vec + bm25 + recency + affect. Fail-soft: any error falls through to a
+    no-op so the user prompt always reaches the model.
     """
     inp = _read_input()
     cfg = config.load()
     if not cfg.get("recall", {}).get("vector", False):
-        # Vector recall disabled (default). No-op — return without output.
         return 0
 
-    # Scaffold: retrieve the user prompt text from the CC hook payload.
-    prompt_text = ""
-    try:
-        # CC UserPromptSubmit payload: {"prompt": "...", "session_id": "..."}
-        prompt_text = inp.get("prompt", "")
-    except Exception:
-        pass
-
+    prompt_text = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
     if not prompt_text:
         return 0
 
-    # TODO: replace this stub with the real call once worktree C merges.
-    #   from . import recall as recall_mod
-    #   hits = recall_mod.vector_search(prompt_text, limit=5)
-    #   ctx = "\n".join(h["content"] for h in hits)
-    #   json.dump({"hookSpecificOutput": {
-    #       "hookEventName": "UserPromptSubmit",
-    #       "additionalContext": ctx,
-    #   }}, sys.stdout)
+    rcfg = cfg.get("recall", {})
+    try:
+        from . import recall as recall_mod
+        conn = storage.connect(config.db_path())
+        try:
+            hits = recall_mod.recall_fusion(
+                conn, prompt_text,
+                limit=int(rcfg.get("limit", 5)),
+                budget_chars=int(rcfg.get("budget_chars", 2000)),
+                w_vec=float(rcfg.get("w_vec", 0.55)),
+                w_bm25=float(rcfg.get("w_bm25", 0.30)),
+                w_recency=float(rcfg.get("w_recency", 0.15)),
+                w_affect=float(rcfg.get("w_affect", 0.10)),
+                min_score=float(rcfg.get("min_score", 0.35)),
+            )
+        finally:
+            conn.close()
+    except Exception:
+        return 0  # fail-soft: never break the user turn
+
+    if not hits:
+        return 0
+
+    lines = ["## Recall (auto)"]
+    for h in hits:
+        ts = (h.get("timestamp") or "")[:10]
+        snippet = (h.get("content") or "").replace("\n", " ")[:300]
+        lines.append(f"- [{ts}] {snippet}")
+    ctx = "\n".join(lines)
+
+    json.dump(
+        {"hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": ctx,
+        }},
+        sys.stdout,
+    )
     return 0
 
 

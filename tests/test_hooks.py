@@ -398,38 +398,60 @@ def test_heartbeat_beyond_7d_ignored(env, monkeypatch, capsys):
     assert "⚠" not in ctx
 
 
-# ── user_prompt_submit scaffold tests ─────────────────────────────────────────
+# ── user_prompt_submit tests (wired to recall.recall_fusion) ─────────────────
 
-def test_user_prompt_submit_disabled_by_default(env, monkeypatch, capsys):
-    """Config recall.vector = false (default) => no-op, no output."""
+def test_user_prompt_submit_explicit_disable(env, monkeypatch, capsys):
+    """Explicit recall.vector = false => no-op, no output."""
+    base_cfg = config.load()
+    base_cfg.setdefault("recall", {})["vector"] = False
+    monkeypatch.setattr(config, "load", lambda: base_cfg)
     _stdin(monkeypatch, {"prompt": "hello", "session_id": "s1"})
     rc = hooks.main(["user_prompt_submit"])
     assert rc == 0
     assert capsys.readouterr().out == ""
 
 
-def test_user_prompt_submit_enabled_scaffold_noop(env, monkeypatch, capsys):
-    """With recall.vector = true, scaffold runs but produces no context (TODO stub)."""
-    _stdin(monkeypatch, {"prompt": "hello", "session_id": "s1"})
-
+def _force_vector_on(monkeypatch):
     base_cfg = config.load()
     base_cfg.setdefault("recall", {})["vector"] = True
     monkeypatch.setattr(config, "load", lambda: base_cfg)
 
+
+def test_user_prompt_submit_no_hits_noop(env, monkeypatch, capsys):
+    """vector=true + no matching events => no additionalContext written."""
+    _force_vector_on(monkeypatch)
+    _stdin(monkeypatch, {"prompt": "hello", "session_id": "s1"})
     rc = hooks.main(["user_prompt_submit"])
     assert rc == 0
-    # Stub: no additionalContext output yet (wired after worktree C merges).
     assert capsys.readouterr().out == ""
 
 
 def test_user_prompt_submit_empty_prompt_noop(env, monkeypatch, capsys):
     """Empty prompt with vector=true => graceful no-op."""
+    _force_vector_on(monkeypatch)
     _stdin(monkeypatch, {"prompt": "", "session_id": "s1"})
-
-    base_cfg = config.load()
-    base_cfg.setdefault("recall", {})["vector"] = True
-    monkeypatch.setattr(config, "load", lambda: base_cfg)
-
     rc = hooks.main(["user_prompt_submit"])
     assert rc == 0
     assert capsys.readouterr().out == ""
+
+
+def test_user_prompt_submit_emits_recall_block(env, monkeypatch, capsys):
+    """vector=true + matching FTS event => ## Recall block in additionalContext."""
+    db, _, _ = env
+    conn = storage.connect(db)
+    conn.execute(
+        "INSERT INTO events(session_id,timestamp,role,content) "
+        "VALUES('s9','2026-05-20T10:00:00Z','user','build phase 1 plan')")
+    conn.commit()
+    conn.close()
+    _force_vector_on(monkeypatch)
+    _stdin(monkeypatch, {"prompt": "phase 1 plan", "session_id": "s1"})
+    rc = hooks.main(["user_prompt_submit"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out, "expected stdout JSON with additionalContext"
+    data = json.loads(out)
+    ctx = data["hookSpecificOutput"]["additionalContext"]
+    assert "## Recall" in ctx
+    assert "phase 1 plan" in ctx
+    assert data["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
