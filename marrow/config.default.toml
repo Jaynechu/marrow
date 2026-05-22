@@ -10,6 +10,10 @@ backup_dir = ""
 offsite_backup_dir = ""
 # Dashboard renders here (Obsidian vault). Empty = ~/Desktop/NY/dashboard.md
 dashboard = ""
+# Sub-pages folder (milestone.md, diary.md, ...). Empty = ~/Desktop/NY/sub_pages
+sub_pages = ""
+# State dir for sub-page hash/backup. Empty = <DATA_DIR>/state
+sub_pages_state = ""
 
 [backup]
 # Daily DB snapshots to retain each side (local + offsite). Conservative
