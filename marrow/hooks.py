@@ -19,8 +19,9 @@ import math
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from . import config, dashboard, repo, storage, transcript
+from . import config, dashboard, repo, storage, subpages, transcript
 
 # ── affect label lookup ──────────────────────────────────────────────────────
 # valence: Low ≤ -0.3 < Neu ≤ 0.3 < High
@@ -245,6 +246,20 @@ def session_end() -> int:
             repo.add_alert(
                 "warn", "dashboard",
                 f"session_end skipped dashboard write: {e}",
+                source="hooks.py", db=db,
+            )
+        sub_folder = config.sub_pages_path()
+        sub_state = config.sub_pages_state_path()
+        try:
+            Path(sub_folder).mkdir(parents=True, exist_ok=True)
+            Path(sub_state).mkdir(parents=True, exist_ok=True)
+            subpages.write_all_subpages(
+                conn, folder=sub_folder, state_dir=sub_state, db=db,
+            )
+        except PermissionError as e:
+            repo.add_alert(
+                "warn", "sub_pages",
+                f"session_end skipped sub-pages write: {e}",
                 source="hooks.py", db=db,
             )
         # Auto-embed events freshly archived this session so recall stays

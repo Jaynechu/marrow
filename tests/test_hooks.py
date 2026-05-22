@@ -19,6 +19,8 @@ from marrow import config, hooks, storage
 def env(tmp_path, monkeypatch):
     db = str(tmp_path / "t.db")
     dash = str(tmp_path / "dashboard.md")
+    sub_folder = str(tmp_path / "sub_pages")
+    sub_state = str(tmp_path / "sub_state")
     conn = storage.init_db(db)
     conn.execute("INSERT INTO threads(category,title,status) "
                  "VALUES('study','GAMSAT plan','active')")
@@ -26,6 +28,8 @@ def env(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(config, "db_path", lambda: db)
     monkeypatch.setattr(config, "dashboard_path", lambda: dash)
+    monkeypatch.setattr(config, "sub_pages_path", lambda: sub_folder)
+    monkeypatch.setattr(config, "sub_pages_state_path", lambda: sub_state)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     return db, dash, tmp_path
 
@@ -66,6 +70,28 @@ def test_session_end_archives_and_renders(env, monkeypatch, tmp_path):
     assert n == 2
     txt = open(dash).read()
     assert "GAMSAT plan" in txt and hooks.dashboard.M0 in txt
+
+
+def test_session_end_writes_sub_pages(env, monkeypatch, tmp_path):
+    """SessionEnd renders milestone.md (+ siblings) into sub_pages folder."""
+    db, _, _ = env
+    conn = storage.connect(db)
+    conn.execute("INSERT INTO milestones(scope,date,title) "
+                 "VALUES('me','2026-01-17','Stellan birthday')")
+    conn.commit()
+    conn.close()
+    jl = tmp_path / "s.jsonl"
+    jl.write_text(json.dumps(
+        {"type": "user", "sessionId": "s1",
+         "timestamp": "2026-05-17T01:00:00Z",
+         "message": {"role": "user", "content": "ping"}}))
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": str(jl)})
+    assert hooks.main(["session_end"]) == 0
+    from pathlib import Path
+    sub = Path(tmp_path / "sub_pages" / "milestone.md")
+    assert sub.exists(), "milestone.md not written"
+    txt = sub.read_text()
+    assert "Stellan birthday" in txt
 
 
 def test_session_end_dashboard_eperm_alerts_warn(env, monkeypatch, tmp_path):
