@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS milestones (
   theme TEXT,
   pinned INTEGER NOT NULL DEFAULT 0,
   source_hash TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE TABLE IF NOT EXISTS vocab (
   id INTEGER PRIMARY KEY,
@@ -253,10 +254,19 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         # Schema-evolution backfill: a column added after a db already
         # exists is not applied by CREATE IF NOT EXISTS. Idempotent —
         # duplicate-column ALTER is swallowed; add a row per new column.
-        for tbl, col, decl in (("goose_bites", "source_hash", "TEXT"),):
+        # SQLite ALTER cannot use non-constant defaults, so the column is
+        # added nullable then backfilled from created_at on the same pass.
+        for tbl, col, decl in (
+            ("goose_bites", "source_hash", "TEXT"),
+            ("milestones", "updated_at", "TEXT"),
+        ):
             try:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
                 pass
+        conn.execute(
+            "UPDATE milestones SET updated_at = created_at "
+            "WHERE updated_at IS NULL"
+        )
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn

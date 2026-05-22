@@ -179,6 +179,64 @@ def _force_dim(monkeypatch, st, d):
     monkeypatch.setattr(st.config, "load", fake)
 
 
+def test_milestones_has_updated_at_column(db):
+    """Round 2 Unit 1: milestones.updated_at backs persistent md edits."""
+    assert "updated_at" in _cols(db, "milestones")
+
+
+def test_milestones_updated_at_defaults_on_insert(db):
+    db.execute(
+        "INSERT INTO milestones(scope,date,title) VALUES('me','2026-05-22','x')"
+    )
+    db.commit()
+    row = db.execute(
+        "SELECT created_at, updated_at FROM milestones"
+    ).fetchone()
+    assert row["updated_at"] is not None
+    # Default is the same strftime expression as created_at -> equal here.
+    assert row["updated_at"] == row["created_at"]
+
+
+def test_milestones_updated_at_backfill_on_old_db(tmp_path):
+    """Existing rows on an old db schema must get updated_at = created_at."""
+    p = str(tmp_path / "legacy.db")
+    # Build a legacy milestones table (no updated_at) and insert one row,
+    # then re-open with init_db to trigger the ALTER + backfill path.
+    legacy = sqlite3.connect(p)
+    legacy.execute(
+        "CREATE TABLE milestones ("
+        "  id INTEGER PRIMARY KEY,"
+        "  scope TEXT NOT NULL,"
+        "  date TEXT NOT NULL,"
+        "  title TEXT NOT NULL,"
+        "  description TEXT,"
+        "  theme TEXT,"
+        "  pinned INTEGER NOT NULL DEFAULT 0,"
+        "  source_hash TEXT,"
+        "  created_at TEXT NOT NULL DEFAULT "
+        "(strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+        ")"
+    )
+    legacy.execute(
+        "INSERT INTO milestones(scope,date,title,created_at) "
+        "VALUES('me','2026-01-01','old','2026-01-01T00:00:00Z')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    conn = storage.init_db(p)
+    try:
+        cols = {r["name"] for r in
+                conn.execute("PRAGMA table_info(milestones)").fetchall()}
+        assert "updated_at" in cols
+        row = conn.execute(
+            "SELECT created_at, updated_at FROM milestones"
+        ).fetchone()
+        assert row["updated_at"] == row["created_at"]
+    finally:
+        conn.close()
+
+
 def test_events_vec_dim_follows_config(tmp_path, monkeypatch):
     import marrow.storage as st
     _force_dim(monkeypatch, st, 1024)
