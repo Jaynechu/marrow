@@ -446,20 +446,33 @@ def recall_fusion(
         if final >= min_score:
             scored.append((final, {**c, "score": final}))
 
-    # ── milestone scoring (no vec, no recency, no affect) ─────────────────────
+    # ── milestone scoring (no vec/recency/affect; evergreen anchor —
+    # any token hit enters, kw_score+pinned only decide rank, no min_score
+    # gate so long queries don't dilute the match into oblivion). ─────────────
     for mc in milestone_cands:
         raw = w_bm25 * mc["bm25"]
         if mc["pinned"]:
             raw += _MILESTONE_PINNED_BOOST
-        if raw >= min_score:
-            scored.append((raw, {**mc, "score": raw}))
+        scored.append((raw, {**mc, "score": raw}))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+
+    # ── reserved milestone slots ──────────────────────────────────────────────
+    # Events can outrank milestones on score (recency + affect + fts_hit),
+    # so a pure top-K cut starves milestones on long/noisy queries. Reserve
+    # up to ceil(limit/3) slots for best-matched milestones; remainder goes
+    # to events. Final order re-sorted by score.
+    ms_scored = [(s, r) for s, r in scored if r.get("kind") == "milestone"]
+    ev_scored = [(s, r) for s, r in scored if r.get("kind") != "milestone"]
+    ms_cap = max(1, (limit + 2) // 3)
+    ms_picks = ms_scored[:ms_cap]
+    ev_picks = ev_scored[: max(0, limit - len(ms_picks))]
+    picks = sorted(ms_picks + ev_picks, key=lambda x: x[0], reverse=True)
 
     # ── budget truncation ─────────────────────────────────────────────────────
     out: list[dict] = []
     used = 0
-    for _, row in scored[:limit]:
+    for _, row in picks[:limit]:
         content = row["content"] or ""
         if used + len(content) > budget_chars:
             content = content[: max(0, budget_chars - used)]
@@ -470,3 +483,34 @@ def recall_fusion(
             break
 
     return out
+
+
+# ── config-driven entrypoint (used by hook + MCP daemon) ─────────────────────
+
+def recall_with_config(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    limit: int | None = None,
+    budget_chars: int | None = None,
+) -> list[dict]:
+    """Run recall_fusion with weights + thresholds from [recall] config.
+
+    Single shared path so hook (UserPromptSubmit) and MCP daemon return the
+    same shape for the same query. Caller may override limit/budget per call.
+    """
+    from . import config as _config
+    rcfg = _config.load().get("recall", {})
+    return recall_fusion(
+        conn, query,
+        limit=int(limit if limit is not None else rcfg.get("limit", 5)),
+        budget_chars=int(
+            budget_chars if budget_chars is not None
+            else rcfg.get("budget_chars", 2000)
+        ),
+        w_vec=float(rcfg.get("w_vec", 0.55)),
+        w_bm25=float(rcfg.get("w_bm25", 0.30)),
+        w_recency=float(rcfg.get("w_recency", 0.15)),
+        w_affect=float(rcfg.get("w_affect", 0.10)),
+        min_score=float(rcfg.get("min_score", 0.35)),
+    )

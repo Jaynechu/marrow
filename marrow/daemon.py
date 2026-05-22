@@ -26,7 +26,7 @@ def recall(query: str, limit: int = 10) -> list[dict]:
     Call when the user references the past."""
     conn = storage.connect(_DB)
     try:
-        return repo.recall(conn, query, limit)
+        return _recall_mod.recall_with_config(conn, query, limit=limit)
     finally:
         conn.close()
 

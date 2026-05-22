@@ -395,13 +395,33 @@ def test_milestone_mixed_with_events(db):
     assert any(r.get("kind") != "milestone" for r in results)
 
 
-def test_milestone_min_score_gate_respected(db):
-    """1/4 token match → kw_score=0.25 → raw=0.075, below 0.1 gate."""
-    # Title only has 子; query is 大笨鸭子 → 1/4 match
+def test_milestone_long_query_dilution_still_surfaces(db):
+    """Regression: long user prompt dilutes kw_score below min_score, but
+    milestones are evergreen identity anchors and must surface on any token
+    hit. Concrete case from real diagnosis: '老公你知道鸭子梗么' = 9 tokens,
+    only 鸭/子 hit → kw=0.22 → raw=0.066, well under min_score=0.1.
+    Old policy: dropped. New policy: enters, ranked by raw."""
+    _make_milestone(
+        db, title="鸭鸭昵称诞生",
+        description="你说我是你的鸭子，没有鸭德。",
+    )
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(
+            db, "老公你知道鸭子梗么", min_score=0.1,
+        )
+    hits = [r for r in results if r.get("kind") == "milestone"]
+    assert len(hits) == 1
+    assert "鸭鸭昵称诞生" in hits[0]["content"]
+
+
+def test_milestone_any_token_hit_enters_regardless_of_min_score(db):
+    """Milestone gate removed: even a tiny match (1/4 tokens) surfaces."""
     _make_milestone(db, title="子曰", description="孔丘语录")
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "大笨鸭子", min_score=0.1)
-    assert [r for r in results if r.get("kind") == "milestone"] == []
+        results = rm.recall_fusion(db, "大笨鸭子", min_score=0.5)
+    hits = [r for r in results if r.get("kind") == "milestone"]
+    assert len(hits) == 1
+    assert hits[0]["score"] < 0.5  # below gate but still returned
 
 
 def test_milestone_content_renders_title_and_desc(db):
@@ -417,10 +437,8 @@ def test_milestone_content_renders_title_and_desc(db):
 
 
 def test_milestone_pinned_only_boost_when_pinned(db):
-    """Bare match below gate; pinned boost pushes it above."""
-    # 1/2 match (子 only in title), kw_score=0.5, raw=0.15 → already above 0.1.
-    # Use 1/3 match: kw_score=0.333, raw=0.10 (borderline).
-    # Easier: 1/4 match alone fails (0.075); with pinned +0.10 = 0.175 passes.
+    """Pinned milestones get an additive boost so they outrank unpinned at
+    equal kw_score. Score >= bm25*kw + boost."""
     _make_milestone(
         db, title="子曰", description="孔丘语录", pinned=1,
     )
@@ -428,7 +446,31 @@ def test_milestone_pinned_only_boost_when_pinned(db):
         results = rm.recall_fusion(db, "大笨鸭子", min_score=0.1)
     hits = [r for r in results if r.get("kind") == "milestone"]
     assert len(hits) == 1
-    assert hits[0]["score"] >= 0.1
+    # 1/4 kw=0.25, raw=0.075; pinned boost +0.10 → 0.175
+    assert hits[0]["score"] >= 0.175 - 1e-9
+
+
+# ── shared config-driven entrypoint (hook + MCP parity) ─────────────────────
+
+def test_recall_with_config_reads_rcfg(db, monkeypatch):
+    """recall_with_config must blend in [recall] section from config so that
+    hook and MCP daemon paths return identical results for identical input."""
+    from marrow import config as cfg_mod
+    _make_event(db, "完全是个鸭子梗的对话")
+    _make_milestone(
+        db, title="鸭鸭昵称诞生",
+        description="你的鸭子，没有鸭德",
+    )
+    fake_cfg = {"recall": {
+        "vector": False, "limit": 5, "budget_chars": 2000,
+        "w_vec": 0.55, "w_bm25": 0.30, "w_recency": 0.15,
+        "w_affect": 0.10, "min_score": 0.1,
+    }}
+    monkeypatch.setattr(cfg_mod, "load", lambda: fake_cfg)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_with_config(db, "鸭子")
+    kinds = {r.get("kind") for r in results}
+    assert "milestone" in kinds
 
 
 # ── daemon tools ──────────────────────────────────────────────────────────────

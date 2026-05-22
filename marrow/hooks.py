@@ -300,21 +300,11 @@ def user_prompt_submit() -> int:
     if not prompt_text:
         return 0
 
-    rcfg = cfg.get("recall", {})
     try:
         from . import recall as recall_mod
         conn = storage.connect(config.db_path())
         try:
-            hits = recall_mod.recall_fusion(
-                conn, prompt_text,
-                limit=int(rcfg.get("limit", 5)),
-                budget_chars=int(rcfg.get("budget_chars", 2000)),
-                w_vec=float(rcfg.get("w_vec", 0.55)),
-                w_bm25=float(rcfg.get("w_bm25", 0.30)),
-                w_recency=float(rcfg.get("w_recency", 0.15)),
-                w_affect=float(rcfg.get("w_affect", 0.10)),
-                min_score=float(rcfg.get("min_score", 0.35)),
-            )
+            hits = recall_mod.recall_with_config(conn, prompt_text)
         finally:
             conn.close()
     except Exception:
