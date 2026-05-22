@@ -5,6 +5,7 @@
 <principle>
 - If Haiku trim you, just follow; no need to verbatim my wording — keep core ideas all sessions can understand. 
 - For Chinese input use ( ) to bypass CJK guard.
+- For format/prompt/template that will be used by subagent or generate text show in dashboard or session start hook, always confirm with me - don't write in yourself.
 - For tech/mech concepts use simple examples (e.g. valence / arousal: WAM 92 → valence ≈ 0.9 / arousal ≈ 0.85).
 - When a tech decision needs Lumi's call: lead with effect/impact; name each option by effect, not unfamiliar tech terms; explanations go last for optional learning. (反例: 上来就问 fastembed+bge-m3 vs X — 名词不认识无法选)
 - No source of truth or fixed approach in this project. All docs can change if a better option comes up. Don't cite a doc to rebut me — use first principles.
@@ -13,6 +14,7 @@
     - No need to follow any reference repo. Borrow ideas; write our own to best match Marrow.
 - Do not infer from the old ny-memm system.
 - Ignore all `ollama` / `claude_cli rotating` provider-chain alerts — ollama not installed yet, only the final tier (sonnet/claude) failing counts as a real alert.
+- MCP daemon (`marrow/daemon.py`) is a stdio long-runner — edits to daemon / recall / storage modules do not apply until the next `cc` launch. Restart cc after these edits.
 </principle>
 
 ## When to read what
