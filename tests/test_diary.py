@@ -171,6 +171,59 @@ def test_run_day_writes_affect_rows(db):
     assert r["source"] == "diary_single_call"
 
 
+def test_single_call_audit_log_ok_outcome(db):
+    # Successful parse -> one diary_single_call_affect_ok audit row.
+    p, conn = db
+    diary.run_day(conn, "2026-05-16", FakeLLM(), db=p)
+    rows = conn.execute(
+        "SELECT action, summary FROM audit_log "
+        "WHERE target_table='diary' AND target_id='2026-05-16' "
+        "AND action LIKE 'diary_single_call_%'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["action"] == "diary_single_call_affect_ok"
+    assert "2026-05-16" in rows[0]["summary"]
+
+
+def test_single_call_audit_log_no_marker_outcome(tmp_path):
+    # No ===AFFECT=== marker -> diary_single_call_no_affect_marker audit row.
+    p = str(tmp_path / "tel_na.db")
+    conn = storage.init_db(p)
+    _session(conn, "s1", 2)
+    conn.commit()
+    diary.run_day(conn, "2026-05-16", FakeLLMNoAffect(), db=p)
+    rows = conn.execute(
+        "SELECT action FROM audit_log "
+        "WHERE target_table='diary' AND target_id='2026-05-16' "
+        "AND action LIKE 'diary_single_call_%'"
+    ).fetchall()
+    assert any(r["action"] == "diary_single_call_no_affect_marker" for r in rows)
+
+
+def test_single_call_audit_log_parse_fail_outcome(tmp_path):
+    # Marker present but JSON broken -> diary_single_call_affect_parse_fail.
+    p = str(tmp_path / "tel_pf.db")
+    conn = storage.init_db(p)
+    _session(conn, "s1", 2)
+    conn.commit()
+
+    class BrokenJSONLLM:
+        def call(self, role, body, *, tier="cheap"):
+            if role == "diary":
+                return ("正文段落。\n===AFFECT===\n"
+                        "{this is not valid json}\n===END===")
+            return ""
+
+    diary.run_day(conn, "2026-05-16", BrokenJSONLLM(), db=p)
+    rows = conn.execute(
+        "SELECT action, summary FROM audit_log "
+        "WHERE target_table='diary' AND target_id='2026-05-16' "
+        "AND action='diary_single_call_affect_parse_fail'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert "error" in rows[0]["summary"]
+
+
 def test_run_day_neutral_affect_on_missing_json(tmp_path):
     # No ===AFFECT=== block -> neutral fallback; diary still written.
     p = str(tmp_path / "na.db")
@@ -560,7 +613,7 @@ def test_fallback_routes_by_turn_count(tmp_path, monkeypatch):
 # ── Phase 2: _parse_single_call unit tests ────────────────────────────────────
 
 def test_parse_single_call_prose_and_affect():
-    prose, aff = diary._parse_single_call(
+    prose, aff, outcome, _err = diary._parse_single_call(
         "段落一。\n---\n段落二。\n===AFFECT===\n"
         '[{"ep":1,"valence":0.8,"arousal":0.5,"importance":7,'
         '"label":"开心","entities":["Lumi"],"event_hint":"早上好"},'
@@ -571,28 +624,33 @@ def test_parse_single_call_prose_and_affect():
     assert "===AFFECT===" not in prose
     assert len(aff) == 2
     assert aff[0]["ep"] == 1
+    assert outcome == "ok"
 
 
 def test_parse_single_call_bad_json_returns_empty_affect():
-    prose, aff = diary._parse_single_call(
+    prose, aff, outcome, err = diary._parse_single_call(
         "一些日记内容。\n===AFFECT===\n{not valid json}\n===END==="
     )
     assert "日记内容" in prose
     assert aff == []
+    assert outcome == "parse_fail"
+    assert err  # non-empty excerpt
 
 
 def test_parse_single_call_no_affect_block():
-    prose, aff = diary._parse_single_call("完全没有情感数据的正文。")
+    prose, aff, outcome, _err = diary._parse_single_call("完全没有情感数据的正文。")
     assert prose == "完全没有情感数据的正文。"
     assert aff == []
+    assert outcome == "no_marker"
 
 
 def test_parse_single_call_missing_end_sentinel():
     # ===END=== absent -> still attempt parse up to EOF
-    prose, aff = diary._parse_single_call(
+    prose, aff, outcome, _err = diary._parse_single_call(
         "正文。\n===AFFECT===\n[]\n"
     )
     assert aff == []  # empty list is valid, though unusual
+    assert outcome == "ok"
 
 
 # ── Phase 2: _resolve_event_hint unit test ────────────────────────────────────

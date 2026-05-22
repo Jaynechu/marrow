@@ -516,23 +516,33 @@ def _stitch(llm: LLMClient, date: str,
 
 # ── Phase 2: single-call helpers ──────────────────────────────────────────────
 
-def _parse_single_call(text: str) -> tuple[str, list[dict]]:
-    """Split prose from the trailing affect JSON. Never raises."""
+def _parse_single_call(text: str) -> tuple[str, list[dict], str, str]:
+    """Split prose from the trailing affect JSON. Never raises.
+
+    Returns (prose, affect_raw, outcome, err) where outcome is one of:
+      "no_marker"  — ===AFFECT=== absent from response
+      "parse_fail" — marker present but JSON parse failed (err holds excerpt)
+      "ok"         — marker present and parsed as a list (may be empty)
+    """
     prose = text
     affect_raw: list[dict] = []
+    err = ""
     idx_open = text.find(_AFFECT_OPEN)
-    if idx_open != -1:
-        prose = text[:idx_open].rstrip()
-        tail = text[idx_open + len(_AFFECT_OPEN):]
-        idx_close = tail.find(_AFFECT_CLOSE)
-        json_str = tail[:idx_close].strip() if idx_close != -1 else tail.strip()
-        try:
-            parsed = json.loads(json_str)
-            if isinstance(parsed, list):
-                affect_raw = parsed
-        except (json.JSONDecodeError, ValueError):
-            pass  # neutral fallback applied per-episode in _build_affect_rows
-    return prose, affect_raw
+    if idx_open == -1:
+        return prose, affect_raw, "no_marker", err
+    prose = text[:idx_open].rstrip()
+    tail = text[idx_open + len(_AFFECT_OPEN):]
+    idx_close = tail.find(_AFFECT_CLOSE)
+    json_str = tail[:idx_close].strip() if idx_close != -1 else tail.strip()
+    try:
+        parsed = json.loads(json_str)
+    except (json.JSONDecodeError, ValueError) as e:
+        return prose, affect_raw, "parse_fail", str(e)[:160]
+    if isinstance(parsed, list):
+        affect_raw = parsed
+        return prose, affect_raw, "ok", err
+    # parsed but not a list (e.g. dict or scalar) -> treat as parse_fail
+    return prose, affect_raw, "parse_fail", f"non-list type: {type(parsed).__name__}"
 
 
 def _resolve_event_hint(conn, hint: str) -> int | None:
@@ -585,6 +595,34 @@ def _neutral_affect_rows(date: str, n: int, source: str) -> list[dict]:
              "importance": _NEUTRAL_IMPORTANCE,
              "label": None, "entities": None, "source": source}
             for i in range(max(n, 1))]
+
+
+_SINGLE_CALL_ACTIONS = {
+    "no_marker": "diary_single_call_no_affect_marker",
+    "parse_fail": "diary_single_call_affect_parse_fail",
+    "ok": "diary_single_call_affect_ok",
+}
+
+
+def _log_single_call_outcome(conn, date: str, outcome: str,
+                             ep_count: int, err: str = "") -> None:
+    """One audit_log row per single-call AFFECT outcome. Best-effort."""
+    action = _SINGLE_CALL_ACTIONS.get(outcome)
+    if not action:
+        return
+    payload = {"date": date, "ep": ep_count}
+    if outcome == "parse_fail" and err:
+        payload["error"] = err
+    summary = json.dumps(payload, ensure_ascii=False)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, "
+                "action, summary) VALUES ('diary', ?, ?, ?)",
+                (date, action, summary),
+            )
+    except Exception:
+        pass  # telemetry never blocks the diary write
 
 
 def _write_affect(conn, rows: list[dict]) -> None:
@@ -677,9 +715,11 @@ def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None,
         prompt = SINGLE_CALL_PROMPT.format(date=date, sessions=sessions_text)
         try:
             raw = llm.call("diary", prompt, tier="mid")
-            prose, affect_raw_parsed = _parse_single_call(raw)
+            prose, affect_raw_parsed, _outcome, _err = _parse_single_call(raw)
             affect_rows = _build_affect_rows(conn, date, prose, affect_raw_parsed)
             narrative = prose.strip() or None  # empty prose -> fallback
+            _log_single_call_outcome(
+                conn, date, _outcome, len(affect_rows), _err)
         except LLMError:
             use_fallback = True  # LLMError includes refusal (worktree B's job)
 
