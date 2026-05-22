@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import repo
+from .reconcile import reconcile_milestones
 from .subpages_render import (
     render_cheatsheet,
     render_diary,
@@ -58,6 +59,9 @@ class SubPageConfig:
     path: str                         # absolute path to the .md file
     state_dir: str                    # dir for .hash / .bak files
     read_only: bool = False           # skip hash-guard; always overwrite
+    # md->DB reconcile callback. Runs BEFORE render so Lumi's md edits flow
+    # back to DB and the freshly-rendered block reflects them. None = skip.
+    reconcile: Callable[[sqlite3.Connection, "Path"], object] | None = None
     subpages: list["SubPageConfig"] = field(default_factory=list)
 
 
@@ -93,12 +97,30 @@ def _split(text: str, key: str) -> tuple[str, str, str]:
 
 def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
                   db: str | None = None) -> None:
-    """Render + write one sub-page; recurse into children."""
-    block = cfg.render(conn)
+    """Render + write one sub-page; recurse into children.
+
+    Order: reconcile (md->DB) -> render -> hash-guard -> atomic write.
+    Reconcile runs first so Lumi's md edits flow back to DB and the new
+    render block reflects them. Hash-guard alerts only when reconcile
+    didn't absorb the change (anchored conflicts, free-form text added).
+    """
     path, key = cfg.path, cfg.key
     Path(cfg.state_dir).mkdir(parents=True, exist_ok=True)
     hash_file = Path(cfg.state_dir) / f"{key}.hash"
 
+    # Run reconcile BEFORE render so the new block reflects Lumi's edits.
+    rpt = None
+    if cfg.reconcile is not None and os.path.exists(path) and not cfg.read_only:
+        try:
+            rpt = cfg.reconcile(conn, Path(path))
+        except Exception as e:
+            repo.add_alert(
+                "warn", "sub_pages",
+                f"{key} reconcile failed: {e}; falling through to render",
+                source="subpages.py", db=db,
+            )
+
+    block = cfg.render(conn)
     existing = Path(path).read_text(encoding="utf-8") if os.path.exists(path) else ""
 
     if cfg.read_only:
@@ -107,7 +129,11 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
         before, cur_block, after = _split(existing, key)
         if cur_block:
             last = hash_file.read_text() if hash_file.exists() else ""
-            if last and _hash(cur_block) != last:
+            absorbed = rpt is not None and (
+                getattr(rpt, "any_change", lambda: False)()
+                or getattr(rpt, "unchanged", 0) > 0
+            )
+            if last and _hash(cur_block) != last and not absorbed:
                 bak = Path(cfg.state_dir) / f"{key}.{int(time.time())}.bak"
                 shutil.copyfile(path, bak)
                 repo.add_alert(
@@ -232,7 +258,8 @@ def build_all_configs(conn: sqlite3.Connection, *,
     d = Path(folder)
     flat = [
         SubPageConfig("diary",      render_diary,      str(d/"diary.md"),       state_dir),
-        SubPageConfig("milestone",  render_milestone,  str(d/"milestone.md"),   state_dir),
+        SubPageConfig("milestone",  render_milestone,  str(d/"milestone.md"),   state_dir,
+                      reconcile=reconcile_milestones),
         SubPageConfig("memes",      render_memes,      str(d/"memes.md"),       state_dir),
         SubPageConfig("goose",      render_goose,      str(d/"goose.md"),       state_dir),
         SubPageConfig("cheatsheet", render_cheatsheet, str(d/"cheatsheet.md"),  state_dir,
