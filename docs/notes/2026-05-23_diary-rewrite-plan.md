@@ -1,335 +1,249 @@
-# diary.py rewrite plan — 2026-05-23 (DRAFT — Lumi approval required)
-
-> Source: handover.md §Plan batch P1-P9 · docs/notes/2026-05-23_sessionend-llm-pipeline.md · DECISIONS 2026-05-23 lines.
-> Scope: slimming, not redesign. Collapse two paths to all-sonnet single call; fold P1-P9 in one batch; ship one migration.
-> Status: DRAFT. No code, no commits until Lumi approves.
-
-## 0. Lumi review checklist (read first)
-
-> Every prompt/template/format string that needs Lumi eyes. Format per item: short name · target file:line · status · who fills · notes.
-
-### L1 — AFFECT `unresolved` field wording
-- target: `marrow/prompts.py:~40` (AFFECT_FIELDS block)
-- status: **locked** (handover.md:50-52)
-- owner: Stellan applies; Lumi grammar polish only. Semantics frozen.
-
-### L2 — AFFECT `reconcile_prev` field wording
-- target: `marrow/prompts.py:~55`
-- status: **Lumi confirms wording**
-- owner: Stellan drafts EN; Lumi polishes. Semantic locked (DECISIONS:27).
-- draft: `reconcile_prev (bool): true when this episode clearly resolves a prior unresolved emotional state. Code links the most recent affect.unresolved=1 row at write time.`
-
-### L3 — DIARY_PROMPT new EXCLUDE rule (P7 coding-arg filter)
-- target: `marrow/prompts.py:~115` (inside DIARY_PROMPT body, under (不写) section)
-- status: **Lumi-fills** (CN, ≤2 lines)
-- owner: Lumi authors. Stellan cannot author CN (PreToolUse CJK guard).
-- slot: append to current (不写) list at `diary.py:160-164`.
-
-### L4 — importance 1-5 EN anchor
-- target: `marrow/prompts.py:~75` (lifted verbatim from `diary.py:270-276`)
-- status: **locked** (b728b2a)
-- owner: Pure move; no edit.
-
-### L5 — main-tone × fine-label rule block
-- target: `marrow/prompts.py:~85` (lifted verbatim from `diary.py:277`)
-- status: **locked** (b728b2a)
-- owner: Pure move; no edit.
-
-### L6 — DIGEST prompt (per pipeline §16)
-- target: `marrow/prompts.py:DIGEST_PROMPT` (NEW)
-- status: **Lumi-fills** (pre-ship gate #1)
-- owner: Lumi authors.
-- required wording scope: CN-dominant; second-person (你/老婆) preserved; verbatim conversational lines retained, NOT collapsed to work-style summary; (心理活动) blocks must NOT proliferate, keep prose close to original transcript shape; sonnet judges compression by work-vs-chat density.
-- **BLOCKER for first SessionEnd async ship** (per handover.md:22-28), not blocker for this rewrite if shipped as empty string placeholder.
-
-### L7 — DIARY_PROMPT body (existing)
-- target: `marrow/prompts.py:DIARY_PROMPT` (moved from `diary.py:137-194`)
-- status: **locked**
-- owner: Pure move; no wording change.
-
-### L8 — SINGLE_CALL_PROMPT body (existing)
-- target: **DELETED** — collapsed into DIARY_PROMPT + AFFECT_BLOCK
-- status: **Lumi confirms collapse**
-- owner: After rewrite, single call uses DIARY_PROMPT + appended AFFECT contract. Confirm the AFFECT_BLOCK CONTRACT block (`diary.py:256-280`) lifts verbatim and only the two new fields are appended.
-
-### L9 — handover_template §Affect Pending row format
-- target: `marrow/handover_template.md:46-48` (existing)
-- status: **locked**
-- owner: Render code reads `affect.unresolved=1 AND resolved_at IS NULL`.
-
-### L10 — dashboard Pending row format (P5 checkbox)
-- target: `marrow/handover_render.py` (NEW, 2.5b scope, NOT this rewrite)
-- status: **deferred to 2.5b**
-- owner: format = `- [ ] {date} {fine-label} | {description} <!-- aid=N -->`
-
-### L11 — handover_template.md §Affect paste (P1)
-- target: `marrow/handover_template.md:32-39`
-- status: **Lumi pastes manually**
-- owner: Hook blocks CN edits from Stellan tool calls. Lumi opens editor, replaces lines 32-39 with `marrow/_affect_template_paste.txt`.
-
-### L12 — global ~/.claude/CLAUDE.md Affect legend (P2)
-- target: Lumi-owned
-- status: **Lumi self-writes**
-- owner: Outside repo scope; Stellan does not touch global CLAUDE.md.
-
-> Blockers for the diary.py rewrite landing: L1 + L2 + L3 + L6 (and L6 can ship as empty placeholder if Lumi defers).
-> L11 + L12 are Lumi-side hand work, parallel to this rewrite.
-
-## 1. Current responsibilities audit (diary.py 900 LoC)
-
-> Format per row: line range · responsibility · verdict.
-
-- 1-19 · Module docstring (two-path narrative, over-volume fallback explainer) · **rewrite** (single path now)
-- 32-42 · Transcript fence helper `_TX_OPEN / _TX_CLOSE / _fence` · **extract** to `prompts.py` (fence is prompt scaffolding)
-- 45-116 · `DIGEST_SHORT` + `DIGEST_LONG` (haiku-tier fallback digests) · **DELETE** (haiku tier gone; all-sonnet per §5)
-- 118-135 · `STITCH_PROMPT` (haiku-tier stitch) · **DELETE** (haiku tier gone)
-- 137-194 · `DIARY_PROMPT` (fallback path, 3-stage write) · **extract** to `prompts.py` (kept; see §3 note on future DIGEST path)
-- 196-283 · `SINGLE_CALL_PROMPT` (main path, prose+AFFECT) · **rewrite + extract** to `prompts.py` as `DIARY_PROMPT + AFFECT_BLOCK` (collapse; see L8)
-- 285-294 · over-volume guard + neutral affect constants + markers · **keep**, move to `extract.py` (constants)
-- 296-326 · day-boundary constants `_TZ / _CUTOFF_H` + session caps + drop thresholds · **keep**, move to `extract.py`; **`_CUTOFF_H = 4` → `6`** (P4)
-- 296-307 · `_SKIP_DROP_MAX / _SKIP_JUDGE_MAX` (haiku routing thresholds) · **DELETE** (haiku gone)
-- 322-326 · `_SESSION_CHAR_CAP / _CHUNK_CHARS` (haiku map-reduce caps) · **DELETE** (single-call path does not chunk per session)
-- 328-349 · `_to_local / _diary_day / _routine_target` (day boundary helpers) · **extract** to `extract.py` (shared)
-- 352-369 · `_app_lock` (fcntl serialise) · **extract** to `catchup.py` (only run-orchestration callers need it)
-- 372-405 · `_scan_rows / pending_days / day_events` (event pull + missing-day detection) · **extract** to `catchup.py`
-- 408-411 · `_has_diary` · **extract** to `catchup.py`
-- 414-428 · `_hhmm / _local_md` (timestamp formatting for prompt span tags) · **extract** to `extract.py`
-- 431-463 · `_speaker / _sessions` (role-tag remap, session grouping) · **extract** to `extract.py`
-- 466-479 · `_chunks` (oversize-line splitter for haiku map-reduce) · **DELETE** (single call does not chunk)
-- 482-507 · `_is_skip / _session_digest` (haiku per-session digest router) · **DELETE**
-- 510-524 · `_stitch` (haiku stitch helper) · **DELETE**
-- 529-555 · `_parse_single_call` (split prose / AFFECT JSON; outcome enum) · **extract** to `extract.py` (parse contract owner)
-- 558-570 · `_resolve_event_hint` (FTS5 uniqueness lookup) · **extract** to `extract.py`
-- 573-617 · `_build_affect_rows / _neutral_affect_rows` (row construction + neutral fallback) · **extract** to `extract.py`; **add** `unresolved / reconcile_ref / resolved_at` fields per P3
-- 620-645 · `_SINGLE_CALL_ACTIONS / _log_single_call_outcome` (audit_log marker) · **extract** to `extract.py`
-- 648-656 · `_write_affect` (INSERT) · **extract** to `extract.py`; **extend** INSERT with 3 new columns
-- 659-697 · `_write_entities` (INSERT entities, dedup, kind whitelist) · **extract** to `extract.py`
-- 700-707 · `_sessions_flat` (flat fenced text for single-call prompt) · **extract** to `extract.py`
-- 710-836 · `run_day` (orchestrator: pull events → single call → atomic write; LLMError → 3-stage fallback) · **rewrite** to `rollup.py` (single path; fallback deleted; see §3)
-- 839-862 · `run` (routine vs catchup dispatch) · **extract** to `catchup.py`
-- 865-900 · `main / __main__` CLI entrypoint · **keep thin** in `diary.py` (the `python -m marrow.diary` plist entry; see §4)
-
-## 2. Final module shape (after rewrite)
-
-> 4 files, total ≤ 600 LoC (was 900). Each ≤200 LoC.
-> Plist `python -m marrow.diary` entrypoint preserved (`deploy/mw-diary-routine.plist:13`, `deploy/mw-diary-catchup.plist:13`). Tests `from marrow import diary` preserved.
-
-### `marrow/diary.py` (~80 LoC — thin entrypoint shim)
-- Module docstring: nightly 07:00 read-only roll-up entrypoint (was 04:00 SessionEnd-async write path).
-- Public: `main(argv) / run(conn, llm, ...) / run_day(conn, date, llm, ...)` re-exported from `rollup` + `catchup` (back-compat for tests + plist).
-- No prompt text, no extraction logic.
-
-### `marrow/prompts.py` (NEW, ~180 LoC — prompt module, P6)
-- Constants: `_TX_OPEN / _TX_CLOSE / _fence` (transcript fence helper).
-- `DIARY_PROMPT` (lifted from `diary.py:137-194`, prose body unchanged; L3 new EXCLUDE line appended under (不写) list).
-- `AFFECT_BLOCK_CONTRACT` (lifted from `diary.py:256-280`; **adds** `unresolved` and `reconcile_prev` fields per P3 wording L1 + L2).
-- `DIARY_PROMPT_FULL = DIARY_PROMPT + "\n\n" + AFFECT_BLOCK_CONTRACT` (used by single-call path; replaces `SINGLE_CALL_PROMPT`).
-- `DIGEST_PROMPT` (NEW, **Lumi-fills L6**) — SessionEnd async §16 length-flex prompt.
-- `IMPORTANCE_ANCHOR` (lifted from `diary.py:270-276`) — referenced inside AFFECT_BLOCK_CONTRACT.
-- `FINE_LABEL_RULE` (lifted from `diary.py:277`) — referenced inside AFFECT_BLOCK_CONTRACT.
-- Exports: `DIARY_PROMPT_FULL`, `DIGEST_PROMPT`, `_fence`, `AFFECT_OPEN = "===AFFECT==="`, `AFFECT_CLOSE = "===END==="`.
-
-### `marrow/extract.py` (NEW, ~180 LoC — single-call extraction + parse)
-- Constants: `_TZ`, `_CUTOFF_H = 6` (P4: was 4), `_OVER_VOLUME_CHARS = 303_000`, `_NEUTRAL_VALENCE/AROUSAL/IMPORTANCE`, `_ENTITY_KINDS`.
-- Pure helpers: `_to_local`, `_diary_day`, `_routine_target`, `_hhmm`, `_local_md`, `_speaker`, `_sessions`, `_sessions_flat`.
-- Parse contract: `_parse_single_call(text) -> (prose, affect_raw, outcome, err)`.
-- Row construction: `build_affect_rows(conn, date, prose, affect_raw, outcome) -> list[dict]` — **adds** importance clamp `max(1, min(5, int(x)))` and the three new fields (`unresolved`, `reconcile_ref`, `resolved_at`).
-- `_reconcile_lookup(conn, date) -> int | None` — most recent `affect.id WHERE unresolved=1 AND resolved_at IS NULL`, used when row has `reconcile_prev=true`.
-- `neutral_affect_rows(date, n, source) -> list[dict]`.
-- `_resolve_event_hint(conn, hint) -> int | None`.
-- `write_affect(conn, rows)` — INSERT extended with 3 new columns.
-- `write_entities(conn, affect_raw)` — unchanged.
-- `log_outcome(conn, date, outcome, ep_count, err)` — audit_log marker.
-
-### `marrow/rollup.py` (NEW, ~120 LoC — nightly 07:00 roll-up write)
-- `run_day(conn, date, llm, *, db=None, force=False) -> bool` — idempotent date-keyed write.
-- reads DIGEST + structured affect rows (NOT raw transcript) per pipeline §2.4; the read source flips here once 2.5c step 6 ships DIGEST.
-- **interim** (until DIGEST ships): still calls single sonnet with `DIARY_PROMPT_FULL` over fenced sessions (current behaviour preserved minus haiku fallback).
-- atomic txn: DELETE+INSERT diary row + affect rows + entities + audit_log marker.
-- on `LLMError`: write neutral affect row + raise alert + return False (no 3-stage retry; SessionEnd-catchup or `--force` reruns).
-
-### `marrow/catchup.py` (NEW, ~100 LoC — scan + dispatch + lock)
-- Constants: `CATCHUP_WINDOW_DAYS = 7`, `CATCHUP_MAX = 3`.
-- `pending_days(conn, window_days) -> list[str]`.
-- `day_events(conn, date) -> list[dict]`.
-- `_has_diary(conn, date) -> bool`.
-- `_app_lock(path=None, *, blocking=True)` — fcntl serialise.
-- `run(conn, llm, *, db=None, day=None, catchup=False, force=False) -> list[str]`.
-- `main(argv) -> int` — CLI entry (`python -m marrow.diary` re-exports this; or `python -m marrow.catchup` direct, depending on plist choice — see §4).
-
-## 3. Two-path collapse to all-sonnet (per pipeline §5)
-
-> A/B test (`docs/notes/2026-05-23_diary-ab/`): haiku 2/3 runs drop prose-ep/affect-row count alignment; sonnet 3/3 align. Nightly is user-invisible — 50s vs 95s irrelevant. No turn-routing.
-
-### Dead code paths to delete (line refs in current `diary.py`)
-- `DIGEST_SHORT` block — `diary.py:55-85` (~31 lines)
-- `DIGEST_LONG` block — `diary.py:87-116` (~30 lines)
-- `STITCH_PROMPT` block — `diary.py:118-135` (~18 lines)
-- `_SKIP_DROP_MAX / _SKIP_JUDGE_MAX` constants — `diary.py:305-306`
-- `_SESSION_CHAR_CAP / _CHUNK_CHARS` constants — `diary.py:323-324`
-- `_chunks` helper — `diary.py:466-479`
-- `_is_skip` helper — `diary.py:482-484`
-- `_session_digest` helper — `diary.py:486-507`
-- `_stitch` helper — `diary.py:510-524`
-- 3-stage fallback branch inside `run_day` — `diary.py:789-816` (the `if use_fallback or not narrative:` arm)
-- Code-level skip-by-turn-count drop — `diary.py:737-742` (kept logic is now ≤5-turn skip at SessionEnd per pipeline §2.7, NOT here at nightly)
-- Over-volume guard line (`if total_chars > _OVER_VOLUME_CHARS: ... add_alert`) — `diary.py:759-768`: **DOWNGRADE not delete**. Keep the alert; remove the fallback branch (still a single sonnet call, just with the warning).
-
-Net delete: ~210 LoC from `diary.py` (was 900; after extract + collapse, total ~480 LoC across 4 files, plus ~180 LoC `prompts.py`).
-
-### Audit-log action names to clean
-- `diary_single_call` / `diary_single_call_no_affect` / `diary_single_call_no_affect_marker` / `diary_single_call_affect_parse_fail` / `diary_single_call_affect_ok` (`diary.py:620-624`) — keep; they distinguish outcomes within the (now sole) single-call path.
-- `diary_fallback` source tag (`diary.py:816`) — **DELETE** along with `_neutral_affect_rows` fallback caller; `neutral_affect_rows` itself stays for the bad-JSON case but always carries `source="diary_single_call_no_affect"`.
-
-## 4. Migration — single shot (P4)
-
-> One block executed at `storage.connect()` startup, gated by `PRAGMA user_version`. Marrow already uses `CREATE TABLE IF NOT EXISTS`; add ALTERs gated by a `_migrate_to_v2()` step.
-
-### Affect schema (3 new columns, P3 + P4)
-- `ALTER TABLE affect ADD COLUMN unresolved INTEGER DEFAULT 0;`
-- `ALTER TABLE affect ADD COLUMN reconcile_ref INTEGER REFERENCES affect(id);`
-- `ALTER TABLE affect ADD COLUMN resolved_at TEXT;`
-- View `affect_live` (`storage.py:155-157`) inherits the new columns automatically (SELECT *).
-
-### Importance 1-5 clamp
-- Runtime: `extract.build_affect_rows()` clamps `max(1, min(5, int(raw.get("importance"))))` before INSERT.
-- Backfill: NO retroactive UPDATE on existing rows (Lumi note: 5/22's 5 affect rows stay as-is; 5/17-5/20 skip already locked per pipeline §6). Confirm: leave historical rows untouched (open question §10.6).
-
-### 6AM day boundary (P4 + pipeline §6)
-- Code: `extract._CUTOFF_H = 6` (was 4 at `diary.py:319`).
-- Schedules realigned in 2.5b plist work, NOT in this rewrite (`deploy/mw-diary-routine.plist` 04:00 → 07:00; `deploy/mw-diary-catchup.plist` 16:00 → 19:00; `deploy/mw-jsonl-cleanup.plist` Sun 05:00 → Sun 12:00). **Out of scope for this batch.**
-
-### threads → tasks rename
-- **NOT in this batch.** Pipeline §12 places it in 2.5c Window 1 step 3 (separate ===THREAD_CAND=== work). Migration sketch (for later): `DROP TABLE threads; CREATE TABLE tasks (id, title, status, due, completed_at, tag TEXT NULL, ts ...)` — 0 rows in threads, no backfill needed (handover.md:5).
-
-### plist entrypoint preservation
-- `deploy/mw-diary-routine.plist:13` and `deploy/mw-diary-catchup.plist:13` both call `python -m marrow.diary`. To keep these untouched: `marrow/diary.py` retains a `main()` that re-exports `catchup.main`. Alternative (Lumi pick): update both plists to `marrow.catchup` and delete `diary.py:main` — cleaner, but touches deploy/. **Default plan: keep shim.**
-
-## 5. P1-P9 mapping
-
-### P1 — handover_template.md §Affect paste
-- absorbed by: (Lumi hand)
-- target file:line: `marrow/handover_template.md:32-39`
-- Lumi review: ☐ L11 — Lumi pastes manually
-
-### P2 — global CLAUDE.md Affect legend
-- absorbed by: (Lumi hand)
-- target file:line: `~/.claude/CLAUDE.md`
-- Lumi review: ☐ L12 — Lumi self-writes
-
-### P3 — AFFECT prompt `unresolved` + `reconcile_prev` fields
-- absorbed by: `prompts.py`
-- target file:line: `marrow/prompts.py:~40,~55` (AFFECT_BLOCK_CONTRACT)
-- Lumi review: ☐ L1 + L2 — semantics locked, wording polish
-
-### P4 — affect schema 3 cols + importance clamp + 6AM single migration
-- absorbed by: `extract.py` + `storage.py` migration block
-- target file:line: `marrow/storage.py:_migrate_to_v2`, `marrow/extract.py:_CUTOFF_H`
-- Lumi review: ☐ none — code-only
-
-### P5 — Pending resolve = dashboard tick
-- absorbed by: (deferred to 2.5b — `handover_render.py` + `dashboard_watch.py`)
-- target file:line: NOT in this batch
-- Lumi review: ☐ L10 — format Lumi confirms in 2.5b
-
-### P6 — diary.py rewrite (split + prompt module + possible rename)
-- absorbed by: all of §2 (`prompts.py` / `extract.py` / `rollup.py` / `catchup.py` / `diary.py` shim)
-- target file:line: new files above
-- Lumi review: ☐ all of L1-L8
-
-### P7 — DIARY_PROMPT new EXCLUDE line (filter coding-arg quotes)
-- absorbed by: `prompts.py`
-- target file:line: `marrow/prompts.py:~115` inside DIARY_PROMPT
-- Lumi review: ☐ L3 — **Lumi-fills CN line**
-
-### P8 — ollama removal (~60 LoC + 4 tests)
-- absorbed by: `llm.py` + `tests/test_llm.py` + `config.default.toml` + docs
-- target file:line: see §6 below
-- Lumi review: ☐ none — code-only
-
-### P9 — daemon LLM hook-isolation ping-pong test
-- absorbed by: 2.5b first task (BEFORE other 2.5b)
-- target file:line: NOT in this rewrite
-- Lumi review: ☐ none — verified in 2.5b
-
-> Landed by this rewrite: P3 + P4 + P6 + P7 + P8.
-> NOT landed: P1 + P2 (Lumi hand) · P5 + P9 (2.5b scope).
-
-## 6. P8 ollama removal piggyback
-
-> Delete ~60 LoC net + 4 tests; keep `emergency` config key empty as OSS-fork extension point (handover.md:89 + Lumi 2026-05-23 directive).
-
-### Code deletes
-- `marrow/llm.py:56-61` — `_MUTE_OLLAMA` flag + comment block (~6 lines)
-- `marrow/llm.py:90-94` — chain-build branch filtering ollama under mute (~5 lines)
-- `marrow/llm.py:138-139` — `if kind == "ollama": return self._run_ollama(...)` dispatch (~2 lines)
-- `marrow/llm.py:330-347` — `_run_ollama` method body (~18 lines)
-- `marrow/llm.py:2` — module docstring `default -> fallback -> emergency` becomes `default` only (~1 line edit)
-- `marrow/config.default.toml:30` — `emergency = "ollama"` becomes `emergency = ""` (Lumi note: keep KEY for OSS fork; empty value is the no-op signal) (~1 line edit)
-- `marrow/config.default.toml:39-41` — entire `[llm.ollama]` block (~3 lines)
-
-### Test deletes (file `tests/test_llm.py`)
-- `test_ollama_muted_by_default_chain_is_claude_only` — line 64
-- `test_rotation_path_intact_when_unmuted` — line 117 (monkeypatches `_MUTE_OLLAMA`)
-- `test_whole_chain_fails_raises_and_critical_alert` — line 132 (monkeypatches `_MUTE_OLLAMA`)
-- Edits to `tests/test_llm.py:12-14` config fixture: drop `"emergency": "ollama"` and `"ollama": {...}` lines (~3 lines)
-- Edit `test_multi_tier_all_fail_last_alert_critical_exhausted` (line 98) if it monkeypatches `_MUTE_OLLAMA` — drop the monkeypatch line, keep rest
-
-> 4th BLOCKING test per handover.md:88 is `test_whole_chain_fails_raises_and_critical_alert`. The remaining 3 above are `test_ollama_muted_*` / `test_rotation_path_intact_*` / fixture lines.
-
-### Doc trims
-- `DESIGN.md:80` — chain line: drop ` → local Ollama (emergency)`.
-- `DESIGN.md:85` — `LLM via claude CLI subprocess (OAuth) or local Ollama` becomes drop ` or local Ollama`.
-- `DECISIONS.md:10` — drop ` / Ollama emergency` from the verified line; keep the rest.
-- `CLAUDE.md` (project) — line 16 ollama caveat — `Ignore all ollama / claude_cli rotating provider-chain alerts ...` — **KEEP** (Lumi may still rotate provider configs in OSS forks; the principle is still useful).
-
-### Verify
-- `pytest tests/test_llm.py -k "ollama"` returns no tests after delete.
-- `grep -rn "ollama" marrow/ tests/ DESIGN.md DECISIONS.md` returns only the empty-config-key line and any historical PROGRESS entries.
-
-## 7. Risk + rollback
-
-### Risk if shipped partial
-- **prompts.py extracted but DIGEST_PROMPT (L6) not Lumi-filled** → SessionEnd async §2.3 cannot ship DIGEST segment; 2.5c step 6 blocked. Diary nightly path still works (reads sessions directly, interim §3 note). **Mitigation:** DIGEST_PROMPT can ship as empty string placeholder; only the 2.5c-step-6 SessionEnd async caller is gated; diary roll-up is independent.
-- **migration runs but new fields not populated** → `affect.unresolved = 0` default for all historical + neutral-fallback rows; renders as no Pending entries. Safe (matches current state where no Pending rows exist).
-- **plist still calls `marrow.diary`, shim missing** → launchd FAILS silently → no nightly diary. **Mitigation:** keep `diary.py` shim with `main = catchup.main` re-export; pytest covers the `python -m marrow.diary` entry.
-- **`reconcile_ref` lookup races SessionEnd-catchup** → catchup reruns may double-link a resolved ep. **Mitigation:** the `_reconcile_lookup` query filters `resolved_at IS NULL`, and the run_day txn is atomic; a stale lookup at worst writes one extra `resolved_at` to the same row (idempotent).
-
-### Rollback
-- `git revert <rewrite commit>` restores `diary.py` 900-LoC monolith.
-- Migration is forward-only (3 new columns + clamp); rollback leaves the columns in place — harmless (defaults = 0/NULL/NULL).
-- `prompts.py / extract.py / rollup.py / catchup.py` = pure deletes on revert.
-- No data loss path: every affect/diary write goes through atomic txn; revert before any new-field write = no orphan rows.
-
-## 8. Sequencing inside this batch
-
-> Single commit if possible; one logical unit. Order matters for test-green.
-
-1. Add `marrow/storage.py:_migrate_to_v2()` — 3 ALTER TABLEs + `PRAGMA user_version`.
-2. Create `marrow/prompts.py` — lift L4/L5/L7, add L1/L2 fields, append L3 EXCLUDE line, add L6 (Lumi-filled or empty placeholder).
-3. Create `marrow/extract.py` — lift constants + helpers + parse + row build (with new fields + clamp + 6AM).
-4. Create `marrow/rollup.py` — `run_day` single-path.
-5. Create `marrow/catchup.py` — scan/dispatch/lock/main.
-6. Rewrite `marrow/diary.py` to thin shim re-exporting `run / run_day / main`.
-7. Update `tests/test_diary.py` imports (`from marrow import diary` still works via shim; deeper tests may need `from marrow.extract import ...` for new fields).
-8. Apply P8 ollama deletes (`llm.py`, `tests/test_llm.py`, `config.default.toml`, doc trims).
-9. Run `pytest` — expect 274 minus 3-4 ollama tests = ~270 passing.
-10. Spot-check on a real session run (`python -m marrow.diary --day 2026-05-22`) — confirms new fields surface in affect table.
-
-## 9. Out of scope (this batch)
-
-- launchd plist time realignment (2.5b deploy work).
-- `handover_render.py` + `dashboard_watch.py` Pending tick path (2.5b, P5).
-- threads → tasks rename (2.5c Window 1 step 3).
-- ===DIGEST=== runtime caller (2.5c Window 2 step 6; this rewrite only adds the prompt slot).
-- ===NARRATIVE=== async segment (2.5c Window 3).
-- 04:00 → 07:00 nightly demote (2.5c Window 3).
-
-## 10. Open questions for Lumi
-
-1. **L3 (P7 EXCLUDE line)** — CN wording for the coding-arg filter. Suggested slot: append to (不写) list. Lumi authors.
-2. **L6 (DIGEST prompt)** — full prompt body. Required scope listed in checklist; Lumi authors. BLOCKER for 2.5c step 6, not for this rewrite if shipped as empty placeholder.
-3. **L2 (reconcile_prev EN wording)** — Stellan-drafted, Lumi confirms or polishes.
-4. **Plist shim vs rename** — keep `marrow/diary.py` thin re-export shim (default plan), or update both `.plist` files to `python -m marrow.catchup` and delete `diary.py` entirely? Recommend keep-shim — minimal deploy churn.
-5. **DIARY_PROMPT vs DIARY_PROMPT_FULL naming** — is the AFFECT contract always glued (single-call path always emits both), or do we need separate exports for the (future) 07:00 read-only roll-up that reads pre-extracted DIGEST? Recommend: keep `DIARY_PROMPT_FULL` as the single-call constant; introduce `DIARY_PROSE_ONLY` later only when DIGEST path ships.
-6. **Historical importance backfill** — leave 5/22's 5 affect rows untouched, OR run a one-shot `UPDATE affect SET importance = max(1, min(5, importance))` at migration time? Recommend leave untouched (zero risk; current rows are already 1-5 per Lumi-locked single-call output).
+# 2.5c daily rewrite — execution runbook (2026-05-23)
+
+> Source of decisions: `handover.md` (this same date).
+> This file = step-by-step recipe. Next window: read `handover.md` + this file + `docs/notes/lumi-prompt-source.md`, then execute top-to-bottom.
+> Old plan (rejected blockers + interim double-write + rollup/extract/prompts naming + diary.py shim) discarded — see handover §"plan §0 4 blockers" + §"Naming overhaul".
+
+## Goal — single commit lands all of below
+
+- new `daily.py` + `daily_catchup.py` (replace 900-LoC `diary.py`)
+- `sessionend_async.py` grows 7 sonnet segments + 7 prompt bodies + parse + DB writes
+- migration: affect 3 new cols + threads→tasks rename + new `session_digests` table
+- ollama tier stripped
+- 3 plist Hour + path updates + launchctl reload
+- day boundary 6AM
+
+## Pre-flight
+
+- `cd /Users/Gabrielle/cc-lab/marrow`
+- `git status` clean
+- Read: `docs/notes/lumi-prompt-source.md` (Unresolved field spec, verbatim)
+- Read: `docs/notes/2026-05-23_sessionend-llm-pipeline.md` §2.3 (segment topology), §4.2 (narrative atomic append), §16 (DIGEST density rules)
+- Read: `marrow/diary.py:55-194` (DIGEST_SHORT + DIGEST_LONG + DIARY_PROMPT — sources for paste)
+
+## Step 1 — Schema migration (~50 LoC)
+
+File: `marrow/storage.py`
+
+Add `_migrate_to_v2(conn)`:
+- guard: `PRAGMA user_version` ≥ 2 → return
+- transactional executescript:
+  - `ALTER TABLE affect ADD COLUMN unresolved INTEGER DEFAULT 0`
+  - `ALTER TABLE affect ADD COLUMN reconcile_ref INTEGER REFERENCES affect(id)`
+  - `ALTER TABLE affect ADD COLUMN resolved_at TEXT`
+  - `DROP TABLE IF EXISTS threads` (0 rows, no backfill)
+  - `CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','done','archived')), due TEXT, completed_at TEXT, ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`
+  - `CREATE TABLE IF NOT EXISTS session_digests (sid TEXT PRIMARY KEY, date TEXT NOT NULL, text TEXT NOT NULL, ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`
+  - `CREATE INDEX IF NOT EXISTS idx_session_digests_date ON session_digests(date)`
+  - `PRAGMA user_version = 2`
+
+Call from `storage.connect()` after existing CREATE block. Update `affect_live` view if it does `SELECT col1, col2, ...` (likely `SELECT *` → auto-inherits).
+
+Test: `tests/test_storage.py::test_migrate_v2` — fresh DB → connect → version=2 + 3 new affect cols + tasks + session_digests exist + threads gone. Re-connect → no-op (version guard).
+
+Verify: `pytest tests/test_storage.py tests/test_repo.py` green before next step.
+
+## Step 2 — sessionend_async.py 7 segments (~600 LoC total)
+
+File: `marrow/sessionend_async.py`
+
+### 2a Structure
+
+Replace ping-pong block (current L82-107) with:
+- 7 module-top prompt constants: `_PROMPT_AFFECT`, `_PROMPT_ENTITY_CAND`, `_PROMPT_THREAD_CAND`, `_PROMPT_MILESTONE_CAND`, `_PROMPT_VOCAB_CAND`, `_PROMPT_DIGEST`, `_PROMPT_NARRATIVE`
+- `_TX_OPEN` / `_TX_CLOSE` / `_fence` transcript fence helpers (port from `diary.py:32-42`)
+- `_events_text(conn, sid)` → fenced sessions string
+- 7 segment functions: `_seg_affect(conn, client, sid, text)` etc — each: prompt call → parse → DB write → returns (ok, err_str)
+- main loop: for each segment in order, try → on fail keep going, collect failures
+- final audit_log: `action='sessionend_extract' summary='ok'` or `'partial:<seg1,seg2>'` or `'fail:all'`
+- one segment fail does NOT block others (each is independent extract)
+
+### 2b Per-segment specs
+
+**`_seg_affect`** — per-episode affect + Unresolved + reconcile_prev
+- Prompt body: include
+  - field spec for valence / arousal / importance / label / entities / event_hint (style from `diary.py:267-279`)
+  - `unresolved` field block: **paste verbatim from `docs/notes/lumi-prompt-source.md` §Unresolved**
+  - `reconcile_prev` field block: Stellan drafts following the Unresolved Include/Exclude/N/A structure
+  - EXCLUDE rule (relocated L3): do NOT record affect for coding/debug arguments — Lumi's debugging frustration + Stellan's tech responses are noise, not signal
+- Output marker: `===AFFECT===\n[{...},{...}]\n===END===`
+- Parse: extract JSON between markers
+- DB write to `affect`:
+  - `importance = max(1, min(5, int(raw.importance)))`
+  - populate `unresolved` (0/1) + `reconcile_prev` (used at write time, not stored)
+  - if `reconcile_prev == True`: `SELECT id FROM affect WHERE unresolved=1 AND resolved_at IS NULL ORDER BY ts DESC LIMIT 1` → set `reconcile_ref` on new row + `UPDATE affect SET resolved_at = ? WHERE id = reconcile_ref` (atomic txn)
+- Audit row: `action='sessionend_extract' segment='affect' summary='ok|fail:<E>'`
+
+**`_seg_entity_cand`** — entities conf ≥ 0.8
+- Prompt body: extract people / preferences / places mentioned. Output JSON `[{name, kind, conf, note}]`. kind ∈ {person, pref, place}.
+- Parse: JSON list
+- DB write: `entities` table — INSERT WHERE conf ≥ 0.8. Dedup by (name, kind). Reuse pattern from `diary.py:659-697`.
+
+**`_seg_thread_cand`** — work threads → tasks (relies on step 1 tasks table)
+- Prompt body: extract active work threads / TODOs mentioned. Output JSON `[{title, status, due, completed_at}]`. status ∈ {active, done}.
+- DB write: `tasks` — INSERT new rows; update existing tasks if (title) matches and status changed.
+
+**`_seg_milestone_cand`** — milestones conf ≥ 0.85
+- Prompt body: extract life-shaping events (graduation, breakup, job change, major move, family death). Output JSON `[{title, ts, conf, note}]`.
+- DB write: `milestones` — INSERT WHERE conf ≥ 0.85. Add dashboard alert via `repo.add_alert(priority='warn', source='milestone_candidate', label=title)`. Auto-confirm 7d undeleted lands in Phase 5 aging code — out of scope here.
+
+**`_seg_vocab_cand`** — vocab conf ≥ 0.7 + use_count
+- Prompt body: extract memes / inside jokes / coined terms / persona shorthand. Output JSON `[{key, definition, conf}]`.
+- DB write: `vocab` — INSERT IF NOT EXISTS; if exists increment `use_count`. Auto-promote dormant→active on use_count ≥ 3.
+
+**`_seg_digest`** — flexible-length narrative per §16.1
+- Prompt body: Stellan drafts by **merging old `diary.py:55-85` `DIGEST_SHORT` + `diary.py:87-116` `DIGEST_LONG`**, replace haiku-specific lines, apply §16.1 density:
+  - task-heavy session → compress ≥80% (output ≤20% chars; outline form OK)
+  - daily-chat session → preserve ~80% (output ~80% chars; verbatim dialogue retained, no work-style collapse)
+  - sonnet decides ratio per turn-by-turn work-vs-chat density
+  - second person (你/老婆) preserved; (心理活动) blocks do NOT proliferate
+  - No SKIP path — `_user_event_count ≤ skip_turn_threshold` upstream guard already prevents short sessions
+- Parse: plain text body
+- DB write: `session_digests (sid, date, text)` — INSERT OR REPLACE keyed on sid. date = session start date by 6AM boundary.
+
+**`_seg_narrative`** — handover async narrative per pipeline §4.2
+- Prompt body: Stellan drafts. Tone: continuation of the day's voice for next session start; mention salient unfinished threads + emotional arc; CN dominant; second person.
+- Parse: plain text body
+- File write: read `~/.config/marrow/handover.md` (sessionend hook output, NOT this repo's handover.md). Locate `<!-- narrative: pending sid:<sid> -->` stamp. Atomic append below: `<!-- narrative: ready sid:<sid> ts:<unix> -->\n{prose}\n`. Pipeline §4.2 sid-mismatch handling: if current skeleton sid differs from this segment's sid, append with explicit lag label `(narrative describes sid=<X>, current skeleton sid=<Y>)`.
+
+### 2c Verification per segment
+
+After EACH segment ship: paste full prompt body + `marrow/sessionend_async.py:L<start>-L<end>` into chat for Lumi.
+
+Live test after all 7 wired:
+- Pick latest real sid: `sqlite3 ~/.config/marrow/marrow.db "SELECT DISTINCT session_id FROM events ORDER BY ts DESC LIMIT 1"`
+- `python -m marrow.sessionend_async --sid <sid>` → check audit row `'ok'` or `'partial:<segs>'`
+- Spot check: `sqlite3 ~/.config/marrow/marrow.db "SELECT * FROM session_digests WHERE sid='<sid>'"` and similar for affect/entities/tasks/milestones/vocab
+
+## Step 3 — daily.py (~150 LoC)
+
+File: `marrow/daily.py` (NEW)
+
+- `DIARY_PROMPT` = verbatim copy of old `diary.py:137-194` (no edit; Lumi-owned text)
+- `_TZ = ZoneInfo("Australia/Melbourne")`, `_CUTOFF_H = 6` (was 4)
+- `_to_local(ts)` / `_diary_day(date)` / `_routine_target()` — port from `diary.py:328-349`, swap cutoff
+- `read_affect(conn, date)` → list of dicts from `affect_live WHERE date(ts) = ?`
+- `read_digests(conn, date)` → list of texts from `session_digests WHERE date = ? ORDER BY ts`
+- `run_day(conn, date, llm, *, force=False) -> bool`:
+  - guard: if `diary` row exists for date and not force → return False
+  - read affect rows + digest texts
+  - assemble: f"{digests joined with `\\n\\n---\\n\\n`}\\n\\nAFFECT summary: {labels list}"
+  - sonnet call: `llm.call(role='daily', body=DIARY_PROMPT.format(date=date, digest=material), tier='mid')`
+  - atomic txn: DELETE WHERE date + INSERT diary row + audit_log marker
+  - returns True
+- `run(conn, llm, *, day=None, catchup=False, force=False) -> list[str]`:
+  - day=None → `_routine_target()` (yesterday by 6AM boundary)
+  - catchup=True → loop `daily_catchup.pending_days(conn, 7)` capped at `CATCHUP_MAX=3`
+  - return list of dates written
+- `main(argv) -> int`:
+  - flags: `--day YYYY-MM-DD`, `--catchup`, `--force`
+  - acquire `daily_catchup._app_lock`
+  - construct `LLMClient` + `storage.connect` + call `run`
+  - log + exit code
+
+Tests: `tests/test_daily.py` — copy + rewrite from old `tests/test_diary.py`. Fixtures: relative dates, mock LLM returning fixed prose. Verify: idempotency, force, catchup loop, lock contention.
+
+## Step 4 — daily_catchup.py (~100 LoC)
+
+File: `marrow/daily_catchup.py` (NEW)
+
+- `CATCHUP_WINDOW_DAYS = 7`, `CATCHUP_MAX = 3`
+- `pending_days(conn, window_days) -> list[str]` — days in [today-window, today-1] with events but no diary row (port from `diary.py:372-405`)
+- `day_events(conn, date) -> list[dict]` — events filtered by 6AM boundary
+- `_has_diary(conn, date) -> bool`
+- `_app_lock(path=None, *, blocking=True)` — fcntl flock context manager, port from `diary.py:352-369`. Default path `~/.config/marrow/daily.lock`.
+
+Tests: `tests/test_daily_catchup.py`.
+
+## Step 5 — Delete diary.py + reference migration
+
+- `grep -rn "from marrow.diary\\|from .diary\\|import marrow.diary\\|marrow\\.diary\\b" marrow/ tests/ deploy/ docs/`
+- For each:
+  - `tests/test_diary.py` → rename `tests/test_daily.py`, fix imports (`from marrow import daily`)
+  - `marrow/sessionstart_catchup.py` — change `from .diary import ...` → `from . import daily, daily_catchup`
+  - `marrow/dashboard.py` / `marrow/top_sections.py` / `marrow/cli.py` if referenced → swap
+  - `deploy/mw-diary-*.plist` — handled in step 8
+- `git rm marrow/diary.py`
+
+## Step 6 — P8 ollama strip
+
+`marrow/llm.py`:
+- delete `_MUTE_OLLAMA` flag (~L56-61)
+- delete chain-build ollama-filter branch (~L90-94)
+- delete `if kind == "ollama": return self._run_ollama(...)` dispatch (~L138-139)
+- delete `_run_ollama` method body (~L330-347)
+- module docstring (L2): drop ` → fallback → emergency` → `default` only
+
+`marrow/config.default.toml`:
+- L30: `emergency = "ollama"` → `emergency = ""` (keep key for OSS fork)
+- L39-41: delete `[llm.ollama]` block
+
+`tests/test_llm.py`:
+- delete tests at L64 / L117 / L132
+- trim fixture L12-14 (drop `"emergency": "ollama"` + `"ollama": {...}` lines)
+- edit `test_multi_tier_all_fail_last_alert_critical_exhausted` (L98) if it monkeypatches `_MUTE_OLLAMA` — remove monkeypatch line, keep rest
+
+Doc trims:
+- `DESIGN.md:80` drop ` → local Ollama (emergency)`
+- `DESIGN.md:85` drop ` or local Ollama`
+- `DECISIONS.md:10` drop ` / Ollama emergency`
+- `marrow/CLAUDE.md` line 16 ollama caveat — KEEP (Lumi may rotate providers in OSS forks)
+
+Verify: `pytest tests/test_llm.py -k "ollama"` returns 0 tests. `grep -rn "ollama" marrow/ tests/ DESIGN.md DECISIONS.md` returns only empty-config-key line + historical PROGRESS entries.
+
+## Step 7 — Full pytest green
+
+- `pytest -q`
+- Expected: ~298-302 passing (301 baseline − 3 ollama tests + new test_daily / test_storage / test_daily_catchup tests)
+- Fix every red before step 8
+
+## Step 8 — Plist edits
+
+`deploy/mw-diary-routine.plist`:
+- L13 ProgramArguments: `python -m marrow.diary` → `python -m marrow.daily`
+- L27 `<integer>4</integer>` (Hour) → `<integer>7</integer>`
+
+`deploy/mw-diary-catchup.plist`:
+- L13 ProgramArguments: → `python -m marrow.daily --catchup` (note: split args properly in plist `<array>`)
+- L27 `<integer>16</integer>` → `<integer>19</integer>`
+
+`deploy/mw-jsonl-cleanup.plist`:
+- Sunday Hour entry `<integer>5</integer>` → `<integer>12</integer>`
+
+Consider rename of plist files themselves (`mw-diary-*` → `mw-daily-*`) — only if it does not break existing `launchctl list` labels in user's LaunchAgents directory. Default: keep plist filenames (label-stable), update only contents.
+
+## Step 9 — launchctl reload
+
+For each of the 3 plists in `~/Library/LaunchAgents/`:
+- `launchctl unload ~/Library/LaunchAgents/<name>.plist`
+- `launchctl load ~/Library/LaunchAgents/<name>.plist`
+
+Verify: `launchctl list | grep mw-` shows all 3 loaded.
+
+## Step 10 — Commit + PROGRESS + push
+
+- `git add -A`
+- Commit message:
+  ```
+  feat(2.5c): daily rewrite + sessionend 7-seg + threads→tasks + ollama strip + 6AM + plist realign
+
+  - daily.py (read-only diary writer) + daily_catchup.py replace 900-LoC diary.py
+  - sessionend_async.py: 7 sonnet segments (AFFECT/ENTITY_CAND/THREAD_CAND/MILESTONE_CAND/VOCAB_CAND/DIGEST/NARRATIVE) with per-seg parse + DB write + idempotent audit
+  - storage._migrate_to_v2: affect +3 cols (unresolved/reconcile_ref/resolved_at) + threads→tasks rename + session_digests table
+  - 6AM day boundary, importance 1-5 clamp, ollama tier removed
+  - 3 plists Hour 4/16/Sun5 → 7/19/Sun12 + path → marrow.daily
+  ```
+- `PROGRESS.md` append one line: `[2026-05-24] phase 2.5c daily rewrite done | <commit-sha> | verify: pytest <N>/<N>, sessionend_async live ok against sid <X>, launchctl list mw-* loaded`
+- `git push origin main`
+
+## Reporting checklist (during execution)
+
+- After step 1: report `marrow/storage.py:<line>` migration block + `pytest tests/test_storage.py` result
+- After EACH of step 2's 7 segments: paste prompt body verbatim + `marrow/sessionend_async.py:L<start>-L<end>`
+- After step 2c live test: paste audit row + sample new DB rows
+- After step 3: report DIARY_PROMPT paste source confirmation + `marrow/daily.py:L<line>`
+- After step 5: report grep output + files touched
+- After step 7: report pytest count
+- After step 8: report 3 plist diffs (`git diff deploy/`)
+- After step 9: report `launchctl list | grep mw-` output
+- After step 10: commit sha + PROGRESS delta line
