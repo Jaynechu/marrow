@@ -40,17 +40,15 @@ def test_render_top_has_alerts_and_threads(db):
     assert M0 in block and M1 in block
 
 
-def test_alert_id_rendered_at_front(db):
+def test_alert_rendered_with_severity(db):
+    # Format changed in 2.5b: severity: message (no id prefix, per template spec).
     conn = storage.connect(db)
     try:
-        row = conn.execute("SELECT id FROM alerts LIMIT 1").fetchone()
         block = dashboard.render_top(conn)
     finally:
         conn.close()
-    aid = row["id"]
-    line = next(ln for ln in block.splitlines()
-                if "recall returned 0" in ln)
-    assert line == f"- #{aid} [warn] recall returned 0"
+    line = next(ln for ln in block.splitlines() if "recall returned 0" in ln)
+    assert line == "- warn: recall returned 0"
 
 
 def test_write_creates_file_with_block(db, tmp_path):
