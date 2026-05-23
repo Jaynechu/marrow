@@ -3,18 +3,17 @@
 Contract:
 - New sub-page = new SubPageConfig entry + table, not a base rewrite (goal 7).
 - Same render contract for all views: marker-partition, atomic temp+replace
-  write, hash-guard -> backup + 1 alert on hand-edit conflict.
-- Cheatsheet exception: read_only=True, always overwrites, no hash-guard.
+  write. md->DB reconcile runs first so anchored hand-edits flow back to DB.
+- Free-form hand-edits inside the rendered block are silently overwritten
+  on next render (DB is SoT; non-anchored text is not preserved).
+- Cheatsheet exception: read_only=True, always overwrites.
 - Render functions live in subpages_render.py.
 """
 from __future__ import annotations
 
-import hashlib
 import os
-import shutil
 import sqlite3
 import tempfile
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,11 +53,11 @@ def _m1(key: str) -> str:
 @dataclass
 class SubPageConfig:
     """Render config for one sub-page or sub-page folder."""
-    key: str                          # marker key and hash-file stem
+    key: str                          # marker key
     render: Callable[[sqlite3.Connection], str]  # returns full block incl markers
     path: str                         # absolute path to the .md file
-    state_dir: str                    # dir for .hash / .bak files
-    read_only: bool = False           # skip hash-guard; always overwrite
+    state_dir: str                    # dir for sub-page state (reserved)
+    read_only: bool = False           # always overwrite full file
     # md->DB reconcile callback. Runs BEFORE render so Lumi's md edits flow
     # back to DB and the freshly-rendered block reflects them. None = skip.
     reconcile: Callable[[sqlite3.Connection, "Path"], object] | None = None
@@ -66,7 +65,7 @@ class SubPageConfig:
 
 
 # ---------------------------------------------------------------------------
-# Write (hash-guard + atomic write)
+# Write (atomic)
 # ---------------------------------------------------------------------------
 
 def _atomic_write(path: str, data: str) -> None:
@@ -82,10 +81,6 @@ def _atomic_write(path: str, data: str) -> None:
             os.unlink(tmp)
 
 
-def _hash(s: str) -> str:
-    return hashlib.sha256(s.encode()).hexdigest()
-
-
 def _split(text: str, key: str) -> tuple[str, str, str]:
     """(before, block_incl_markers, after); block '' if markers absent."""
     m0, m1 = _m0(key), _m1(key)
@@ -99,20 +94,18 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
                   db: str | None = None) -> None:
     """Render + write one sub-page; recurse into children.
 
-    Order: reconcile (md->DB) -> render -> hash-guard -> atomic write.
-    Reconcile runs first so Lumi's md edits flow back to DB and the new
-    render block reflects them. Hash-guard alerts only when reconcile
-    didn't absorb the change (anchored conflicts, free-form text added).
+    Order: reconcile (md->DB) -> render -> atomic write.
+    Reconcile absorbs anchored md edits into DB so the new render reflects
+    them. Free-form text inside the rendered block is silently overwritten;
+    Lumi's hand-edits are intentional and DB stays SoT.
     """
     path, key = cfg.path, cfg.key
     Path(cfg.state_dir).mkdir(parents=True, exist_ok=True)
-    hash_file = Path(cfg.state_dir) / f"{key}.hash"
 
     # Run reconcile BEFORE render so the new block reflects Lumi's edits.
-    rpt = None
     if cfg.reconcile is not None and os.path.exists(path) and not cfg.read_only:
         try:
-            rpt = cfg.reconcile(conn, Path(path))
+            cfg.reconcile(conn, Path(path))
         except Exception as e:
             repo.add_alert(
                 "warn", "sub_pages",
@@ -128,29 +121,12 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
     else:
         before, cur_block, after = _split(existing, key)
         if cur_block:
-            last = hash_file.read_text() if hash_file.exists() else ""
-            absorbed = rpt is not None and (
-                getattr(rpt, "any_change", lambda: False)()
-                or getattr(rpt, "unchanged", 0) > 0
-            )
-            if last and _hash(cur_block) != last and not absorbed:
-                bak = Path(cfg.state_dir) / f"{key}.{int(time.time())}.bak"
-                shutil.copyfile(path, bak)
-                repo.add_alert(
-                    "warn", "dashboard",
-                    f"{key} sub-page hand-edited; backed up before re-render, "
-                    f"see {bak.name}", source="subpages.py", db=db,
-                )
             new = before + block + after
         elif existing:
             new = block + "\n\n" + existing
         else:
             new = block + "\n"
-        # Both writes atomic: a crash between bare write_text and atomic_write
-        # would leave the md newer than the hash and trigger a false
-        # "hand-edited" alert on the next render.
         _atomic_write(path, new)
-        _atomic_write(str(hash_file), _hash(block))
 
     for child in cfg.subpages:
         write_subpage(child, conn, db=db)

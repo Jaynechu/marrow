@@ -2,12 +2,13 @@
 
 Contract:
 - Each sub-page rendered from one table, same render contract (markers +
-  atomic write + hash-guard) differing only by table + view.
+  atomic write) differing only by table + view.
 - Structured views: row-id anchor `<!-- id:{id} -->` at line end.
 - Narrative views (diary, goose-bites): `## YYYY-MM-DD` heading is the row
   boundary; no extra inline anchor.
-- Cheatsheet: read-only, always overwrite, no hash-guard.
-- Hand-edit in a non-read-only sub-page -> backup + one alert, never silent.
+- Cheatsheet: read-only, always overwrite.
+- Anchored md edits flow back to DB via reconcile; free-form hand-edits
+  inside the rendered block are silently overwritten on next render.
 - New sub-page = new SubPageConfig entry, not a base rewrite (goal 7).
 """
 from __future__ import annotations
@@ -289,10 +290,11 @@ def test_cheatsheet_always_overwrites(db, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Hash-guard: hand-edit on non-read-only sub-page -> backup + alert
+# Free-form hand-edit inside the rendered block is silently overwritten
+# (anchored edits flow back via reconcile; free-form is not preserved).
 # ---------------------------------------------------------------------------
 
-def test_hand_edit_backs_up_and_alerts(db, tmp_path):
+def test_freeform_hand_edit_silently_overwritten(db, tmp_path):
     folder = str(tmp_path / "ny")
     state = str(tmp_path / "state")
     path = str(Path(folder) / "milestone.md")
@@ -305,19 +307,22 @@ def test_hand_edit_backs_up_and_alerts(db, tmp_path):
             state_dir=state,
         )
         subpages.write_subpage(cfg, conn, db=db)
-        # Lumi hand-edits inside the system block
+        # Free-form addition inside the marker block (not an anchored row).
+        end_marker = "<!-- marrow:milestone:end -->"
         t = Path(path).read_text().replace(
-            "First meeting", "First meeting EDITED"
+            end_marker, "FREE FORM NOTE\n" + end_marker
         )
         Path(path).write_text(t)
         subpages.write_subpage(cfg, conn, db=db)
+        result = Path(path).read_text()
         alerts = [a["message"] for a in
                   __import__("marrow.repo", fromlist=["x"]).open_alerts(conn)]
     finally:
         conn.close()
-    assert any("milestone" in m.lower() or "sub-page" in m.lower()
-               for m in alerts)
-    assert list(Path(state).glob("milestone*.bak"))
+    # Overwritten silently: free-form line gone, no alert, no .bak.
+    assert "FREE FORM NOTE" not in result
+    assert not any("hand-edited" in m.lower() for m in alerts)
+    assert not list(Path(state).glob("milestone*.bak"))
 
 
 # ---------------------------------------------------------------------------
