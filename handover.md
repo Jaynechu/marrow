@@ -23,6 +23,21 @@
 
 ## Next window
 
+### Bug #0 — recall outlet starves on default limit, ignores entity table (P0, blocks "memory exists" trust)
+- Symptom: Lumi mentioned (李小云) ~12 times over 5/19-5/22, auto recall surfaces only 3 (75% missing). (大龙虾) 2 events, 1 surfaced.
+- Raw evidence (sqlite events_fts MATCH): (李小云) 12 distinct events; (大龙虾) 2.
+- Write + FTS index path verified healthy. Failure is the OUTLET.
+- Root causes:
+  - `marrow/recall.py:511` default `limit=5`.
+  - `marrow/recall.py:467` `ms_cap = max(1, (limit+2)//3)` gives milestones 2 slots; events get 3 (`:469`). Caps total event surfacing at 3 regardless of FTS hit count.
+  - `[embedding].model = ""` in config.toml — bge-m3 not loaded; fusion degrades to FTS+recency only (DECISIONS Phase 2 locks bge-m3 1024d but never installed).
+  - entities table has `mention_count` column but recall does NOT join on entity → never proactively surfaces history when current prompt contains an entity name.
+- Fix direction (priority order):
+  - (P0 cheap) default `limit` 5 → 15; drop `ms_cap` to 1 (or 0) when FTS strong-hit count > N; raise per-item budget cap accordingly.
+  - (P0 design) entity-aware recall: when current prompt contains an entity name (FTS-match entities.name + aliases), JOIN entity_id → events directly, force-include all matches in top-K, bypass fusion scoring.
+  - (P1) enable bge-m3 embedder so vector lane stops being dead weight; events_vec already has embedder-id/dim provenance slot reserved (FUTURE: events_vec_embedder_provenance).
+  - (P1) use entities.mention_count as a recency/frequency booster in fusion weight.
+
 ### Bug #1 — handover render race (high priority, blocks dev-brief retire)
 - `handover_render.write_handover()` at SessionStart does full-file overwrite of `~/.config/marrow/handover.md`: reads empty template → renders top + Reference + stamp → atomic_write whole file. Overwrites the ThisSession/NextSession content that the previous sessionend just wrote.
 - Evidence: prev sessionend 02:48:46 audit ok → this SessionStart 02:49:43 handover.md mtime → ThisSession/NextSession blank, stamp `pending sid:sid-hook-test`.
