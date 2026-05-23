@@ -44,7 +44,7 @@ Later
 - 【主调】或【主调A → 主调B】 · 4 个 key ep (eph/epl 按 outlier 排)
 
 ### Pending
-- emotional carryover (unresolved 写这里)
+- emotional carryover (unresolved 写这里; use `- [ ]` to mark resolved)
 
 —————以上这一段应该是跟dashboard的top一模一样的—————
 
