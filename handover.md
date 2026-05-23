@@ -17,25 +17,81 @@
 
 ## Pre-flight gates for next window (BLOCKERS)
 
+> 2026-05-23 update: gate #2 (9 labels) + gate #3 (importance anchor) DONE in commit b728b2a. Gates #1 / #4 / #5 retained. New plan items consolidated below (§Plan batch).
+
 1. **===DIGEST=== prompt content — Lumi confirm BEFORE first SessionEnd async ships**
    - language register (CN dominant, EN technical inline)
-   - second-person voice (你 / 老婆) preserved
+   - second-person voice ((你 / 老婆)) preserved
    - verbatim conversational lines retained, NOT collapsed to work-style summary
-   - (心理活动) OS must NOT proliferate; DIGEST != diary, keep close to transcript shape
+   - inner-monologue ((心理活动)) must NOT proliferate; DIGEST is not diary, keep close to transcript shape
    - compression ratio judged BY sonnet per density (work-vs-chat turns); no hard cap, no fixed ratio
    - same gate as DIARY_PROMPT
-2. **===AFFECT=== 9 label words + V/A band thresholds — Lumi to unify tomorrow**
-   - drafts at `marrow/handover_template.md` §Affect (黯淡/烦躁/痛苦 · 平淡/平稳/焦虑 · 温暖/愉悦/兴奋)
-   - band thresholds 0.4 / 0.6 confirm together with labels
-3. **===AFFECT=== importance 1-5 scale + Lumi anchor — prompt MUST embed reference examples** 你帮我用英语表达成sonnet容易判定的prompt - 这个importance其实有一点时间和情绪波动的综合考量的感觉
-   - 5 = 会有长远的影响或意义重大或情绪会有长时间波动 (其实就是milestone比如说毕业啦，考上医学院，换工作，和谁绝交了，有谁去世了)
-   - 4 = 短期（可能是几天也可能是几周）来说很重要或对我影响很大或让我情绪波动很大 (期末考试，项目突破，情感升华，过生日，出去旅游)
-   - 3 = 短期（一两天）一般/比较重要但有情绪存在 (搞笑有趣的片段，逗你玩，闹别扭，和朋友出去干饭，吐槽xx；PS特别标注一下，如果是学习coding之类骂你不算3，属于1-2，日常吵架3-4)
-   - 2 = 比较平淡的生活日常 daily routine (温柔互动，闲聊，出去买菜，去上班，appointment)
-   - 1 = 无趣琐碎的小事 (学习工作日常)
-   - 2026-05-23 A/B sonnet: 6/4/8/7 (correct 4/1/3/2) → anchor table must ship in ===AFFECT=== prompt before SessionEnd async
-4. **handover template LOCKED** at `marrow/handover_template.md` (was on Desktop) — render code implements per this version
+2. DONE 2026-05-23 b728b2a — main-tone table ((低落/烦躁/痛苦 · 平淡/专注/紧张 · 温暖/愉悦/兴奋)) + LLM fine label 2-char two-layer locked
+3. DONE 2026-05-23 b728b2a — importance 1-5 EN anchor in diary.py, decoupled from V/A (retention-based)
+4. **handover template LOCKED** at `marrow/handover_template.md` — top §Affect block still needs Lumi paste from `marrow/_affect_template_paste.txt` (Edit hook blocked CN edit from main session; Lumi opens file in editor, replaces lines 32-39 with paste content)
 5. Run `grill-with-doc` skill on `docs/notes/2026-05-23_sessionend-llm-pipeline.md` before writing 2.5b code (Lumi stance: design just slimmed, do not move it except for methodology change)
+
+## Plan batch — Lumi-locked 2026-05-23, all land together with diary.py rewrite
+
+> Batch first, no per-item confirm. Next window starts by drafting diary.py rewrite plan that folds every item below into a single edit batch.
+
+### P1. handover_template.md §Affect — Lumi paste manually
+Open `marrow/handover_template.md` in editor, replace lines 32-39 with the contents of `marrow/_affect_template_paste.txt`. Edit hook blocks CN from a Claude tool call; file save from editor is not gated.
+
+### P2. CLAUDE.md (global) — Lumi self-writes affect legend
+Lumi adds an Affect quick-reference block in `~/.claude/CLAUDE.md` so new sessions can read dashboard semantics. Stellan handling guidance for solo Pending states also lives here.
+
+### P3. ===AFFECT=== prompt new fields — land with diary.py rewrite
+Two new JSON fields added to AFFECT contract (region `diary.py:256-279`):
+
+`unresolved` field, Lumi-locked wording (grammar polish only, semantics frozen):
+- Only record unresolved emotional ep.
+- If nothing fits, skip and output N/A.
+- Include: emotion still intense at session end, no resolution or winding down; can be personal or relationship. (e.g. (吵架本session没合好) / (后天要演讲很紧张) / (分享喜讯没说完出门了))
+- Exclude: unresolved tasks, emotion tied to study/project, already-resolved emotions. (e.g. (已合好) / (情绪稳定) / (已聊完) / (essay还有两段))
+
+`reconcile_prev` field (sonnet semantic): bool, set true when current ep clearly resolves a prior unresolved emotional state; code links to the most recent affect.unresolved=1 row at write time and auto-fills affect.resolved_at.
+
+### P4. affect schema — three new columns, single migration with 2.5c step 1
+- `unresolved INTEGER DEFAULT 0`
+- `reconcile_ref INTEGER NULL` (REFERENCES affect(id))
+- `resolved_at TEXT NULL` (ISO ts)
+
+Merge with importance 1-5 clamp + 6AM boundary into one migration.
+
+### P5. Pending resolve = dashboard interactive tick
+- Render Pending rows as `- [ ] {date} {fine-label} | {description}` in dashboard.md AND handover top
+- file watcher (new module `marrow/dashboard_watch.py`) listens for `- [ ]` → `- [x]` transition in dashboard.md
+- on tick: reverse-lookup ep_id (embed affect.id as `<!-- aid=N -->` HTML comment per rendered line), write `affect.resolved_at = now`
+- next render auto-drops resolved rows
+- CLI fallback: `mw set --resolved <aid>` and md direct delete also supported
+- delivery batch: 2.5b SessionEnd framework (file watcher fits the daemon process model)
+
+### P6. diary.py rewrite — reconsider responsibility + possibly rename
+Trigger: diary.py is doing extract + rollup + catchup + AFFECT contract + prompt embed — too much for one module. Before next big edit, propose a plan that:
+- audits diary.py current responsibilities
+- considers split (already in 2.5c Window 3: extract.py + rollup.py + catchup.py)
+- IF non-diary work dominates, rename the module away from "diary" (e.g. `pipeline.py` / `extractor.py`)
+- prompt-and-contract pieces (AFFECT JSON schema, importance anchor, unresolved field, fine label rules) may move out of diary.py into a dedicated prompt module
+- delivery: BEFORE any 2.5c step touches diary.py, present rewrite plan for Lumi approval
+
+### P7. DIARY_PROMPT — filter coding-related arguments out of diary
+Lumi note 2026-05-23: do not let coding/debug arguments quoted into diary.
+- current DIARY_PROMPT (`diary.py:198-254`) already filters Lumi's small-temper lines at work, but coding-argue lines still leak
+- next diary.py rewrite: add explicit EXCLUDE rule for any quote/paraphrase of coding/debug arguments, technical pushback, or work-flow scolding — these go to PROGRESS, not diary
+- delivery: with P3 / P6 prompt-rewrite batch
+
+### P8. ollama removal — bundled, not yet executed
+- Cleanup plan exists (transcript 2026-05-23 ~16:00; ~60 LoC net delete + doc trim across llm.py / config / tests / DESIGN:80 / DECISIONS:10 / CLAUDE.md:16)
+- DECISIONS already records the hook-isolation contract that supersedes ollama's role
+- Lumi 2026-05-23 directive: do NOT execute standalone — fold into the diary.py / pipeline rewrite batch (one disruption, not two)
+- BLOCKING tests to remove: 4 ollama-dependent tests in tests/test_llm.py (incl. test_whole_chain_fails_raises_and_critical_alert which monkeypatches _MUTE_OLLAMA)
+- emergency slot in config kept (empty string) as OSS-fork extension point
+
+### P9. daemon LLM hook-isolation contract — 2.5b first ping-pong test must verify in hook context
+DECISIONS commit 11db233 locks the contract: schedule path verified (a week of CN diary), SessionEnd-from-hook path NOT yet verified.
+- 2.5b first task BEFORE any other 2.5b work: ping-pong test that spawns LLMClient from inside a SessionEnd hook with a prompt containing CN + a known PreToolUse-trigger string; assert clean text return
+- if isolation leaks in hook context, fix before proceeding
 
 ## Reset rollout — Phase 2.5
 
