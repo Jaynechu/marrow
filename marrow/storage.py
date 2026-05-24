@@ -221,10 +221,11 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
     conn = connect(path)
     dim = int(cfg.get("embedding", {}).get("dim", 1024))
     with conn:
-        # Pre-_TABLES rename: legacy DB has `threads` populated. Renaming
-        # before CREATE TABLE IF NOT EXISTS tasks is the only way to carry
-        # the rows across; doing it after would leave both tables present.
+        # Pre-_TABLES renames: legacy populated tables (`threads`, `vocab`)
+        # must be renamed BEFORE CREATE TABLE IF NOT EXISTS runs, or both
+        # the legacy and the new empty table end up coexisting.
         _pre_v2_rename(conn)
+        _pre_v5_rename(conn)
         conn.executescript(_TABLES)
         # FTS5 tokenizer migration: Phase 1 shipped unicode61 (CJK tokenless).
         # Drop + rebuild with trigram when stale; rebuild only on migration.
@@ -368,14 +369,14 @@ def _migrate_to_v4(conn: sqlite3.Connection) -> None:
         pass
 
 
-def _migrate_to_v5(conn: sqlite3.Connection) -> None:
-    """v5 schema: rename `vocab` -> `memes` (sub-page name alignment) +
-    stickers.vocab_id column -> stickers.meme_id. Idempotent — skips when
-    `memes` already exists or `vocab` is absent.
+def _pre_v5_rename(conn: sqlite3.Connection) -> None:
+    """Pre-_TABLES rename: legacy `vocab` -> `memes`. Idempotent.
+
+    Must run BEFORE `_TABLES` so CREATE TABLE IF NOT EXISTS memes does not
+    create a sibling empty table next to the populated legacy one.
+    Also handles stickers.vocab_id -> stickers.meme_id column rename
+    (SQLite >=3.25 supports RENAME COLUMN).
     """
-    v = conn.execute("PRAGMA user_version").fetchone()[0]
-    if v >= 5:
-        return
     has_memes = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memes'"
     ).fetchone()
@@ -384,7 +385,21 @@ def _migrate_to_v5(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if has_vocab and not has_memes:
         conn.execute("ALTER TABLE vocab RENAME TO memes")
-    # stickers.vocab_id -> stickers.meme_id (SQLite ≥3.25 supports RENAME COLUMN).
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(stickers)")}
-    if "vocab_id" in cols and "meme_id" not in cols:
-        conn.execute("ALTER TABLE stickers RENAME COLUMN vocab_id TO meme_id")
+    has_stickers = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='stickers'"
+    ).fetchone()
+    if has_stickers:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(stickers)")}
+        if "vocab_id" in cols and "meme_id" not in cols:
+            conn.execute(
+                "ALTER TABLE stickers RENAME COLUMN vocab_id TO meme_id"
+            )
+
+
+def _migrate_to_v5(conn: sqlite3.Connection) -> None:
+    """v5 schema bump only. The actual rename lives in _pre_v5_rename so it
+    runs BEFORE CREATE TABLE IF NOT EXISTS memes. Idempotent.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 5:
+        return
