@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from . import config as _config
 from . import repo
 from .reconcile import reconcile_milestones
 from .subpages_render import (
@@ -28,10 +29,13 @@ from .subpages_render import (
     render_memes,
     render_milestone,
     render_pit,
+    render_profile,
     render_project_page,
     render_projects_index,
+    render_stickers,
     render_study_index,
     render_study_unit,
+    render_wallet,
 )
 
 _MARKER_START = "<!-- marrow:{key}:start -->"
@@ -225,30 +229,133 @@ def build_projects_configs(conn: sqlite3.Connection,
 
 
 # ---------------------------------------------------------------------------
-# Entry points
+# Entry points — config-driven (DESIGN L43-65, [subpages] in config.toml)
 # ---------------------------------------------------------------------------
 
+# Registry: known keys → builder(conn, folder, state_dir) returning a
+# SubPageConfig. Folder-based views (study, projects) build their own
+# children; the rest are single-file flat configs.
+_REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = {
+    "profile":    lambda c, f, s: SubPageConfig(
+        "profile",   render_profile,   str(Path(f)/"profile.md"),   s),
+    "milestone":  lambda c, f, s: SubPageConfig(
+        "milestone", render_milestone, str(Path(f)/"milestone.md"), s,
+        reconcile=reconcile_milestones),
+    "diary":      lambda c, f, s: SubPageConfig(
+        "diary",     render_diary,     str(Path(f)/"diary.md"),     s),
+    "memes":      lambda c, f, s: SubPageConfig(
+        "memes",     render_memes,     str(Path(f)/"memes.md"),     s),
+    "stickers":   lambda c, f, s: SubPageConfig(
+        "stickers",  render_stickers,  str(Path(f)/"stickers.md"),  s),
+    "wallet":     lambda c, f, s: SubPageConfig(
+        "wallet",    render_wallet,    str(Path(f)/"wallet.md"),    s),
+    "goose":      lambda c, f, s: SubPageConfig(
+        "goose",     render_goose,     str(Path(f)/"goose.md"),     s),
+    "cheatsheet": lambda c, f, s: SubPageConfig(
+        "cheatsheet", render_cheatsheet, str(Path(f)/"cheatsheet.md"), s,
+        read_only=True),
+    "study":      lambda c, f, s: build_study_configs(c, f, s),
+    "projects":   lambda c, f, s: build_projects_configs(c, f, s),
+}
+
+# Render order when [subpages] is absent from config — covers fresh installs
+# and tests. Mirrors DESIGN L43-65 default order.
+_DEFAULT_TOP = ["profile", "milestone", "diary", "memes",
+                "stickers", "wallet", "goose"]
+_DEFAULT_BOTTOM = ["study", "projects", "cheatsheet"]
+
+
+def _subpages_cfg() -> dict:
+    """Load [subpages] from config.toml, fall back to defaults. Never raises.
+
+    Distinguishes missing key (use default) from empty list (honour empty).
+    """
+    try:
+        cfg = _config.load().get("subpages") or {}
+    except Exception:
+        cfg = {}
+    top    = cfg["top"]    if "top"    in cfg else _DEFAULT_TOP
+    bottom = cfg["bottom"] if "bottom" in cfg else _DEFAULT_BOTTOM
+    hidden = cfg["hidden"] if "hidden" in cfg else []
+    return {"top": list(top), "bottom": list(bottom), "hidden": list(hidden)}
+
+
 def build_all_configs(conn: sqlite3.Connection, *,
-                      folder: str, state_dir: str) -> list[SubPageConfig]:
-    """Full sub-page config list. Add a new view here + a renderer = done."""
-    d = Path(folder)
-    flat = [
-        SubPageConfig("diary",      render_diary,      str(d/"diary.md"),       state_dir),
-        SubPageConfig("milestone",  render_milestone,  str(d/"milestone.md"),   state_dir,
-                      reconcile=reconcile_milestones),
-        SubPageConfig("memes",      render_memes,      str(d/"memes.md"),       state_dir),
-        SubPageConfig("goose",      render_goose,      str(d/"goose.md"),       state_dir),
-        SubPageConfig("cheatsheet", render_cheatsheet, str(d/"cheatsheet.md"),  state_dir,
-                      read_only=True),
-    ]
-    flat.append(build_study_configs(conn, str(d), state_dir))
-    flat.append(build_projects_configs(conn, str(d), state_dir))
-    return flat
+                      folder: str, state_dir: str,
+                      db: str | None = None) -> list[SubPageConfig]:
+    """Config-driven sub-page list (DESIGN L43-65).
+
+    Order: top items, then bottom items. Unknown keys = warn + skip + alert.
+    `hidden` keys still build (so md files stay current) but the dashboard
+    Content list excludes them — gate happens at content_list().
+    """
+    sub_cfg = _subpages_cfg()
+    out: list[SubPageConfig] = []
+    seen: set[str] = set()
+    for section in ("top", "bottom"):
+        for key in sub_cfg[section]:
+            if key in seen:
+                continue
+            seen.add(key)
+            builder = _REGISTRY.get(key)
+            if builder is None:
+                repo.add_alert(
+                    "warn", "sub_pages",
+                    f"unknown subpage key '{key}' in [subpages].{section}"
+                    " — skipped (registry: " + ", ".join(sorted(_REGISTRY)) + ")",
+                    source="subpages.py", db=db,
+                )
+                continue
+            try:
+                out.append(builder(conn, folder, state_dir))
+            except Exception as e:
+                repo.add_alert(
+                    "warn", "sub_pages",
+                    f"subpage '{key}' build failed: {e}",
+                    source="subpages.py", db=db,
+                )
+    return out
+
+
+def content_list(*, folder: str | None = None) -> dict:
+    """Return ordered subpage display info for dashboard `## Content`.
+
+    Returns {"top": [(label, rel_path), ...], "bottom": [(label, rel_path), ...]}
+    Hidden keys excluded. `folder` defaults to config.sub_pages_path() so the
+    dashboard can compute md links relative to its own path.
+    """
+    sub_cfg = _subpages_cfg()
+    hidden = set(sub_cfg["hidden"])
+    folder = folder or _config.sub_pages_path()
+    base = Path(folder)
+    out: dict[str, list[tuple[str, str]]] = {"top": [], "bottom": []}
+    for section in ("top", "bottom"):
+        for key in sub_cfg[section]:
+            if key in hidden or key not in _REGISTRY:
+                continue
+            label = _DISPLAY.get(key, key.capitalize())
+            out[section].append((label, str(base / f"{key}.md")))
+    return out
+
+
+# Display names for dashboard Content section. Falls back to key.capitalize().
+_DISPLAY = {
+    "profile":    "Profile",
+    "milestone":  "Milestone",
+    "diary":      "Diary",
+    "memes":      "Memes",
+    "stickers":   "Stickers",
+    "wallet":     "Wallet",
+    "goose":      "Goose-bites",
+    "study":      "Study",
+    "projects":   "Projects",
+    "cheatsheet": "Cheatsheet",
+}
 
 
 def write_all_subpages(conn: sqlite3.Connection, *,
                        folder: str, state_dir: str,
                        db: str | None = None) -> None:
     """Render and write all sub-pages atomically."""
-    for cfg in build_all_configs(conn, folder=folder, state_dir=state_dir):
+    for cfg in build_all_configs(conn, folder=folder, state_dir=state_dir, db=db):
         write_subpage(cfg, conn, db=db)

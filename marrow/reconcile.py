@@ -19,16 +19,15 @@ MILESTONE_KEY = "milestone"
 _M0 = f"<!-- marrow:{MILESTONE_KEY}:start -->"
 _M1 = f"<!-- marrow:{MILESTONE_KEY}:end -->"
 
-# Mirrors render_milestone output:
-#   - YYYY-MM-DD **Title** [theme] (pinned) — desc <!-- id:N -->
-# Theme, (pinned), description, and anchor are optional in capture; the
-# title and date are required for a parseable row.
+# Mirrors render_milestone output (milestone_format_unify, 2026-05-24):
+#   - [YYYY-MM-DD] subject: description  <!-- id:N -->
+# Description and anchor are optional; subject and date are required.
+# Subject = `title` column (text before the colon). Theme column kept
+# nullable in DB but no longer parsed from md.
 _ROW_RE = re.compile(
-    r"^- (?P<date>\d{4}-\d{2}-\d{2}) "
-    r"\*\*(?P<title>[^*]+?)\*\*"
-    r"(?: \[(?P<theme>[^\]]+)\])?"
-    r"(?P<pinned> \(pinned\))?"
-    r"(?: — (?P<desc>.*?))?"
+    r"^- \[(?P<date>\d{4}-\d{2}-\d{2})\] "
+    r"(?P<title>[^:<]+?)"
+    r"(?:: (?P<desc>.*?))?"
     r"(?: <!-- id:(?P<id>\d+) -->)?\s*$"
 )
 
@@ -79,8 +78,8 @@ def _parse(md_text: str) -> list[dict]:
             "scope": section,
             "date": m.group("date"),
             "title": m.group("title").strip(),
-            "theme": m.group("theme"),
-            "pinned": 1 if m.group("pinned") else 0,
+            "theme": None,  # render dropped theme; DB col stays nullable
+            "pinned": 1,    # md rows on subpage are confirmed by being there
             "description": (m.group("desc") or None) and m.group("desc").strip(),
             "id": int(m.group("id")) if m.group("id") else None,
         })

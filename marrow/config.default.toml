@@ -65,6 +65,16 @@ min_score = 0.35
 # Threshold tunes after 1-week sample.
 skip_turn_threshold = 5
 
+[subpages]
+# Sub-page render order + visibility (DESIGN L43-65). Known keys:
+#   profile · milestone · diary · memes · stickers · wallet · goose
+#   study · projects · cheatsheet
+# `top` = content (numbered on dashboard). `bottom` = utility (unnumbered).
+# `hidden` = built but not listed in dashboard `## Content`.
+top = ["profile", "milestone", "diary", "memes", "stickers", "wallet", "goose"]
+bottom = ["study", "projects", "cheatsheet"]
+hidden = []
+
 [transcript]
 # ADR-0004 single source of truth for the headless-spawn signal. A jsonl
 # whose assistant models are all (prefix-match) in this set is a spawned

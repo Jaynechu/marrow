@@ -60,14 +60,14 @@ def render_diary(conn: sqlite3.Connection) -> str:
 # -- Milestone (structured, ## Us / ## Me) ----------------------------------
 
 def render_milestone(conn: sqlite3.Connection) -> str:
+    """Render format (FUTURE milestone_format_unify, 2026-05-24):
+        - [YYYY-MM-DD] subject: description  <!-- id:N -->
+    `title` column = subject. `theme` column kept nullable but unused in
+    render. Us and Me share format.
+    """
     key = "milestone"
-    # Subpage = confirmed milestones only (pinned=1). pinned=0 rows are
-    # LLM-extracted candidates living in milestones table, rendered to
-    # dashboard `Milestone candidate` section instead. Confirmation =
-    # `mw set milestones <id> pinned 1` OR hand-add a row to milestone.md
-    # (reconcile_milestones force-pins md rows on insert/update).
     rows = conn.execute(
-        "SELECT id, scope, date, title, description, theme, pinned "
+        "SELECT id, scope, date, title, description, pinned "
         "FROM milestones WHERE pinned=1 ORDER BY date"
     ).fetchall()
     us = [r for r in rows if r["scope"] == "us"]
@@ -80,14 +80,10 @@ def render_milestone(conn: sqlite3.Connection) -> str:
             lines.append("")
             return lines
         for r in entries:
-            # All subpage rows are pinned=1 by construction (render WHERE
-            # pinned=1). The literal "(pinned)" marker is now redundant —
-            # drop it to keep the md clean.
-            theme = f" [{r['theme']}]" if r["theme"] else ""
-            desc = f" — {r['description']}" if r["description"] else ""
+            subject = r["title"] or "(untitled)"
+            desc = f": {r['description']}" if r["description"] else ""
             lines.append(
-                f"- {r['date']} **{r['title']}**{theme}{desc}"
-                + _anchor(r["id"])
+                f"- [{r['date']}] {subject}{desc}" + _anchor(r["id"])
             )
         lines.append("")
         return lines
@@ -97,6 +93,46 @@ def render_milestone(conn: sqlite3.Connection) -> str:
     out += _section("Me", me)
     out.append(_m1(key))
     return "\n".join(out)
+
+
+# -- Empty stubs: Profile / Stickers / Wallet -------------------------------
+# Position-reserved per DESIGN L43-65. Profile content lands when entity
+# render is wired; Wallet content lands with Phase 5 (stellan_wallet);
+# Stickers reuses memes.stickers section for now.
+
+def _stub_block(key: str, title: str, note: str) -> str:
+    return "\n".join([
+        _m0(key),
+        f"# {title}",
+        "",
+        f"_{note}_",
+        "",
+        _m1(key),
+    ])
+
+
+def render_profile(conn: sqlite3.Connection) -> str:
+    return _stub_block(
+        "profile",
+        "Profile",
+        "Position reserved — entity-backed render lands with Phase 2 entity fix.",
+    )
+
+
+def render_stickers(conn: sqlite3.Connection) -> str:
+    return _stub_block(
+        "stickers",
+        "Stickers",
+        "Position reserved — gallery render lands once auto-describe ingest ships.",
+    )
+
+
+def render_wallet(conn: sqlite3.Connection) -> str:
+    return _stub_block(
+        "wallet",
+        "Wallet",
+        "Position reserved — bank-statement render lands with Phase 5 stellan_wallet.",
+    )
 
 
 # -- Memes (memes table + sticker thumbnails) ------------------------------

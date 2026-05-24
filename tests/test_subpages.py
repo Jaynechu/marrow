@@ -360,6 +360,87 @@ def test_write_all_subpages_creates_files(db, tmp_path):
     finally:
         conn.close()
     for name in ("diary.md", "milestone.md", "memes.md",
-                  "goose.md", "cheatsheet.md", "study.md", "projects.md"):
+                  "goose.md", "cheatsheet.md", "study.md", "projects.md",
+                  "profile.md", "stickers.md", "wallet.md"):
         assert (Path(folder) / name).exists(), f"Missing {name}"
     assert (Path(folder) / "projects" / "pit.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Config-driven build (DESIGN L43-65)
+# ---------------------------------------------------------------------------
+
+def test_build_all_configs_respects_subpages_config(db, tmp_path, monkeypatch):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+
+    def fake_load():
+        return {"subpages": {"top": ["milestone", "diary"],
+                              "bottom": ["projects"], "hidden": []}}
+
+    monkeypatch.setattr(subpages._config, "load", fake_load)
+    conn = storage.connect(db)
+    try:
+        cfgs = subpages.build_all_configs(conn, folder=folder, state_dir=state)
+    finally:
+        conn.close()
+    keys = [c.key for c in cfgs]
+    # Order honoured; only listed keys built.
+    assert keys == ["milestone", "diary", "projects"]
+
+
+def test_build_all_configs_warns_on_unknown_key(db, tmp_path, monkeypatch):
+    folder = str(tmp_path / "ny")
+    state = str(tmp_path / "state")
+
+    def fake_load():
+        return {"subpages": {"top": ["milestone", "bogus_key"],
+                              "bottom": [], "hidden": []}}
+
+    monkeypatch.setattr(subpages._config, "load", fake_load)
+    conn = storage.connect(db)
+    try:
+        cfgs = subpages.build_all_configs(conn, folder=folder,
+                                          state_dir=state, db=db)
+        from marrow import repo as _repo
+        msgs = [a["message"] for a in _repo.open_alerts(conn)]
+    finally:
+        conn.close()
+    keys = [c.key for c in cfgs]
+    assert keys == ["milestone"]
+    assert any("bogus_key" in m for m in msgs)
+
+
+def test_content_list_excludes_hidden(db, tmp_path, monkeypatch):
+    folder = str(tmp_path / "ny")
+
+    def fake_load():
+        return {"subpages": {"top": ["profile", "milestone"],
+                              "bottom": ["cheatsheet"],
+                              "hidden": ["milestone"]}}
+
+    monkeypatch.setattr(subpages._config, "load", fake_load)
+    out = subpages.content_list(folder=folder)
+    top_keys = [Path(p).stem for _, p in out["top"]]
+    assert "profile" in top_keys
+    assert "milestone" not in top_keys
+    assert [Path(p).stem for _, p in out["bottom"]] == ["cheatsheet"]
+
+
+# ---------------------------------------------------------------------------
+# Milestone format (milestone_format_unify, 2026-05-24)
+# ---------------------------------------------------------------------------
+
+def test_milestone_format_brackets_and_colon(db):
+    conn = storage.connect(db)
+    try:
+        block = subpages.render_milestone(conn)
+    finally:
+        conn.close()
+    # Expected: `- [2026-01-17] First meeting: In the rain  <!-- id:N -->`
+    assert "[2026-01-17] First meeting: In the rain" in block
+    # Me row has no description, so no colon expected.
+    assert "[2026-03-01] Head of school award" in block
+    assert "Head of school award:" not in block
+    # Theme dropped from render even if column non-null.
+    assert "[theme]" not in block

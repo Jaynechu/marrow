@@ -68,7 +68,8 @@ def test_reconcile_inserts_unanchored(db, tmp_path):
     md = _render_to_md(db, folder, state)
     text = md.read_text(encoding="utf-8")
     # Inject a new row under ## Me without an id anchor.
-    new_line = "- 2026-05-22 **Round 2 milestone** — added by Lumi\n"
+    # Format = milestone_format_unify: `- [YYYY-MM-DD] subject: description`.
+    new_line = "- [2026-05-22] Round 2 milestone: added by Lumi\n"
     text = text.replace("## Me\n\n", "## Me\n\n" + new_line)
     md.write_text(text, encoding="utf-8")
 
