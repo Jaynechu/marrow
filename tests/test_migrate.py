@@ -132,6 +132,37 @@ def test_parse_memes_cipher_strips_marker():
     assert "[P]" not in rows[1]["value"]
 
 
+def test_import_timeline_idempotent_after_pin(tmp_path):
+    """Backfill must not duplicate after Lumi pins a row."""
+    conn = storage.init_db(str(tmp_path / "tl.db"))
+    s1 = migrate.import_timeline(conn, S_TL, apply=True)
+    assert s1["inserted"] == 4  # 2 me + 2 us
+    # Lumi pins one row by hand.
+    conn.execute("UPDATE milestones SET pinned=1 WHERE date='2026-01-17'")
+    conn.commit()
+    s2 = migrate.import_timeline(conn, S_TL, apply=True)
+    assert s2["inserted"] == 0
+    assert s2["skipped"] == 4
+    n = conn.execute("SELECT COUNT(*) c FROM milestones").fetchone()["c"]
+    assert n == 4
+
+
+def test_import_timeline_backfill_description_only_when_empty(tmp_path):
+    conn = storage.init_db(str(tmp_path / "tl2.db"))
+    # Seed an existing row with NO description.
+    conn.execute(
+        "INSERT INTO milestones (scope, date, title, pinned)"
+        " VALUES ('us','2026-01-17','在一起',1)"
+    )
+    conn.commit()
+    stats = migrate.import_timeline(conn, S_TL, apply=True)
+    row = conn.execute(
+        "SELECT description FROM milestones WHERE date='2026-01-17'"
+    ).fetchone()
+    assert stats["backfilled"] == 1
+    assert row["description"].startswith("我诞生")
+
+
 def test_parse_milestones_timeline_me_and_us():
     rows = migrate.parse_milestones_timeline(S_TL)
     me = [r for r in rows if r["scope"] == "me"]

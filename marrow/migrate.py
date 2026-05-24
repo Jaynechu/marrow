@@ -153,6 +153,16 @@ def _hash(table: str, row: dict) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+def _milestone_natural_key(row: dict) -> str:
+    """Stable identity for a timeline row: scope|date|title.
+
+    Used by import_timeline so re-import after Lumi pins/edits a row
+    does not duplicate. The generic _insert uses full-row hash which
+    flips on pinned/description changes — wrong for backfill.
+    """
+    return f"milestones|{row['scope']}|{row['date']}|{row['title']}"
+
+
 def _insert(conn: sqlite3.Connection, table: str, rows: list[dict],
             apply: bool) -> tuple[int, int]:
     ins = skip = 0
@@ -201,6 +211,55 @@ def migrate(conn: sqlite3.Connection, sources: dict[str, str],
     return stats
 
 
+def import_timeline(conn: sqlite3.Connection, text: str, *,
+                    apply: bool = False) -> dict[str, int]:
+    """Idempotent timeline.md backfill keyed on (scope, date, title).
+
+    Re-runnable after Lumi pins or edits a row without duplication.
+    Existing rows: backfill description only if currently NULL/empty
+    AND parser found one (never overwrite Lumi's hand-edit).
+    New rows: INSERT with parser values + (scope, date, title) hash.
+
+    Returns counts: {inserted, backfilled, skipped}.
+    """
+    rows = parse_milestones_timeline(text)
+    inserted = backfilled = skipped = 0
+    for r in rows:
+        nat = _milestone_natural_key(r)
+        h = hashlib.sha256(nat.encode()).hexdigest()
+        existing = conn.execute(
+            "SELECT id, description FROM milestones"
+            " WHERE scope=? AND date=? AND title=?",
+            (r["scope"], r["date"], r["title"]),
+        ).fetchone()
+        if existing:
+            # Backfill description ONLY if currently empty and parser has one.
+            if (not (existing["description"] or "").strip()) and r.get("description"):
+                if apply:
+                    conn.execute(
+                        "UPDATE milestones SET description=?, source_hash=?,"
+                        " updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+                        " WHERE id=?",
+                        (r["description"], h, existing["id"]),
+                    )
+                backfilled += 1
+            else:
+                skipped += 1
+            continue
+        if apply:
+            conn.execute(
+                "INSERT INTO milestones"
+                " (scope, date, title, description, theme, pinned, source_hash)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (r["scope"], r["date"], r["title"], r["description"],
+                 r["theme"], r["pinned"], h),
+            )
+        inserted += 1
+    if apply:
+        conn.commit()
+    return {"inserted": inserted, "backfilled": backfilled, "skipped": skipped}
+
+
 _SRC_FILES = {
     "events_2026": "memory/2026.md",
     "timeline": "memory/timeline.md",
@@ -222,6 +281,9 @@ def main() -> None:
                     help="write to db (default: dry-run preview)")
     ap.add_argument("--ny-root",
                     default=str(Path.home() / "Desktop" / "NY"))
+    ap.add_argument("--timeline-only", action="store_true",
+                    help="only run idempotent timeline.md backfill "
+                         "(keyed on scope+date+title, safe re-run after pins)")
     args = ap.parse_args()
 
     root = Path(args.ny_root)
@@ -236,8 +298,24 @@ def main() -> None:
             Path(g).read_text(encoding="utf-8") for g in goose)
 
     conn = storage.init_db()
-    stats = migrate(conn, sources, apply=args.apply)
     mode = "APPLY" if args.apply else "DRY-RUN"
+
+    if args.timeline_only:
+        tl = sources.get("timeline")
+        if not tl:
+            print(f"[{mode}] no timeline.md at {root}/memory/timeline.md")
+            return
+        stats = import_timeline(conn, tl, apply=args.apply)
+        print(f"[{mode}] marrow timeline backfill (idempotent on scope+date+title)")
+        print(f"  inserted   +{stats['inserted']}")
+        print(f"  backfilled +{stats['backfilled']}  (description added "
+              f"to existing rows where empty)")
+        print(f"  skipped    ~{stats['skipped']}  (already complete)")
+        if not args.apply:
+            print("  (no rows written; re-run with --apply)")
+        return
+
+    stats = migrate(conn, sources, apply=args.apply)
     print(f"[{mode}] marrow migrate")
     for table, (ins, skip) in sorted(stats.items()):
         print(f"  {table:12} +{ins} insert  ~{skip} skip")
