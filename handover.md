@@ -1,10 +1,10 @@
-# Marrow handover — 2026-05-24 17:15
+# Marrow handover — 2026-05-24 18:00
 
 > Fixed-name overwrite, never delete. Keep points not touched this window.
 
 ## State
-- pytest 342 passed + 1 skipped (6.56s)
-- main ahead origin 9 commits — push pending Lumi nod
+- pytest 342 passed + 1 skipped
+- main ahead origin 12 commits — push pending Lumi nod
 - schema v6 — entities.aliases TEXT (JSON list, LLM-written via ENTITY_CAND)
 - entities live = 19 (9 person + 1 place + 9 pref) — all 19 rows now carry aliases + cleaned fact ((Bendigo) rewritten with true archive)
 - milestones live = 22 (9 me incl. lighthouse + 13 us) — full timeline.md re-import
@@ -44,12 +44,11 @@ bug recall-cross-table-vec-gap — only `events` has a vec lane:
 bug entity-card recency tie-breaker (low pri):
 - 19 entity rows have empty `timestamp` — when several cards score equally, ordering is arbitrary. Not painful yet; revisit if multi-entity queries surface.
 
-### Carry-over working dir (NOT this window's — left as-is per Lumi)
-Five files modified in working tree by a sibling window doing Phase A handover-render flock work:
-- `marrow/handover_render.py` (+281 lines: flock-guarded RMW, multi-session merge, snapshot to audit_log)
-- `marrow/handover_template.md`, `marrow/sessionend_prompts.py`, `tests/test_handover_render.py`, `FUTURE.md`
-- Three untracked notes under `docs/notes/` (marrow-pulse-design / brainstorm-future / chord-affect CN)
-- Untouched this window — sibling owner merges.
+### Sibling window landed (2026-05-24 17:30–18:00)
+- `9edd1c2` feat(handover): flock-guarded multi-session merge; <2h sessions fold under sub-heading, ≥2h in `## Previous Sessions`; HTML markers → `<!-- marrow:top:start/end -->`; audit_log snapshot; .partial.<sid> fallback.
+- `ee82dc8` prompt(affect): dropped `event_hint`.
+- `~/Desktop/NY/handover.md` → `~/.config/marrow/handover.md` symlink.
+- Affect table wiped (`/tmp/affect_backup_20260524_163613.sql`).
 
 ### Operational
 - main ahead origin 9 commits — push when Lumi nods.
@@ -71,6 +70,11 @@ Five files modified in working tree by a sibling window doing Phase A handover-r
 - `writer_authority` / `drift_sweep` / `convention_injection` / `claude_md_render_guard`.
 - static-layer retire (CLAUDE.md family / cipher / MCP guide to daemon-rendered).
 - UserPromptSubmit hook should reuse MCP daemon embedder — eliminate the 0.8s per-prompt cost (one cold init at daemon startup instead).
+
+### Handover Phase B (pending, code-side)
+- `sessionend_async` reads `~/.config/marrow/handover.md`, feeds into HANDOVER prompt; Sonnet drops done items, keeps untouched carryover, appends new.
+- Empty sections emit `None` (Lumi spec); `HANDOVER` block in `sessionend_prompts.py` needs that contract.
+- Trigger when Lumi finalises HANDOVER prompt rewrite.
 
 ### Carryover scratch
 - `docs/notes/brainstorm-future.md` — 10-section brainstorm merged into FUTURE 2026-05-24; archive when stable.
