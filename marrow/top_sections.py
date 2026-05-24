@@ -91,22 +91,15 @@ def render_alerts(conn: sqlite3.Connection) -> str:
     return "\n".join(lines)
 
 
-def _today_midnight_utc() -> datetime:
-    """Midnight local today as UTC — used for Completed cutoff (not 6AM)."""
-    from datetime import time as _time
-    today = datetime.now(_TZ).date()
-    return datetime.combine(today, _time(0, 0), tzinfo=_TZ).astimezone(timezone.utc)
-
-
 def render_tasks(conn: sqlite3.Connection) -> str:
-    # Completed: tasks done since local midnight (not 6AM — tasks are ticked
-    # anytime of day, not tied to the diary boundary).
-    cutoff_iso = _today_midnight_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # 6AM local day boundary — aligned with daily_catchup / sessionend_async.
+    cutoff_utc = _day_cutoff_utc()
+    cutoff_iso = cutoff_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     done = conn.execute(
         "SELECT id, category, title FROM tasks WHERE status='done' AND updated_at>=? "
         "ORDER BY updated_at DESC", (cutoff_iso,)).fetchall()
 
-    today_local = datetime.now(_TZ).date()
+    today_local = cutoff_utc.astimezone(_TZ).date()
     next7 = today_local + timedelta(days=7)
     active = conn.execute(
         "SELECT id, category, title, due, created_at, next_step FROM tasks "

@@ -63,14 +63,11 @@ def test_tick_sets_done(conn, tmp_path):
 # ── 2. untick: [x] -> [ ] flips DB back to active ────────────────────────────
 
 def test_untick_sets_active(conn, tmp_path):
-    # Use today midnight to ensure it shows in Completed.
-    today_midnight = datetime.datetime.combine(
-        datetime.datetime.now(_TZ).date(),
-        datetime.time(0, 0),
-        tzinfo=_TZ,
-    ).astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Use cutoff+1h (post-6AM) so the row lands in today's Completed.
+    after_cutoff = (top_sections._day_cutoff_utc() +
+                    datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
     tid = _insert_task(conn, "Review slides", status="done",
-                       updated_at=today_midnight)
+                       updated_at=after_cutoff)
     dash = _render_dashboard(conn, tmp_path)
     text = dash.read_text()
     # Simulate Lumi un-ticking.
@@ -153,17 +150,18 @@ def test_seg_task_cand_skips_archived(conn, tmp_path):
     assert count == 1  # still only one row
 
 
-# ── 7. Completed cutoff: task done at 02:00 local shows in Completed ──────────
+# ── 7. Completed cutoff: 6AM local boundary ──────────────────────────────────
 
-def test_completed_cutoff_midnight_not_6am(conn, tmp_path):
-    # 02:00 local today — was hidden under old 6AM cutoff, must now show.
-    today_2am = datetime.datetime.combine(
-        datetime.datetime.now(_TZ).date(),
-        datetime.time(2, 0),
-        tzinfo=_TZ,
-    ).astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _insert_task(conn, "Early morning task", status="done", updated_at=today_2am)
+def test_completed_cutoff_6am(conn, tmp_path):
+    # Pre-6AM done timestamp hides; post-6AM shows.
+    cutoff_utc = top_sections._day_cutoff_utc()
+    before = (cutoff_utc - datetime.timedelta(hours=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    after = (cutoff_utc + datetime.timedelta(hours=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    _insert_task(conn, "Pre-cutoff task", status="done", updated_at=before)
+    _insert_task(conn, "Post-cutoff task", status="done", updated_at=after)
 
     md = top_sections.render_tasks(conn)
-    assert "Early morning task" in md
-    assert "- [x]" in md
+    assert "Post-cutoff task" in md
+    assert "Pre-cutoff task" not in md
