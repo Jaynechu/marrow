@@ -38,7 +38,7 @@ def open_alerts(conn: sqlite3.Connection) -> list[dict]:
         "SELECT id, severity, type, message, source "
         "FROM alerts WHERE resolved = 0 "
         "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 "
-        "ELSE 2 END, created_at DESC"
+        "ELSE 2 END, created_at ASC"
     ).fetchall()
     return [dict(r) for r in rows]
 

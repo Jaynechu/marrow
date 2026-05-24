@@ -33,7 +33,7 @@ def _anchor(row_id: int) -> str:
 def render_diary(conn: sqlite3.Connection) -> str:
     key = "diary"
     rows = conn.execute(
-        "SELECT date, content, mood FROM diary ORDER BY date DESC"
+        "SELECT date, content, mood FROM diary ORDER BY date ASC"
     ).fetchall()
     # No internal H1 — Obsidian shows the filename as the title; an in-file
     # H1 duplicates it. Same rule applies to every render fn below.
@@ -128,7 +128,7 @@ def render_milestone(conn: sqlite3.Connection) -> str:
 # -- Empty stubs: Profile / Stickers / Wallet -------------------------------
 # Position-reserved per DESIGN L43-65. Profile content lands when entity
 # render is wired; Wallet content lands with Phase 5 (stellan_wallet);
-# Stickers reuses memes.stickers section for now.
+# Stickers gallery lands once auto-describe ingest ships.
 
 def _stub_block(key: str, title: str, note: str) -> str:
     # `title` kept in the signature for callsite clarity but not rendered —
@@ -167,12 +167,16 @@ def render_wallet(conn: sqlite3.Connection) -> str:
     )
 
 
-# -- Memes (memes table + sticker thumbnails) ------------------------------
+# -- Memes (Personal: paw+fact / Public: meme+event+news+others) -----------
+
+_MEME_PERSONAL = ("paw", "fact")
+_MEME_PUBLIC = ("meme", "event", "news", "others")
+
 
 def render_memes(conn: sqlite3.Connection) -> str:
     key = "memes"
-    memes_rows = conn.execute(
-        "SELECT id, type, key, value, context, use_count "
+    rows = conn.execute(
+        "SELECT id, type, key, value, context "
         "FROM memes ORDER BY "
         "CASE type "
         "  WHEN 'paw' THEN 1 "
@@ -184,34 +188,26 @@ def render_memes(conn: sqlite3.Connection) -> str:
         "END, "
         "created_at ASC"
     ).fetchall()
-    sticker_rows = conn.execute(
-        "SELECT s.id, s.key, s.asset_path, s.mime_type, m.key AS meme_key "
-        "FROM stickers s LEFT JOIN memes m ON m.id = s.meme_id "
-        "ORDER BY s.use_count DESC, s.created_at DESC"
-    ).fetchall()
+    personal = [r for r in rows if r["type"] in _MEME_PERSONAL]
+    public = [r for r in rows if r["type"] not in _MEME_PERSONAL]
+
+    def _line(r) -> str:
+        ctx = f" _{r['context']}_" if r["context"] else ""
+        val = f" → {r['value']}" if r["value"] else ""
+        return f"- [{r['type']}] **{r['key']}**{val}{ctx}" + _anchor(r["id"])
+
+    def _section(label: str, entries: list) -> list[str]:
+        lines = [f"## {label}", ""]
+        if entries:
+            lines += [_line(r) for r in entries]
+        else:
+            lines.append("_none yet_")
+        lines.append("")
+        return lines
 
     out = [_m0(key), ""]
-    out.append("## Phrases")
-    out.append("")
-    if memes_rows:
-        for r in memes_rows:
-            ctx = f" _{r['context']}_" if r["context"] else ""
-            val = f" → {r['value']}" if r["value"] else ""
-            out.append(
-                f"- [{r['type']}] **{r['key']}**{val}{ctx}" + _anchor(r["id"])
-            )
-    else:
-        out.append("_No memes yet._")
-    out.append("")
-    out.append("## Stickers")
-    out.append("")
-    if sticker_rows:
-        for r in sticker_rows:
-            mk = f" ({r['meme_key']})" if r["meme_key"] else ""
-            out.append(f"- ![[{r['asset_path']}]]{mk}" + _anchor(r["id"]))
-    else:
-        out.append("_No stickers yet._")
-    out.append("")
+    out += _section("Personal", personal)
+    out += _section("Public", public)
     out.append(_m1(key))
     return "\n".join(out)
 
@@ -221,7 +217,7 @@ def render_memes(conn: sqlite3.Connection) -> str:
 def render_goose(conn: sqlite3.Connection) -> str:
     key = "goose"
     rows = conn.execute(
-        "SELECT date, bites FROM goose_bites ORDER BY date DESC"
+        "SELECT date, bites FROM goose_bites ORDER BY date ASC"
     ).fetchall()
     out = [_m0(key), ""]
     if not rows:
@@ -311,7 +307,7 @@ def render_pit(conn: sqlite3.Connection) -> str:
     key = "pit"
     rows = conn.execute(
         "SELECT id, title, description, status, related_files "
-        "FROM pit ORDER BY status, created_at DESC"
+        "FROM pit ORDER BY status, created_at ASC"
     ).fetchall()
     out = [_m0(key), ""]
     if rows:

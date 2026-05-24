@@ -84,8 +84,8 @@ def test_render_diary_month_grouped(db):
     # Both months appear as headings
     assert "## 2026-05" in block
     assert "## 2026-04" in block
-    # 2026-05 entry appears before 2026-04 (DESC order)
-    assert block.index("## 2026-05") < block.index("## 2026-04")
+    # ASC order: oldest first — 2026-04 entry appears before 2026-05
+    assert block.index("## 2026-04") < block.index("## 2026-05")
 
 
 # ---------------------------------------------------------------------------
@@ -119,17 +119,19 @@ def test_render_milestone_structured_anchor(db):
 # Memes
 # ---------------------------------------------------------------------------
 
-def test_render_memes_phrases_and_stickers(db):
+def test_render_memes_personal_and_public(db):
     conn = storage.connect(db)
     try:
         block = subpages.render_memes(conn)
     finally:
         conn.close()
-    assert "## Phrases" in block
-    assert "(da long xia)" in block or "(Openclaw)" in block or "(da " in block \
-           or "大龙虾" in block
-    assert "## Stickers" in block
+    assert "## Personal" in block
+    assert "## Public" in block
+    assert "大龙虾" in block
     assert "<!-- marrow:memes:start -->" in block
+    # Stickers section gone — sticker render lives on its own subpage.
+    assert "## Stickers" not in block
+    assert "## Phrases" not in block
 
 
 def test_render_memes_structured_anchor(db):
