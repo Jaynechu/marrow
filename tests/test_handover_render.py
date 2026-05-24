@@ -84,7 +84,7 @@ def test_render_alerts_empty(env):
     conn = _conn(db)
     out = top_sections.render_alerts(conn)
     conn.close()
-    assert "- (none)" in out
+    assert "_none_" in out
 
 
 # ── Unit: render_tasks ────────────────────────────────────────────────────────
@@ -183,7 +183,7 @@ def test_render_milestone_candidate_empty(env):
     conn = _conn(db)
     out = top_sections.render_milestone_candidate(conn)
     conn.close()
-    assert "- (none)" in out
+    assert "_none_" in out
 
 
 # ── Unit: render_affect ───────────────────────────────────────────────────────
@@ -295,7 +295,7 @@ def test_render_affect_pending_unresolved_and_resolved(env):
 
 
 def test_render_affect_pending_empty_when_no_unresolved(env):
-    """No unresolved rows → '- (none)'."""
+    """No unresolved rows → Pending sub-section hides entirely."""
     db, _, _, _ = env
     conn = _conn(db)
     today = datetime.now(timezone.utc).date().isoformat()
@@ -303,19 +303,19 @@ def test_render_affect_pending_empty_when_no_unresolved(env):
                    label="平静", description="散步")
     out = top_sections.render_affect(conn)
     conn.close()
-    pending_section = out.split("### Pending")[1]
-    assert "- (none)" in pending_section
+    assert "### Pending" not in out
 
 
 def test_render_affect_empty_tables(env):
-    """No affect rows → all subsections still render with (none)."""
+    """No affect rows → Today/This Week show _none_, Pending hides."""
     db, _, _, _ = env
     conn = _conn(db)
     out = top_sections.render_affect(conn)
     conn.close()
     assert "### Today" in out
     assert "### This Week" in out
-    assert "### Pending" in out
+    assert "### Pending" not in out
+    assert "_none_" in out
 
 
 # ── Unit: handover_render ─────────────────────────────────────────────────────

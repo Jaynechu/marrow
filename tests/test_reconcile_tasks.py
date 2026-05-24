@@ -110,7 +110,7 @@ def test_noop_when_no_trail(conn, tmp_path):
     _insert_task(conn, "Old task")
     # Write a dashboard without anchors (manually constructed, no trail).
     dash = tmp_path / "dashboard.md"
-    dash.write_text("## Tasks\n### Completed [0]\n- (none)\n### To-Do List [1]\nToday\n- [ ] [Study] Old task\n")
+    dash.write_text("## Tasks\n### Completed [0]\n_none_\n### To-Do List [1]\nToday\n- [ ] [Study] Old task\n")
 
     rpt = reconcile.reconcile_tasks(conn, dash)
 

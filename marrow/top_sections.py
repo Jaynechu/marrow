@@ -89,7 +89,7 @@ def render_alerts(conn: sqlite3.Connection) -> str:
         "ELSE 2 END, created_at ASC"
     ).fetchall()
     lines = ["## Alerts (active)"]
-    lines += [f"- {r[0]}: {r[1]}" for r in rows] if rows else ["- (none)"]
+    lines += [f"- {r[0]}: {r[1]}" for r in rows] if rows else ["_none_"]
     return "\n".join(lines)
 
 
@@ -139,27 +139,26 @@ def render_tasks(conn: sqlite3.Connection) -> str:
             all_ids.append(r[0])
             out.append(f"- [x] [{r[1] or 'Others'}] {r[2]} <!-- id:{r[0]} -->")
     else:
-        out.append("- (none)")
+        out.append("_none_")
     out.append(f"### To-Do List [{len(active)}]")
-    out.append("Today")
-    out += [_row(r, None) for r in buckets["t"]] if buckets["t"] else ["- (none)"]
-    out.append("Next 7 Days")
-    if buckets["n"]:
-        out += [_row(r, r[3][:10] if r[3] else None) for r in buckets["n"]]
-    else:
-        out.append("- (none)")
-    out.append("Later")
     l_due = [r for r in buckets["l"] if r[3]]
     l_nodue = [r for r in buckets["l"] if not r[3]]
-    if l_due:
-        out += [_row(r, r[3][:10]) for r in l_due]
-    elif not l_nodue:
-        out.append("- (none)")
-    out.append("No date")
-    if l_nodue:
-        out += [_row(r, r[4][:10] if r[4] else None) for r in l_nodue]
+    if not active:
+        out.append("_none_")
     else:
-        out.append("- (none)")
+        # Empty sub-buckets hide their heading entirely — no `(none)` placeholder.
+        if buckets["t"]:
+            out.append("Today")
+            out += [_row(r, None) for r in buckets["t"]]
+        if buckets["n"]:
+            out.append("Next 7 Days")
+            out += [_row(r, r[3][:10] if r[3] else None) for r in buckets["n"]]
+        if l_due:
+            out.append("Later")
+            out += [_row(r, r[3][:10]) for r in l_due]
+        if l_nodue:
+            out.append("No date")
+            out += [_row(r, r[4][:10] if r[4] else None) for r in l_nodue]
     # Trail marker — reconcile_tasks uses this to detect rows deleted from md.
     ids_str = ",".join(str(i) for i in all_ids)
     out.append(f"<!-- cand:task:ids=[{ids_str}] -->")
@@ -186,7 +185,7 @@ def render_milestone_candidate(conn: sqlite3.Connection, n: int = 5) -> str:
                 f"{_BUTTONS}  <!-- id:{r[0]} -->"
             )
     else:
-        out.append("- (none)")
+        out.append("_none_")
     # Trail marker — reconcile compares this against ids surviving in md
     # so deleting a row in Obsidian == drop+tombstone (no vote needed).
     ids_csv = ",".join(str(r[0]) for r in rows)
@@ -236,7 +235,7 @@ def render_affect(conn: sqlite3.Connection) -> str:
                 f"{_ep_phrase(ep_l, 'l')}"
             )
     else:
-        out.append("- (none)")
+        out.append("_none_")
 
     out.append("### This Week")
     if week_rows:
@@ -270,22 +269,21 @@ def render_affect(conn: sqlite3.Connection) -> str:
         ]
         out.append(f"- 【{tone_label}】 · {' · '.join(parts)}")
     else:
-        out.append("- (none)")
+        out.append("_none_")
 
-    out.append("### Pending")
     pending_rows = conn.execute(
         "SELECT description, label, resolved_at FROM affect "
         "WHERE superseded_by IS NULL AND unresolved=1 AND date>=? "
         "ORDER BY created_at, id",
         (week_iso,),
     ).fetchall()
+    # Pending sub-section hides entirely when empty (no heading, no body).
     if pending_rows:
+        out.append("### Pending")
         for r in pending_rows:
             text = r["description"] or r["label"] or "(ep)"
             box = "x" if r["resolved_at"] else " "
             out.append(f"- [{box}] {text}")
-    else:
-        out.append("- (none)")
     return "\n".join(out)
 
 
