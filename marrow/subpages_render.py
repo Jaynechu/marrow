@@ -67,8 +67,13 @@ def render_milestone(conn: sqlite3.Connection) -> str:
         ##### [YYYY-MM-DD] subject
         description paragraph. <!-- id:N -->
 
-    Me rows carry year-only dates (no fake month-day padding):
-        ##### [YYYY] subject
+    Two H5-heading flavours:
+    - Standard (Us + dated Me): `##### [YYYY-MM-DD] subject`
+    - Historical Me (year-only date AND title starts with `Age `):
+      `##### [<title>]` — the title itself (e.g. `Age 0-10 | Shanghai`)
+      is the human-readable bracket; the raw year is not surfaced.
+      Round-trip stays safe because reconcile reads the row's id from
+      the inline `<!-- id:N -->` anchor and pulls date from DB.
 
     `title` column = subject. `theme` kept nullable but unused.
     Confirmed rows (pinned=1) are clean — no `Nh ago`, no `✅❌✏️`
@@ -82,6 +87,13 @@ def render_milestone(conn: sqlite3.Connection) -> str:
     us = [r for r in rows if r["scope"] == "us"]
     me = [r for r in rows if r["scope"] == "me"]
 
+    def _is_age_row(r) -> bool:
+        # Year-only date column (no `-MM-DD`) AND title prefixed with `Age `
+        # → historical Me row from timeline.md backfill.
+        date = (r["date"] or "").strip()
+        title = (r["title"] or "").strip()
+        return len(date) == 4 and date.isdigit() and title.startswith("Age ")
+
     def _section(label: str, entries: list) -> list[str]:
         lines = [f"## {label}", ""]
         if not entries:
@@ -90,7 +102,11 @@ def render_milestone(conn: sqlite3.Connection) -> str:
             return lines
         for r in entries:
             subject = r["title"] or "(untitled)"
-            lines.append(f"##### [{r['date']}] {subject}")
+            if _is_age_row(r):
+                # Historical Me — title fills the bracket, year stays in DB only.
+                lines.append(f"##### [{subject}]")
+            else:
+                lines.append(f"##### [{r['date']}] {subject}")
             desc = (r["description"] or "").strip()
             # Anchor sits inline at the tail of the description paragraph.
             # When description is empty, anchor goes on its own line — still

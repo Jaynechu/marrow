@@ -451,3 +451,26 @@ def test_milestone_h5_paragraph_format(db):
     assert "ago)" not in block
     # No candidate buttons on confirmed rows.
     assert "✅" not in block and "❌" not in block and "✏️" not in block
+
+
+def test_milestone_me_age_row_uses_single_bracket(tmp_path):
+    """Historical Me row (year-only date + `Age ` title) renders as
+    `##### [<title>]`; dated Me rows keep the `[YYYY-MM-DD] subject` form.
+    """
+    from marrow import storage as _storage
+    p = str(tmp_path / "age.db")
+    conn = _storage.init_db(p)
+    with conn:
+        conn.execute("INSERT INTO milestones(scope,date,title,description,pinned)"
+                     " VALUES('me','1995','Age 0-10 | Shanghai','flat',1)")
+        conn.execute("INSERT INTO milestones(scope,date,title,description,pinned)"
+                     " VALUES('me','2026-05-15','Marrow rebuild','starting',1)")
+    try:
+        block = subpages.render_milestone(conn)
+    finally:
+        conn.close()
+    # Age row: title fills the bracket; raw year not surfaced.
+    assert "##### [Age 0-10 | Shanghai]" in block
+    assert "##### [1995]" not in block
+    # Dated Me row keeps standard form.
+    assert "##### [2026-05-15] Marrow rebuild" in block

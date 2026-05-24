@@ -67,10 +67,13 @@ def test_reconcile_inserts_unanchored(db, tmp_path):
     state = tmp_path / "state"
     md = _render_to_md(db, folder, state)
     text = md.read_text(encoding="utf-8")
-    # Inject a new row under ## Me without an id anchor.
-    # Format = milestone_format_unify: `- [YYYY-MM-DD] subject: description`.
-    new_line = "- [2026-05-22] Round 2 milestone: added by Lumi\n"
-    text = text.replace("## Me\n\n", "## Me\n\n" + new_line)
+    # Inject a new H5 block under ## Me without an id anchor.
+    # Format = H5 paragraph: `##### [date] subject\ndescription`.
+    new_block = (
+        "##### [2026-05-22] Round 2 milestone\n"
+        "added by Lumi\n\n"
+    )
+    text = text.replace("## Me\n\n", "## Me\n\n" + new_block)
     md.write_text(text, encoding="utf-8")
 
     conn = storage.connect(db)
@@ -88,7 +91,7 @@ def test_reconcile_inserts_unanchored(db, tmp_path):
     md2 = _render_to_md(db, folder, state)
     txt2 = md2.read_text()
     rid = rows[0]["id"]
-    assert f"Round 2 milestone" in txt2
+    assert "Round 2 milestone" in txt2
     assert f"<!-- id:{rid} -->" in txt2
 
 
@@ -245,6 +248,127 @@ def test_candidate_no_vote_is_inert(tmp_path):
     assert rpt.updated == 0
     assert rpt.deleted == 0
     assert row["pinned"] == 0
+
+
+def test_reconcile_edit_description_keeps_id(db, tmp_path):
+    """Editing only the description paragraph (anchor untouched) UPDATEs."""
+    folder = tmp_path / "ny"
+    state = tmp_path / "state"
+    md = _render_to_md(db, folder, state)
+    text = md.read_text(encoding="utf-8")
+    # Replace the description sentence under the Us H5 block.
+    text = text.replace("In the rain", "In the rain, soaked but smiling")
+    md.write_text(text)
+    conn = storage.connect(db)
+    try:
+        rpt = reconcile.reconcile_milestones(conn, md)
+        row = conn.execute(
+            "SELECT description FROM milestones WHERE title='First meeting'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert rpt.updated == 1
+    assert row["description"] == "In the rain, soaked but smiling"
+
+
+def test_reconcile_deletes_h5_block(db, tmp_path):
+    """Removing the whole H5 block (heading + paragraph + id) DELETEs."""
+    folder = tmp_path / "ny"
+    state = tmp_path / "state"
+    md = _render_to_md(db, folder, state)
+    text = md.read_text()
+    # Strip every line belonging to the First meeting H5 block.
+    lines = text.splitlines()
+    out: list[str] = []
+    drop = False
+    for ln in lines:
+        if ln.startswith("##### [") and "First meeting" in ln:
+            drop = True
+            continue
+        if drop and (ln.startswith("##### ") or ln.startswith("## ")
+                     or ln.startswith("<!-- marrow:")):
+            drop = False
+        if drop:
+            continue
+        out.append(ln)
+    md.write_text("\n".join(out) + "\n")
+    conn = storage.connect(db)
+    try:
+        rpt = reconcile.reconcile_milestones(conn, md)
+        row = conn.execute(
+            "SELECT id FROM milestones WHERE title='First meeting'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert rpt.deleted == 1
+    assert row is None
+
+
+def test_reconcile_ignores_legacy_bullets(db, tmp_path):
+    """A stale `- [date] ...` bullet must NOT be absorbed into the
+    preceding H5 block's description. Legacy bullets are skipped — the
+    reconcile leaves DB rows untouched until Lumi rewrites the block in
+    H5 form (or a fresh render rewrites them).
+    """
+    folder = tmp_path / "ny"
+    state = tmp_path / "state"
+    md = _render_to_md(db, folder, state)
+    # Splice a stale legacy bullet between the H5 block and the next H5.
+    text = md.read_text()
+    legacy = (
+        "- [2026-04-01] legacy bullet that should NOT pollute description "
+        "<!-- id:999 -->\n"
+    )
+    text = text.replace("## Me\n\n", "## Me\n\n" + legacy)
+    md.write_text(text)
+    conn = storage.connect(db)
+    try:
+        rpt = reconcile.reconcile_milestones(conn, md)
+        # The H5 'Head of school award' row's description must not contain
+        # the legacy bullet text.
+        row = conn.execute(
+            "SELECT description FROM milestones WHERE title='Head of school award'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row["description"] is None or "legacy bullet" not in (row["description"] or "")
+    # The legacy bullet creates no new row.
+    conn = storage.connect(db)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM milestones WHERE title LIKE 'legacy%'"
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    assert n == 0
+
+
+def test_reconcile_age_row_single_bracket(db, tmp_path):
+    """Historical Me row (year-only date + `Age ...` title) renders as
+    single-bracket `##### [Age 0-10 | Shanghai]`; the raw year is not
+    surfaced in md. Round-trip is safe: anchor pulls date from DB.
+    """
+    folder = tmp_path / "ny"
+    state = tmp_path / "state"
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO milestones(scope,date,title,description,pinned)"
+            " VALUES('me','1995','Age 0-10 | Shanghai','small apartment',1)"
+        )
+    conn.close()
+    md = _render_to_md(db, folder, state)
+    text = md.read_text()
+    # New format: title fills the bracket, year is DB-only.
+    assert "##### [Age 0-10 | Shanghai]" in text
+    assert "##### [1995]" not in text
+    # Re-parse: anchor carries id, date inherited from DB → no diff.
+    conn = storage.connect(db)
+    try:
+        rpt = reconcile.reconcile_milestones(conn, md)
+    finally:
+        conn.close()
+    assert not rpt.any_change()
 
 
 def test_reconcile_unchanged_is_inert(db, tmp_path):

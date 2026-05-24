@@ -24,17 +24,19 @@ MILESTONE_KEY = "milestone"
 _M0 = f"<!-- marrow:{MILESTONE_KEY}:start -->"
 _M1 = f"<!-- marrow:{MILESTONE_KEY}:end -->"
 
-# Mirrors render_milestone output (milestone_format_unify, 2026-05-24):
-#   - [YYYY-MM-DD] subject: description  <!-- id:N -->
-# Description and anchor are optional; subject and date are required.
-# Subject = `title` column (text before the colon). Theme column kept
-# nullable in DB but no longer parsed from md.
-_ROW_RE = re.compile(
-    r"^- \[(?P<date>\d{4}-\d{2}-\d{2})\] "
-    r"(?P<title>[^:<]+?)"
-    r"(?:: (?P<desc>.*?))?"
-    r"(?: <!-- id:(?P<id>\d+) -->)?\s*$"
+# Mirrors render_milestone output (H5 + paragraph, 2026-05-24):
+#   ##### [YYYY-MM-DD] subject       (Us / dated Me — full date in bracket)
+#   ##### [YYYY] subject             (Me — year-only date in bracket, legacy)
+#   ##### [<title>]                  (Me historical — title fills bracket,
+#                                     date stays in DB; only valid when row
+#                                     carries `<!-- id:N -->` anchor so we
+#                                     can pull date from the existing row)
+#   description paragraph. <!-- id:N -->
+_H5_RE = re.compile(
+    r"^##### \[(?P<date>\d{4}(?:-\d{2}-\d{2})?)\] (?P<title>.+?)\s*$"
 )
+_H5_AGE_RE = re.compile(r"^##### \[(?P<title>.+?)\]\s*$")
+_ID_RE = re.compile(r"<!-- id:(?P<id>\d+) -->")
 
 
 @dataclass
@@ -53,21 +55,46 @@ class ReconcileReport:
 
 
 def _parse(md_text: str) -> list[dict]:
-    """Yield row dicts in section order. Section is set by ## Us / ## Me."""
+    """Yield row dicts in section order.
+
+    Block boundary = H5 heading `##### [date] subject`. Body lines below
+    the heading (until the next H5 / `## ` section / end-of-marker) form
+    the description paragraph; the `<!-- id:N -->` anchor may live
+    anywhere in the body (inline-tail by render convention).
+    """
     rows: list[dict] = []
     section: str | None = None
     in_block = False
+    cur: dict | None = None
+    body: list[str] = []
+
+    def flush():
+        nonlocal cur, body
+        if cur is None:
+            return
+        text = "\n".join(body).strip()
+        m_id = _ID_RE.search(text)
+        if m_id:
+            cur["id"] = int(m_id.group("id"))
+            text = _ID_RE.sub("", text).strip()
+        cur["description"] = text or None
+        rows.append(cur)
+        cur = None
+        body = []
+
     for line in md_text.splitlines():
         s = line.rstrip()
         if _M0 in s:
             in_block = True
             continue
         if _M1 in s:
+            flush()
             in_block = False
             continue
         if not in_block:
             continue
-        if s.startswith("## "):
+        if s.startswith("## ") and not s.startswith("##### "):
+            flush()
             head = s[3:].strip().lower()
             if head == "us":
                 section = "us"
@@ -76,18 +103,42 @@ def _parse(md_text: str) -> list[dict]:
             else:
                 section = None
             continue
-        m = _ROW_RE.match(s)
-        if not m or section is None:
+        m = _H5_RE.match(s)
+        if m and section is not None:
+            flush()
+            cur = {
+                "scope": section,
+                "date": m.group("date"),
+                "title": m.group("title").strip(),
+                "theme": None,
+                "pinned": 1,
+                "description": None,
+                "id": None,
+            }
             continue
-        rows.append({
-            "scope": section,
-            "date": m.group("date"),
-            "title": m.group("title").strip(),
-            "theme": None,  # render dropped theme; DB col stays nullable
-            "pinned": 1,    # md rows on subpage are confirmed by being there
-            "description": (m.group("desc") or None) and m.group("desc").strip(),
-            "id": int(m.group("id")) if m.group("id") else None,
-        })
+        # Historical Me — single-bracket form `##### [<title>]` (no date in
+        # bracket). Only honoured under `## Me`; date is unknown here and
+        # must be recovered from DB via the row's id anchor.
+        m_age = _H5_AGE_RE.match(s)
+        if m_age and section == "me":
+            flush()
+            cur = {
+                "scope": section,
+                "date": None,
+                "title": m_age.group("title").strip(),
+                "theme": None,
+                "pinned": 1,
+                "description": None,
+                "id": None,
+            }
+            continue
+        # Stale legacy `- [date] ...` bullet rows from a pre-H5 file are
+        # NOT body — skip them so they don't pollute the H5 description.
+        if s.startswith("- "):
+            continue
+        if cur is not None and s:
+            body.append(s)
+    flush()
     return rows
 
 
@@ -155,6 +206,10 @@ def reconcile_milestones(conn: sqlite3.Connection,
         # inserts + updates
         for row in md_rows:
             rid = row["id"]
+            # Single-bracket historical Me rows have no date in the md;
+            # inherit the DB's existing date so diff doesn't flap.
+            if rid is not None and rid in db_rows and row["date"] is None:
+                row["date"] = db_rows[rid]["date"] or ""
             if rid is not None and rid in db_rows:
                 cur = db_rows[rid]
                 changed = (
@@ -187,6 +242,15 @@ def reconcile_milestones(conn: sqlite3.Connection,
                     f"anchored id {rid} not in db: {row['title'][:40]}"
                 )
             else:
+                if row["date"] is None:
+                    # Unanchored single-bracket Me row carries no date.
+                    # We can't synthesise one; report conflict so Lumi can
+                    # rewrite the heading with a date or restore the anchor.
+                    rpt.conflicts.append(
+                        f"single-bracket row needs date or id anchor: "
+                        f"{row['title'][:40]}"
+                    )
+                    continue
                 h = _hash(row)
                 cur = conn.execute(
                     "INSERT INTO milestones "
