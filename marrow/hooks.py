@@ -34,12 +34,22 @@ def _affect_heartbeat(conn: sqlite3.Connection) -> str | None:
     """Return block line if a day in last 7d had events but no affect, else None.
 
     DECISIONS line 37: fires ONLY on a day that HAD events but NO affect.
-    Checks the past 7 calendar days (UTC date boundary).
+    Checks the past 7 calendar days (UTC date boundary), but ignores days
+    earlier than the affect pipeline's first-seen date — historical events
+    before AFFECT extraction shipped never had a chance to produce rows.
     """
+    pipeline_start_row = conn.execute(
+        "SELECT MIN(date) FROM affect_live"
+    ).fetchone()
+    pipeline_start = pipeline_start_row[0] if pipeline_start_row else None
+    if not pipeline_start:
+        return None  # pipeline never produced anything → warning is noise
     today = _now_utc().date()
     gap_day: str | None = None
     for delta in range(1, 8):
         d = (today - timedelta(days=delta)).isoformat()
+        if d < pipeline_start:
+            continue
         has_events = conn.execute(
             "SELECT 1 FROM events WHERE date(timestamp) = ? LIMIT 1", (d,)
         ).fetchone()

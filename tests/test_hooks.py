@@ -289,7 +289,10 @@ def test_heartbeat_events_without_affect_fires(env, monkeypatch, capsys):
     """Day has events but NO affect => heartbeat block appears."""
     db, _, _ = env
     conn = storage.connect(db)
-    yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+    today = datetime.now(timezone.utc).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    anchor = (today - timedelta(days=30)).isoformat()
+    _insert_affect(conn, anchor, 1, 0.5, 0.5)  # pipeline-start anchor
     _insert_event(conn, yesterday)
     conn.close()
 
@@ -304,7 +307,10 @@ def test_heartbeat_gap_within_7d(env, monkeypatch, capsys):
     """Gap 6 days ago (events, no affect) => heartbeat fires."""
     db, _, _ = env
     conn = storage.connect(db)
-    six_ago = (datetime.now(timezone.utc).date() - timedelta(days=6)).isoformat()
+    today = datetime.now(timezone.utc).date()
+    six_ago = (today - timedelta(days=6)).isoformat()
+    anchor = (today - timedelta(days=30)).isoformat()
+    _insert_affect(conn, anchor, 1, 0.5, 0.5)  # pipeline-start anchor
     _insert_event(conn, six_ago)
     conn.close()
 
@@ -320,6 +326,8 @@ def test_heartbeat_reports_most_recent_gap(env, monkeypatch, capsys):
     db, _, _ = env
     conn = storage.connect(db)
     today = datetime.now(timezone.utc).date()
+    anchor = (today - timedelta(days=30)).isoformat()
+    _insert_affect(conn, anchor, 1, 0.5, 0.5)  # pipeline-start anchor
     for delta in [2, 5]:
         d = (today - timedelta(days=delta)).isoformat()
         _insert_event(conn, d)
@@ -339,6 +347,38 @@ def test_heartbeat_beyond_7d_ignored(env, monkeypatch, capsys):
     conn = storage.connect(db)
     eight_ago = (datetime.now(timezone.utc).date() - timedelta(days=8)).isoformat()
     _insert_event(conn, eight_ago)
+    conn.close()
+
+    _stdin(monkeypatch, {})
+    hooks.main(["session_start"])
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "⚠" not in ctx
+
+
+def test_heartbeat_before_pipeline_start_ignored(env, monkeypatch, capsys):
+    """Events older than first affect row are pre-pipeline → no warning."""
+    db, _, _ = env
+    conn = storage.connect(db)
+    today = datetime.now(timezone.utc).date()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    five_ago = (today - timedelta(days=5)).isoformat()
+    # Pipeline first produced affect yesterday; 5 days ago events are pre-pipeline.
+    _insert_affect(conn, yesterday, 1, 0.5, 0.5)
+    _insert_event(conn, five_ago)
+    conn.close()
+
+    _stdin(monkeypatch, {})
+    hooks.main(["session_start"])
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "⚠" not in ctx
+
+
+def test_heartbeat_no_affect_anywhere_ignored(env, monkeypatch, capsys):
+    """Affect pipeline never produced anything → silent (warning would be noise)."""
+    db, _, _ = env
+    conn = storage.connect(db)
+    yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+    _insert_event(conn, yesterday)
     conn.close()
 
     _stdin(monkeypatch, {})
