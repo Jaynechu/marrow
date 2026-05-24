@@ -20,7 +20,9 @@ from __future__ import annotations
 import datetime as _dt
 import sys
 
-from . import candidates, config, daily_catchup, repo, storage
+from pathlib import Path
+
+from . import candidates, config, daily_catchup, repo, storage, subpages
 from .daily_prompts import DAILY_CAND_PROMPT
 from .llm import LLMClient, LLMError
 
@@ -258,6 +260,21 @@ def main(argv: list[str] | None = None) -> int:
         with daily_catchup.app_lock():
             wrote = run(conn, llm, db=db, day=day, catchup=catchup,
                         force=force)
+        if wrote:
+            try:
+                sub_folder = config.sub_pages_path()
+                sub_state = config.sub_pages_state_path()
+                Path(sub_folder).mkdir(parents=True, exist_ok=True)
+                Path(sub_state).mkdir(parents=True, exist_ok=True)
+                subpages.write_all_subpages(
+                    conn, folder=sub_folder, state_dir=sub_state, db=db,
+                )
+            except Exception as e:
+                repo.add_alert(
+                    "warn", "sub_pages",
+                    f"daily {mode} skipped sub-pages write: {e}",
+                    source="daily.py", db=db,
+                )
         print(f"[{ts}] daily {mode} ok: wrote={wrote or '[]'}", flush=True)
         return 0
     except Exception as e:
