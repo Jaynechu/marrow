@@ -921,8 +921,33 @@ def recall_fusion(
             "date": date,
         })
 
+    # Tasks: vec-only lane (no kw scan for now — titles are short, can land
+    # later if needed). Evergreen — no recency on the recall ranking either.
+    tasks_cands: list[dict] = []
+    for card in tasks_vec_cards:
+        vs = card["vec_score"]
+        if vs < _VEC_ONLY_FLOOR:
+            continue
+        title = card["title"]
+        if not title:
+            continue
+        next_step = card["next_step"]
+        category = card["category"]
+        body = f"{category}: {title}" if category else title
+        if next_step:
+            body = f"{body} — {next_step}"
+        tasks_cands.append({
+            "kind": "task", "id": card["id"],
+            "session_id": None, "timestamp": card["created_at"],
+            "role": "task", "content": body,
+            "channel": None, "compressed": 0,
+            "bm25": 0.0, "vec": vs, "fts_hit": False,
+            "category": category, "status": card["status"],
+        })
+
     if (not candidates and not milestone_cands and not memes_cands
-            and not entities_vec_cards and not diary_cands):
+            and not entities_vec_cards and not diary_cands
+            and not tasks_cands):
         return []
 
     # ── dormant revive + scoring ──────────────────────────────────────────────
@@ -1039,6 +1064,11 @@ def recall_fusion(
         raw = w_diary_vec * dc.get("vec", 0.0)
         scored.append((raw, {**dc, "score": raw}))
 
+    # ── tasks scoring (vec only — evergreen study + project surface) ────────
+    for tc in tasks_cands:
+        raw = w_tasks_vec * tc.get("vec", 0.0)
+        scored.append((raw, {**tc, "score": raw}))
+
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # ── entity force-include (prepend before ms_cap reservation) ─────────────
@@ -1097,7 +1127,7 @@ def recall_fusion(
     # reservation.
     strong_fts_count = sum(
         1 for _, r in scored
-        if r.get("kind") not in ("milestone", "memes", "diary")
+        if r.get("kind") not in ("milestone", "memes", "diary", "task")
         and r.get("bm25", 0.0) >= 0.5
         and not r.get("force_include")
     )
@@ -1105,26 +1135,33 @@ def recall_fusion(
         ms_cap = 1
         memes_cap = 0
         diary_cap = 0
+        tasks_cap = 0
     else:
         ms_cap = max(1, (limit + 2) // 3)
         memes_cap = 1 if limit <= 5 else 2
         # Diary = long-form companion surface. Reserve 1 slot when limit > 5
         # so it isn't starved by event/memes/milestone density.
         diary_cap = 1 if limit > 5 else 0
+        # Tasks = study + project surface. Same reservation rule as diary.
+        tasks_cap = 1 if limit > 5 else 0
     ms_scored = [(s, r) for s, r in scored if r.get("kind") == "milestone"]
     memes_scored = [(s, r) for s, r in scored if r.get("kind") == "memes"]
     diary_scored = [(s, r) for s, r in scored if r.get("kind") == "diary"]
+    tasks_scored = [(s, r) for s, r in scored if r.get("kind") == "task"]
     ev_scored = [
         (s, r) for s, r in scored
-        if r.get("kind") not in ("milestone", "memes", "diary")
+        if r.get("kind") not in ("milestone", "memes", "diary", "task")
     ]
     ms_picks = ms_scored[:ms_cap]
     memes_picks = memes_scored[:memes_cap]
     diary_picks = diary_scored[:diary_cap]
-    reserved = len(ms_picks) + len(memes_picks) + len(diary_picks)
+    tasks_picks = tasks_scored[:tasks_cap]
+    reserved = (
+        len(ms_picks) + len(memes_picks) + len(diary_picks) + len(tasks_picks)
+    )
     ev_picks = ev_scored[: max(0, limit - reserved)]
     picks = sorted(
-        ms_picks + memes_picks + diary_picks + ev_picks,
+        ms_picks + memes_picks + diary_picks + tasks_picks + ev_picks,
         key=lambda x: x[0], reverse=True,
     )
 
@@ -1180,5 +1217,6 @@ def recall_with_config(
         w_entities_vec=float(rcfg.get("w_entities_vec", 0.55)),
         w_milestones_vec=float(rcfg.get("w_milestones_vec", 0.55)),
         w_diary_vec=float(rcfg.get("w_diary_vec", 0.55)),
+        w_tasks_vec=float(rcfg.get("w_tasks_vec", 0.55)),
         min_score=float(rcfg.get("min_score", 0.35)),
     )

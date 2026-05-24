@@ -66,6 +66,7 @@ w_memes_vec = 0.55
 w_entities_vec = 0.55
 w_milestones_vec = 0.55
 w_diary_vec = 0.55
+w_tasks_vec = 0.55
 min_score = 0.35
 
 [sessionend]

@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -173,6 +173,11 @@ CREATE TABLE IF NOT EXISTS diary_vec_meta (
   embedder_id TEXT NOT NULL,
   dim INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS tasks_vec_meta (
+  rowid INTEGER PRIMARY KEY,
+  embedder_id TEXT NOT NULL,
+  dim INTEGER NOT NULL
+);
 """
 
 # superseded_by IS NULL = the current row. Recall/backdrop read the live view.
@@ -216,7 +221,9 @@ def _vec_table(dim: int, name: str = "events_vec") -> str:
 # the named main table can have a 1024d row in <name>_vec; tracked by
 # <name>_vec_meta. Same shape as events_vec so the embed write path stays one
 # helper.
-_VEC_LANES = ("memes_vec", "entities_vec", "milestones_vec", "diary_vec")
+_VEC_LANES = (
+    "memes_vec", "entities_vec", "milestones_vec", "diary_vec", "tasks_vec",
+)
 
 
 def _ondisk_vec_dim(conn: sqlite3.Connection, name: str = "events_vec") -> int | None:
@@ -330,6 +337,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v6(conn)
         _migrate_to_v7(conn)
         _migrate_to_v8(conn)
+        _migrate_to_v9(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -487,4 +495,15 @@ def _migrate_to_v8(conn: sqlite3.Connection) -> None:
     """
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 8:
+        return
+
+
+def _migrate_to_v9(conn: sqlite3.Connection) -> None:
+    """v9: tasks vec lane (tasks_vec / tasks_vec_meta) covering study +
+    projects (both render from the `tasks` table filtered by category).
+    Table + meta created unconditionally in init_db; this bump is a version
+    sentinel. Backfill happens on the next embed_pending() call.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 9:
         return

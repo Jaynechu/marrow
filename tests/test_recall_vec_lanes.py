@@ -89,6 +89,17 @@ def _make_diary(db, date: str, content: str) -> int:
     ).fetchone()["rowid"]
 
 
+def _make_task(db, title: str, category: str = "task",
+               next_step: str = "", status: str = "active") -> int:
+    db.execute(
+        "INSERT INTO tasks(category, title, next_step, status) "
+        "VALUES(?, ?, ?, ?)",
+        (category, title, next_step, status),
+    )
+    db.commit()
+    return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
 # ── A. embed write path ──────────────────────────────────────────────────────
 
 def test_embed_meme_writes_and_idempotent(db):
@@ -130,22 +141,23 @@ def test_embed_milestone_writes_and_idempotent(db):
     ).fetchone()[0] == 1
 
 
-def test_embed_pending_backfills_all_five_lanes(db):
+def test_embed_pending_backfills_all_six_lanes(db):
     _make_event(db, "event row")
     _make_meme(db, "meme-key")
     _make_entity(db, "Stellan", fact="partner")
     _make_milestone(db, "milestone-title")
     _make_diary(db, "2026-05-23", "diary content for vec")
+    _make_task(db, "GAMSAT prep", category="study", next_step="section 2")
     mock_emb = MagicMock()
     mock_emb.embed.side_effect = lambda texts: np.stack(
         [_fake_vec(100 + i) for i, _ in enumerate(texts)]
     )
     with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
         n = rm.embed_pending(db, batch=10)
-    assert n == 5
+    assert n == 6
     for tbl in ("events_vec_meta", "memes_vec_meta",
                 "entities_vec_meta", "milestones_vec_meta",
-                "diary_vec_meta"):
+                "diary_vec_meta", "tasks_vec_meta"):
         assert db.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] == 1
 
 
@@ -258,13 +270,15 @@ def test_vec_lane_no_op_without_embedder(db):
     _make_entity(db, "VecDisabled", fact="x")
     _make_milestone(db, "no vec milestone")
     _make_diary(db, "2026-05-23", "vec disabled diary content")
+    _make_task(db, "no vec task", category="study")
     with patch.object(rm, "_ensure_embedder", return_value=None):
         # Should not raise; no kw substring match on this query either.
         results = rm.recall_fusion(
             db, "wholly orthogonal sentence here", min_score=0.0,
         )
-    # No memes / entity / milestone / diary vec-only rows surface.
-    assert not any(r.get("kind") in ("memes", "milestone", "entity", "diary")
+    # No memes / entity / milestone / diary / task vec-only rows surface.
+    assert not any(r.get("kind") in ("memes", "milestone", "entity",
+                                     "diary", "task")
                    for r in results)
 
 
@@ -421,3 +435,111 @@ def test_diary_orphan_sweep(db):
         "SELECT rowid FROM diary_vec_meta"
     ).fetchall()}
     assert rowids == {cur_rid}
+
+
+# ── D. tasks lane ────────────────────────────────────────────────────────────
+
+def test_embed_task_writes_and_idempotent(db):
+    tid = _make_task(db, "GAMSAT prep", category="study",
+                     next_step="section 2")
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([_fake_vec(30)])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        assert rm.embed_task(db, tid, "study: GAMSAT prep — section 2") is True
+        assert rm.embed_task(db, tid, "study: GAMSAT prep — section 2") is False
+    assert db.execute(
+        "SELECT COUNT(*) FROM tasks_vec_meta WHERE rowid=?", (tid,)
+    ).fetchone()[0] == 1
+    assert db.execute(
+        "SELECT COUNT(*) FROM tasks_vec WHERE rowid=?", (tid,)
+    ).fetchone()[0] == 1
+
+
+def test_embed_pending_skips_archived_tasks(db):
+    live_tid = _make_task(db, "live task", category="study", status="active")
+    done_tid = _make_task(db, "done task", category="task", status="done")
+    _make_task(db, "archived task", category="task", status="archived")
+    mock_emb = MagicMock()
+    mock_emb.embed.side_effect = lambda texts: np.stack(
+        [_fake_vec(500 + i) for i, _ in enumerate(texts)]
+    )
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        rm.embed_pending(db, batch=10)
+    rowids = {r["rowid"] for r in db.execute(
+        "SELECT rowid FROM tasks_vec_meta"
+    ).fetchall()}
+    assert rowids == {live_tid, done_tid}
+
+
+def test_tasks_vec_lane_surfaces_via_monkeypatch(db, monkeypatch):
+    tid = _make_task(db, "GAMSAT chemistry", category="study",
+                     next_step="finish 30 MCQs")
+    qvec = _fake_vec(31)
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([qvec])
+
+    def fake_tasks_hits(c, b, k):
+        return [{
+            "id": tid, "category": "study",
+            "title": "GAMSAT chemistry", "next_step": "finish 30 MCQs",
+            "status": "active",
+            "created_at": "2026-05-01T00:00:00Z", "vec_score": 0.7,
+        }]
+
+    monkeypatch.setattr(rm, "_tasks_vec_hits", fake_tasks_hits)
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(
+            db, "totally unrelated query", min_score=0.0,
+        )
+    task_hits = [r for r in results if r.get("kind") == "task"]
+    assert len(task_hits) >= 1
+    assert "GAMSAT chemistry" in task_hits[0]["content"]
+    assert "finish 30 MCQs" in task_hits[0]["content"]
+    assert task_hits[0]["score"] > 0
+
+
+def test_tasks_vec_lane_gated_by_floor(db, monkeypatch):
+    tid = _make_task(db, "low sim task", category="study")
+    qvec = _fake_vec(32)
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([qvec])
+    # 0.30 < _VEC_ONLY_FLOOR (0.40) — should be gated out.
+    monkeypatch.setattr(rm, "_tasks_vec_hits", lambda c, b, k: [{
+        "id": tid, "category": "study",
+        "title": "low sim task", "next_step": "",
+        "status": "active",
+        "created_at": "2026-05-01T00:00:00Z", "vec_score": 0.30,
+    }])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(
+            db, "anything goes here", min_score=0.0,
+        )
+    assert not any(r.get("kind") == "task" for r in results)
+
+
+def test_tasks_slot_reserved_when_limit_gt_5(db, monkeypatch):
+    """With limit>5 and no strong FTS, at least one task slot is reserved
+    even when events would otherwise saturate the limit via vec-only scores."""
+    tid = _make_task(db, "task to reserve", category="study",
+                     next_step="step")
+    for i in range(8):
+        _make_event(db, f"alpha bravo charlie {i}")
+    qvec = _fake_vec(33)
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([qvec])
+
+    monkeypatch.setattr(rm, "_tasks_vec_hits", lambda c, b, k: [{
+        "id": tid, "category": "study",
+        "title": "task to reserve", "next_step": "step",
+        "status": "active",
+        "created_at": "2026-05-01T00:00:00Z", "vec_score": 0.6,
+    }])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(
+            db, "zzz nonmatching query", limit=6, min_score=0.0,
+        )
+    task_hits = [r for r in results if r.get("kind") == "task"]
+    assert len(task_hits) >= 1, (
+        f"task slot not reserved; results kinds = "
+        f"{[r.get('kind') for r in results]}"
+    )
