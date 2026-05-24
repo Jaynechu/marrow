@@ -35,11 +35,11 @@
 
 ### Bug surfaced this window (NOT fixed)
 
-bug memes-semantic — memes leg matches on `key` only, no semantic bridge:
-- Probe (我每个月赎身费多少) hits milestone (鸭鸭昵称诞生) (description mentions (100刀的赎身费)) but does NOT hit memes row `key=Plan / value="Max 5x · $100/mo (~AUD150)"`. Semantic link (赎身费) to Plan to 100 lives in vocab but recall has no path from (赎身费) to key Plan.
-- Root cause: `recall._memes_candidates` reverse-substring scans `key` only. Memes need the same alias channel entities just got.
-- Fix path: schema v7 with `memes.aliases TEXT`, MEMES_CAND prompt requires aliases list, `_memes_candidates` matches key + every alias. Mirrors entity fix exactly.
-- Acceptance test: query (赎身费) → memes row Plan returned.
+bug recall-cross-table-vec-gap — only `events` has a vec lane:
+- Probe (我每个月赎身费多少) hits milestone (鸭鸭昵称诞生) but does NOT hit memes row `key=Plan / value="Max 5x · $100/mo (~AUD150)"`. Semantic link (赎身费) ↔ Plan ↔ 100 exists in vocabulary; recall has no semantic path.
+- Root cause: only `events_vec` (bge-m3 1024d) has embeddings. `memes`, `entities`, `milestones` lack vec lanes, falling back to substring-on-key, which misses cross-language and synonym queries.
+- Fix (schema v7+): add `memes_vec` / `entities_vec` / `milestones_vec` (sqlite-vec, 1024d); embed surface forms on insert/update; `recall_fusion` queries each vec lane alongside substring matchers; keep `entities.aliases` as fast-path.
+- Acceptance: query (赎身费) → memes Plan in top-K with no string overlap; query (我的猫) → entity (小胖) without alias hit.
 
 bug entity-card recency tie-breaker (low pri):
 - 19 entity rows have empty `timestamp` — when several cards score equally, ordering is arbitrary. Not painful yet; revisit if multi-entity queries surface.
@@ -53,7 +53,7 @@ Five files modified in working tree by a sibling window doing Phase A handover-r
 
 ### Operational
 - main ahead origin 9 commits — push when Lumi nods.
-- Worktrees `agent-a4da07a55ca6a413f` / `a685002c0d6d3fc13` / `a6fabfb5e4904c925` / `aa39f1350df35ccf0` / `aba825b3a0487e962` all locked by completed agents — auto-clean later, or `git worktree remove -f -f` next session.
+6 stale agent worktrees + branches force-removed this session (see build-workflow.md Housekeeping).
 - MCP daemon reload required: live cc windows still run `marrow.daemon` processes spawned BEFORE the recall/alias fixes — `mcp__marrow__recall` keeps returning pre-fix results until each cc window is restarted. UserPromptSubmit hook already runs latest code (fresh Python spawn per prompt).
 - aging plist still NOT launchctl-loaded (multi-handover carryover).
 
@@ -62,7 +62,7 @@ Five files modified in working tree by a sibling window doing Phase A handover-r
 ### Lumi-owned (no agent touch)
 - bug #2 dashboard tasks polluted (TASK_CAND extracts marrow-dev steps) — Lumi rewrites `daily_prompts.py` TASK_CAND prompt as part of bigger sweep.
 - bug vocab-extract noise ((马斯克) / (额度) in dashboard despite N<3) — Lumi's prompt rewrite folds this. Conf / mention threshold inspection if it persists post-rewrite.
-- bug memes-semantic (NEW, this window) — Lumi may fold into the same MEMES_CAND rewrite pass (add aliases field mirroring entity v6).
+- bug recall-cross-table-vec-gap (NEW, this window — structural) — give memes / entities / milestones their own vec lane so bge-m3 bridges semantics cross-table; aliases stays as the literal fast-path. Detail in `### Bug surfaced this window` above.
 
 ### Phase 2 Lumi-owned closeout
 - `dashboard_v2_redo` / `milestone_format_unify` / `subpage_redo` / dashboard top free-form fix.
