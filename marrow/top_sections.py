@@ -58,7 +58,9 @@ def _day_cutoff_utc() -> datetime:
 
 
 def _week_iso() -> str:
-    return (datetime.now(_TZ).date() - timedelta(days=7)).isoformat()
+    # 6AM-aligned: pre-6AM still belongs to prior day, like Affect Today.
+    today = _day_cutoff_utc().astimezone(_TZ).date()
+    return (today - timedelta(days=7)).isoformat()
 
 
 def _rel_time(created_at: str) -> str:
@@ -84,7 +86,7 @@ def render_alerts(conn: sqlite3.Connection) -> str:
     rows = conn.execute(
         "SELECT severity, message FROM alerts WHERE resolved = 0 "
         "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 "
-        "ELSE 2 END, created_at DESC"
+        "ELSE 2 END, created_at ASC"
     ).fetchall()
     lines = ["## Alerts (active)"]
     lines += [f"- {r[0]}: {r[1]}" for r in rows] if rows else ["- (none)"]
@@ -97,7 +99,7 @@ def render_tasks(conn: sqlite3.Connection) -> str:
     cutoff_iso = cutoff_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     done = conn.execute(
         "SELECT id, category, title FROM tasks WHERE status='done' AND updated_at>=? "
-        "ORDER BY updated_at DESC", (cutoff_iso,)).fetchall()
+        "ORDER BY updated_at ASC", (cutoff_iso,)).fetchall()
 
     today_local = cutoff_utc.astimezone(_TZ).date()
     next7 = today_local + timedelta(days=7)
@@ -175,7 +177,7 @@ _BUTTONS = "✅ ❌ ✏️"
 def render_milestone_candidate(conn: sqlite3.Connection, n: int = 5) -> str:
     rows = conn.execute(
         "SELECT id, date, title, created_at FROM milestones WHERE pinned=0 "
-        "ORDER BY created_at DESC LIMIT ?", (n,)).fetchall()
+        "ORDER BY created_at ASC LIMIT ?", (n,)).fetchall()
     out = [f"## Milestone candidate [{len(rows)}]"]
     if rows:
         for r in rows:
