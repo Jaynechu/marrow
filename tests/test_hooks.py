@@ -19,8 +19,8 @@ from marrow import config, hooks, storage
 def env(tmp_path, monkeypatch):
     db = str(tmp_path / "t.db")
     dash = str(tmp_path / "dashboard.md")
-    sub_folder = str(tmp_path / "sub_pages")
-    sub_state = str(tmp_path / "sub_state")
+    sub_folder = str(tmp_path / "db-pages")
+    sub_state = str(tmp_path / "db_state")
     conn = storage.init_db(db)
     conn.execute("INSERT INTO tasks(category,title,status) "
                  "VALUES('study','GAMSAT plan','active')")
@@ -28,6 +28,10 @@ def env(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(config, "db_path", lambda: db)
     monkeypatch.setattr(config, "dashboard_path", lambda: dash)
+    monkeypatch.setattr(config, "db_pages_path", lambda: sub_folder)
+    monkeypatch.setattr(config, "db_pages_state_path", lambda: sub_state)
+    # Legacy aliases kept synced so any caller still hitting the old name
+    # (uncommitted other-window edits in daily.py) sees the same tmp paths.
     monkeypatch.setattr(config, "sub_pages_path", lambda: sub_folder)
     monkeypatch.setattr(config, "sub_pages_state_path", lambda: sub_state)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
@@ -72,11 +76,11 @@ def test_session_end_archives_and_renders(env, monkeypatch, tmp_path):
     assert "GAMSAT plan" in txt and hooks.dashboard.M0 in txt
 
 
-def test_session_end_does_not_write_sub_pages(env, monkeypatch, tmp_path):
-    """SessionEnd MUST NOT touch sub_pages — those are owned by daily.py.
+def test_session_end_does_not_write_db_pages(env, monkeypatch, tmp_path):
+    """SessionEnd MUST NOT touch db-pages — those are owned by daily.py.
     Re-rendering milestone.md every session was the root cause of the
     `Milestone candidate` regrow-after-delete bug (pinned=0 leak into the
-    subpage). Dashboard top is still rewritten; sub_pages folder is left
+    subpage). Dashboard top is still rewritten; db-pages folder is left
     untouched until the next 07:00 daily routine."""
     db, _, _ = env
     conn = storage.connect(db)
@@ -92,7 +96,7 @@ def test_session_end_does_not_write_sub_pages(env, monkeypatch, tmp_path):
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": str(jl)})
     assert hooks.main(["session_end"]) == 0
     from pathlib import Path
-    sub = Path(tmp_path / "sub_pages" / "milestone.md")
+    sub = Path(tmp_path / "db-pages" / "milestone.md")
     assert not sub.exists(), "session_end must not write milestone.md"
 
 

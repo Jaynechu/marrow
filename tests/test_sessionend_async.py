@@ -227,10 +227,14 @@ def test_sessionend_hook_fires_async_popen(db_env, monkeypatch, tmp_path):
         {"session_id": "sid-hook-test", "transcript_path": str(jl)})))
     monkeypatch.setattr(config, "dashboard_path",
                         lambda: str(tmp_path / "dashboard.md"))
+    monkeypatch.setattr(config, "db_pages_path",
+                        lambda: str(tmp_path / "db-pages"))
+    monkeypatch.setattr(config, "db_pages_state_path",
+                        lambda: str(tmp_path / "db_state"))
     monkeypatch.setattr(config, "sub_pages_path",
-                        lambda: str(tmp_path / "sub_pages"))
+                        lambda: str(tmp_path / "db-pages"))
     monkeypatch.setattr(config, "sub_pages_state_path",
-                        lambda: str(tmp_path / "sub_state"))
+                        lambda: str(tmp_path / "db_state"))
 
     with patch("marrow.hooks.popen_detach", side_effect=fake_popen):
         from marrow import hooks

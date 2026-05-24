@@ -112,7 +112,7 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
             cfg.reconcile(conn, Path(path))
         except Exception as e:
             repo.add_alert(
-                "warn", "sub_pages",
+                "warn", "db_pages",
                 f"{key} reconcile failed: {e}; falling through to render",
                 source="subpages.py", db=db,
             )
@@ -300,7 +300,7 @@ def build_all_configs(conn: sqlite3.Connection, *,
             builder = _REGISTRY.get(key)
             if builder is None:
                 repo.add_alert(
-                    "warn", "sub_pages",
+                    "warn", "db_pages",
                     f"unknown subpage key '{key}' in [subpages].{section}"
                     " — skipped (registry: " + ", ".join(sorted(_REGISTRY)) + ")",
                     source="subpages.py", db=db,
@@ -310,7 +310,7 @@ def build_all_configs(conn: sqlite3.Connection, *,
                 out.append(builder(conn, folder, state_dir))
             except Exception as e:
                 repo.add_alert(
-                    "warn", "sub_pages",
+                    "warn", "db_pages",
                     f"subpage '{key}' build failed: {e}",
                     source="subpages.py", db=db,
                 )
@@ -321,14 +321,14 @@ def content_list(*, folder: str | None = None) -> dict:
     """Return ordered subpage display info for dashboard `## Content`.
 
     Returns {"top": [(label, rel_path), ...], "bottom": [(label, rel_path), ...]}
-    Hidden keys excluded. `folder` defaults to config.sub_pages_path() so the
+    Hidden keys excluded. `folder` defaults to config.db_pages_path() so the
     dashboard can compute md links relative to its own path.
     """
     sub_cfg = _subpages_cfg()
     hidden = set(sub_cfg["hidden"])
     if folder is None:
         try:
-            folder = _config.sub_pages_path()
+            folder = _config.db_pages_path()
         except Exception:
             folder = "."
     base = Path(folder)

@@ -23,13 +23,15 @@ from marrow import top_sections, handover_render
 def env(tmp_path, monkeypatch):
     db = str(tmp_path / "t.db")
     dash = str(tmp_path / "dashboard.md")
-    sub_folder = str(tmp_path / "sub_pages")
-    sub_state = str(tmp_path / "sub_state")
+    sub_folder = str(tmp_path / "db-pages")
+    sub_state = str(tmp_path / "db_state")
     rendered_handover = tmp_path / "handover.md"
     conn = storage.init_db(db)
     conn.close()
     monkeypatch.setattr(config, "db_path", lambda: db)
     monkeypatch.setattr(config, "dashboard_path", lambda: dash)
+    monkeypatch.setattr(config, "db_pages_path", lambda: sub_folder)
+    monkeypatch.setattr(config, "db_pages_state_path", lambda: sub_state)
     monkeypatch.setattr(config, "sub_pages_path", lambda: sub_folder)
     monkeypatch.setattr(config, "sub_pages_state_path", lambda: sub_state)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)

@@ -50,16 +50,28 @@ def load() -> dict:
     dash = paths.get("dashboard") or str(
         Path.home() / "Desktop" / "NY" / "dashboard.md"
     )
-    sub = paths.get("sub_pages") or str(
-        Path.home() / "Desktop" / "NY" / "sub_pages"
+    # `db_pages` = folder of md files rendered from DB (was `sub_pages` until
+    # 2026-05-24). Name signals provenance: rendered-from-DB vs hand-written
+    # notes elsewhere in the Obsidian vault. Legacy `sub_pages` key still read
+    # as a fallback so an old config.toml keeps working until rewritten.
+    sub = paths.get("db_pages") or paths.get("sub_pages") or str(
+        Path.home() / "Desktop" / "NY" / "db-pages"
     )
-    sub_state = paths.get("sub_pages_state") or str(DATA_DIR / "state")
+    sub_state = (
+        paths.get("db_pages_state")
+        or paths.get("sub_pages_state")
+        or str(DATA_DIR / "state")
+    )
     paths["db"] = db
     paths["backup_dir"] = backup
     paths["offsite_backup_dir"] = offsite
     paths["dashboard"] = dash
-    paths["sub_pages"] = str(Path(sub).expanduser())
-    paths["sub_pages_state"] = str(Path(sub_state).expanduser())
+    paths["db_pages"] = str(Path(sub).expanduser())
+    paths["db_pages_state"] = str(Path(sub_state).expanduser())
+    # Legacy keys kept synchronised so any caller still using sub_pages_path()
+    # (uncommitted other-window edits in daily.py etc.) gets the same path.
+    paths["sub_pages"] = paths["db_pages"]
+    paths["sub_pages_state"] = paths["db_pages_state"]
     cfg.setdefault("backup", {}).setdefault("keep", 14)
     Path(backup).mkdir(parents=True, exist_ok=True)
     return cfg
@@ -73,9 +85,15 @@ def db_path() -> str:
     return load()["paths"]["db"]
 
 
-def sub_pages_path() -> str:
-    return load()["paths"]["sub_pages"]
+def db_pages_path() -> str:
+    return load()["paths"]["db_pages"]
 
 
-def sub_pages_state_path() -> str:
-    return load()["paths"]["sub_pages_state"]
+def db_pages_state_path() -> str:
+    return load()["paths"]["db_pages_state"]
+
+
+# Legacy aliases — kept until all callers move to db_pages_path(). Pending
+# uncommitted edits in marrow/daily.py and tests still call these.
+sub_pages_path = db_pages_path
+sub_pages_state_path = db_pages_state_path
