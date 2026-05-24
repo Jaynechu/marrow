@@ -60,27 +60,16 @@ def parse_pit(text: str) -> list[dict]:
 
 
 def parse_goose_bites(text: str) -> list[dict]:
-    rows: list[dict] = []
-    cur: dict | None = None
-
-    def flush():
-        nonlocal cur
-        if cur and cur["bites"].strip():
-            rows.append(cur)
-        cur = None
-
+    """Parse single-line format: `- [YYYY-MM-DD]<quote>`. One row per line."""
+    rows = []
     for line in text.splitlines():
         s = line.strip()
-        m = re.match(r"### (\d{4}-\d{2}-\d{2})$", s)
-        if m:
-            flush()
-            cur = {"date": m.group(1), "session_id": None,
-                   "bites": "", "best": 0}
-        elif s.startswith("![["):
+        if s.startswith("![["):
             continue
-        elif cur is not None and s:
-            cur["bites"] += ("\n" if cur["bites"] else "") + s
-    flush()
+        m = re.match(r"^- \[(\d{4}-\d{2}-\d{2})\](.+)$", s)
+        if m:
+            rows.append({"date": m.group(1), "session_id": None,
+                         "bites": m.group(2).strip(), "best": 1})
     return rows
 
 
@@ -110,6 +99,12 @@ def parse_memes_cipher(text: str) -> list[dict]:
 
 
 def parse_milestones_timeline(text: str) -> list[dict]:
+    """Parse timeline.md ## Me / ## Us sections.
+
+    timeline.md = curated history — every row is a confirmed fact, so
+    pinned=1 from the start. Candidates (pinned=0) come from session
+    digests, never from this curated md. See import_timeline().
+    """
     rows: list[dict] = []
     section = None
     cur: dict | None = None
@@ -133,7 +128,7 @@ def parse_milestones_timeline(text: str) -> list[dict]:
                 cur = {"scope": "me",
                        "date": str(BIRTH_YEAR + int(m.group(1))),
                        "title": s[1:-1].strip(), "description": "",
-                       "theme": None, "pinned": 0}
+                       "theme": None, "pinned": 1}
             elif cur and s and not s.startswith(">"):
                 cur["description"] = (cur["description"] + " " + s).strip()
         elif section == "Us":
@@ -143,7 +138,7 @@ def parse_milestones_timeline(text: str) -> list[dict]:
                 title, _, desc = rest.partition(": ")
                 rows.append({"scope": "us", "date": m.group(1),
                              "title": title.strip(), "description": desc.strip(),
-                             "theme": None, "pinned": 0})
+                             "theme": None, "pinned": 1})
     flush()
     return rows
 
@@ -215,15 +210,23 @@ def import_timeline(conn: sqlite3.Connection, text: str, *,
                     apply: bool = False) -> dict[str, int]:
     """Idempotent timeline.md backfill keyed on (scope, date, title).
 
-    Re-runnable after Lumi pins or edits a row without duplication.
+    timeline.md = curated history — every row lands pinned=1 (the parser
+    sets it). Candidates (pinned=0) come from session digests, not from
+    this curated md, so the subpage shows them directly without going
+    through the dashboard ✅/❌ vote loop.
+
+    Re-runnable after Lumi pins/edits without duplication.
     Existing rows: backfill description only if currently NULL/empty
     AND parser found one (never overwrite Lumi's hand-edit).
     New rows: INSERT with parser values + (scope, date, title) hash.
+    Tombstones (audit_log action='tombstone' on milestones, with the
+    same natural-key hash recorded in summary) block re-insert — Lumi
+    drops stay dropped across reruns.
 
-    Returns counts: {inserted, backfilled, skipped}.
+    Returns counts: {inserted, backfilled, skipped, tombstoned}.
     """
     rows = parse_milestones_timeline(text)
-    inserted = backfilled = skipped = 0
+    inserted = backfilled = skipped = tombstoned = 0
     for r in rows:
         nat = _milestone_natural_key(r)
         h = hashlib.sha256(nat.encode()).hexdigest()
@@ -246,6 +249,15 @@ def import_timeline(conn: sqlite3.Connection, text: str, *,
             else:
                 skipped += 1
             continue
+        tomb = conn.execute(
+            "SELECT 1 FROM audit_log"
+            " WHERE target_table='milestones' AND action='tombstone'"
+            "   AND summary LIKE ?",
+            (f"%{h}%",),
+        ).fetchone()
+        if tomb:
+            tombstoned += 1
+            continue
         if apply:
             conn.execute(
                 "INSERT INTO milestones"
@@ -257,7 +269,8 @@ def import_timeline(conn: sqlite3.Connection, text: str, *,
         inserted += 1
     if apply:
         conn.commit()
-    return {"inserted": inserted, "backfilled": backfilled, "skipped": skipped}
+    return {"inserted": inserted, "backfilled": backfilled,
+            "skipped": skipped, "tombstoned": tombstoned}
 
 
 _SRC_FILES = {
@@ -307,10 +320,12 @@ def main() -> None:
             return
         stats = import_timeline(conn, tl, apply=args.apply)
         print(f"[{mode}] marrow timeline backfill (idempotent on scope+date+title)")
-        print(f"  inserted   +{stats['inserted']}")
+        print(f"  inserted   +{stats['inserted']}  (pinned=1, curated history)")
         print(f"  backfilled +{stats['backfilled']}  (description added "
               f"to existing rows where empty)")
         print(f"  skipped    ~{stats['skipped']}  (already complete)")
+        print(f"  tombstoned ~{stats.get('tombstoned', 0)}  "
+              f"(blocked by audit_log tombstone)")
         if not args.apply:
             print("  (no rows written; re-run with --apply)")
         return

@@ -216,30 +216,24 @@ def render_memes(conn: sqlite3.Connection) -> str:
     return "\n".join(out)
 
 
-# -- Goose-bites (narrative, best-of-the-day) ------------------------------
+# -- Goose-bites (flat list, one best quote per day) -----------------------
 
 def render_goose(conn: sqlite3.Connection) -> str:
     key = "goose"
     rows = conn.execute(
-        "SELECT id, date, bites, best FROM goose_bites ORDER BY date DESC"
+        "SELECT date, bites FROM goose_bites ORDER BY date DESC"
     ).fetchall()
     out = [_m0(key), ""]
-    cur_month = None
-    for r in rows:
-        month = r["date"][:7]
-        if month != cur_month:
-            if cur_month is not None:
-                out.append("")
-            out.append(f"## {month}")
-            out.append("")
-            cur_month = month
-        best = " [best]" if r["best"] else ""
-        out.append(f"## {r['date']}{best}")
-        out.append("")
-        out.append(r["bites"].strip() if r["bites"] else "")
-        out.append("")
     if not rows:
         out.append("_No goose-bites yet._")
+        out.append("")
+    else:
+        for r in rows:
+            bites = (r["bites"] or "").strip()
+            # Legacy multiline: take first non-empty line only.
+            if "\n" in bites:
+                bites = next((l for l in bites.splitlines() if l.strip()), bites)
+            out.append(f"- [{r['date']}]{bites}")
         out.append("")
     out.append(_m1(key))
     return "\n".join(out)

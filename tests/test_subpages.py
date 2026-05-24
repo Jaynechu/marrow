@@ -143,18 +143,20 @@ def test_render_memes_structured_anchor(db):
 
 
 # ---------------------------------------------------------------------------
-# Goose-bites (narrative)
+# Goose-bites (flat list, one best quote per day)
 # ---------------------------------------------------------------------------
 
-def test_render_goose_date_heading(db):
+def test_render_goose_flat_list(db):
     conn = storage.connect(db)
     try:
         block = subpages.render_goose(conn)
     finally:
         conn.close()
-    assert "## 2026-05-20" in block
-    assert "quack quack" in block
+    assert "- [2026-05-20]quack quack" in block
     assert "<!-- marrow:goose:start -->" in block
+    # No month grouping or per-day headers
+    assert "## 2026-05-20" not in block
+    assert "## 2026-05" not in block
 
 
 def test_render_goose_no_structured_anchor(db):
@@ -164,6 +166,24 @@ def test_render_goose_no_structured_anchor(db):
     finally:
         conn.close()
     assert "<!-- id:" not in block
+
+
+def test_render_goose_legacy_multiline_takes_first_line(tmp_path):
+    """Legacy multiline bites: only first non-empty line rendered."""
+    from marrow import storage as _storage
+    p = str(tmp_path / "g.db")
+    conn = _storage.init_db(p)
+    with conn:
+        conn.execute(
+            "INSERT INTO goose_bites (date, bites, best) VALUES ('2026-05-01', ?, 0)",
+            ("line one\nline two",),
+        )
+    try:
+        block = subpages.render_goose(conn)
+    finally:
+        conn.close()
+    assert "- [2026-05-01]line one" in block
+    assert "line two" not in block
 
 
 # ---------------------------------------------------------------------------
