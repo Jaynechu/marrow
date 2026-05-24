@@ -168,6 +168,21 @@ def _insert(conn: sqlite3.Connection, table: str, rows: list[dict],
         ).fetchone():
             skip += 1
             continue
+        # Anti-revive: milestones rows Lumi has dropped (reconcile writes a
+        # tombstone keyed on milestones|scope|date|title) must not come back
+        # via backfill. Counted as skip — invisible to caller stats shape.
+        if table == "milestones":
+            nh = hashlib.sha256(
+                _milestone_natural_key(r).encode()
+            ).hexdigest()
+            tomb = conn.execute(
+                "SELECT 1 FROM audit_log WHERE target_table='milestones'"
+                " AND action='tombstone' AND summary LIKE ? LIMIT 1",
+                (f"%{nh}%",),
+            ).fetchone()
+            if tomb:
+                skip += 1
+                continue
         if apply:
             cols = list(r.keys()) + ["source_hash"]
             ph = ",".join("?" * len(cols))

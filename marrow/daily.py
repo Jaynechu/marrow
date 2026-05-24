@@ -303,6 +303,18 @@ def main(argv: list[str] | None = None) -> int:
                     f"daily {mode} skipped sub-pages write: {e}",
                     source="daily.py", db=db,
                 )
+        if catchup:
+            try:
+                from . import goose_bites
+                yday = (_dt.datetime.now(daily_catchup._TZ).date()
+                        - _dt.timedelta(days=1)).isoformat()
+                goose_bites.select_quote_for_date(conn, yday)
+            except Exception as e:
+                repo.add_alert(
+                    "warn", "goose_bites",
+                    f"daily catchup skipped goose-bites: {e}",
+                    source="daily.py", db=db,
+                )
         print(f"[{ts}] daily {mode} ok: wrote={wrote or '[]'}", flush=True)
         return 0
     except Exception as e:
