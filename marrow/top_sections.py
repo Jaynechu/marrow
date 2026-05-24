@@ -68,9 +68,12 @@ def _rel_time(created_at: str) -> str:
         dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        delta = datetime.now(timezone.utc) - dt
-        h = int(delta.total_seconds() // 3600)
-        return f"{h}h ago" if h < 24 else f"{delta.days}d ago"
+        secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+        if secs < 3600:
+            return f"{max(secs // 60, 1)}m ago"
+        if secs < 86400:
+            return f"{secs // 3600}h ago"
+        return f"{secs // 86400}d ago"
     except Exception:
         return "?"
 
@@ -204,38 +207,67 @@ def _ep_phrase(row: dict, side: str) -> str:
 
 
 def render_affect(conn: sqlite3.Connection) -> str:
-    cutoff_utc = _day_cutoff_utc()
-    cutoff_iso = cutoff_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    today_rows = [dict(r) for r in conn.execute(
-        "SELECT id, valence, arousal, importance, label, description, ep "
-        "FROM affect "
-        "WHERE superseded_by IS NULL AND date>=? AND created_at>=? "
-        "ORDER BY ep",
-        (cutoff_utc.date().isoformat(), cutoff_iso)).fetchall()]
-
-    week_iso = _week_iso()
-    week_rows = [dict(r) for r in conn.execute(
-        "SELECT id, valence, arousal, importance, label, description, ep, "
-        "date FROM affect "
-        "WHERE superseded_by IS NULL AND date>=?", (week_iso,)).fetchall()]
+    # Anchor everything to the latest sessionend batch's date — so after 6AM
+    # rollover the prior day stays visible until the next sessionend writes.
+    latest = conn.execute(
+        "SELECT date, created_at FROM affect "
+        "WHERE superseded_by IS NULL "
+        "ORDER BY created_at DESC, id DESC LIMIT 1"
+    ).fetchone()
 
     out = ["## Affect", "### Today"]
+    if not latest:
+        out.append("_none_")
+        out.append("### This Week")
+        out.append("_none_")
+        return "\n".join(out)
+    last_date, last_ts = latest[0], latest[1]
+    week_floor = (datetime.fromisoformat(last_date).date()
+                  - timedelta(days=6)).isoformat()
+
+    last_batch = [dict(r) for r in conn.execute(
+        "SELECT id, valence, arousal, importance, label, description, ep "
+        "FROM affect WHERE superseded_by IS NULL AND created_at=? "
+        "ORDER BY ep", (last_ts,)).fetchall()]
+    today_rows = [dict(r) for r in conn.execute(
+        "SELECT id, valence, arousal, importance, label, description, ep "
+        "FROM affect WHERE superseded_by IS NULL AND date=? "
+        "ORDER BY ep", (last_date,)).fetchall()]
+    week_rows = [dict(r) for r in conn.execute(
+        "SELECT id, valence, arousal, importance, label, description, ep, "
+        "date FROM affect WHERE superseded_by IS NULL AND date>=?",
+        (week_floor,)).fetchall()]
+
+    # Line 1 — last sessionend batch (fine label tone, batch max/min, ago tag).
+    if last_batch:
+        tone_row = max(last_batch, key=lambda r: (r["importance"], r["valence"]))
+        last_tone = tone_row.get("label") or _tone(
+            tone_row["valence"], tone_row["arousal"]
+        )
+        ep_h = max(last_batch, key=lambda r: r["valence"])
+        ep_l = min(last_batch, key=lambda r: r["valence"])
+        ago = _rel_time(last_ts)
+        if ep_h["id"] == ep_l["id"]:
+            out.append(f"- 【{last_tone}】 · {_ep_phrase(ep_h, 'h')} [{ago}]")
+        else:
+            out.append(
+                f"- 【{last_tone}】 · {_ep_phrase(ep_h, 'h')} · "
+                f"{_ep_phrase(ep_l, 'l')} [{ago}]"
+            )
+
+    # Line 2 — 24h (today, anchored to last_date).
     if today_rows:
         mv, ma = _wmean(today_rows, "valence"), _wmean(today_rows, "arousal")
         ep_h = max(today_rows, key=lambda r: (r["valence"], r["importance"]))
         ep_l = min(today_rows, key=lambda r: (r["valence"], -r["importance"]))
         tone = _tone(mv, ma)
         if ep_h["id"] == ep_l["id"]:
-            # Single ep (or all eps share extreme V); dedup to one side.
-            out.append(f"- 【{tone}】 · {_ep_phrase(ep_h, 'h')}")
+            out.append(f"- 【{tone}】 · {_ep_phrase(ep_h, 'h')} [24h]")
         else:
             out.append(
                 f"- 【{tone}】 · {_ep_phrase(ep_h, 'h')} · "
-                f"{_ep_phrase(ep_l, 'l')}"
+                f"{_ep_phrase(ep_l, 'l')} [24h]"
             )
-    else:
-        out.append("_none_")
 
     out.append("### This Week")
     if week_rows:
@@ -275,7 +307,7 @@ def render_affect(conn: sqlite3.Connection) -> str:
         "SELECT description, label, resolved_at FROM affect "
         "WHERE superseded_by IS NULL AND unresolved=1 AND date>=? "
         "ORDER BY created_at, id",
-        (week_iso,),
+        (week_floor,),
     ).fetchall()
     # Pending sub-section hides entirely when empty (no heading, no body).
     if pending_rows:

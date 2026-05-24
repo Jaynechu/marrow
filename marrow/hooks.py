@@ -15,32 +15,13 @@ PreToolUse is the global prompt-guard.py (scope already covers
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
-from . import config, dashboard, repo, storage, transcript
+from . import config, dashboard, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach
 
-# ── affect label lookup ──────────────────────────────────────────────────────
-# valence: Low ≤ -0.3 < Neu ≤ 0.3 < High
-# intensity (arousal): Calm < 0.4 ≤ Intense
-_VALENCE_LABEL = [(-0.3, "Low"), (0.3, "Neu"), (float("inf"), "High")]
-_INTENSITY_LABEL = [(0.4, "Calm"), (float("inf"), "Intense")]
-
-BACKDROP_MAX_CHARS = 350
 SESSION_START_HARD_CAP = 6000
-
-
-def _vlabel(v: float) -> str:
-    for threshold, label in _VALENCE_LABEL:
-        if v <= threshold:
-            return label
-    return "High"
-
-
-def _ilabel(a: float) -> str:
-    return "Calm" if a < 0.4 else "Intense"
 
 
 def _now_utc() -> datetime:
@@ -75,85 +56,7 @@ def _affect_heartbeat(conn: sqlite3.Connection) -> str | None:
     return None
 
 
-# ── affect backdrop ──────────────────────────────────────────────────────────
-
-def _affect_backdrop(conn: sqlite3.Connection) -> str:
-    """Build the 4-element affect backdrop. No LLM. ≤5 lines ≤350 chars.
-
-    ① recent past episodes' emotion summary (top by importance, last 7d)
-    ② current emotion (single most-recent row)
-    ③ calm-vs-swing trend (≤7d weighted, 1 line)
-    ④ emotional-pending (unresolved-between-us; source='pending')
-    """
-    today = _now_utc().date()
-    cutoff = (today - timedelta(days=7)).isoformat()
-
-    # All live affect from last 7 days, newest first.
-    rows = conn.execute(
-        "SELECT date, ep, valence, arousal, importance, label, source "
-        "FROM affect_live "
-        "WHERE date >= ? "
-        "ORDER BY date DESC, ep DESC",
-        (cutoff,),
-    ).fetchall()
-
-    if not rows:
-        return ""
-
-    # Convert sqlite3.Row to dicts for .get() support
-    rows = [dict(r) for r in rows]
-
-    lines: list[str] = []
-
-    # ② current emotion = most-recent row
-    cur = rows[0]
-    cur_tag = f"{_vlabel(cur['valence'])}/{_ilabel(cur['arousal'])}"
-    cur_label = f" ({cur['label']})" if cur.get("label") else ""
-    lines.append(f"② Now {cur['date']} ep{cur['ep']}: {cur_tag}{cur_label}")
-
-    # ① recent past: top-N by importance (exclude the current row), last 7d
-    past = [r for r in rows[1:] if r.get("source") != "pending"]
-    past_top = sorted(past, key=lambda r: r["importance"], reverse=True)[:3]
-    if past_top:
-        segs = []
-        for r in past_top:
-            tag = f"{_vlabel(r['valence'])}/{_ilabel(r['arousal'])}"
-            lbl = f"({r['label']})" if r.get("label") else ""
-            segs.append(f"{r['date']} ep{r['ep']} {tag}{lbl}")
-        lines.insert(0, "① Recent: " + " · ".join(segs))
-
-    # ③ calm-vs-swing: exponential weighted std of valence over last 7d
-    # weight = exp(-days_ago/3)
-    scored = []
-    for r in rows:
-        if r.get("source") == "pending":
-            continue
-        days_ago = (today - datetime.fromisoformat(r["date"]).date()).days
-        w = math.exp(-days_ago / 3.0)
-        scored.append((r["valence"], w))
-    if len(scored) >= 2:
-        wsum = sum(w for _, w in scored)
-        wmean = sum(v * w for v, w in scored) / wsum
-        wvar = sum(w * (v - wmean) ** 2 for v, w in scored) / wsum
-        wstd = math.sqrt(wvar)
-        trend = "Stable" if wstd < 0.2 else ("Wavy" if wstd < 0.45 else "Stormy")
-        wmean_tag = _vlabel(wmean)
-        lines.append(f"③ 7d trend: {wmean_tag} / {trend} (σ={wstd:.2f})")
-
-    # ④ emotional-pending: rows with source='pending', newest first
-    pending = [r for r in rows if r.get("source") == "pending"]
-    if pending:
-        segs = []
-        for r in pending[:2]:
-            lbl = r.get("label") or f"ep{r['ep']}"
-            segs.append(lbl)
-        lines.append("④ Pending: " + " · ".join(segs))
-
-    # Enforce ≤5 lines, ≤350 chars
-    result = "\n".join(lines[:5])
-    if len(result) > BACKDROP_MAX_CHARS:
-        result = result[: BACKDROP_MAX_CHARS - 1] + "…"
-    return result
+# Affect backdrop = top_sections.render_affect (shared with dashboard).
 
 
 # ── session-start payload ────────────────────────────────────────────────────
@@ -212,9 +115,9 @@ def session_start() -> int:
 
         parts.append(_handoff_text(conn))
 
-        backdrop = _affect_backdrop(conn)
+        backdrop = top_sections.render_affect(conn)
         if backdrop:
-            parts.append("## Affect\n" + backdrop)
+            parts.append(backdrop)
 
         ctx = "\n\n".join(p for p in parts if p)
 

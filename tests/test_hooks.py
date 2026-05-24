@@ -170,11 +170,11 @@ def test_unknown_event_usage_error(env, monkeypatch):
 
 def _insert_affect(conn, date: str, ep: int, valence: float, arousal: float,
                    importance: int = 5, label: str | None = None,
-                   source: str | None = None):
+                   source: str | None = None, description: str | None = None):
     conn.execute(
-        "INSERT INTO affect (date, ep, valence, arousal, importance, label, source) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (date, ep, valence, arousal, importance, label, source),
+        "INSERT INTO affect (date, ep, valence, arousal, importance, label, "
+        "description, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (date, ep, valence, arousal, importance, label, description, source),
     )
     conn.commit()
 
@@ -188,22 +188,24 @@ def _insert_event(conn, date: str, session_id: str = "s1"):
     conn.commit()
 
 
-def test_affect_backdrop_empty_returns_empty(env, monkeypatch, capsys):
-    """No affect rows => backdrop section absent from context."""
+def test_affect_backdrop_empty_renders_placeholder(env, monkeypatch, capsys):
+    """No affect rows => Affect block still renders with _none_ placeholders."""
     _stdin(monkeypatch, {})
     rc = hooks.main(["session_start"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     ctx = out["hookSpecificOutput"]["additionalContext"]
-    assert "Affect" not in ctx
+    assert "## Affect" in ctx
+    assert "_none_" in ctx
 
 
 def test_affect_backdrop_present_in_context(env, monkeypatch, capsys):
-    """With recent affect rows, backdrop appears under ## Affect."""
+    """With recent affect rows, session_start injects the shared render_affect block."""
     db, _, _ = env
     conn = storage.connect(db)
     today = datetime.now(timezone.utc).date()
-    _insert_affect(conn, today.isoformat(), 1, 0.6, 0.5, importance=7, label="开心")
+    _insert_affect(conn, today.isoformat(), 1, 0.7, 0.7, importance=3, label="开心",
+                   description="项目过审")
     conn.close()
 
     _stdin(monkeypatch, {})
@@ -212,111 +214,26 @@ def test_affect_backdrop_present_in_context(env, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert "## Affect" in ctx
-    assert "High" in ctx  # valence > 0.3
-    assert "Intense" in ctx  # arousal >= 0.4
+    assert "### Today" in ctx
+    assert "### This Week" in ctx
+    assert "eph3 开心 | 项目过审" in ctx
 
 
-def test_affect_backdrop_valence_low(env, monkeypatch, capsys):
+def test_affect_backdrop_anchors_after_6am_rollover(env, monkeypatch, capsys):
+    """Past 6AM with no new sessionend → prior day still surfaces (no empty Today)."""
     db, _, _ = env
     conn = storage.connect(db)
-    today = datetime.now(timezone.utc).date()
-    _insert_affect(conn, today.isoformat(), 1, -0.5, 0.2, label="难过")
+    yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+    _insert_affect(conn, yesterday, 1, 0.5, 0.5, importance=2, label="昨",
+                   description="昨天的事")
     conn.close()
 
     _stdin(monkeypatch, {})
     hooks.main(["session_start"])
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "Low" in ctx
-    assert "Calm" in ctx
-
-
-def test_affect_backdrop_trend_line_calm(env, monkeypatch, capsys):
-    """Many similar valence rows -> Stable."""
-    db, _, _ = env
-    conn = storage.connect(db)
-    today = datetime.now(timezone.utc).date()
-    for i in range(5):
-        d = (today - timedelta(days=i)).isoformat()
-        _insert_affect(conn, d, 1, 0.4, 0.3, importance=5)
-    conn.close()
-
-    _stdin(monkeypatch, {})
-    hooks.main(["session_start"])
-    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "Stable" in ctx
-
-
-def test_affect_backdrop_trend_line_swing(env, monkeypatch, capsys):
-    """Alternating high/low valence -> Wavy or Stormy."""
-    db, _, _ = env
-    conn = storage.connect(db)
-    today = datetime.now(timezone.utc).date()
-    for i in range(6):
-        d = (today - timedelta(days=i)).isoformat()
-        v = 0.9 if i % 2 == 0 else -0.9
-        _insert_affect(conn, d, 1, v, 0.5, importance=5)
-    conn.close()
-
-    _stdin(monkeypatch, {})
-    hooks.main(["session_start"])
-    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "Wavy" in ctx or "Stormy" in ctx
-
-
-def test_affect_backdrop_pending_element(env, monkeypatch, capsys):
-    """source='pending' rows appear in ④ emotional-pending."""
-    db, _, _ = env
-    conn = storage.connect(db)
-    today = datetime.now(timezone.utc).date()
-    _insert_affect(conn, today.isoformat(), 1, 0.5, 0.6, label="开心")
-    _insert_affect(conn, today.isoformat(), 2, -0.4, 0.7,
-                   label="争吵未解决", source="pending")
-    conn.close()
-
-    _stdin(monkeypatch, {})
-    hooks.main(["session_start"])
-    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "Pending" in ctx
-    assert "争吵未解决" in ctx
-
-
-def test_affect_backdrop_pending_excluded_from_trend(env, monkeypatch, capsys):
-    """pending rows excluded from trend calculation; only non-pending counted."""
-    db, _, _ = env
-    conn = storage.connect(db)
-    today = datetime.now(timezone.utc).date()
-    # Only pending + one real
-    _insert_affect(conn, today.isoformat(), 1, 0.4, 0.3, label="normal")
-    _insert_affect(conn, today.isoformat(), 2, -0.9, 0.9,
-                   label="unresolved", source="pending")
-    conn.close()
-
-    _stdin(monkeypatch, {})
-    hooks.main(["session_start"])
-    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    # Only 1 non-pending row -> no trend line (need >= 2)
-    assert "trend" not in ctx
-
-
-def test_affect_backdrop_char_cap(env, monkeypatch, capsys):
-    """Backdrop never exceeds BACKDROP_MAX_CHARS."""
-    db, _, _ = env
-    conn = storage.connect(db)
-    today = datetime.now(timezone.utc).date()
-    for i in range(20):
-        d = (today - timedelta(days=i % 7)).isoformat()
-        long_label = "X" * 80
-        _insert_affect(conn, d, i + 1, 0.5, 0.5, label=long_label)
-    conn.close()
-
-    _stdin(monkeypatch, {})
-    hooks.main(["session_start"])
-    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    # Full context can be longer (tasks+alerts+backdrop), but backdrop itself ≤350
-    # Extract backdrop section
-    if "## Affect" in ctx:
-        backdrop_section = ctx.split("## Affect\n", 1)[1].split("\n\n")[0]
-        assert len(backdrop_section) <= hooks.BACKDROP_MAX_CHARS
+    assert "### Today" in ctx
+    assert "eph2 昨" in ctx
+    assert "_none_" not in ctx.split("### This Week")[0].split("### Today")[1]
 
 
 def test_session_start_total_hard_cap(env, monkeypatch, capsys):
