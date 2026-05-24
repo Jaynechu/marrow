@@ -250,12 +250,14 @@ def _milestone_candidates(
 ) -> list[dict]:
     """LIKE-scan milestones; rank by matched-token ratio + pinned boost.
 
+    Reverse-substring fallback: if title.lower() is a substring of query.lower(),
+    boost kw_score to 1.0 — catches direct title typing past noisy tokens.
+
     Returns rows already shaped for fusion: timestamp (date as ISO),
     content (title[: description]), bm25 (kw_score), pinned.
     """
     tokens = _query_tokens(query)
-    if not tokens:
-        return []
+    q_lower = query.lower()
     rows = conn.execute(
         "SELECT id, scope, date, title, description, pinned "
         "FROM milestones"
@@ -267,10 +269,12 @@ def _milestone_candidates(
         title = r["title"] or ""
         desc = r["description"] or ""
         hay = (title + " " + desc).lower()
-        hits = sum(1 for t in tokens if t in hay)
-        if not hits:
+        title_l = title.lower()
+        title_match = bool(title_l) and title_l in q_lower
+        hits = sum(1 for t in tokens if t in hay) if tokens else 0
+        if not hits and not title_match:
             continue
-        kw_score = hits / len(tokens)
+        kw_score = 1.0 if title_match else (hits / len(tokens))
         # Pinned only matters as a tiebreaker once final raw is computed;
         # carry the flag through so the fusion loop can add the boost.
         date = r["date"] or ""
@@ -293,6 +297,56 @@ def _milestone_candidates(
         })
     scored.sort(key=lambda c: (c["pinned"], c["bm25"]), reverse=True)
     return scored[: limit * 3]
+
+
+# ── vocab keyword scan ───────────────────────────────────────────────────────
+
+def _vocab_candidates(
+    conn: sqlite3.Connection, query: str, limit: int
+) -> list[dict]:
+    """Reverse-substring scan over active vocab rows.
+
+    Matches when key.lower() is a substring of query.lower(). Used so memes /
+    cipher / nickname / phrase rows surface alongside events + milestones.
+    Shape parallels milestone candidates; kind="vocab".
+    """
+    q_lower = query.lower().strip()
+    if not q_lower:
+        return []
+    rows = conn.execute(
+        "SELECT id, type, key, value, context, pinned, use_count "
+        "FROM vocab WHERE status='active'"
+    ).fetchall()
+    if not rows:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        key = r["key"] or ""
+        if not key or key.lower() not in q_lower:
+            continue
+        value = r["value"] or ""
+        ctx = r["context"] or ""
+        content = f"{key}: {value}" if value else key
+        if ctx:
+            content = f"{content} ({ctx})"
+        out.append({
+            "kind": "vocab",
+            "id": r["id"],
+            "session_id": None,
+            "timestamp": "",
+            "role": "vocab",
+            "content": content,
+            "channel": None,
+            "compressed": 0,
+            "bm25": 1.0,
+            "vec": 0.0,
+            "fts_hit": True,
+            "pinned": int(r["pinned"] or 0),
+            "type": r["type"],
+            "use_count": int(r["use_count"] or 0),
+        })
+    out.sort(key=lambda c: (c["pinned"], c["use_count"]), reverse=True)
+    return out[: limit * 2]
 
 
 # ── fusion retrieval ──────────────────────────────────────────────────────────
@@ -385,10 +439,11 @@ def recall_fusion(
                     "bm25": 0.0, "vec": vec_score, "fts_hit": False,
                 }
 
-    # ── milestone candidates (small table, LIKE scan, no vec/recency) ────────
+    # ── milestone + vocab candidates (small tables, LIKE / substring scan) ──
     milestone_cands = _milestone_candidates(conn, q, limit)
+    vocab_cands = _vocab_candidates(conn, q, limit)
 
-    if not candidates and not milestone_cands:
+    if not candidates and not milestone_cands and not vocab_cands:
         return []
 
     # ── dormant revive + scoring ──────────────────────────────────────────────
@@ -484,6 +539,13 @@ def recall_fusion(
             raw += _MILESTONE_PINNED_BOOST
         scored.append((raw, {**mc, "score": raw}))
 
+    # ── vocab scoring (mirror milestone: w_bm25 * 1.0 + pinned boost) ────────
+    for vc in vocab_cands:
+        raw = w_bm25 * vc["bm25"]
+        if vc["pinned"]:
+            raw += _MILESTONE_PINNED_BOOST
+        scored.append((raw, {**vc, "score": raw}))
+
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # ── entity force-include (prepend before ms_cap reservation) ─────────────
@@ -497,28 +559,35 @@ def recall_fusion(
     scored = force_pairs + scored
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # ── reserved milestone slots ──────────────────────────────────────────────
-    # Events can outrank milestones on score (recency + affect + fts_hit),
-    # so a pure top-K cut starves milestones on long/noisy queries. Reserve
-    # up to ceil(limit/3) slots for best-matched milestones; remainder goes
-    # to events. Final order re-sorted by score.
-    # Adaptive ms_cap: when >=3 strong FTS hits exist, drop to 1 milestone
-    # slot so entity-dense queries don't waste budget on milestones.
+    # ── reserved milestone + vocab slots ──────────────────────────────────────
+    # Events can outrank milestones / vocab on score (recency + affect +
+    # fts_hit). Reserve slots so anchor rows aren't starved on long queries.
+    # Adaptive: when >=3 strong FTS hits exist, drop both caps so entity-dense
+    # queries don't waste budget on anchors.
     strong_fts_count = sum(
         1 for _, r in scored
-        if r.get("kind") != "milestone" and r.get("bm25", 0.0) >= 0.5
+        if r.get("kind") not in ("milestone", "vocab")
+        and r.get("bm25", 0.0) >= 0.5
     )
     if strong_fts_count >= 3:
         ms_cap = 1
+        vocab_cap = 0
     else:
         ms_cap = max(1, (limit + 2) // 3)
+        vocab_cap = 1 if limit <= 5 else 2
     ms_scored = [(s, r) for s, r in scored if r.get("kind") == "milestone"]
-    ev_scored = [(s, r) for s, r in scored if r.get("kind") != "milestone"]
-    # Force-include rows are already in ev_scored (kind="event"); they skip
-    # ms_cap reservation naturally since they are events.
+    vocab_scored = [(s, r) for s, r in scored if r.get("kind") == "vocab"]
+    ev_scored = [
+        (s, r) for s, r in scored
+        if r.get("kind") not in ("milestone", "vocab")
+    ]
     ms_picks = ms_scored[:ms_cap]
-    ev_picks = ev_scored[: max(0, limit - len(ms_picks))]
-    picks = sorted(ms_picks + ev_picks, key=lambda x: x[0], reverse=True)
+    vocab_picks = vocab_scored[:vocab_cap]
+    reserved = len(ms_picks) + len(vocab_picks)
+    ev_picks = ev_scored[: max(0, limit - reserved)]
+    picks = sorted(
+        ms_picks + vocab_picks + ev_picks, key=lambda x: x[0], reverse=True
+    )
 
     # ── budget truncation ─────────────────────────────────────────────────────
     # Per-item cap = budget_chars // limit so one long hit can't starve the

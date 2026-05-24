@@ -1,7 +1,10 @@
 """Entity-aware force-include for recall: surface events linked to named entities.
 
-When the query contains an entity name (person/place/pref), pull events that
-mention that entity via FTS5 match — bypassing the normal fusion score gate.
+Reverse-match approach: iterate entities_live rows; for each row check if
+name.lower() is a substring of query.lower(). No tokenizer dependency, fully
+CJK-safe (catches 2-char names like (南南) that the trigram tokenizer / char-
+split tokens silently drop).
+
 Force-include rows are prepended in recall_fusion before ms_cap reservation.
 """
 from __future__ import annotations
@@ -15,79 +18,69 @@ def entity_force_include(
     query: str,
     limit: int,
 ) -> list[dict]:
-    """Return events force-linked to entities matched in query.
+    """Return events force-linked to entities whose name appears in query.
 
-    - Tokenizes query with same logic as recall._query_tokens.
-    - Matches entity names in entities_live via LIKE on each token.
-    - Fetches events via FTS5 MATCH on entity name (trigram tokenizer).
-    - Scores: 1.0 + 0.1 * log1p(mention_count) to outrank fusion scores.
-    - Caps total returned at limit // 2 (min 1) to avoid flooding.
-    - Deduplicates by event id.
-    - Returns empty list when entities table is empty or no tokens match.
+    - Reverse substring match: name.lower() in query.lower().
+    - Inner event fetch: LIKE-scan for name <3 chars (trigram tokenizer floor);
+      else try FTS5 first, fall back to LIKE on empty.
+    - Scores: 1.0 + 0.1 * log1p(mention_count).
+    - Cap at limit // 2 (min 1).
+    - Dedup by event id.
     """
-    from .recall import _query_tokens
-
-    tokens = _query_tokens(query)
-    if not tokens:
+    q_lower = query.lower().strip()
+    if not q_lower:
         return []
 
-    # Match entities by name LIKE token.
-    matched_entities: list[dict] = []
-    seen_eid: set[int] = set()
-    seen_entity_id: set[int] = set()
-
-    for token in tokens:
-        if len(token) < 2:
-            # Single-char tokens produce too many false positives.
+    rows = conn.execute(
+        "SELECT id, name, mention_count FROM entities_live"
+    ).fetchall()
+    matched: list[dict] = []
+    for r in rows:
+        name = r["name"] or ""
+        if not name:
             continue
-        rows = conn.execute(
-            "SELECT id, name, mention_count FROM entities_live "
-            "WHERE name LIKE ?",
-            (f"%{token}%",),
-        ).fetchall()
-        for r in rows:
-            eid = r["id"]
-            if eid not in seen_entity_id:
-                seen_entity_id.add(eid)
-                matched_entities.append({
-                    "id": eid,
-                    "name": r["name"],
-                    "mention_count": r["mention_count"] or 0,
-                })
+        if name.lower() in q_lower:
+            matched.append({
+                "id": r["id"],
+                "name": name,
+                "mention_count": r["mention_count"] or 0,
+            })
 
-    if not matched_entities:
+    if not matched:
         return []
+
+    # Longer names first — more specific (rules out (南) matching when (南南) is present).
+    matched.sort(key=lambda e: len(e["name"]), reverse=True)
 
     force_cap = max(1, limit // 2)
     results: list[dict] = []
+    seen_eid: set[int] = set()
 
-    for entity in matched_entities:
+    for entity in matched:
         if len(results) >= force_cap:
             break
         name = entity["name"]
-        mc = entity["mention_count"]
-        score = 1.0 + 0.1 * math.log1p(mc)
+        score = 1.0 + 0.1 * math.log1p(entity["mention_count"])
 
-        # FTS5 MATCH on entity name to find linked events.
-        # Trigram tokenizer requires >=3 chars; fall back to LIKE for short names.
-        try:
-            fts_q = '"' + name.replace('"', '""') + '"'
-            event_rows = conn.execute(
-                "SELECT e.id, e.session_id, e.timestamp, e.role, "
-                "e.content, e.channel, e.compressed "
-                "FROM events_fts f JOIN events e ON e.id = f.rowid "
-                "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
-                (fts_q, force_cap * 2),
-            ).fetchall()
-        except Exception:
-            event_rows = []
+        event_rows: list = []
+        if len(name) >= 3:
+            try:
+                fts_q = '"' + name.replace('"', '""') + '"'
+                event_rows = conn.execute(
+                    "SELECT e.id, e.session_id, e.timestamp, e.role, "
+                    "e.content, e.channel, e.compressed "
+                    "FROM events_fts f JOIN events e ON e.id = f.rowid "
+                    "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
+                    (fts_q, force_cap * 2),
+                ).fetchall()
+            except Exception:
+                event_rows = []
 
-        if not event_rows and len(name) >= 2:
-            # Fallback: LIKE scan when FTS5 returns nothing (short name / edge).
+        if not event_rows:
             event_rows = conn.execute(
                 "SELECT id, session_id, timestamp, role, content, "
                 "channel, compressed FROM events "
-                "WHERE content LIKE ? LIMIT ?",
+                "WHERE content LIKE ? ORDER BY timestamp DESC LIMIT ?",
                 (f"%{name}%", force_cap * 2),
             ).fetchall()
 
