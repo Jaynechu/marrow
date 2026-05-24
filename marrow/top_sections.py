@@ -91,22 +91,31 @@ def render_alerts(conn: sqlite3.Connection) -> str:
     return "\n".join(lines)
 
 
+def _today_midnight_utc() -> datetime:
+    """Midnight local today as UTC — used for Completed cutoff (not 6AM)."""
+    from datetime import time as _time
+    today = datetime.now(_TZ).date()
+    return datetime.combine(today, _time(0, 0), tzinfo=_TZ).astimezone(timezone.utc)
+
+
 def render_tasks(conn: sqlite3.Connection) -> str:
-    cutoff_iso = _day_cutoff_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Completed: tasks done since local midnight (not 6AM — tasks are ticked
+    # anytime of day, not tied to the diary boundary).
+    cutoff_iso = _today_midnight_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
     done = conn.execute(
-        "SELECT category, title FROM tasks WHERE status='done' AND updated_at>=? "
+        "SELECT id, category, title FROM tasks WHERE status='done' AND updated_at>=? "
         "ORDER BY updated_at DESC", (cutoff_iso,)).fetchall()
 
     today_local = datetime.now(_TZ).date()
     next7 = today_local + timedelta(days=7)
     active = conn.execute(
-        "SELECT category, title, due, created_at, next_step FROM tasks "
+        "SELECT id, category, title, due, created_at, next_step FROM tasks "
         "WHERE status='active' "
         "ORDER BY (due IS NULL), due, created_at").fetchall()
 
     buckets: dict[str, list] = {"t": [], "n": [], "l": []}
     for r in active:
-        due = r[2]
+        due = r[3]
         if due:
             try:
                 d = datetime.fromisoformat(due[:10]).date()
@@ -116,36 +125,49 @@ def render_tasks(conn: sqlite3.Connection) -> str:
                 pass
         buckets["l"].append(r)
     for k in buckets:
-        buckets[k].sort(key=_tag_key)
+        # r[1] is category (r[0] is id)
+        buckets[k].sort(key=lambda r: _tag_key(r[1:]))
+
+    all_ids: list[int] = []
 
     def _row(r, date_str: str | None) -> str:
-        tag = r[0] or "Others"
-        detail = f": {r[4]}" if r[4] else ""
+        # r = (id, category, title, due, created_at, next_step)
+        all_ids.append(r[0])
+        tag = r[1] or "Others"
+        detail = f": {r[5]}" if r[5] else ""
         date_part = f" [{date_str}]" if date_str else ""
-        return f"- [ ] [{tag}] {r[1]}{detail}{date_part}"
+        return f"- [ ] [{tag}] {r[2]}{detail}{date_part} <!-- id:{r[0]} -->"
 
     out = [f"## Tasks", f"### Completed [{len(done)}]"]
-    out += [f"- [x] [{r[0] or 'Others'}] {r[1]}" for r in done] if done else ["- (none)"]
+    if done:
+        for r in done:
+            all_ids.append(r[0])
+            out.append(f"- [x] [{r[1] or 'Others'}] {r[2]} <!-- id:{r[0]} -->")
+    else:
+        out.append("- (none)")
     out.append(f"### To-Do List [{len(active)}]")
     out.append("Today")
     out += [_row(r, None) for r in buckets["t"]] if buckets["t"] else ["- (none)"]
     out.append("Next 7 Days")
     if buckets["n"]:
-        out += [_row(r, r[2][:10] if r[2] else None) for r in buckets["n"]]
+        out += [_row(r, r[3][:10] if r[3] else None) for r in buckets["n"]]
     else:
         out.append("- (none)")
     out.append("Later")
-    l_due = [r for r in buckets["l"] if r[2]]
-    l_nodue = [r for r in buckets["l"] if not r[2]]
+    l_due = [r for r in buckets["l"] if r[3]]
+    l_nodue = [r for r in buckets["l"] if not r[3]]
     if l_due:
-        out += [_row(r, r[2][:10]) for r in l_due]
+        out += [_row(r, r[3][:10]) for r in l_due]
     elif not l_nodue:
         out.append("- (none)")
     out.append("No date")
     if l_nodue:
-        out += [_row(r, r[3][:10] if r[3] else None) for r in l_nodue]
+        out += [_row(r, r[4][:10] if r[4] else None) for r in l_nodue]
     else:
         out.append("- (none)")
+    # Trail marker — reconcile_tasks uses this to detect rows deleted from md.
+    ids_str = ",".join(str(i) for i in all_ids)
+    out.append(f"<!-- cand:task:ids=[{ids_str}] -->")
     return "\n".join(out)
 
 
