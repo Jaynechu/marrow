@@ -133,7 +133,7 @@ def test_reconcile_updates_and_advances_updated_at(db, tmp_path):
     assert row["updated_at"] >= row["created_at"]
 
 
-# ── 4. md with anchored row removed -> delete + backup ─────────────────────
+# ── 4. md with anchored row removed -> delete (no backup) ──────────────────
 
 def test_reconcile_deletes_when_row_removed(db, tmp_path):
     folder = tmp_path / "ny"
@@ -156,11 +156,12 @@ def test_reconcile_deletes_when_row_removed(db, tmp_path):
         conn.close()
     assert rpt.deleted == 1
     assert remaining == 1
-    # Backup taken because destructive.
-    assert list(Path(md.parent).glob("milestone.*.bak.md"))
+    # No backup file written — DESIGN L62 forbids backups; alert path
+    # via rpt.conflicts covers reconcile failure.
+    assert not list(Path(md.parent).glob("milestone.*.bak.md"))
 
 
-# ── 5. unchanged md -> no audit_log, no backup ──────────────────────────────
+# ── 5. unchanged md -> no audit_log ────────────────────────────────────────
 
 # ── candidate buttons (✅ ❌ ✏️) ────────────────────────────────────────────
 
@@ -219,6 +220,82 @@ def test_candidate_drop_deletes_and_tombstones(tmp_path):
     assert rpt.deleted == 1
     assert row is None
     assert audit["action"] == "tombstone"
+
+
+def test_candidate_row_deleted_drops_and_tombstones(tmp_path):
+    """Lumi rm's the bullet line in Obsidian → drop + tombstone, even with
+    no emoji vote. Trail marker `<!-- cand:milestone:ids=[N] -->` records
+    that the row was rendered last round, so absence == intent to drop.
+    """
+    p = str(tmp_path / "t.db")
+    conn = storage.init_db(p)
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO milestones(scope,date,title,pinned,source_hash) "
+            "VALUES('us','2026-05-22','Bye','sh-x',0)"
+        )
+        rid = cur.lastrowid
+    dash = tmp_path / "dashboard.md"
+    # No `- [...] <!-- id:N -->` row in the candidate block — only the trail
+    # marker survives, meaning Lumi deleted the bullet line.
+    dash.write_text(
+        "<!-- marrow:top:start -->\n"
+        "## Milestone candidate [0]\n"
+        f"<!-- cand:milestone:ids=[{rid}] -->\n"
+        "## Affect\n"
+        "<!-- marrow:top:end -->\n"
+    )
+    rpt = reconcile.reconcile_milestone_candidates(conn, dash)
+    row = conn.execute(
+        "SELECT id FROM milestones WHERE id=?", (rid,)
+    ).fetchone()
+    audit = conn.execute(
+        "SELECT action, summary FROM audit_log WHERE target_table='milestones'"
+        " AND target_id=? ORDER BY id DESC LIMIT 1", (str(rid),)
+    ).fetchone()
+    conn.close()
+    assert rpt.deleted == 1
+    assert row is None
+    assert audit["action"] == "tombstone"
+    # Summary carries the natural-key hash for downstream LIKE-match.
+    import hashlib
+    nh = hashlib.sha256(b"milestones|us|2026-05-22|Bye").hexdigest()
+    assert nh in audit["summary"]
+
+
+def test_candidate_drop_blocks_revive_via_write_milestone_cand(tmp_path):
+    """After drop, write_milestone_cand must not re-insert the same row."""
+    from marrow import candidates
+    p = str(tmp_path / "t.db")
+    conn = storage.init_db(p)
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO milestones(scope,date,title,pinned,source_hash) "
+            "VALUES('me','2026-05-22','Killed','sh-x',0)"
+        )
+        rid = cur.lastrowid
+    dash = tmp_path / "dashboard.md"
+    dash.write_text(
+        "<!-- marrow:top:start -->\n"
+        "## Milestone candidate [0]\n"
+        f"<!-- cand:milestone:ids=[{rid}] -->\n"
+        "## Affect\n"
+        "<!-- marrow:top:end -->\n"
+    )
+    reconcile.reconcile_milestone_candidates(conn, dash)
+    raw = (
+        "===MILESTONE_CAND===\n"
+        '{"scope":"me","date":"2026-05-22","title":"Killed",'
+        '"description":"x","conf":0.95}\n'
+        "===END===\n"
+    )
+    n = candidates.write_milestone_cand(conn, raw, "2026-05-22")
+    cnt = conn.execute(
+        "SELECT COUNT(*) FROM milestones WHERE title='Killed'"
+    ).fetchone()[0]
+    conn.close()
+    assert n == 0
+    assert cnt == 0
 
 
 def test_candidate_no_vote_is_inert(tmp_path):
@@ -389,5 +466,5 @@ def test_reconcile_unchanged_is_inert(db, tmp_path):
         conn.close()
     assert not rpt.any_change()
     assert after == before
-    # No backup files.
+    # No backup files — unchanged md is fully inert.
     assert not list(Path(md.parent).glob("milestone.*.bak.md"))

@@ -170,6 +170,10 @@ def render_milestone_candidate(conn: sqlite3.Connection, n: int = 5) -> str:
             )
     else:
         out.append("- (none)")
+    # Trail marker — reconcile compares this against ids surviving in md
+    # so deleting a row in Obsidian == drop+tombstone (no vote needed).
+    ids_csv = ",".join(str(r[0]) for r in rows)
+    out.append(f"<!-- cand:milestone:ids=[{ids_csv}] -->")
     return "\n".join(out)
 
 

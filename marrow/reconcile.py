@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import shutil
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -49,9 +48,6 @@ class ReconcileReport:
 
     def any_change(self) -> bool:
         return self.inserted or self.updated or self.deleted
-
-    def destructive(self) -> bool:
-        return self.deleted > 0 or bool(self.conflicts)
 
 
 def _parse(md_text: str) -> list[dict]:
@@ -170,7 +166,10 @@ def reconcile_milestones(conn: sqlite3.Connection,
       pinned/date changed.
     - Row without anchor -> insert (new milestone written by Lumi).
     - DB row whose id is missing from md -> delete.
-    - No-op when md == current state: no writes, no audit, no backup.
+    - No-op when md == current state: no writes, no audit.
+    - Failures surface via rpt.conflicts -> alert in caller. No md backup
+      taken; render is the SoT and atomic write keeps the previous md
+      intact until the new one lands.
     """
     rpt = ReconcileReport()
     md_path = Path(md_path)
@@ -188,19 +187,6 @@ def reconcile_milestones(conn: sqlite3.Connection,
     }
 
     seen: set[int] = set()
-    backup_taken = False
-
-    def _backup_once() -> None:
-        nonlocal backup_taken
-        if backup_taken or not md_path.exists():
-            return
-        state = md_path.parent
-        bak = state / f"{md_path.stem}.{int(time.time())}.bak{md_path.suffix}"
-        try:
-            shutil.copyfile(md_path, bak)
-            backup_taken = True
-        except OSError as e:
-            rpt.conflicts.append(f"backup failed: {e}")
 
     with conn:
         # inserts + updates
@@ -272,14 +258,9 @@ def reconcile_milestones(conn: sqlite3.Connection,
             # returned early on missing file; require at least one parsed row.
             if not md_rows:
                 continue
-            if not backup_taken:
-                _backup_once()
             conn.execute("DELETE FROM milestones WHERE id=?", (rid,))
             _audit(conn, rid, "delete", "md-reconcile: removed from md")
             rpt.deleted += 1
-
-        if rpt.destructive() and not backup_taken:
-            _backup_once()
 
     return rpt
 
@@ -297,17 +278,33 @@ _EDIT_CHAR = "✏️"  # ✏️ (pencil + emoji selector)
 # (✅ or ❌) — pencil edits are not destructive, treated as no-op for now
 # (md reflects DB on next render either way).
 _CAND_ID_RE = re.compile(r"<!-- id:(\d+) -->")
+# Trail marker emitted by render_milestone_candidate so reconcile can tell
+# "row deleted in Obsidian" apart from "row never rendered this round".
+_CAND_TRAIL_RE = re.compile(r"<!-- cand:milestone:ids=\[([0-9,\s]*)\] -->")
 
 
-def _parse_dashboard_candidates(text: str) -> list[dict]:
-    """Scan dashboard md for milestone-candidate rows with vote chars.
+def _milestone_natkey_hash(scope: str, date: str, title: str) -> str:
+    """Identity hash for anti-revive tombstones — `milestones|scope|date|title`.
+    Mirrors migrate._milestone_natural_key so the generic backfill path and
+    sonnet-candidate writes both skip rows Lumi has dropped.
+    """
+    nk = f"milestones|{scope}|{date}|{title}"
+    return hashlib.sha256(nk.encode()).hexdigest()
 
-    Returns a list of {id, vote} where vote ∈ {"pin", "drop", "edit"}.
-    Rows missing a decision char are skipped. Multiple chars on one row
-    resolve in priority: drop > pin > edit (destructive wins so a Lumi
-    "❌ + leftover ✅" still drops).
+
+def _parse_dashboard_candidates(text: str) -> tuple[list[dict], list[int] | None]:
+    """Scan dashboard md for milestone-candidate rows.
+
+    Returns (votes, trail_ids):
+    - votes: [{id, vote}] where vote ∈ {"pin", "drop", "edit"}. Rows missing
+      a decision char are skipped. Multiple chars on one row resolve drop >
+      pin > edit (destructive wins so leftover ✅ alongside ❌ still drops).
+    - trail_ids: list of ids from the trail marker `<!-- cand:milestone:
+      ids=[...] -->` — i.e. ids the renderer wrote last round. None when no
+      marker present (legacy / first-render dashboard; skip drop-by-absence).
     """
     found: list[dict] = []
+    trail: list[int] | None = None
     in_block = False
     for raw in text.splitlines():
         s = raw.rstrip()
@@ -316,7 +313,16 @@ def _parse_dashboard_candidates(text: str) -> list[dict]:
             continue
         if in_block and s.startswith("## "):
             in_block = False
-            continue
+        if in_block:
+            tm = _CAND_TRAIL_RE.search(s)
+            if tm:
+                inside = tm.group(1).strip()
+                trail = []
+                if inside:
+                    for tok in inside.split(","):
+                        tok = tok.strip()
+                        if tok.isdigit():
+                            trail.append(int(tok))
         if not in_block:
             continue
         m = _CAND_ID_RE.search(s)
@@ -341,31 +347,86 @@ def _parse_dashboard_candidates(text: str) -> list[dict]:
         else:
             vote = "edit"
         found.append({"id": rid, "vote": vote})
-    return found
+    return found, trail
+
+
+def _scan_candidate_ids(text: str) -> set[int]:
+    """Set of milestone-candidate ids surviving in dashboard md (anchor scan,
+    independent of emoji votes). Used by reconcile to detect "row deleted".
+    """
+    ids: set[int] = set()
+    in_block = False
+    for raw in text.splitlines():
+        s = raw.rstrip()
+        if "## Milestone candidate" in s:
+            in_block = True
+            continue
+        if in_block and s.startswith("## "):
+            in_block = False
+            continue
+        if not in_block:
+            continue
+        if _CAND_TRAIL_RE.search(s):
+            continue
+        m = _CAND_ID_RE.search(s)
+        if m and m.group(1).isdigit():
+            ids.add(int(m.group(1)))
+    return ids
+
+
+def _drop_milestone_candidate(conn, rid: int, source: str) -> None:
+    """DELETE + write anti-revive tombstone keyed on natural_key hash.
+    Summary stays `sha=<hash>|title=<title>` so migrate._insert and
+    candidates.write_milestone_cand can LIKE-match the same key.
+    """
+    row = conn.execute(
+        "SELECT scope, date, title FROM milestones WHERE id=?", (rid,)
+    ).fetchone()
+    if row is None:
+        return
+    h = _milestone_natkey_hash(
+        row["scope"] or "", row["date"] or "", row["title"] or "",
+    )
+    conn.execute("DELETE FROM milestones WHERE id=?", (rid,))
+    tomb = f"sha={h}|title={(row['title'] or '')[:80]}"
+    _audit(conn, rid, "tombstone", f"{source}: {tomb}")
 
 
 def reconcile_milestone_candidates(conn: sqlite3.Connection,
                                     dashboard_path: Path) -> ReconcileReport:
-    """Apply ✅/❌ votes on dashboard milestone-candidate rows.
+    """Reconcile dashboard `## Milestone candidate` rows back to DB.
 
-    ✅ → pinned=1 (row moves to subpage on next render — scope already on row).
-    ❌ → DELETE + audit_log tombstone (anti-revive on next extraction pass).
-    ✏️ → no-op for now (md re-rendered to DB state; HTML layer realises edits).
+    Three drop paths, one outcome — DELETE row + write anti-revive tombstone:
+    - ❌ vote (legacy emoji-vote workflow)
+    - Row deleted in Obsidian (id present in last-round trail marker but
+      missing from md this round) — natural "delete the bullet to drop"
+    Pin:
+    - ✅ vote → pinned=1 (row appears on milestone subpage next render).
+      (Or: copy the row's `<!-- id:N -->` into the milestone subpage —
+      reconcile_milestones picks it up and flips pinned=1 there.)
+    ✏️ → no-op (md re-rendered to DB state; HTML layer realises edits).
     """
     rpt = ReconcileReport()
     dashboard_path = Path(dashboard_path)
     if not dashboard_path.exists():
         return rpt
     text = dashboard_path.read_text(encoding="utf-8")
-    votes = _parse_dashboard_candidates(text)
-    if not votes:
+    votes, trail = _parse_dashboard_candidates(text)
+    # Collect every anchored id surviving in the candidate block — votes
+    # alone miss bare rows (no emoji edit), so re-scan the block for raw
+    # `<!-- id:N -->` anchors. Trail marker presence = candidate block
+    # rendered cleanly this round; intersect against it to spot deletions.
+    md_ids = _scan_candidate_ids(text)
+    missing: list[int] = []
+    if trail is not None:
+        missing = [i for i in trail if i not in md_ids]
+    if not votes and not missing:
         return rpt
     with conn:
         for v in votes:
             rid = v["id"]
             row = conn.execute(
-                "SELECT id, pinned, source_hash, title FROM milestones"
-                " WHERE id=?", (rid,)
+                "SELECT id, pinned, title FROM milestones WHERE id=?", (rid,)
             ).fetchone()
             if row is None:
                 rpt.conflicts.append(f"candidate id {rid} not in db")
@@ -382,14 +443,22 @@ def reconcile_milestone_candidates(conn: sqlite3.Connection,
                        f"dashboard ✅: {(row['title'] or '')[:60]}")
                 rpt.updated += 1
             elif v["vote"] == "drop":
-                conn.execute("DELETE FROM milestones WHERE id=?", (rid,))
-                # Tombstone in audit_log keyed on source_hash so future
-                # candidate extraction can skip the same upstream row.
-                tomb = f"sha={row['source_hash'] or ''}|" \
-                       f"title={(row['title'] or '')[:80]}"
-                _audit(conn, rid, "tombstone", f"dashboard ❌: {tomb}")
+                _drop_milestone_candidate(conn, rid, "dashboard ❌")
                 rpt.deleted += 1
             else:  # edit — no-op until HTML layer realises in-place edits
                 _audit(conn, rid, "edit_noop", "dashboard ✏️ (no md edit path)")
                 rpt.unchanged += 1
+        for rid in missing:
+            row = conn.execute(
+                "SELECT id, pinned FROM milestones WHERE id=?", (rid,)
+            ).fetchone()
+            if row is None:
+                continue
+            if row["pinned"]:
+                # Lumi may have promoted the row by copying its anchor into
+                # the milestone subpage — the candidate-block row vanishing
+                # is then expected, not a drop. Skip.
+                continue
+            _drop_milestone_candidate(conn, rid, "dashboard row deleted")
+            rpt.deleted += 1
     return rpt

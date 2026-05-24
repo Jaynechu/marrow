@@ -43,16 +43,16 @@
 ## Sub-pages (one table → one view, same render contract)
 > Order + visibility config-driven via `[subpages]` in `~/.config/marrow/config.toml`. Two groups: top (content) + bottom (utility), rendered with `---` divider.
 
-Top (content, numbered):
-1. Profile — personal facts beyond CLAUDE.md: interests, lifestyle, family & friends. Backed by entities (Phase 2).
-2. Milestone — life events (## Us + ## Me).
-3. Diary — one page per month, drill into per-day narrative.
-4. Memes — private inside-jokes + viral quotes + topical news/event mentions; hot memes first.
-5. Stickers — WeChat-sticker-style gallery, bidirectional: drop a file in → system auto-writes description + trigger from chat context; remove from md or via chat → gone.
-6. Wallet — opt-in addon, transactions table, bank-statement layout (see FUTURE stellan_wallet). Position reserved now; content render lands with Phase 5.
-7. Goose-bites — Best of the day (铁锅).
+Top (content):
+- Profile — personal facts beyond CLAUDE.md: interests, lifestyle, family & friends. Backed by entities (Phase 2).
+- Milestone — life events (## Us + ## Me).
+- Diary — one page per month, drill into per-day narrative.
+- Memes — private inside-jokes + viral quotes + topical news/event mentions; hot memes first.
+- Stickers — WeChat-sticker-style gallery, bidirectional: drop a file in → system auto-writes description + trigger from chat context; remove from md or via chat → gone.
+- Wallet — opt-in addon, transactions table, bank-statement layout (see FUTURE stellan_wallet). Position reserved now; content render lands with Phase 5.
+- Goose-bites — Best of the day (铁锅).
 
-Bottom (utility, unnumbered):
+Bottom (utility):
 - Study — one page per unit (progress / due / submitted). Notion stays primary, this is the CC-visible mirror.
 - Projects — index of active + done + pit (deferred backlog not in Open Threads), one page per project. A project's own sub-pages do not appear on the dashboard.
 - Cheatsheet — scripts / hooks / skills / aliases + directory map (marrow code, `~/.config` data, NY), rendered from disk reality. Read-only: disk is source of truth, hand-edits overwritten on next render.

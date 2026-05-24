@@ -7,6 +7,7 @@ parser via extract_block). Writers are idempotent on their natural key.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
 
 _ENTITY_KINDS = {"person", "pref", "place"}
@@ -128,6 +129,17 @@ def write_milestone_cand(conn, raw: str, date: str,
             " LIMIT 1", (scope, title, m_date),
         ).fetchone()
         if exists:
+            continue
+        # Anti-revive: skip if Lumi has already dropped this milestone
+        # (reconcile writes a tombstone keyed on milestones|scope|date|title).
+        nk = f"milestones|{scope}|{m_date}|{title}"
+        nh = hashlib.sha256(nk.encode()).hexdigest()
+        tomb = conn.execute(
+            "SELECT 1 FROM audit_log WHERE target_table='milestones'"
+            " AND action='tombstone' AND summary LIKE ? LIMIT 1",
+            (f"%{nh}%",),
+        ).fetchone()
+        if tomb:
             continue
         with conn:
             conn.execute(
