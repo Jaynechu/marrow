@@ -148,9 +148,13 @@ _ADD_TABLES = {"milestone": _add_milestone}
 _MEL_TZ = ZoneInfo("Australia/Melbourne")
 
 
-def cmd_goose_select(args) -> int:
-    from .goose_select import select_quote_for_date
-    date = args.date or datetime.datetime.now(_MEL_TZ).strftime("%Y-%m-%d")
+def cmd_goose_bites(args) -> int:
+    from .goose_bites import select_quote_for_date
+    if args.date:
+        date = args.date
+    else:
+        today = datetime.datetime.now(_MEL_TZ).date()
+        date = (today - datetime.timedelta(days=1)).isoformat()
     with _conn(args.db) as conn:
         quote = select_quote_for_date(conn, date)
     if quote:
@@ -253,9 +257,9 @@ def build_parser() -> argparse.ArgumentParser:
     ad.add_argument("--pinned", action="store_true")
     ad.set_defaults(fn=cmd_add)
 
-    gs = sub.add_parser("goose-select", parents=[common])
+    gs = sub.add_parser("goose-bites", parents=[common])
     gs.add_argument("--date", default=None, metavar="YYYY-MM-DD")
-    gs.set_defaults(fn=cmd_goose_select)
+    gs.set_defaults(fn=cmd_goose_bites)
 
     return p
 

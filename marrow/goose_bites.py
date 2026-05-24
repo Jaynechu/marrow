@@ -48,14 +48,14 @@ def _call_haiku(candidates: list[str]) -> str | None:
     try:
         client = LLMClient()
         body = _SYSTEM_PROMPT + "\n\n" + "\n".join(candidates)
-        result = client.call("goose_select", body, tier="cheap")
+        result = client.call("goose_bites", body, tier="cheap")
         picked = result.strip()
         if picked in candidates:
             return picked
-        _LOG.warning("goose_select: Haiku output not in candidates, falling back to longest")
+        _LOG.warning("goose_bites: Haiku output not in candidates, falling back to longest")
         return max(candidates, key=len)
     except Exception as e:
-        _LOG.warning("goose_select: LLM call failed: %s", e)
+        _LOG.warning("goose_bites: LLM call failed: %s", e)
         return None
 
 
@@ -84,11 +84,11 @@ def select_quote_for_date(conn: sqlite3.Connection, date: str) -> str | None:
     try:
         candidates = _parse_day_block(date)
     except Exception as e:
-        _LOG.warning("goose_select: failed to parse day block for %s: %s", date, e)
+        _LOG.warning("goose_bites: failed to parse day block for %s: %s", date, e)
         return None
 
     if not candidates:
-        _LOG.warning("goose_select: no candidates for %s", date)
+        _LOG.warning("goose_bites: no candidates for %s", date)
         return None
 
     if len(candidates) == 1:
@@ -101,7 +101,7 @@ def select_quote_for_date(conn: sqlite3.Connection, date: str) -> str | None:
     try:
         _upsert(conn, date, quote)
     except Exception as e:
-        _LOG.warning("goose_select: DB upsert failed for %s: %s", date, e)
+        _LOG.warning("goose_bites: DB upsert failed for %s: %s", date, e)
         return None
 
     return quote
