@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS milestones (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
-CREATE TABLE IF NOT EXISTS vocab (
+CREATE TABLE IF NOT EXISTS memes (
   id INTEGER PRIMARY KEY,
   type TEXT NOT NULL,
   key TEXT NOT NULL,
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS vocab (
 );
 CREATE TABLE IF NOT EXISTS stickers (
   id INTEGER PRIMARY KEY,
-  vocab_id INTEGER REFERENCES vocab(id) ON DELETE SET NULL,
+  meme_id INTEGER REFERENCES memes(id) ON DELETE SET NULL,
   key TEXT NOT NULL,
   asset_path TEXT NOT NULL,
   mime_type TEXT,
@@ -278,6 +278,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v2(conn)
         _migrate_to_v3(conn)
         _migrate_to_v4(conn)
+        _migrate_to_v5(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -331,19 +332,24 @@ def _migrate_to_v2(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_to_v3(conn: sqlite3.Connection) -> None:
-    """v3 schema: vocab.pinned (LLM-written, aging exemption) +
-    vocab.status (code-written by aging job — 'active' | 'dormant').
+    """v3 schema: memes.pinned (LLM-written, aging exemption) +
+    memes.status (code-written by aging job — 'active' | 'dormant').
     Idempotent — duplicate ALTER swallowed; user_version short-circuits.
+    Pre-v5 the table was named `vocab`; v5 renames it. This migration may
+    therefore run against either name; resolve at call time.
     """
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 3:
         return
+    tbl = "memes" if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memes'"
+    ).fetchone() else "vocab"
     for col, decl in (
         ("pinned", "INTEGER NOT NULL DEFAULT 0"),
         ("status", "TEXT NOT NULL DEFAULT 'active'"),
     ):
         try:
-            conn.execute(f"ALTER TABLE vocab ADD COLUMN {col} {decl}")
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
             pass
 
@@ -360,3 +366,25 @@ def _migrate_to_v4(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE affect ADD COLUMN description TEXT")
     except sqlite3.OperationalError:
         pass
+
+
+def _migrate_to_v5(conn: sqlite3.Connection) -> None:
+    """v5 schema: rename `vocab` -> `memes` (sub-page name alignment) +
+    stickers.vocab_id column -> stickers.meme_id. Idempotent — skips when
+    `memes` already exists or `vocab` is absent.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 5:
+        return
+    has_memes = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memes'"
+    ).fetchone()
+    has_vocab = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='vocab'"
+    ).fetchone()
+    if has_vocab and not has_memes:
+        conn.execute("ALTER TABLE vocab RENAME TO memes")
+    # stickers.vocab_id -> stickers.meme_id (SQLite ≥3.25 supports RENAME COLUMN).
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(stickers)")}
+    if "vocab_id" in cols and "meme_id" not in cols:
+        conn.execute("ALTER TABLE stickers RENAME COLUMN vocab_id TO meme_id")
