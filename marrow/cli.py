@@ -6,10 +6,12 @@ an exit code. Hooks/daemon never call here — they use repo.py.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import re
 import sys
 from contextlib import contextmanager
+from zoneinfo import ZoneInfo
 
 from . import config, storage
 
@@ -143,6 +145,20 @@ def _add_milestone(conn, args) -> int:
 
 _ADD_TABLES = {"milestone": _add_milestone}
 
+_MEL_TZ = ZoneInfo("Australia/Melbourne")
+
+
+def cmd_goose_select(args) -> int:
+    from .goose_select import select_quote_for_date
+    date = args.date or datetime.datetime.now(_MEL_TZ).strftime("%Y-%m-%d")
+    with _conn(args.db) as conn:
+        quote = select_quote_for_date(conn, date)
+    if quote:
+        print(f"selected: {quote}")
+    else:
+        print(f"no quote for {date}")
+    return 0
+
 
 def cmd_add(args) -> int:
     fn = _ADD_TABLES.get(args.table)
@@ -236,6 +252,10 @@ def build_parser() -> argparse.ArgumentParser:
     ad.add_argument("--theme", default=None)
     ad.add_argument("--pinned", action="store_true")
     ad.set_defaults(fn=cmd_add)
+
+    gs = sub.add_parser("goose-select", parents=[common])
+    gs.add_argument("--date", default=None, metavar="YYYY-MM-DD")
+    gs.set_defaults(fn=cmd_goose_select)
 
     return p
 
