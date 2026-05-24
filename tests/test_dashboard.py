@@ -78,6 +78,33 @@ def test_write_preserves_hand_zone(db, tmp_path):
     assert "Essay 370" in txt
 
 
+def test_render_top_includes_content_section(db, tmp_path, monkeypatch):
+    # Content section follows Affect and lists subpages with md links.
+    from marrow import subpages
+
+    def fake_load():
+        return {"subpages": {"top": ["milestone", "diary"],
+                              "bottom": ["cheatsheet"], "hidden": []}}
+
+    monkeypatch.setattr(subpages._config, "load", fake_load)
+    dash = tmp_path / "dashboard.md"
+    conn = storage.connect(db)
+    try:
+        block = dashboard.render_top(conn, dashboard_path=str(dash))
+    finally:
+        conn.close()
+    assert "## Content" in block
+    # Top entries numbered
+    assert "1. [Milestone](" in block and "milestone.md" in block
+    assert "2. [Diary](" in block
+    # Divider before bottom
+    assert "---" in block
+    # Bottom entries unnumbered, just bullets
+    assert "- [Cheatsheet](" in block
+    # Affect section precedes Content
+    assert block.index("## Affect") < block.index("## Content")
+
+
 def test_hand_edit_in_block_silently_overwritten(db, tmp_path):
     dash = tmp_path / "dashboard.md"
     state = tmp_path / "state"

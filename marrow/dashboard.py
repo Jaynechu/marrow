@@ -18,8 +18,10 @@ M0 = "<!-- marrow:top:start -->"
 M1 = "<!-- marrow:top:end -->"
 
 
-def render_top(conn) -> str:
-    return M0 + "\n" + top_sections.render_top(conn) + "\n" + M1
+def render_top(conn, *, dashboard_path: str | None = None) -> str:
+    return (M0 + "\n"
+            + top_sections.render_top(conn, dashboard_path=dashboard_path)
+            + "\n" + M1)
 
 
 def _split(text: str) -> tuple[str, str, str]:
@@ -46,7 +48,7 @@ def _atomic_write(path: str, data: str) -> None:
 
 def write_dashboard(path: str, conn, *, state_dir: str,
                     db: str | None = None) -> None:
-    block = render_top(conn)
+    block = render_top(conn, dashboard_path=path)
     Path(state_dir).mkdir(parents=True, exist_ok=True)
 
     existing = ""

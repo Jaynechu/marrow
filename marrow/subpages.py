@@ -326,7 +326,11 @@ def content_list(*, folder: str | None = None) -> dict:
     """
     sub_cfg = _subpages_cfg()
     hidden = set(sub_cfg["hidden"])
-    folder = folder or _config.sub_pages_path()
+    if folder is None:
+        try:
+            folder = _config.sub_pages_path()
+        except Exception:
+            folder = "."
     base = Path(folder)
     out: dict[str, list[tuple[str, str]]] = {"top": [], "bottom": []}
     for section in ("top", "bottom"):

@@ -1,13 +1,16 @@
-"""Shared sync renderers for the 4 dashboard/handover top sections.
+"""Shared sync renderers for the dashboard/handover top sections.
 
-All functions are pure (no I/O); accept a sqlite3.Connection; return markdown.
-Imported by dashboard.py and handover_render.py — no duplication.
+All functions are pure (no I/O except content list path resolution);
+accept a sqlite3.Connection; return markdown. Imported by dashboard.py
+and handover_render.py — no duplication.
 """
 from __future__ import annotations
 
 import math
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 # ── day boundary ─────────────────────────────────────────────────────────────
@@ -250,11 +253,55 @@ def render_affect(conn: sqlite3.Connection) -> str:
     return "\n".join(out)
 
 
-def render_top(conn: sqlite3.Connection) -> str:
-    """Concatenate all 4 sections (Alerts/Tasks/Milestone/Affect)."""
+def render_content(conn: sqlite3.Connection,
+                   *, dashboard_path: str | None = None) -> str:
+    """Render the `## Content` section listing subpages with md links.
+
+    Top items numbered, then `---` divider, then bottom items unnumbered.
+    Links are relative to the dashboard's own directory so Obsidian +
+    plain-md readers both resolve them. Hidden keys excluded by
+    content_list().
+    """
+    from . import subpages
+    info = subpages.content_list()
+    if dashboard_path:
+        base = Path(dashboard_path).parent
+    else:
+        from . import config as _config
+        base = Path(_config.dashboard_path()).parent
+
+    def _rel(p: str) -> str:
+        try:
+            return os.path.relpath(p, start=str(base))
+        except ValueError:
+            return p
+
+    out = ["## Content"]
+    top = info["top"]
+    bottom = info["bottom"]
+    if not top and not bottom:
+        out.append("- (none)")
+        return "\n".join(out)
+    for i, (label, path) in enumerate(top, start=1):
+        out.append(f"{i}. [{label}]({_rel(path)})")
+    if bottom:
+        out.append("---")
+        for label, path in bottom:
+            out.append(f"- [{label}]({_rel(path)})")
+    return "\n".join(out)
+
+
+def render_top(conn: sqlite3.Connection,
+               *, dashboard_path: str | None = None) -> str:
+    """Concatenate all dashboard top sections.
+
+    Order: Alerts → Tasks → Milestone candidate → Affect → Content.
+    `## Content` lives just below Affect (DESIGN L60).
+    """
     return "\n\n".join([
         render_alerts(conn),
         render_tasks(conn),
         render_milestone_candidate(conn),
         render_affect(conn),
+        render_content(conn, dashboard_path=dashboard_path),
     ])
