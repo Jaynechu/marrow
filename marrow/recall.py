@@ -172,6 +172,24 @@ _LANES: dict[str, dict[str, str]] = {
             "ORDER BY mi.id DESC LIMIT ?"
         ),
     },
+    # Diary table is keyed by `date TEXT PRIMARY KEY`, not INTEGER. vec0 rowid
+    # must be INTEGER, so we ride SQLite's implicit `rowid` column (auto-assigned
+    # to every table without an explicit INTEGER PRIMARY KEY). Stable across
+    # re-opens; reassigned on DELETE+INSERT (daily.py rewrites by date). Orphan
+    # rows in diary_vec_meta whose rowid no longer exists in diary are swept by
+    # _embed_pending_lane before the per-lane backfill query runs.
+    "diary": {
+        "vec_table": "diary_vec",
+        "meta_table": "diary_vec_meta",
+        "pending_sql": (
+            "SELECT d.rowid AS id, "
+            "  TRIM(d.date || ': ' || COALESCE(d.content,'')) AS text "
+            "FROM diary d WHERE COALESCE(d.content,'') NOT IN ('','—') "
+            "AND NOT EXISTS (SELECT 1 FROM diary_vec_meta x "
+            "                WHERE x.rowid=d.rowid) "
+            "ORDER BY d.rowid DESC LIMIT ?"
+        ),
+    },
 }
 
 
@@ -252,6 +270,47 @@ def embed_milestone(
     return _embed_one(conn, "milestones", milestone_id, text, embedder_id, dim)
 
 
+def embed_diary(
+    conn: sqlite3.Connection,
+    date: str,
+    text: str,
+    embedder_id: str = "bge-m3",
+    dim: int = 1024,
+) -> bool:
+    """Embed one diary entry into diary_vec + diary_vec_meta. Idempotent.
+
+    Resolves the diary row's rowid by date first — diary's PK is TEXT, vec0
+    needs INTEGER. Returns False if the date is not in the diary table.
+    """
+    row = conn.execute(
+        "SELECT rowid FROM diary WHERE date=?", (date,)
+    ).fetchone()
+    if row is None:
+        return False
+    return _embed_one(conn, "diary", int(row["rowid"]), text, embedder_id, dim)
+
+
+def _sweep_diary_orphans(conn: sqlite3.Connection) -> None:
+    """Drop diary_vec / diary_vec_meta rows whose rowid no longer maps to a
+    diary row. daily.run_day rewrites diary by DELETE+INSERT, which reassigns
+    rowid and orphans the previous vec embedding. Cheap full-scan join — diary
+    is small (≤ ~365 rows/yr).
+    """
+    try:
+        stale = [r[0] for r in conn.execute(
+            "SELECT m.rowid FROM diary_vec_meta m "
+            "WHERE NOT EXISTS (SELECT 1 FROM diary d WHERE d.rowid=m.rowid)"
+        ).fetchall()]
+    except sqlite3.Error:
+        return
+    if not stale:
+        return
+    with conn:
+        for rid in stale:
+            conn.execute("DELETE FROM diary_vec WHERE rowid=?", (rid,))
+            conn.execute("DELETE FROM diary_vec_meta WHERE rowid=?", (rid,))
+
+
 def _embed_pending_lane(
     conn: sqlite3.Connection,
     lane: str,
@@ -263,6 +322,8 @@ def _embed_pending_lane(
     emb = _ensure_embedder()
     if emb is None:
         return 0
+    if lane == "diary":
+        _sweep_diary_orphans(conn)
     cfg = _LANES[lane]
     rows = conn.execute(cfg["pending_sql"], (batch,)).fetchall()
     if not rows:
@@ -294,7 +355,7 @@ def embed_pending(
     embedder_id: str = "bge-m3",
     dim: int = 1024,
 ) -> int:
-    """Backfill all four lanes (events + memes + entities + milestones).
+    """Backfill all five lanes (events + memes + entities + milestones + diary).
 
     Per-lane budget = `batch` so a large events backlog cannot starve the
     cross-table lanes on a single hook firing. Returns total rows written.
@@ -392,6 +453,36 @@ def _milestones_vec_hits(
     except sqlite3.Error:
         return {}
     return {r["id"]: max(0.0, 1.0 - r["distance"]) for r in rows}
+
+
+def _diary_vec_hits(
+    conn: sqlite3.Connection, qblob: bytes, k: int
+) -> list[dict]:
+    """Return diary cards matched by qblob, including vec_score.
+
+    Diary is long-form prose dated per day. We return id (rowid), date and
+    raw content so the fusion loop can shape the row.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT d.rowid AS id, d.date, d.content, v.distance "
+            "FROM diary_vec v JOIN diary d ON d.rowid = v.rowid "
+            "WHERE embedding MATCH ? AND k = ? "
+            "ORDER BY v.distance",
+            (qblob, k),
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        vs = max(0.0, 1.0 - r["distance"])
+        out.append({
+            "id": r["id"],
+            "date": r["date"] or "",
+            "content": r["content"] or "",
+            "vec_score": vs,
+        })
+    return out
 
 
 def _entities_vec_hits(
@@ -575,6 +666,7 @@ def recall_fusion(
     w_memes_vec: float = 0.55,
     w_entities_vec: float = 0.55,
     w_milestones_vec: float = 0.55,
+    w_diary_vec: float = 0.55,
     min_score: float = 0.35,
 ) -> list[dict]:
     """Single weighted scalar fusion: vec + bm25 + recency + affect.
@@ -664,11 +756,13 @@ def recall_fusion(
     memes_vec_map: dict[int, float] = {}
     milestones_vec_map: dict[int, float] = {}
     entities_vec_cards: list[dict] = []
+    diary_vec_cards: list[dict] = []
     if vec_available:
         k_lane = max(limit * 2, 5)
         memes_vec_map = _memes_vec_hits(conn, qblob, k_lane)
         milestones_vec_map = _milestones_vec_hits(conn, qblob, k_lane)
         entities_vec_cards = _entities_vec_hits(conn, qblob, k_lane)
+        diary_vec_cards = _diary_vec_hits(conn, qblob, k_lane)
 
     # Memes: merge vec hits into the substring pool by id.
     memes_by_id = {c["id"]: c for c in memes_cands}
@@ -730,8 +824,28 @@ def recall_fusion(
             }
     milestone_cands = list(ms_by_id.values())
 
+    # Diary: vec-only lane (no kw scan for long-form prose). Build candidates
+    # gated by _VEC_ONLY_FLOOR; scored with w_diary_vec, no bm25/recency.
+    diary_cands: list[dict] = []
+    for card in diary_vec_cards:
+        vs = card["vec_score"]
+        if vs < _VEC_ONLY_FLOOR:
+            continue
+        if not card["content"] or card["content"] == "—":
+            continue
+        date = card["date"]
+        ts = date if "T" in date else (date + "T00:00:00Z" if date else "")
+        diary_cands.append({
+            "kind": "diary", "id": card["id"],
+            "session_id": None, "timestamp": ts,
+            "role": "diary", "content": card["content"],
+            "channel": None, "compressed": 0,
+            "bm25": 0.0, "vec": vs, "fts_hit": False,
+            "date": date,
+        })
+
     if (not candidates and not milestone_cands and not memes_cands
-            and not entities_vec_cards):
+            and not entities_vec_cards and not diary_cands):
         return []
 
     # ── dormant revive + scoring ──────────────────────────────────────────────
@@ -834,6 +948,11 @@ def recall_fusion(
             raw += _MILESTONE_PINNED_BOOST
         scored.append((raw, {**vc, "score": raw}))
 
+    # ── diary scoring (vec only — evergreen long-form prose) ─────────────────
+    for dc in diary_cands:
+        raw = w_diary_vec * dc.get("vec", 0.0)
+        scored.append((raw, {**dc, "score": raw}))
+
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # ── entity force-include (prepend before ms_cap reservation) ─────────────
@@ -892,28 +1011,35 @@ def recall_fusion(
     # reservation.
     strong_fts_count = sum(
         1 for _, r in scored
-        if r.get("kind") not in ("milestone", "memes")
+        if r.get("kind") not in ("milestone", "memes", "diary")
         and r.get("bm25", 0.0) >= 0.5
         and not r.get("force_include")
     )
     if strong_fts_count >= 3:
         ms_cap = 1
         memes_cap = 0
+        diary_cap = 0
     else:
         ms_cap = max(1, (limit + 2) // 3)
         memes_cap = 1 if limit <= 5 else 2
+        # Diary = long-form companion surface. Reserve 1 slot when limit > 5
+        # so it isn't starved by event/memes/milestone density.
+        diary_cap = 1 if limit > 5 else 0
     ms_scored = [(s, r) for s, r in scored if r.get("kind") == "milestone"]
     memes_scored = [(s, r) for s, r in scored if r.get("kind") == "memes"]
+    diary_scored = [(s, r) for s, r in scored if r.get("kind") == "diary"]
     ev_scored = [
         (s, r) for s, r in scored
-        if r.get("kind") not in ("milestone", "memes")
+        if r.get("kind") not in ("milestone", "memes", "diary")
     ]
     ms_picks = ms_scored[:ms_cap]
     memes_picks = memes_scored[:memes_cap]
-    reserved = len(ms_picks) + len(memes_picks)
+    diary_picks = diary_scored[:diary_cap]
+    reserved = len(ms_picks) + len(memes_picks) + len(diary_picks)
     ev_picks = ev_scored[: max(0, limit - reserved)]
     picks = sorted(
-        ms_picks + memes_picks + ev_picks, key=lambda x: x[0], reverse=True
+        ms_picks + memes_picks + diary_picks + ev_picks,
+        key=lambda x: x[0], reverse=True,
     )
 
     # ── budget truncation ─────────────────────────────────────────────────────
@@ -967,5 +1093,6 @@ def recall_with_config(
         w_memes_vec=float(rcfg.get("w_memes_vec", 0.55)),
         w_entities_vec=float(rcfg.get("w_entities_vec", 0.55)),
         w_milestones_vec=float(rcfg.get("w_milestones_vec", 0.55)),
+        w_diary_vec=float(rcfg.get("w_diary_vec", 0.55)),
         min_score=float(rcfg.get("min_score", 0.35)),
     )

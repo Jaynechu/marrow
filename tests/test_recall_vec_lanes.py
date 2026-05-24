@@ -78,6 +78,17 @@ def _make_milestone(db, title: str, description: str = "d",
     return db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
+def _make_diary(db, date: str, content: str) -> int:
+    db.execute(
+        "INSERT INTO diary(date, content) VALUES(?, ?)",
+        (date, content),
+    )
+    db.commit()
+    return db.execute(
+        "SELECT rowid FROM diary WHERE date=?", (date,)
+    ).fetchone()["rowid"]
+
+
 # ── A. embed write path ──────────────────────────────────────────────────────
 
 def test_embed_meme_writes_and_idempotent(db):
@@ -119,20 +130,22 @@ def test_embed_milestone_writes_and_idempotent(db):
     ).fetchone()[0] == 1
 
 
-def test_embed_pending_backfills_all_four_lanes(db):
+def test_embed_pending_backfills_all_five_lanes(db):
     _make_event(db, "event row")
     _make_meme(db, "meme-key")
     _make_entity(db, "Stellan", fact="partner")
     _make_milestone(db, "milestone-title")
+    _make_diary(db, "2026-05-23", "diary content for vec")
     mock_emb = MagicMock()
     mock_emb.embed.side_effect = lambda texts: np.stack(
         [_fake_vec(100 + i) for i, _ in enumerate(texts)]
     )
     with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
         n = rm.embed_pending(db, batch=10)
-    assert n == 4
+    assert n == 5
     for tbl in ("events_vec_meta", "memes_vec_meta",
-                "entities_vec_meta", "milestones_vec_meta"):
+                "entities_vec_meta", "milestones_vec_meta",
+                "diary_vec_meta"):
         assert db.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] == 1
 
 
@@ -244,11 +257,167 @@ def test_vec_lane_no_op_without_embedder(db):
     _make_meme(db, "vec-disabled-key")
     _make_entity(db, "VecDisabled", fact="x")
     _make_milestone(db, "no vec milestone")
+    _make_diary(db, "2026-05-23", "vec disabled diary content")
     with patch.object(rm, "_ensure_embedder", return_value=None):
         # Should not raise; no kw substring match on this query either.
         results = rm.recall_fusion(
             db, "wholly orthogonal sentence here", min_score=0.0,
         )
-    # No memes / entity / milestone vec-only rows surface.
-    assert not any(r.get("kind") in ("memes", "milestone", "entity")
+    # No memes / entity / milestone / diary vec-only rows surface.
+    assert not any(r.get("kind") in ("memes", "milestone", "entity", "diary")
                    for r in results)
+
+
+# ── C. diary lane ────────────────────────────────────────────────────────────
+
+def test_embed_diary_writes_and_idempotent(db):
+    rid = _make_diary(db, "2026-05-23", "GAMSAT 准备 today, drained")
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([_fake_vec(20)])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        assert rm.embed_diary(db, "2026-05-23", "GAMSAT 准备 today, drained") is True
+        assert rm.embed_diary(db, "2026-05-23", "GAMSAT 准备 today, drained") is False
+    assert db.execute(
+        "SELECT COUNT(*) FROM diary_vec_meta WHERE rowid=?", (rid,)
+    ).fetchone()[0] == 1
+    assert db.execute(
+        "SELECT COUNT(*) FROM diary_vec WHERE rowid=?", (rid,)
+    ).fetchone()[0] == 1
+
+
+def test_embed_diary_unknown_date_noop(db):
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([_fake_vec(21)])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        assert rm.embed_diary(db, "1999-01-01", "nope") is False
+    assert db.execute(
+        "SELECT COUNT(*) FROM diary_vec_meta"
+    ).fetchone()[0] == 0
+
+
+def test_diary_vec_lane_surfaces_via_monkeypatch(db, monkeypatch):
+    rid = _make_diary(db, "2026-05-22", "long-form prose about a feeling")
+    qvec = _fake_vec(22)
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([qvec])
+
+    def fake_diary_hits(c, b, k):
+        return [{
+            "id": rid, "date": "2026-05-22",
+            "content": "long-form prose about a feeling",
+            "vec_score": 0.7,
+        }]
+
+    monkeypatch.setattr(rm, "_diary_vec_hits", fake_diary_hits)
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(
+            db, "totally unrelated query", min_score=0.0,
+        )
+    diary_hits = [r for r in results if r.get("kind") == "diary"]
+    assert len(diary_hits) >= 1
+    assert "long-form prose" in diary_hits[0]["content"]
+    assert diary_hits[0]["score"] > 0
+
+
+def test_diary_vec_lane_gated_by_floor(db, monkeypatch):
+    rid = _make_diary(db, "2026-05-22", "low sim diary entry")
+    qvec = _fake_vec(23)
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([qvec])
+    # 0.30 < _VEC_ONLY_FLOOR (0.40) — should be gated out.
+    monkeypatch.setattr(rm, "_diary_vec_hits", lambda c, b, k: [{
+        "id": rid, "date": "2026-05-22",
+        "content": "low sim diary entry", "vec_score": 0.30,
+    }])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(
+            db, "anything goes here", min_score=0.0,
+        )
+    assert not any(r.get("kind") == "diary" for r in results)
+
+
+def test_diary_slot_reserved_when_limit_gt_5(db, monkeypatch):
+    """With limit>5 and no strong FTS, at least one diary slot is reserved
+    even when events would otherwise saturate the limit via vec-only scores."""
+    rid = _make_diary(db, "2026-05-22", "diary entry to reserve")
+    # Add events that only surface via the vec lane (no FTS overlap with the
+    # query string), so strong_fts_count stays 0 and the diary cap applies.
+    event_ids = [
+        _make_event(db, f"alpha bravo charlie {i}") for i in range(8)
+    ]
+    qvec = _fake_vec(24)
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([qvec])
+
+    # Fake events_vec to return all 8 with mid sim — pushes 8 event candidates
+    # into the pool without any FTS hit.
+    def fake_execute(orig_execute):
+        def wrapped(sql, *args, **kwargs):
+            if "events_vec" in sql and "MATCH" in sql:
+                # Return synthetic vec rows: (id, ..., distance)
+                # Use a tiny in-memory fetcher mimicking sqlite rows.
+                class _Row(dict):
+                    def __getitem__(self, k): return dict.__getitem__(self, k)
+
+                rows = []
+                for i, eid in enumerate(event_ids):
+                    rows.append(_Row(
+                        id=eid, session_id="s1",
+                        timestamp="2026-05-19T10:00:00Z",
+                        role="user", content=f"alpha bravo charlie {i}",
+                        channel=None, compressed=0,
+                        distance=0.2 + i * 0.01,
+                    ))
+
+                class _Cur:
+                    def fetchall(self_inner): return rows
+                return _Cur()
+            return orig_execute(sql, *args, **kwargs)
+        return wrapped
+
+    monkeypatch.setattr(rm, "_diary_vec_hits", lambda c, b, k: [{
+        "id": rid, "date": "2026-05-22",
+        "content": "diary entry to reserve", "vec_score": 0.6,
+    }])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(
+            db, "zzz nonmatching query", limit=6, min_score=0.0,
+        )
+    diary_hits = [r for r in results if r.get("kind") == "diary"]
+    assert len(diary_hits) >= 1, (
+        f"diary slot not reserved; results kinds = "
+        f"{[r.get('kind') for r in results]}"
+    )
+
+
+def test_diary_orphan_sweep(db):
+    """Rewriting a diary row (DELETE+INSERT) reassigns rowid; the previous
+    vec_meta row should be swept by _embed_pending_lane before backfill."""
+    rid1 = _make_diary(db, "2026-05-23", "first version")
+    mock_emb = MagicMock()
+    mock_emb.embed.side_effect = lambda texts: np.stack(
+        [_fake_vec(400 + i) for i, _ in enumerate(texts)]
+    )
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        rm.embed_pending(db, batch=10)
+    assert db.execute(
+        "SELECT COUNT(*) FROM diary_vec_meta WHERE rowid=?", (rid1,)
+    ).fetchone()[0] == 1
+    # Simulate daily.py rewrite: delete then re-insert. SQLite rowid will
+    # very likely shift (vacuum-less, autoincrement-less default).
+    db.execute("DELETE FROM diary WHERE date=?", ("2026-05-23",))
+    db.execute(
+        "INSERT INTO diary(date, content) VALUES(?, ?)",
+        ("2026-05-23", "second version content"),
+    )
+    db.commit()
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        rm.embed_pending(db, batch=10)
+    # Old rowid orphan is gone; only the current row remains.
+    cur_rid = db.execute(
+        "SELECT rowid FROM diary WHERE date=?", ("2026-05-23",)
+    ).fetchone()["rowid"]
+    rowids = {r["rowid"] for r in db.execute(
+        "SELECT rowid FROM diary_vec_meta"
+    ).fetchall()}
+    assert rowids == {cur_rid}
