@@ -250,7 +250,7 @@ _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = 
     "wallet":     lambda c, f, s: SubPageConfig(
         "wallet",    render_wallet,    str(Path(f)/"wallet.md"),    s),
     "goose":      lambda c, f, s: SubPageConfig(
-        "goose",     render_goose,     str(Path(f)/"goose.md"),     s),
+        "goose",     render_goose,     str(Path(f)/"goose-bites.md"),     s),
     "cheatsheet": lambda c, f, s: SubPageConfig(
         "cheatsheet", render_cheatsheet, str(Path(f)/"cheatsheet.md"), s,
         read_only=True),

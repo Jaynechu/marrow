@@ -381,7 +381,7 @@ def test_write_all_subpages_creates_files(db, tmp_path):
     finally:
         conn.close()
     for name in ("diary.md", "milestone.md", "memes.md",
-                  "goose.md", "cheatsheet.md", "study.md", "projects.md",
+                  "goose-bites.md", "cheatsheet.md", "study.md", "projects.md",
                   "profile.md", "stickers.md", "wallet.md"):
         assert (Path(folder) / name).exists(), f"Missing {name}"
     assert (Path(folder) / "projects" / "pit.md").exists()
