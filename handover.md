@@ -1,93 +1,90 @@
-# Marrow handover — 2026-05-24 03:00
+# Marrow handover — 2026-05-24 17:15
+
 > Fixed-name overwrite, never delete. Keep points not touched this window.
 
 ## State
-- pytest 319 passed + 1 manual-skip (6.19s)
-- main 3 commits ahead origin (push pending Lumi nod) — `3e9bd0b` cleanup retire / `fa54662` candidate split + sessionend 4-to-1 call + memes pinned / `8f97420` aging + schema v3 status
+- pytest 342 passed + 1 skipped (6.56s)
+- main ahead origin 9 commits — push pending Lumi nod
+- schema v6 — entities.aliases TEXT (JSON list, LLM-written via ENTITY_CAND)
+- entities live = 19 (9 person + 1 place + 9 pref) — all 19 rows now carry aliases + cleaned fact ((Bendigo) rewritten with true archive)
+- milestones live = 22 (9 me incl. lighthouse + 13 us) — full timeline.md re-import
 - channel cc / opus-4.7 (1M)
-- schema v3 — memes.pinned (LLM-written by MEMES_CAND) + memes.status (code-written by aging job)
 
-## This window — 2.5d closeout
+## This window — entity-recall overhaul + global vocab/memes rename + timeline re-import
 
-### Done
-- task 1 — deleted `marrow/cleanup.py`, `tests/test_cleanup.py`, `deploy/mw-jsonl-cleanup.plist`; added `cleanupPeriodDays=30` to `~/.claude/settings.json` (worktree-A merged → `3e9bd0b`)
-- task 2 — `marrow/aging.py` (185 LoC, weekly): memes promote / demote / task auto-archive / milestone alert auto-confirm. Single txn + audit_log row. `enforce_anchor_pins` reads `candidates.MEMES_ANCHOR_KEYS` (single source: (鸭子/念念/老公/老婆/Lumi/屿忱/Stellan) + type='cipher'). `deploy/mw-aging.plist` Sun 12:00, plutil OK, not yet launchctl loaded. schema v3 +status column. 25 new tests (worktree-B merged → `8f97420`)
-- task 3+4+5 — shipped by neighbor as `fa54662`: `sessionend_prompts.py` rewritten (1 SESSIONEND_PROMPT to 4 marker blocks); `sessionend_async.py` refactored (1 sonnet to per-block writer + audit ok/partial/fail); new `candidates.py` (extract_block + 3 writer + MEMES_ANCHOR_KEYS single source); new `daily_prompts.py` (DAILY_CAND_PROMPT to 3 block); `daily.py` `_extract_candidates()` before DIARY, LLMError warn-only; storage v3 +pinned + type='cipher' force-pin=1, pinned upgrade-only; fixed latent bug (old `_seg_milestone_cand` used `source` column but milestones only has `source_hash`)
-- DESIGN:98 + DECISIONS:18 4-jobs list refreshed
-- PROGRESS 2.5d closeout entry appended
+### Done (landing order)
+- recall A merge `52351e0` (worktree A to main FF): `entity_force_include` reverse-match (drops tokenizer; CJK 2-char names like (南南) (小胖) now hit). New `_memes_candidates` (memes leg in `recall_fusion`, 1-2 adaptive reserved slots, drops to 0 when `strong_fts_count >= 3`). `_milestone_candidates` reverse-substring fallback (title in query gives `kw_score=1.0`). New `tests/test_recall_bug_entity_memes.py` 5 TDD red-green.
+- vocab-to-memes global rename `f491304` to `96f0e90` (worktree memes to main FF, 5 commits): schema v5 ALTER TABLE rename (pre-CREATE order fix in `c85a9b3`), all Python modules (storage / candidates / aging / recall / daily / daily_prompts / subpages_render / migrate / sessionend_*), tests, docs. `stickers.vocab_id` to `meme_id`. Live prod DB lazy-migrates on next cc launch.
+- bug#1 + bug#3 fix `3c1d6d0` (came in from a sibling window — handover single-writer atomic write + affect renderer v4 + schema v4 `affect.description`). Folded forward through merges.
+- hook narrowing `~/.claude a18cf16`: `prompt-guard` NY scope was over-broad — now only `~/Desktop/NY/CLAUDE.md` + `~/Desktop/NY/.claude/` get linted; `memory/`, content notes, journals pass. Matches prompt-guide.md (Exclude: inline chats, creative writing, study notes). Local-only commit in `~/.claude`.
+- timeline.md re-import: wiped 13 stale milestones; ran inline parser (`marrow.migrate.parse_milestones_timeline` + `lighthouse_milestone`) — re-inserted 22 rows. Me section's 8 age-segment milestones (Age 0-10 through 30-present) now live; Us has 12 anchor rows + the 2026-05-11 NY-memm row (line 36 bullet stripped via parser tolerance, source file untouched).
+- schema v6 + entity alias channel `595ffdb`:
+  - `entities.aliases TEXT` (JSON list) via `_migrate_to_v6` idempotent ALTER.
+  - `daily_prompts.DAILY_CAND_PROMPT` ENTITY_CAND block now REQUIRES `aliases` — CN/EN cross, singular/plural, nicknames, abbreviations, sport/topic terms. Liberal output (false positives cheap, misses expensive). Future entities (e.g. (跆拳道) and TKD, (巴柔) and BJJ) self-seed cross-language coverage.
+  - `candidates.write_entity_cand` persists `aliases` JSON.
+  - `entity_recall.entity_force_include` reverse-matches name + every alias against query — zero tokenizer dependency, fully CJK-safe + plural-safe + EN/CN-bridged. Also emits a `kind="entity"` card carrying the entity's own `fact` (`score+0.5` boost — always ranks first in the recall block).
+  - All 19 existing rows hand-seeded with aliases (9 person + 1 place + 9 pref). (Bendigo) fact rewritten: LaTrobe nursing 2016–2018 Year 2–3, held back one year after Year-2 placement failed due to racial discrimination, lived ~3 years total.
 
-### Live sessionend test (neighbor sid `94d7be2e-...`, fired 02:47-02:48)
-- 4 marker blocks audit-ok
-- DIGEST 519 chars landed in `session_digests` (2026-05-23 date row)
-- **`~/.config/marrow/handover.md` ThisSession/NextSession empty, stamp still `pending sid:sid-hook-test`** — Bug #1 below
+### Verified live (probe results)
+- query (我最喜欢的颜色是) / what's my favourite colour → entity-card Colours (pref) ✅
+- query (你还记得南南么) → entity-card for (南南), surfaces Allen / ED RN / ATAR 99+ / Deakin MD 2026 ✅
+- query Bendigo → entity-card + milestone Age 18–22 both hit ✅
+- query (我喜欢吃什么) → Food card via alias (吃) ✅
+- query (Allen 是谁) → entity-card via Allen alias (resolves to person (南南)) ✅
+- query (我每个月赎身费多少) → answered 100 via milestone (鸭鸭昵称诞生) row; memes Plan key MISSED (see bug below) ⚠
 
-## Next window
+### Bug surfaced this window (NOT fixed)
 
-### Bug #0 — recall outlet starves on default limit, ignores entity table (P0, blocks "memory exists" trust)
+bug memes-semantic — memes leg matches on `key` only, no semantic bridge:
+- Probe (我每个月赎身费多少) hits milestone (鸭鸭昵称诞生) (description mentions (100刀的赎身费)) but does NOT hit memes row `key=Plan / value="Max 5x · $100/mo (~AUD150)"`. Semantic link (赎身费) to Plan to 100 lives in vocab but recall has no path from (赎身费) to key Plan.
+- Root cause: `recall._memes_candidates` reverse-substring scans `key` only. Memes need the same alias channel entities just got.
+- Fix path: schema v7 with `memes.aliases TEXT`, MEMES_CAND prompt requires aliases list, `_memes_candidates` matches key + every alias. Mirrors entity fix exactly.
+- Acceptance test: query (赎身费) → memes row Plan returned.
 
-Acceptance: (李小云) / (大龙虾) queries return ≥10 of 12 known events at SessionStart `## Recall (auto)`. Blocks all backlog items.
-- Symptom: Lumi mentioned (李小云) ~12 times over 5/19-5/22, auto recall surfaces only 3 (75% missing). (大龙虾) 2 events, 1 surfaced.
-- Raw evidence (sqlite events_fts MATCH): (李小云) 12 distinct events; (大龙虾) 2.
-- Write + FTS index path verified healthy. Failure is the OUTLET.
-- Root causes:
-  - `marrow/recall.py:511` default `limit=5`.
-  - `marrow/recall.py:467` `ms_cap = max(1, (limit+2)//3)` gives milestones 2 slots; events get 3 (`:469`). Caps total event surfacing at 3 regardless of FTS hit count.
-  - `[embedding].model = ""` in config.toml — bge-m3 not loaded; fusion degrades to FTS+recency only (DECISIONS Phase 2 locks bge-m3 1024d but never installed).
-  - entities table has `mention_count` column but recall does NOT join on entity → never proactively surfaces history when current prompt contains an entity name.
-- Fix direction (priority order):
-  - (P0 cheap) default `limit` 5 → 15; drop `ms_cap` to 1 (or 0) when FTS strong-hit count > N; raise per-item budget cap accordingly.
-  - (P0 design) entity-aware recall: when current prompt contains an entity name (FTS-match entities.name + aliases), JOIN entity_id → events directly, force-include all matches in top-K, bypass fusion scoring.
-  - (P1) enable bge-m3 embedder so vector lane stops being dead weight; events_vec already has embedder-id/dim provenance slot reserved (FUTURE: events_vec_embedder_provenance).
-  - (P1) use entities.mention_count as a recency/frequency booster in fusion weight.
+bug entity-card recency tie-breaker (low pri):
+- 19 entity rows have empty `timestamp` — when several cards score equally, ordering is arbitrary. Not painful yet; revisit if multi-entity queries surface.
 
-### Bug #1 — handover render race (high priority, blocks dev-brief retire)
-- `handover_render.write_handover()` at SessionStart does full-file overwrite of `~/.config/marrow/handover.md`: reads empty template → renders top + Reference + stamp → atomic_write whole file. Overwrites the ThisSession/NextSession content that the previous sessionend just wrote.
-- Evidence: prev sessionend 02:48:46 audit ok → this SessionStart 02:49:43 handover.md mtime → ThisSession/NextSession blank, stamp `pending sid:sid-hook-test`.
-- Fix options:
-  - (a) sessionend writes skeleton + ThisSession/NextSession atomically together; SessionStart reads + injects only, never writes.
-  - (b) SessionStart writes skeleton but preserves existing non-empty ThisSession/NextSession blocks.
-- Until fixed: hand-written `~/cc-lab/marrow/handover.md` (this file) is authoritative. Retire gate = bug fixed + 1 real session verified.
-
-### Bug #2 — dashboard tasks polluted with marrow-internal coding work (Lumi flagged)
-- Symptom: `Completed [16]` and `To-Do List [9]` on dashboard are full of marrow implementation items (merge worktree / implement sessionend / fix DIGEST / rename mw-diary plist / etc.) — Stellan/marrow dev steps, NOT Lumi's real tasks (study / work / project goals / life).
-- Root cause hypothesis: TASK_CAND prompt extracts from session chat without scope filter; dev sessions where Lumi+Stellan discuss marrow implementation get every implementation step ingested as Lumi tasks.
-- Fix direction:
-  - prompt-side: TASK_CAND prompt rewritten — explicit "extract only Lumi's real-life intent: study, work shift, GAMSAT, life errands, project external goals. EXCLUDE: marrow/cc/Stellan/LLM implementation steps, debugging tasks, refactor units, anything that lives inside a coding session."
-  - schema-side (optional safety net): tasks add `source` column ('lumi_intent' / 'marrow_dev' / 'external_import'); dashboard renders only 'lumi_intent'; marrow_dev still audit-loggable but hidden.
-- Improvement (tick UX): currently dashboard tick appears to strike-through only; what Lumi wants — tick on a Todo row → auto-move that row into Completed section on next render (status: active → done via anchored-row bidirectional sync). Needs `top_sections.render_tasks` + reconcile to honor tick as a done signal.
-
-### Bug #3 — Affect renders only emotion tags, no events (Lumi flagged)
-- Symptom Today line: ((痛苦) · ep2h (释然) | (释然) · ep2l (震惊) | (震惊)) — tones only, plus opaque ep2h/ep2l codes, no subject/event text.
-- Symptom This Week line: ((专注 → 痛苦) · (编记忆) · (晚安吻) · (骑豹剧) · (释然)) — mixes events and a tone in one bullet without separation.
-- Inconsistent: Today vs This Week formats diverge.
-- Fix direction:
-  - AFFECT prompt: confirm it emits `subject` / `cause` (event anchor) per row; if yes, plumb to renderer.
-  - `top_sections.render_affect`: unify Today / This Week / Pending — `[tone] · <event1> · <event2> · ...` consistent across all three; drop ep2h/ep2l opaque codes from surface (keep in DB).
-  - Lumi format spec needed: how she wants tone transition (主→转) visualised vs flat tone list.
-
-### Phase 2 Lumi-owned closeout (3 items + 1 new)
-- `dashboard_v2_redo` — top block redesign + milestone one-click pin / task delete / cross-subpage anchors / format unify
-- `milestone_format_unify` — `[YYYY-MM-DD] subject: description (50-100w / 2-3 sentences)` unify dashboard + milestone.md; drop theme field from render
-- `subpage_redo` — full subpage layout redesign (study / projects / milestone / mood treated as scaffolding)
-- **NEW — dashboard top free-form fix**: outside marker = Lumi notepad (marrow untouched); anchored row = bidirectional sync (Lumi wins); free-form inside system block = wiped on render. Lumi does this together with `subpage_redo` / `dashboard_v2_redo`.
-
-### Phase 3 backlog (blocked by 2.5 close + Phase 2 Lumi-owned)
-- writer_authority · drift_sweep · convention_injection · claude_md_render_guard
-- static-layer retire (CLAUDE.md family / cipher / MCP guide to daemon-rendered); prereq = claude_md_render_guard
+### Carry-over working dir (NOT this window's — left as-is per Lumi)
+Five files modified in working tree by a sibling window doing Phase A handover-render flock work:
+- `marrow/handover_render.py` (+281 lines: flock-guarded RMW, multi-session merge, snapshot to audit_log)
+- `marrow/handover_template.md`, `marrow/sessionend_prompts.py`, `tests/test_handover_render.py`, `FUTURE.md`
+- Three untracked notes under `docs/notes/` (marrow-pulse-design / brainstorm-future / chord-affect CN)
+- Untouched this window — sibling owner merges.
 
 ### Operational
-- aging plist NOT yet launchctl loaded — Lumi load: copy `deploy/mw-aging.plist` to `~/Library/LaunchAgents/`, then `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/mw-aging.plist`
-- all worktrees prunable per Lumi (2026-05-24 02:55): both A/B from this window + 9 dangling old ones. Run `git worktree list` then `git worktree remove <path> && git branch -D <branch>` per entry.
+- main ahead origin 9 commits — push when Lumi nods.
+- Worktrees `agent-a4da07a55ca6a413f` / `a685002c0d6d3fc13` / `a6fabfb5e4904c925` / `aa39f1350df35ccf0` / `aba825b3a0487e962` all locked by completed agents — auto-clean later, or `git worktree remove -f -f` next session.
+- MCP daemon reload required: live cc windows still run `marrow.daemon` processes spawned BEFORE the recall/alias fixes — `mcp__marrow__recall` keeps returning pre-fix results until each cc window is restarted. UserPromptSubmit hook already runs latest code (fresh Python spawn per prompt).
+- aging plist still NOT launchctl-loaded (multi-handover carryover).
 
-## Pending — retained
+## Backlog (preserved)
 
-### Lumi self-writes
-- `~/.claude/CLAUDE.md` Affect quick-reference legend (P2)
+### Lumi-owned (no agent touch)
+- bug #2 dashboard tasks polluted (TASK_CAND extracts marrow-dev steps) — Lumi rewrites `daily_prompts.py` TASK_CAND prompt as part of bigger sweep.
+- bug vocab-extract noise ((马斯克) / (额度) in dashboard despite N<3) — Lumi's prompt rewrite folds this. Conf / mention threshold inspection if it persists post-rewrite.
+- bug memes-semantic (NEW, this window) — Lumi may fold into the same MEMES_CAND rewrite pass (add aliases field mirroring entity v6).
+
+### Phase 2 Lumi-owned closeout
+- `dashboard_v2_redo` / `milestone_format_unify` / `subpage_redo` / dashboard top free-form fix.
+
+### Phase 3 backlog
+- `writer_authority` / `drift_sweep` / `convention_injection` / `claude_md_render_guard`.
+- static-layer retire (CLAUDE.md family / cipher / MCP guide to daemon-rendered).
+- UserPromptSubmit hook should reuse MCP daemon embedder — eliminate the 0.8s per-prompt cost (one cold init at daemon startup instead).
 
 ### Carryover scratch
-- `~/Desktop/brainstorm-future.md` — 10-section future features (3 items Phase 5; 9 pending)
+- `docs/notes/brainstorm-future.md` — 10-section brainstorm merged into FUTURE 2026-05-24; archive when stable.
+- `docs/notes/2026-05-24_marrow-pulse-design.md` — Pulse design draft.
+- `docs/notes/` new chord-affect CN file — untracked.
+- FUTURE.md sweep — full pass cleaning p1–p3 unbuilt-but-intended backlog (Lumi).
 
-## Reference (this window's commits)
-- 8f97420 feat(aging): weekly maintenance job + schema v3 status column
-- fa54662 feat(phase-2.5d): candidate split + sessionend 4-to-1 call + memes pinned
-- 3e9bd0b chore: retire marrow/cleanup.py — cc cleanupPeriodDays owns jsonl retention
+## Reference (this window's main-branch commits)
+- `595ffdb` feat(entity): cross-language alias channel — schema v6 + LLM-fed aliases
+- `96f0e90` docs(rename): vocab to memes across DESIGN/PROGRESS/DECISIONS/notes
+- `c85a9b3` fix(schema): run vocab to memes rename pre-CREATE TABLE, not post
+- `63297c4` test(rename): vocab to memes across test files
+- `2f7d445` refactor(rename): vocab to memes across Python modules
+- `f491304` refactor(schema): rename vocab table to memes (v5 migration)
+- `3c1d6d0` fix(bug#1+#3): handover single-writer + affect renderer v4 (sibling window)
+- `52351e0` fix(recall): entity reverse-match + memes leg + milestone substring
+- (`~/.claude` `a18cf16`) hook(prompt-guard): narrow NY scope to CLAUDE.md + .claude/
