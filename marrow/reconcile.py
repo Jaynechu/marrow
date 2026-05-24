@@ -122,10 +122,13 @@ def reconcile_milestones(conn: sqlite3.Connection,
     if not md_path.exists():
         return rpt
     md_rows = _parse(md_path.read_text(encoding="utf-8"))
+    # Reconcile operates on pinned=1 only — the confirmed subpage set.
+    # pinned=0 candidates live outside the md ↔ db sync loop; daily.py
+    # writes them, dashboard renders them, Lumi promotes via pinned=1.
     db_rows = {
         r["id"]: dict(r) for r in conn.execute(
             "SELECT id, scope, date, title, description, theme, pinned "
-            "FROM milestones"
+            "FROM milestones WHERE pinned=1"
         ).fetchall()
     }
 
@@ -156,16 +159,15 @@ def reconcile_milestones(conn: sqlite3.Connection,
                     or (cur["title"] or "") != row["title"]
                     or (cur["description"] or None) != row["description"]
                     or (cur["theme"] or None) != row["theme"]
-                    or int(cur["pinned"] or 0) != row["pinned"]
                 )
                 if changed:
                     h = _hash(row)
                     conn.execute(
                         "UPDATE milestones SET "
                         "scope=?, date=?, title=?, description=?, theme=?, "
-                        "pinned=?, source_hash=?, updated_at=? WHERE id=?",
+                        "pinned=1, source_hash=?, updated_at=? WHERE id=?",
                         (row["scope"], row["date"], row["title"],
-                         row["description"], row["theme"], row["pinned"],
+                         row["description"], row["theme"],
                          h, _now(), rid),
                     )
                     _audit(conn, rid, "update",
@@ -185,9 +187,9 @@ def reconcile_milestones(conn: sqlite3.Connection,
                 cur = conn.execute(
                     "INSERT INTO milestones "
                     "(scope, date, title, description, theme, pinned, "
-                    " source_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    " source_hash) VALUES (?, ?, ?, ?, ?, 1, ?)",
                     (row["scope"], row["date"], row["title"],
-                     row["description"], row["theme"], row["pinned"], h),
+                     row["description"], row["theme"], h),
                 )
                 _audit(conn, cur.lastrowid, "insert",
                        f"md-reconcile: {row['title'][:60]}")

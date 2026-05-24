@@ -11,10 +11,10 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # ── day boundary ─────────────────────────────────────────────────────────────
-# Current cutoff 5AM local (diary.py _CUTOFF_H=4 + TZ logic → local 5AM net).
-# CUTOFF_MIGRATION: change _DAY_CUTOFF_H to 6 when 2.5c diary.py migrates.
+# 6AM local day boundary — aligned with daily_catchup._CUTOFF_H and
+# sessionend_async._CUTOFF_H.
 _TZ = ZoneInfo("Australia/Melbourne")
-_DAY_CUTOFF_H = 5
+_DAY_CUTOFF_H = 6
 
 # ── 9-tone table: (V-band, A-band) → main tone ───────────────────────────────
 # V band: <0.4 Low, 0.4–0.6 Neu, ≥0.6 High

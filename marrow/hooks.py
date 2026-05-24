@@ -19,9 +19,7 @@ import math
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-from . import config, dashboard, repo, storage, subpages, transcript
+from . import config, dashboard, repo, storage, transcript
 from .popen_detach import popen_detach
 
 # ── affect label lookup ──────────────────────────────────────────────────────
@@ -263,20 +261,14 @@ def session_end() -> int:
                 f"session_end skipped dashboard write: {e}",
                 source="hooks.py", db=db,
             )
-        sub_folder = config.sub_pages_path()
-        sub_state = config.sub_pages_state_path()
-        try:
-            Path(sub_folder).mkdir(parents=True, exist_ok=True)
-            Path(sub_state).mkdir(parents=True, exist_ok=True)
-            subpages.write_all_subpages(
-                conn, folder=sub_folder, state_dir=sub_state, db=db,
-            )
-        except PermissionError as e:
-            repo.add_alert(
-                "warn", "sub_pages",
-                f"session_end skipped sub-pages write: {e}",
-                source="hooks.py", db=db,
-            )
+        # Sub-pages are owned by daily.py (07:00 routine + 19:00 catchup).
+        # session_end used to call write_all_subpages here unconditionally,
+        # which (a) re-rendered milestone.md every session even though no
+        # session-scoped data feeds it, (b) ran reconcile_milestones N times
+        # per day for no reason, (c) coupled with the old pinned=0 leak made
+        # the dashboard `Milestone candidate` block re-grow after manual
+        # deletes. session_end now only owns dashboard top (alerts/tasks/
+        # affect) + sessionend_async (handover + LLM extraction).
         # Bug #1 fix: handover.md is written ONLY by sessionend_async
         # (single-writer rule). Sync skeleton write removed — it raced the
         # async LLM injector and clobbered ThisSession/NextSession content.

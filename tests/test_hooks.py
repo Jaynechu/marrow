@@ -72,12 +72,16 @@ def test_session_end_archives_and_renders(env, monkeypatch, tmp_path):
     assert "GAMSAT plan" in txt and hooks.dashboard.M0 in txt
 
 
-def test_session_end_writes_sub_pages(env, monkeypatch, tmp_path):
-    """SessionEnd renders milestone.md (+ siblings) into sub_pages folder."""
+def test_session_end_does_not_write_sub_pages(env, monkeypatch, tmp_path):
+    """SessionEnd MUST NOT touch sub_pages — those are owned by daily.py.
+    Re-rendering milestone.md every session was the root cause of the
+    `Milestone candidate` regrow-after-delete bug (pinned=0 leak into the
+    subpage). Dashboard top is still rewritten; sub_pages folder is left
+    untouched until the next 07:00 daily routine."""
     db, _, _ = env
     conn = storage.connect(db)
-    conn.execute("INSERT INTO milestones(scope,date,title) "
-                 "VALUES('me','2026-01-17','Stellan birthday')")
+    conn.execute("INSERT INTO milestones(scope,date,title,pinned) "
+                 "VALUES('me','2026-01-17','Stellan birthday',1)")
     conn.commit()
     conn.close()
     jl = tmp_path / "s.jsonl"
@@ -89,9 +93,7 @@ def test_session_end_writes_sub_pages(env, monkeypatch, tmp_path):
     assert hooks.main(["session_end"]) == 0
     from pathlib import Path
     sub = Path(tmp_path / "sub_pages" / "milestone.md")
-    assert sub.exists(), "milestone.md not written"
-    txt = sub.read_text()
-    assert "Stellan birthday" in txt
+    assert not sub.exists(), "session_end must not write milestone.md"
 
 
 def test_session_end_dashboard_eperm_alerts_warn(env, monkeypatch, tmp_path):

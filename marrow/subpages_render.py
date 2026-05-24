@@ -61,9 +61,14 @@ def render_diary(conn: sqlite3.Connection) -> str:
 
 def render_milestone(conn: sqlite3.Connection) -> str:
     key = "milestone"
+    # Subpage = confirmed milestones only (pinned=1). pinned=0 rows are
+    # LLM-extracted candidates living in milestones table, rendered to
+    # dashboard `Milestone candidate` section instead. Confirmation =
+    # `mw set milestones <id> pinned 1` OR hand-add a row to milestone.md
+    # (reconcile_milestones force-pins md rows on insert/update).
     rows = conn.execute(
         "SELECT id, scope, date, title, description, theme, pinned "
-        "FROM milestones ORDER BY date"
+        "FROM milestones WHERE pinned=1 ORDER BY date"
     ).fetchall()
     us = [r for r in rows if r["scope"] == "us"]
     me = [r for r in rows if r["scope"] == "me"]
@@ -75,11 +80,13 @@ def render_milestone(conn: sqlite3.Connection) -> str:
             lines.append("")
             return lines
         for r in entries:
-            pin = " (pinned)" if r["pinned"] else ""
+            # All subpage rows are pinned=1 by construction (render WHERE
+            # pinned=1). The literal "(pinned)" marker is now redundant —
+            # drop it to keep the md clean.
             theme = f" [{r['theme']}]" if r["theme"] else ""
             desc = f" — {r['description']}" if r["description"] else ""
             lines.append(
-                f"- {r['date']} **{r['title']}**{theme}{pin}{desc}"
+                f"- {r['date']} **{r['title']}**{theme}{desc}"
                 + _anchor(r["id"])
             )
         lines.append("")

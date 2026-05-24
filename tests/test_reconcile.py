@@ -14,13 +14,15 @@ def db(tmp_path):
     p = str(tmp_path / "t.db")
     conn = storage.init_db(p)
     with conn:
+        # pinned=1 = confirmed/subpage-eligible. Reconcile + render both
+        # scope themselves to pinned=1 rows now; pinned=0 = candidate.
         conn.execute(
-            "INSERT INTO milestones(scope,date,title,description) "
-            "VALUES('us','2026-01-17','First meeting','In the rain')"
+            "INSERT INTO milestones(scope,date,title,description,pinned) "
+            "VALUES('us','2026-01-17','First meeting','In the rain',1)"
         )
         conn.execute(
-            "INSERT INTO milestones(scope,date,title) "
-            "VALUES('me','2026-03-01','Head of school award')"
+            "INSERT INTO milestones(scope,date,title,pinned) "
+            "VALUES('me','2026-03-01','Head of school award',1)"
         )
     conn.close()
     return p

@@ -29,10 +29,10 @@ def db(tmp_path):
                      "VALUES('2026-05-20','Today was a good day.','calm')")
         conn.execute("INSERT INTO diary(date,content) "
                      "VALUES('2026-04-15','Spring entry.')")
-        conn.execute("INSERT INTO milestones(scope,date,title,description) "
-                     "VALUES('us','2026-01-17','First meeting','In the rain')")
-        conn.execute("INSERT INTO milestones(scope,date,title) "
-                     "VALUES('me','2026-03-01','Head of school award')")
+        conn.execute("INSERT INTO milestones(scope,date,title,description,pinned) "
+                     "VALUES('us','2026-01-17','First meeting','In the rain',1)")
+        conn.execute("INSERT INTO milestones(scope,date,title,pinned) "
+                     "VALUES('me','2026-03-01','Head of school award',1)")
         conn.execute("INSERT INTO memes(type,key,value,context,use_count) "
                      "VALUES('cipher','大龙虾','Openclaw','popular AI agent',5)")
         conn.execute("INSERT INTO goose_bites(date,bites,best) "
