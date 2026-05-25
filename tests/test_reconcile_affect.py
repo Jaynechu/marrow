@@ -146,16 +146,19 @@ def test_reconcile_noop_when_no_anchors(conn, tmp_path):
 
 
 def test_render_each_ep_carries_anchor(conn, tmp_path):
-    """Every visible ep_phrase line gets a `<!-- id:affect.<id> -->` anchor."""
+    """Every ep segment inline carries its own `<!-- id:affect.N -->` anchor."""
     today = datetime.now(timezone.utc).date().isoformat()
     _insert_affect(conn, date=today, ep=1, v=0.8, a=0.6, importance=3,
                     label="开心", description="A 事件")
     _insert_affect(conn, date=today, ep=2, v=0.2, a=0.5, importance=3,
                     label="低落", description="B 事件")
     out = top_sections.render_affect(conn)
-    # Each eph/epl sub-bullet line carries its own anchor.
-    ep_lines = [ln for ln in out.splitlines()
-                if (" eph" in ln or " epl" in ln) and "|" in ln]
-    assert ep_lines, "expected ep_phrase sub-bullets"
-    for ln in ep_lines:
-        assert "<!-- id:affect." in ln, f"missing anchor: {ln}"
+    # Tone-header bullets carry both eph + epl anchors inline on the same line.
+    bullets = [ln for ln in out.splitlines()
+                if ln.startswith("- 【") and ("eph" in ln or "epl" in ln)]
+    assert bullets, "expected inline eph/epl bullets"
+    for ln in bullets:
+        # Each visible ep segment on the bullet line has its own anchor.
+        eps = ln.count(" eph") + ln.count(" epl")
+        anchors = ln.count("<!-- id:affect.")
+        assert anchors >= eps, f"missing per-ep anchor: {ln}"
