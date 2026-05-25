@@ -30,6 +30,7 @@ _CUTOFF_H = 6  # 6AM day boundary (per pipeline §6)
 
 _SUMMARY_OK = "ok"
 _SUMMARY_SKIP = "skip:short_session"
+_SUMMARY_START = "start"
 
 _SEGMENTS = ("affect", "task_cand", "digest", "handover")
 
@@ -111,18 +112,28 @@ def _write_segment_audit(conn, sid: str, segment: str, summary: str) -> None:
 
 
 def _write_final_audit(conn, sid: str, summary: str) -> None:
-    # Count prior fail/partial rows BEFORE inserting this one. First failure
-    # stays silent — catchup retries once. Alert only when this insertion
-    # makes it ≥2 fail rows for the sid (catchup tier already failed).
+    # Count prior effective failures BEFORE inserting this one. Effective =
+    # explicit fail/partial rows + silent deaths (start rows with no matching
+    # terminal). First failure stays silent — catchup retries once. Alert
+    # only when this insertion pushes effective failures ≥ 2.
     prior_fails = 0
     if summary.startswith(("fail:", "partial:")):
         row = conn.execute(
-            "SELECT COUNT(*) c FROM audit_log"
-            " WHERE action='sessionend_extract' AND target_id=?"
-            " AND (summary LIKE 'fail:%' OR summary LIKE 'partial:%')",
+            "SELECT"
+            " SUM(CASE WHEN summary LIKE 'fail:%' OR summary LIKE 'partial:%' THEN 1 ELSE 0 END) AS fails,"
+            " SUM(CASE WHEN summary IN ('ok','skip:short_session') THEN 1 ELSE 0 END) AS done,"
+            " SUM(CASE WHEN summary='start' THEN 1 ELSE 0 END) AS starts"
+            " FROM audit_log"
+            " WHERE action='sessionend_extract' AND target_id=?",
             (sid,),
         ).fetchone()
-        prior_fails = row["c"] if row else 0
+        if row:
+            fails = row["fails"] or 0
+            done = row["done"] or 0
+            starts = row["starts"] or 0
+            # Exclude the current attempt's own 'start' row from silent-death count.
+            silent_deaths = max(0, starts - 1 - (done + fails))
+            prior_fails = fails + silent_deaths
     with conn:
         conn.execute(
             "INSERT INTO audit_log (target_table, target_id, action, summary)"
@@ -408,6 +419,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if _already_done(conn, sid):
             return 0
+
+        # Stamp "start" the moment we own the work. Any silent death below
+        # (LLM hang killed, import crash mid-call, OS reap) leaves this row
+        # behind so catchup can count it as one failed attempt.
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                    " VALUES ('events', ?, 'sessionend_extract', ?)",
+                    (sid, _SUMMARY_START),
+                )
+        except Exception:  # noqa: BLE001 — never block extraction on audit
+            pass
 
         count = _user_event_count(conn, sid)
         if count <= threshold:

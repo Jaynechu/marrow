@@ -36,11 +36,15 @@ RETRY_LIMIT = 2  # max fail/partial extractions before catchup gives up
 
 def _should_skip(conn, sid: str) -> bool:
     """Skip iff already succeeded (ok / skip:short_session) or already
-    hit RETRY_LIMIT failures. Otherwise eligible for catchup retry."""
+    hit RETRY_LIMIT effective failures. Effective failures = explicit
+    fail/partial rows + silent deaths (start rows without a matching
+    terminal row). Silent death = sessionend_async stamped 'start' but
+    died before writing ok/skip/fail/partial."""
     row = conn.execute(
         "SELECT"
         " SUM(CASE WHEN summary IN ('ok','skip:short_session') THEN 1 ELSE 0 END) AS done,"
-        " SUM(CASE WHEN summary LIKE 'fail:%' OR summary LIKE 'partial:%' THEN 1 ELSE 0 END) AS fails"
+        " SUM(CASE WHEN summary LIKE 'fail:%' OR summary LIKE 'partial:%' THEN 1 ELSE 0 END) AS fails,"
+        " SUM(CASE WHEN summary='start' THEN 1 ELSE 0 END) AS starts"
         " FROM audit_log"
         " WHERE action='sessionend_extract' AND target_id=?",
         (sid,),
@@ -49,7 +53,9 @@ def _should_skip(conn, sid: str) -> bool:
         return False
     done = row["done"] or 0
     fails = row["fails"] or 0
-    return done > 0 or fails >= RETRY_LIMIT
+    starts = row["starts"] or 0
+    silent_deaths = max(0, starts - (done + fails))
+    return done > 0 or (fails + silent_deaths) >= RETRY_LIMIT
 
 
 def _jsonl_orphans(conn) -> list[str]:

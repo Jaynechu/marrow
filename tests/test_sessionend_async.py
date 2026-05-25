@@ -101,8 +101,7 @@ def test_sessionend_skip_gate_short_session(db_env, monkeypatch):
 
     assert rc == 0
     rows = _audit_rows(db, "test-short")
-    assert len(rows) == 1
-    assert rows[0]["summary"] == "skip:short_session"
+    assert [r["summary"] for r in rows] == ["start", "skip:short_session"]
     assert not call_count
 
 
@@ -118,8 +117,7 @@ def test_sessionend_async_writes_ok_audit(db_env):
 
     assert rc == 0
     rows = _audit_rows(db, "test-long")
-    assert len(rows) == 1
-    assert rows[0]["summary"] == "ok"
+    assert [r["summary"] for r in rows] == ["start", "ok"]
 
 
 def test_sessionend_async_idempotent(db_env):
@@ -160,8 +158,7 @@ def test_sessionend_async_writes_fail_audit_on_exception(db_env):
 
     assert rc == 1
     rows = _audit_rows(db, "test-fail")
-    assert len(rows) == 1
-    assert rows[0]["summary"] == "fail:RuntimeError"
+    assert [r["summary"] for r in rows] == ["start", "fail:RuntimeError"]
 
 
 # ── Unit 3: sessionstart_catchup ─────────────────────────────────────────────
@@ -187,7 +184,8 @@ def _write_real_jsonl(path: Path, sid: str) -> None:
 
 def test_catchup_picks_pending_sids(db_env, monkeypatch, tmp_path):
     """ok/skip → skip; first fail → retry once; second fail → skip;
-    no audit → spawn; alive (idle<10min) → skip."""
+    no audit → spawn; alive (idle<10min) → skip; lone 'start' (silent
+    death) counts as one fail → retry; two silent deaths → skip."""
     db, _ = db_env
     projects = tmp_path / "projects"
     proj_dir = projects / "-Users-test"
@@ -198,14 +196,18 @@ def test_catchup_picks_pending_sids(db_env, monkeypatch, tmp_path):
     sid_failed_once = "cccccccc-failed-once"
     sid_failed_twice = "eeeeeeee-failed-twice"
     sid_alive = "dddddddd-alive"
+    sid_silent_once = "ffffffff-silent-once"
+    sid_silent_twice = "11111111-silent-twice"
 
     for sid in (sid_done, sid_pending, sid_failed_once,
-                sid_failed_twice, sid_alive):
+                sid_failed_twice, sid_alive,
+                sid_silent_once, sid_silent_twice):
         _write_real_jsonl(proj_dir / f"{sid}.jsonl", sid)
 
     now = time.time()
     old = now - 3600  # 1h ago, well past idle guard
-    for sid in (sid_done, sid_pending, sid_failed_once, sid_failed_twice):
+    for sid in (sid_done, sid_pending, sid_failed_once, sid_failed_twice,
+                sid_silent_once, sid_silent_twice):
         os.utime(proj_dir / f"{sid}.jsonl", (old, old))
 
     conn = storage.connect(db)
@@ -225,6 +227,20 @@ def test_catchup_picks_pending_sids(db_env, monkeypatch, tmp_path):
             "INSERT INTO audit_log (target_table, target_id, action, summary)"
             " VALUES ('events', ?, 'sessionend_extract', 'fail:Other')",
             (sid_failed_twice,))
+        # One silent death: a 'start' row with no matching terminal row.
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'start')",
+            (sid_silent_once,))
+        # Two silent deaths: two 'start' rows, no terminal → counts as 2 fails.
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'start')",
+            (sid_silent_twice,))
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'start')",
+            (sid_silent_twice,))
     conn.close()
 
     monkeypatch.setattr(
@@ -242,7 +258,7 @@ def test_catchup_picks_pending_sids(db_env, monkeypatch, tmp_path):
 
     assert rc == 0
     fired = {args[args.index("--sid") + 1] for args in spawned}
-    assert fired == {sid_pending, sid_failed_once}, fired
+    assert fired == {sid_pending, sid_failed_once, sid_silent_once}, fired
 
 
 def test_catchup_cap_caps_at_max_fire(db_env, monkeypatch, tmp_path):
@@ -623,14 +639,17 @@ def test_sessionend_single_call_routes_to_four_writers(db_env, tmp_path,
             " WHERE target_id='test-combined' ORDER BY id"
         ).fetchall()
         actions = [r["action"] for r in seg_rows]
+        summaries = [r["summary"] for r in seg_rows]
         assert actions == [
+            "sessionend_extract",  # start stamp
             "sessionend_extract_affect",
             "sessionend_extract_task_cand",
             "sessionend_extract_digest",
             "sessionend_extract_handover",
-            "sessionend_extract",
+            "sessionend_extract",  # final
         ]
-        assert seg_rows[-1]["summary"] == "ok"
+        assert summaries[0] == "start"
+        assert summaries[-1] == "ok"
     finally:
         conn.close()
     # Handover file written fresh by sessionend_async — full skeleton + bullets.
