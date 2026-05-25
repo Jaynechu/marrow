@@ -87,6 +87,35 @@ def _already_done(conn, sid: str) -> bool:
     return row is not None
 
 
+def _drop_stale_skip(conn, sid: str, threshold: int) -> bool:
+    """Silent-death fix: cc fires session_end mid-flush — first hook archives
+    a partial 7-8 events, sessionend_async skips (below threshold), then the
+    real session ends with 41 events. Old code kept the skip row forever
+    (skip counted as terminal in _should_skip), the sid never re-processed.
+
+    Now: if a skip row exists but the current user event count is past the
+    threshold, drop the skip row + leave an audit trail and let the main
+    extraction path run. Returns True if a stale skip was cleared."""
+    skip_row = conn.execute(
+        "SELECT id FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=? AND summary=?"
+        " ORDER BY id DESC LIMIT 1",
+        (sid, _SUMMARY_SKIP),
+    ).fetchone()
+    if not skip_row:
+        return False
+    if _user_event_count(conn, sid) <= threshold:
+        return False  # still genuinely short — keep the skip
+    with conn:
+        conn.execute("DELETE FROM audit_log WHERE id=?", (skip_row["id"],))
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'reset:stale_skip')",
+            (sid,),
+        )
+    return True
+
+
 def _session_events_text(conn, sid: str) -> tuple[str, str]:
     """Return (fenced events string, session date). Empty session -> ('', today)."""
     rows = conn.execute(
@@ -419,6 +448,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if _already_done(conn, sid):
             return 0
+        # Silent-death root cause: cc fires session_end mid-flush while only
+        # a partial slice of events is on disk. The original skip:short_session
+        # row then blocked every later re-run. _drop_stale_skip clears the row
+        # only when event count grew past threshold since the skip was written.
+        _drop_stale_skip(conn, sid, threshold)
 
         # Stamp "start" the moment we own the work. Any silent death below
         # (LLM hang killed, import crash mid-call, OS reap) leaves this row
