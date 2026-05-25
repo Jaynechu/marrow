@@ -1,8 +1,14 @@
-"""Tests for marrow/dashboard.py — code-only dashboard top render.
+"""Tests for marrow/dashboard.py — inserter-mode dashboard top render.
 
-Contract: deterministic 4-section block between markers, atomic write,
-hand-written zone outside markers never touched. Free-form hand-edits
-inside the rendered block are silently overwritten on next render. No LLM.
+Phase 3 contract (md=SoT):
+- deterministic 5-section block between `<!-- marrow:top:* -->` markers
+  with per-block `<!-- id:dashboard.* -->` ids
+- hand-written zone outside markers never touched
+- Reconciled blocks (tasks + milestone_cand) ALWAYS overwrite — the
+  reconcile pass absorbed any user edit into the DB first
+- Pure-display blocks (alerts + affect + content) honour hash-skip:
+  user hand-edit preserved when md_index hash diverges from md body
+- Tombstoned blocks (watcher saw user delete the block) are not re-emitted
 """
 from __future__ import annotations
 
@@ -10,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from marrow import dashboard, storage
+from marrow import dashboard, storage, top_sections
+from marrow.md_index import MdIndex
 
 M0 = "<!-- marrow:top:start -->"
 M1 = "<!-- marrow:top:end -->"
@@ -105,13 +112,43 @@ def test_render_top_includes_content_section(db, tmp_path, monkeypatch):
     assert block.index("## Affect") < block.index("## Content")
 
 
-def test_hand_edit_in_block_silently_overwritten(db, tmp_path):
+def test_iter_top_blocks_canonical_ids(db):
+    conn = storage.connect(db)
+    try:
+        pairs = top_sections.iter_top_blocks(conn)
+    finally:
+        conn.close()
+    ids = [bid for bid, _ in pairs]
+    assert ids == list(top_sections.DASHBOARD_BLOCK_IDS)
+    # Every body carries its id marker.
+    for bid, body in pairs:
+        assert f"<!-- id:{bid} -->" in body
+
+
+def test_iter_top_blocks_round_trip_through_dashboard_parser(db):
+    # iter_top_blocks output joined into a top region must parse back into
+    # exactly the same canonical ids in the same order via the dashboard
+    # block parser (which scopes boundaries to `dashboard.<key>` markers and
+    # ignores per-row `<!-- id:N -->` anchors inside the body).
+    conn = storage.connect(db)
+    try:
+        pairs = top_sections.iter_top_blocks(conn)
+    finally:
+        conn.close()
+    joined = "\n\n".join(body for _, body in pairs)
+    parsed = dashboard._parse_top_blocks(joined)
+    assert list(parsed.keys()) == list(top_sections.DASHBOARD_BLOCK_IDS)
+
+
+def test_tasks_block_always_overwritten(db, tmp_path):
+    # Tasks is a reconciled block — reconcile_tasks absorbed any user edit
+    # into the DB before render, so the inserter always rewrites it.
     dash = tmp_path / "dashboard.md"
     state = tmp_path / "state"
     conn = storage.connect(db)
     try:
         dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
-        # Lumi edits inside the system block by hand
+        # Lumi free-form edits the task title (not a tick/untick/delete)
         t = dash.read_text().replace("Essay 370", "Essay 370 EDITED BY LUMI")
         dash.write_text(t)
         dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
@@ -120,8 +157,113 @@ def test_hand_edit_in_block_silently_overwritten(db, tmp_path):
                   __import__("marrow.repo", fromlist=["x"]).open_alerts(conn)]
     finally:
         conn.close()
-    # Hand-edit overwritten silently: edited text gone, no alert, no .bak.
     assert "EDITED BY LUMI" not in result
+    assert "Essay 370" in result
     assert not any("dashboard" in m.lower() and "hand-edited" in m.lower()
                    for m in alerts)
     assert not list(Path(state).glob("dashboard*.bak"))
+
+
+def test_alerts_hand_edit_preserved_when_hash_diverges(db, tmp_path):
+    # Alerts is a pure-display block — hash-skip preserves Lumi's edit.
+    dash = tmp_path / "dashboard.md"
+    state = tmp_path / "state"
+    conn = storage.connect(db)
+    try:
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        text = dash.read_text()
+        edited = text.replace(
+            "- warn: recall returned 0",
+            "- warn: recall returned 0 (lumi noted: investigating)",
+        )
+        assert edited != text
+        dash.write_text(edited)
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        result = dash.read_text()
+    finally:
+        conn.close()
+    assert "lumi noted: investigating" in result
+
+
+def test_content_block_carries_id_marker(db, tmp_path):
+    dash = tmp_path / "dashboard.md"
+    state = tmp_path / "state"
+    conn = storage.connect(db)
+    try:
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        text = dash.read_text()
+    finally:
+        conn.close()
+    for bid in (
+        "dashboard.alerts", "dashboard.tasks", "dashboard.milestone_cand",
+        "dashboard.affect", "dashboard.content",
+    ):
+        assert f"<!-- id:{bid} -->" in text, bid
+
+
+def test_tombstoned_block_not_reemitted(db, tmp_path):
+    # Simulates watcher tombstone of the Alerts block — inserter must skip it.
+    dash = tmp_path / "dashboard.md"
+    state = tmp_path / "state"
+    conn = storage.connect(db)
+    try:
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        # Watcher would tombstone after user deletes the block from md;
+        # we record the tombstone directly here.
+        MdIndex(conn).tombstone(str(dash), "dashboard.alerts")
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        result = dash.read_text()
+    finally:
+        conn.close()
+    assert "<!-- id:dashboard.alerts -->" not in result
+    assert "## Tasks" in result  # other blocks still rendered
+
+
+def test_new_task_appears_on_next_render(db, tmp_path):
+    # Adding a task to the DB shows up in the Tasks block on the next render
+    # even though the block already exists (reconciled block always overwrite).
+    dash = tmp_path / "dashboard.md"
+    state = tmp_path / "state"
+    conn = storage.connect(db)
+    try:
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        first = dash.read_text()
+        assert "New task brand new" not in first
+        conn.execute(
+            "INSERT INTO tasks(category,title,status,next_step) "
+            "VALUES('study','New task brand new','active','x')"
+        )
+        conn.commit()
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        result = dash.read_text()
+    finally:
+        conn.close()
+    assert "New task brand new" in result
+
+
+def test_tick_in_md_moves_row_to_completed(db, tmp_path):
+    # End-to-end: user ticks `[ ]` to `[x]` in dashboard.md, write_dashboard
+    # runs reconcile then re-renders. Row should land in Completed.
+    dash = tmp_path / "dashboard.md"
+    state = tmp_path / "state"
+    conn = storage.connect(db)
+    try:
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        text = dash.read_text()
+        ticked = text.replace(
+            "- [ ] [study] Essay 370",
+            "- [x] [study] Essay 370",
+        )
+        assert ticked != text, "expected initial render to contain `[ ] [study]`"
+        dash.write_text(ticked)
+        dashboard.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        result = dash.read_text()
+        status = conn.execute(
+            "SELECT status FROM tasks WHERE title='Essay 370'").fetchone()[0]
+    finally:
+        conn.close()
+    # DB flipped to done by reconcile, canonical rewrite shows the row in
+    # `### Completed` with `[x]`.
+    assert status == "done"
+    assert "### Completed [1]" in result
+    assert "- [x] [study] Essay 370" in result

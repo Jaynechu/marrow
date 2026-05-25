@@ -155,6 +155,16 @@ class MdIndex:
         ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
+    def is_tombstoned(self, path: str, block_id: str) -> bool:
+        # Helper for inserters — TombstoneStore Protocol unchanged; this is
+        # MdIndex-only. Returns True when the row exists AND has tombstone_at.
+        r = self.conn.execute(
+            "SELECT 1 FROM md_index"
+            " WHERE path=? AND block_id=? AND tombstone_at IS NOT NULL",
+            (path, block_id),
+        ).fetchone()
+        return r is not None
+
     def sync_file(self, path: str, report: ReconcileReport | None = None) -> ReconcileReport:
         """Reconcile one md file with md_index. Read fs, diff, write.
 
