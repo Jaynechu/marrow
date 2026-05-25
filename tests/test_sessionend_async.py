@@ -638,8 +638,9 @@ def test_sessionend_single_call_routes_to_four_writers(db_env, tmp_path,
     assert "shipped 4→1 call refactor" in body
     assert "verify pytest + plist reload" in body
     assert "handover: ready sid:test-combined" in body
-    assert "## Alerts (active)" in body  # skeleton headers present
-    assert "## Tasks" in body
+    # Top section stripped; body sections present
+    assert "## Previous Sessions" in body
+    assert "## This Session" in body
 
 
 def test_load_prior_handover_extracts_four_sections(tmp_path, monkeypatch):
@@ -713,7 +714,8 @@ def test_seg_handover_composes_full_file(db_env, tmp_path, monkeypatch):
     assert "- launchctl + commit" in body
     assert "handover: ready sid:S1" in body
     assert "handover: pending" not in body
-    assert "## Alerts (active)" in body  # skeleton intact
+    # Top section stripped; body sections present
+    assert "## This Session" in body
 
 
 def test_seg_handover_noop_on_empty_blocks(db_env, tmp_path, monkeypatch):

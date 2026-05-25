@@ -68,13 +68,17 @@ def _inject_section(text: str, header: str, body: str) -> str:
 
 
 def render_skeleton(conn: sqlite3.Connection) -> str:
-    """Build template body with top sections + commits, no stamp, empty bullets."""
+    """Build template body without top section, no stamp, empty bullets."""
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
     template = _strip_instruction_lines(template)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     template = template.replace("{{YYYY-MM-DD HH:MM}}", now_str)
-    top = top_sections.render_top(conn)
-    template = _replace_top_sections(template, top)
+    # Strip the entire top section (markers + content between them).
+    i = template.find(_SEP_OPEN)
+    j = template.find(_SEP_CLOSE)
+    if i != -1 and j != -1 and j > i:
+        template = template[:i] + template[j + len(_SEP_CLOSE):]
+    template = template.lstrip("\n")
     return template
 
 
@@ -271,7 +275,13 @@ def _merge_sections(prior_text: str, this_new: str, next_new: str,
             pushed_prev.append((ts, body))
 
     if this_clean != "- None":
-        merged_this = [(new_label, this_clean)] + fresh_this
+        # Dedup: skip if same ts label OR identical body already in fresh_this.
+        existing_ts = {ts for ts, _ in fresh_this}
+        existing_bodies = {body for _, body in fresh_this}
+        if new_label not in existing_ts and this_clean not in existing_bodies:
+            merged_this = [(new_label, this_clean)] + fresh_this
+        else:
+            merged_this = fresh_this
     else:
         merged_this = fresh_this
 

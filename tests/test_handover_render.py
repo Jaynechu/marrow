@@ -321,7 +321,8 @@ def test_render_affect_empty_tables(env):
 # ── Unit: handover_render ─────────────────────────────────────────────────────
 
 def test_handover_write_full_atomic_and_ready_stamp(env):
-    """write_handover_full produces file at _RENDERED_PATH with ready stamp + 4 sections + bullets."""
+    """write_handover_full produces file at _RENDERED_PATH with ready stamp + body sections + bullets.
+    Top section (Alerts/Tasks/Milestone/Affect) is stripped — handover contains only the 4 body sections."""
     db, _, _, rendered_path = env
     conn = _conn(db)
     result_path = handover_render.write_handover_full(
@@ -335,11 +336,18 @@ def test_handover_write_full_atomic_and_ready_stamp(env):
     # Ready stamp present (not pending) — single-writer atomic flow
     assert f"<!-- handover: ready sid:abc123 ts:" in content
     assert "pending sid:" not in content
-    # All 4 section headers present
-    assert "## Alerts (active)" in content
-    assert "## Tasks" in content
-    assert "## Milestone candidate" in content
-    assert "## Affect" in content
+    # Top section markers and their content must NOT appear in handover
+    assert "<!-- marrow:top:start -->" not in content
+    assert "<!-- marrow:top:end -->" not in content
+    assert "## Alerts (active)" not in content
+    assert "## Tasks" not in content
+    assert "## Milestone candidate" not in content
+    assert "## Affect" not in content
+    # The 4 body sections must be present
+    assert "## Previous Sessions" in content
+    assert "## This Session" in content
+    assert "## Next Session" in content
+    assert "## Reference" in content
     # LLM bullets injected
     assert "- did X" in content
     assert "- pick up Z" in content
@@ -771,3 +779,52 @@ def test_phase_a_legacy_format_treated_as_single_segment(env):
     assert "- legacy bullet without timestamp" in this_section
     assert "### [2026-05-24 09:30]" in this_section  # footer ts label
     assert "### [2026-05-24 10:00]" in this_section
+
+
+# ── Dedup: _merge_sections same-ts / same-body guard ─────────────────────────
+
+def test_merge_sections_dedup_same_ts_not_duplicated(env):
+    """7-duplicate scenario: same ts fired 7 times, only 1 segment in result."""
+    # Reproduce the 7x [2026-05-25 05:23] duplicate bug: 7 writes at the same
+    # epoch minute all within the 2h window.
+    base = int(datetime(2026, 5, 25, 5, 23).timestamp())
+    # Write 7 times with identical ts (same minute) and identical content.
+    for i in range(7):
+        _write_via(env, f"sid-{i}", "- schema v9 recap", "- next plan", base)
+
+    content = (env[3]).read_text(encoding="utf-8")
+    this_section = content.split("## This Session")[1].split("## Next Session")[0]
+    # Only one segment heading for this ts — not 7.
+    assert this_section.count("### [2026-05-25 05:23]") == 1
+    assert this_section.count("- schema v9 recap") == 1
+
+
+def test_merge_sections_dedup_same_body_not_duplicated(env):
+    """Two writes with different labels but identical bodies: only 1 stored."""
+    base = int(datetime(2026, 5, 25, 5, 22).timestamp())
+    body = "- identical body bullet that should not duplicate"
+    _write_via(env, "sa", body, "- next", base)
+    # One minute later — different ts label but same body.
+    content = _write_via(env, "sb", body, "- next", base + 60)
+    this_section = content.split("## This Session")[1].split("## Next Session")[0]
+    assert this_section.count(body) == 1
+
+
+def test_handover_top_section_stripped_from_rendered(env):
+    """Rendered handover.md must not contain top-section markers or Alerts/Tasks headers."""
+    db, _, _, rendered_path = env
+    conn = _conn(db)
+    handover_render.write_handover_full(conn, "s-strip", "- x", "- y")
+    conn.close()
+    content = rendered_path.read_text(encoding="utf-8")
+    assert "<!-- marrow:top:start -->" not in content
+    assert "<!-- marrow:top:end -->" not in content
+    assert "## Alerts (active)" not in content
+    assert "## Tasks" not in content
+    assert "## Milestone candidate" not in content
+    assert "## Affect" not in content
+    # Body sections intact.
+    assert "## Previous Sessions" in content
+    assert "## This Session" in content
+    assert "## Next Session" in content
+    assert "## Reference" in content
