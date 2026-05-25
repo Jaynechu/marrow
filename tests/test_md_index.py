@@ -152,6 +152,17 @@ def test_full_scan_tombstones_deleted_file(store, tmp_path):
     assert r.tombstoned == 2
 
 
+def test_is_tombstoned(store):
+    store.record_block("/x/a.md", "1", "h1")
+    assert store.is_tombstoned("/x/a.md", "1") is False
+    store.tombstone("/x/a.md", "1")
+    assert store.is_tombstoned("/x/a.md", "1") is True
+    store.clear_tombstone("/x/a.md", "1")
+    assert store.is_tombstoned("/x/a.md", "1") is False
+    # Unknown row → not tombstoned.
+    assert store.is_tombstoned("/x/a.md", "unknown") is False
+
+
 def test_full_scan_ignores_paths_outside_roots(store, tmp_path):
     foreign = tmp_path / "elsewhere.md"
     foreign.write_text("- x <!-- id:1 -->\n")

@@ -374,3 +374,57 @@ def render_top(conn: sqlite3.Connection,
         render_affect(conn),
         render_content(conn, dashboard_path=dashboard_path),
     ])
+
+
+# ── inserter API (Phase 3 md=SoT) ─────────────────────────────────────────────
+# Canonical block ids used by the dashboard inserter. Stable across renders so
+# md_index can track per-block content_hash. Trailing comment on each `## H2`
+# heading line — picked up by md_index.parse_blocks as the block boundary.
+
+DASHBOARD_BLOCK_IDS = (
+    "dashboard.alerts",
+    "dashboard.tasks",
+    "dashboard.milestone_cand",
+    "dashboard.affect",
+    "dashboard.content",
+)
+
+# Blocks whose user edits are absorbed into the DB by a reconcile pass before
+# render — safe to overwrite the block body with fresh DB-driven content.
+RECONCILED_BLOCK_IDS = frozenset({
+    "dashboard.tasks",
+    "dashboard.milestone_cand",
+})
+
+
+def _stamp_block_id(body: str, block_id: str) -> str:
+    """Append the id marker to the first `## ` heading line. Idempotent."""
+    marker = f"<!-- id:{block_id} -->"
+    if marker in body:
+        return body
+    lines = body.splitlines()
+    for i, ln in enumerate(lines):
+        if ln.startswith("## "):
+            lines[i] = f"{ln} {marker}"
+            return "\n".join(lines)
+    # No H2 heading — prepend marker on its own line (defensive).
+    return f"{marker}\n{body}"
+
+
+def iter_top_blocks(conn: sqlite3.Connection,
+                    *, dashboard_path: str | None = None
+                    ) -> list[tuple[str, str]]:
+    """Yield (block_id, body) for each canonical dashboard top section.
+
+    body carries the `<!-- id:<block_id> -->` marker on its H2 line so the
+    inserter and md_index see the same block boundary.
+    """
+    pairs = [
+        ("dashboard.alerts", render_alerts(conn)),
+        ("dashboard.tasks", render_tasks(conn)),
+        ("dashboard.milestone_cand", render_milestone_candidate(conn)),
+        ("dashboard.affect", render_affect(conn)),
+        ("dashboard.content",
+         render_content(conn, dashboard_path=dashboard_path)),
+    ]
+    return [(bid, _stamp_block_id(body, bid)) for bid, body in pairs]

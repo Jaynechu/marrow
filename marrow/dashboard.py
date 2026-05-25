@@ -1,23 +1,30 @@
-"""Code-only dashboard top render. 5 top sections
-(Alerts/Tasks/Milestone/Affect/Content) between markers; hand-written
-zone outside markers untouched; atomic write.
+"""Dashboard top inserter — md=SoT, block-level upsert.
 
-Free-form hand-edits inside the rendered block are silently overwritten
-on next render (DB is SoT; non-anchored text is not preserved). No LLM.
+Phase 3 reversal (2026-05-25): each top section carries a stable
+`<!-- id:dashboard.<key> -->` marker; per-block content_hash lives in
+md_index. write_dashboard now skips blocks the user has edited (hash
+diverges from md_index baseline) and skips blocks the watcher has
+tombstoned (user deleted the whole block). Free-form edits inside the
+top region are preserved, not overwritten.
 
-Anchor-button votes on candidate rows (✅ pin · ❌ drop · ✏️ edit) are
-absorbed by reconcile.reconcile_milestone_candidates BEFORE re-render
-so Lumi's vote flows back to DB and the new render reflects it.
+Reconcile passes (milestone candidates + tasks) still run BEFORE render
+— they absorb user ticks / votes / deletions into the DB, then the
+inserter writes the resolved DB state back to the two reconciled
+blocks (always overwrite). Pure-display blocks (alerts / affect /
+content) honour hash-skip so any hand-edit survives.
 
-Section renderers live in top_sections.py — shared with handover_render.py.
+Section renderers + the canonical block-id list live in top_sections.py.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import tempfile
 from pathlib import Path
 
 from . import repo, top_sections
+from .md_index import MdIndex
 from .reconcile import reconcile_milestone_candidates, reconcile_tasks
 
 M0 = "<!-- marrow:top:start -->"
@@ -52,6 +59,93 @@ def _atomic_write(path: str, data: str) -> None:
             os.unlink(tmp)
 
 
+def _hash(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _current_top_text(existing: str) -> str:
+    """Return the text BETWEEN the marker pair (exclusive), or '' if missing."""
+    i = existing.find(M0)
+    j = existing.find(M1)
+    if i == -1 or j == -1 or j < i:
+        return ""
+    return existing[i + len(M0):j]
+
+
+# Canonical block id marker — scoped to `dashboard.<key>` so per-row anchors
+# like `<!-- id:1 -->` (task rows) don't act as block boundaries.
+_BLOCK_MARKER_RE = re.compile(
+    r"<!--\s*id:(dashboard\.[A-Za-z0-9_]+)\s*-->"
+)
+
+
+def _parse_top_blocks(top_text: str) -> dict[str, str]:
+    """Split the top region into canonical `dashboard.<key>` blocks.
+
+    Returns {block_id: body}. body runs from the marker line to the line
+    before the next canonical marker (or EOT). Per-row `<!-- id:N -->`
+    anchors inside the body are ignored as boundaries.
+    """
+    lines = top_text.splitlines(keepends=True)
+    starts: list[tuple[int, str]] = []
+    for i, ln in enumerate(lines):
+        m = _BLOCK_MARKER_RE.search(ln)
+        if m:
+            starts.append((i, m.group(1)))
+    out: dict[str, str] = {}
+    for idx, (s, bid) in enumerate(starts):
+        e = starts[idx + 1][0] if idx + 1 < len(starts) else len(lines)
+        body = "".join(lines[s:e]).rstrip("\n")
+        out[bid] = body
+    return out
+
+
+def _assemble_top_region(bodies: list[str]) -> str:
+    inner = "\n\n".join(bodies)
+    return f"{M0}\n{inner}\n{M1}"
+
+
+def _resolve_blocks(path: str, conn, fresh: list[tuple[str, str]],
+                    current_top: str) -> list[str]:
+    """For each canonical fresh block decide: skip / preserve user edit / overwrite.
+
+    Returns the list of block bodies to splice back into the top region, in
+    canonical order. Tombstoned blocks are omitted.
+    """
+    store = MdIndex(conn)
+    current = _parse_top_blocks(current_top)
+    out: list[str] = []
+    for bid, fresh_body in fresh:
+        if store.is_tombstoned(path, bid):
+            # User deleted this block — watcher tombstoned it; do not re-emit.
+            continue
+        cur_body = current.get(bid)
+        # Reconciled blocks: reconcile_* already absorbed any user edit into
+        # the DB, so the fresh body IS the resolved state. Always overwrite.
+        if bid in top_sections.RECONCILED_BLOCK_IDS:
+            out.append(fresh_body)
+            store.record_block(path, bid, _hash(fresh_body))
+            continue
+        if cur_body is None:
+            # First render or user wiped this block but watcher hasn't
+            # tombstoned yet — re-emit canonical fresh.
+            out.append(fresh_body)
+            store.record_block(path, bid, _hash(fresh_body))
+            continue
+        cur_hash = _hash(cur_body)
+        stored = store.get_hash(path, bid)
+        if stored is None or stored == cur_hash:
+            # No user edit since last auto-write — safe to overwrite.
+            out.append(fresh_body)
+            store.record_block(path, bid, _hash(fresh_body))
+        else:
+            # User has edited this block — preserve their body verbatim and
+            # do not bump the stored hash, so subsequent renders keep skipping
+            # until the user re-aligns it (or watcher tombstones).
+            out.append(cur_body)
+    return out
+
+
 def write_dashboard(path: str, conn, *, state_dir: str,
                     db: str | None = None) -> None:
     # Reconcile md edits BEFORE render so Lumi's ✅/❌ + tick/untick flow back.
@@ -73,20 +167,24 @@ def write_dashboard(path: str, conn, *, state_dir: str,
                 f"task reconcile failed: {e}; falling through to render",
                 source="dashboard.py", db=db,
             )
-    block = render_top(conn, dashboard_path=path)
     Path(state_dir).mkdir(parents=True, exist_ok=True)
 
     existing = ""
     if os.path.exists(path):
         existing = open(path, encoding="utf-8").read()
     before, cur_block, after = _split(existing)
+    current_top = _current_top_text(existing) if cur_block else ""
+
+    fresh = top_sections.iter_top_blocks(conn, dashboard_path=path)
+    resolved = _resolve_blocks(path, conn, fresh, current_top)
+    new_top_region = _assemble_top_region(resolved)
 
     if cur_block:
-        new = before + block + after
+        new = before + new_top_region + after
     elif existing:
-        new = block + "\n\n" + existing
+        new = new_top_region + "\n\n" + existing
     else:
-        new = block + "\n"
+        new = new_top_region + "\n"
 
     _atomic_write(path, new)
 
