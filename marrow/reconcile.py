@@ -646,3 +646,136 @@ def reconcile_tasks(conn: sqlite3.Connection,
             rpt.deleted += 1
 
     return rpt
+
+
+# ── affect reconcile ──────────────────────────────────────────────────────────
+
+# Affect rows in the dashboard carry `<!-- id:affect.<id> -->` anchors. Format
+# of each anchored line is one of:
+#   - 【tone】 [ago]       (no anchor — derived stats only)
+#     - ep{h|l}N <label> | <description> <!-- id:affect.N -->
+#   - [ ] <desc> <!-- id:affect.N -->     (pending sub-section)
+_AFFECT_ID_RE = re.compile(r"<!-- id:affect\.(?P<id>\d+) -->")
+_AFFECT_EP_RE = re.compile(
+    r"^\s*-\s+ep[hl]\d+\s+(?P<label>.+?)\s*\|\s*(?P<desc>.+?)\s*$"
+)
+_AFFECT_PENDING_RE = re.compile(
+    r"^\s*-\s+\[[ x]\]\s+(?P<text>.+?)\s*$"
+)
+_AFFECT_H2 = "## Affect"
+
+
+def _affect_audit(conn, aid: int, action: str, summary: str) -> None:
+    conn.execute(
+        "INSERT INTO audit_log (target_table, target_id, action, summary) "
+        "VALUES ('affect', ?, ?, ?)",
+        (str(aid), action, summary),
+    )
+
+
+def _parse_affect_line(line: str, db_label: str | None,
+                       db_desc: str | None) -> tuple[str | None, str | None]:
+    """Recover (label, description) from a rendered affect anchored line.
+
+    Strip the trailing `<!-- id:affect.N -->`. Try ep-phrase shape first
+    (`ep{h|l}N label | desc`); fall back to pending-shape (`[ ] text`).
+    Returns (None, None) when the line doesn't match either shape — caller
+    treats as unchanged.
+    """
+    body = _AFFECT_ID_RE.sub("", line).rstrip()
+    m = _AFFECT_EP_RE.match(body)
+    if m:
+        return m.group("label").strip(), m.group("desc").strip()
+    m = _AFFECT_PENDING_RE.match(body)
+    if m:
+        text = m.group("text").strip()
+        # pending render emits `description or label or (ep)`. Map md text
+        # back to whichever field the DB sourced it from.
+        if db_desc and text == db_desc:
+            return None, db_desc  # unchanged
+        if db_label and text == db_label and not db_desc:
+            return db_label, None  # unchanged label-only source
+        # Edit detected — assume the user wrote into description (richer field).
+        return None, text
+    return None, None
+
+
+def reconcile_affect(conn: sqlite3.Connection,
+                     dashboard_path: str | Path) -> ReconcileReport:
+    """Absorb dashboard `## Affect` description/label edits back into the
+    affect table. Each anchored line maps 1:1 to one DB row via the
+    `<!-- id:affect.N -->` marker. Aggregate stats lines (no anchor) and
+    sub-section headings (`### Today`, `### Pending`) are left alone.
+
+    No-op when the affect block has no anchored lines (cold-start / empty).
+    """
+    rpt = ReconcileReport()
+    dashboard_path = Path(dashboard_path)
+    if not dashboard_path.exists():
+        return rpt
+    text = dashboard_path.read_text(encoding="utf-8")
+    start = text.find(_AFFECT_H2)
+    if start == -1:
+        return rpt
+    after_h2 = text[start + len(_AFFECT_H2):]
+    next_h2 = re.search(r"\n##\s", after_h2)
+    block = after_h2[: next_h2.start()] if next_h2 else after_h2
+
+    # Collect anchored lines: id -> raw line.
+    anchored: dict[int, str] = {}
+    for raw in block.splitlines():
+        m = _AFFECT_ID_RE.search(raw)
+        if not m:
+            continue
+        try:
+            aid = int(m.group("id"))
+        except ValueError:
+            continue
+        anchored[aid] = raw
+
+    if not anchored:
+        return rpt
+
+    placeholders = ",".join("?" for _ in anchored)
+    db_rows: dict[int, dict] = {}
+    for row in conn.execute(
+        f"SELECT id, label, description FROM affect "
+        f"WHERE id IN ({placeholders})",
+        list(anchored.keys()),
+    ).fetchall():
+        db_rows[row["id"]] = dict(row)
+
+    with conn:
+        for aid, line in anchored.items():
+            row = db_rows.get(aid)
+            if row is None:
+                rpt.conflicts.append(f"anchored affect id {aid} not in db")
+                continue
+            try:
+                new_label, new_desc = _parse_affect_line(
+                    line, row.get("label"), row.get("description")
+                )
+            except Exception as e:  # noqa: BLE001 — parse must never crash
+                rpt.conflicts.append(f"affect line {aid} malformed: {e}")
+                continue
+            updates: list[tuple[str, str | None]] = []
+            db_label = row.get("label")
+            db_desc = row.get("description")
+            if new_label is not None and new_label != (db_label or ""):
+                updates.append(("label", new_label))
+            if new_desc is not None and new_desc != (db_desc or ""):
+                updates.append(("description", new_desc))
+            if not updates:
+                rpt.unchanged += 1
+                continue
+            set_clause = ", ".join(f"{c}=?" for c, _ in updates)
+            params = [v for _, v in updates] + [aid]
+            conn.execute(f"UPDATE affect SET {set_clause} WHERE id=?", params)
+            _affect_audit(
+                conn, aid, "retext",
+                f"md-reconcile: " + ", ".join(
+                    f"{c}={(v or '')[:40]}" for c, v in updates
+                ),
+            )
+            rpt.updated += 1
+    return rpt
