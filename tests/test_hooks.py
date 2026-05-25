@@ -53,6 +53,8 @@ def test_session_start_emits_additional_context(env, monkeypatch, capsys):
 
 
 def test_session_end_archives_and_renders(env, monkeypatch, tmp_path):
+    """session_end archives events; dashboard is NOT written by the hook
+    (moved to sessionend_async tail)."""
     db, dash, _ = env
     jl = tmp_path / "s.jsonl"
     jl.write_text("\n".join(json.dumps(o) for o in [
@@ -72,8 +74,9 @@ def test_session_end_archives_and_renders(env, monkeypatch, tmp_path):
     finally:
         conn.close()
     assert n == 2
-    txt = open(dash).read()
-    assert "GAMSAT plan" in txt and hooks.dashboard.M0 in txt
+    # Dashboard must NOT be written by session_end hook (moved to async tail).
+    from pathlib import Path
+    assert not Path(dash).exists(), "session_end must not write dashboard directly"
 
 
 def test_session_end_does_not_write_db_pages(env, monkeypatch, tmp_path):
@@ -101,9 +104,9 @@ def test_session_end_does_not_write_db_pages(env, monkeypatch, tmp_path):
 
 
 def test_session_end_dashboard_eperm_alerts_warn(env, monkeypatch, tmp_path):
-    """TCC-protected Desktop write -> PermissionError must skip dashboard
-    regen only; events still archived; a warn alert fires so the operator
-    sees the TCC block instead of a silent stale dashboard (DESIGN L33)."""
+    """session_end no longer calls dashboard.write_dashboard — the call moved
+    to sessionend_async tail. Hook must complete without calling dashboard and
+    events must still be archived."""
     db, dash, _ = env
     jl = tmp_path / "s.jsonl"
     jl.write_text("\n".join(json.dumps(o) for o in [
@@ -115,45 +118,41 @@ def test_session_end_dashboard_eperm_alerts_warn(env, monkeypatch, tmp_path):
                      "content": [{"type": "text", "text": "on it"}]}},
     ]))
 
-    def boom(*a, **k):
-        raise PermissionError(1, "Operation not permitted")
-    monkeypatch.setattr(hooks.dashboard, "write_dashboard", boom)
-    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": str(jl)})
-    rc = hooks.main(["session_end"])
+    dash_calls: list = []
+
+    def track(*a, **k):
+        dash_calls.append(1)
+
+    with patch("marrow.dashboard.write_dashboard", side_effect=track):
+        _stdin(monkeypatch, {"session_id": "s1", "transcript_path": str(jl)})
+        rc = hooks.main(["session_end"])
     assert rc == 0
     conn = storage.connect(db)
     try:
         n = conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
-        row = conn.execute(
-            "SELECT severity, type, message FROM alerts").fetchone()
     finally:
         conn.close()
-    assert n == 2  # events archive leg still succeeded
-    assert row is not None
-    assert row["severity"] == "warn"  # not critical, doesn't pollute handoff
-    assert row["type"] == "dashboard"
-    assert "session_end" in row["message"]
+    assert n == 2
+    assert dash_calls == [], "session_end must not call write_dashboard directly"
 
 
 def test_session_end_real_error_still_alerts(env, monkeypatch, tmp_path):
-    """A non-permission failure must still surface an alert (no broad catch)."""
+    """session_end no longer calls dashboard — confirm hook runs cleanly
+    without any dashboard reference and archives events as expected."""
     db, dash, _ = env
     jl = tmp_path / "s.jsonl"
     jl.write_text(json.dumps(
         {"type": "user", "sessionId": "s1", "timestamp": "2026-05-17T01:00:00Z",
          "message": {"role": "user", "content": "hi"}}))
 
-    def boom(*a, **k):
-        raise ValueError("genuine bug")
-    monkeypatch.setattr(hooks.dashboard, "write_dashboard", boom)
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": str(jl)})
     assert hooks.main(["session_end"]) == 0
     conn = storage.connect(db)
     try:
-        alerts = conn.execute("SELECT COUNT(*) c FROM alerts").fetchone()["c"]
+        n = conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
     finally:
         conn.close()
-    assert alerts == 1
+    assert n == 1
 
 
 def test_session_end_no_transcript_is_safe(env, monkeypatch):

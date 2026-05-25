@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
-from . import config, dashboard, repo, storage, top_sections, transcript
+from . import config, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach
 
 SESSION_START_HARD_CAP = 6000
@@ -277,37 +277,6 @@ def session_end() -> int:
                     except Exception:  # noqa: BLE001
                         pass
 
-        # ── SLOW SIDE EFFECTS (best-effort) ────────────────────────────────
-        # Below here may not finish if cc kills the hook group. Each step
-        # has its own fallback: dashboard re-renders at 06:01 launchd tick
-        # + next SessionStart; embed_pending re-runs in sessionstart catchup
-        # and in sessionend_async itself.
-        # Bug #1 fix: handover.md is written ONLY by sessionend_async
-        # (single-writer rule). Sync skeleton write removed - it raced the
-        # async LLM injector and clobbered ThisSession/NextSession content.
-        # SessionStart stays read-only against handover.md.
-        state = str(config.DATA_DIR / "state")
-        dash = inp.get("marrow_dashboard") or config.dashboard_path()
-        try:
-            dashboard.write_dashboard(dash, conn, state_dir=state, db=db)
-        except PermissionError as e:
-            # TCC-protected Desktop / unauthorized context: skip the full
-            # re-render (lossless - next authorized session_end rewrites it).
-            repo.add_alert(
-                "warn", "dashboard",
-                f"session_end skipped dashboard write: {e}",
-                source="hooks.py", db=db,
-            )
-
-        try:
-            from . import recall as recall_mod
-            recall_mod.embed_pending(conn, batch=200)
-        except Exception as e:
-            repo.add_alert(
-                "warn", "embed",
-                f"session_end embed_pending failed: {e}",
-                source="hooks.py", db=db,
-            )
     finally:
         conn.close()
     return 0

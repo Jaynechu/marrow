@@ -284,13 +284,32 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
 
 
+def _run_writer(conn, sid: str, name: str, writer) -> bool:
+    """Run one writer; log audit row. Returns True on success."""
+    try:
+        writer()
+        _write_segment_audit(conn, sid, name, "ok")
+        return True
+    except (ValueError, RuntimeError, TypeError, KeyError) as e:
+        try:
+            _write_segment_audit(conn, sid, name, f"fail:{type(e).__name__}")
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+
 def _run_extraction(conn, sid: str, date: str,
                     events_text: str, cfg: dict, count: int) -> int:
-    """Two-call flow: STATE + NARRATIVE → 4 segment writers + final audit."""
+    """Two-call flow: STATE writers run after call1; NARRATIVE writers after
+    call2; dashboard + embed_pending run at tail (fail-soft)."""
+    from . import dashboard as _dash_mod
+    from . import recall as _recall_mod
+
     client = LLMClient(cfg=cfg)
     prior_handover = _load_prior_handover_for_sonnet()
     active_tasks = _load_active_tasks_for_sonnet(conn)
 
+    # ── call 1: STATE (~30s) ──────────────────────────────────────────────────
     state_raw, state_err = "", None
     try:
         state_raw = client.call(
@@ -304,6 +323,14 @@ def _run_extraction(conn, sid: str, date: str,
     except (LLMError, ValueError, RuntimeError) as e:
         state_err = type(e).__name__
 
+    if state_err:
+        _write_segment_audit(conn, sid, "state_call", f"fail:{state_err}")
+    else:
+        # State-based writers: handover.md surfaces ~30s after popen.
+        _run_writer(conn, sid, "handover", lambda: seg_handover(conn, state_raw, sid))
+        _run_writer(conn, sid, "task_cand", lambda: seg_task_cand(conn, state_raw))
+
+    # ── call 2: NARRATIVE (~30s; cache_read on events_text fence) ─────────────
     narrative_raw, narrative_err = "", None
     try:
         narrative_raw = client.call(
@@ -314,55 +341,80 @@ def _run_extraction(conn, sid: str, date: str,
     except (LLMError, ValueError, RuntimeError) as e:
         narrative_err = type(e).__name__
 
+    if narrative_err:
+        _write_segment_audit(conn, sid, "narrative_call",
+                             f"fail:{narrative_err}")
+    else:
+        _run_writer(conn, sid, "affect",
+                    lambda: seg_affect(conn, narrative_raw, sid, date))
+        _run_writer(conn, sid, "digest",
+                    lambda: seg_digest(conn, narrative_raw, sid, date))
+
+    # ── tail: slow side-effects (fail-soft; cc can't kill us here) ───────────
+    db = config.db_path()
+    try:
+        state_dir = str(config.DATA_DIR / "state")
+        _dash_mod.write_dashboard(
+            config.dashboard_path(), conn, state_dir=state_dir, db=db)
+    except Exception as e:  # noqa: BLE001
+        try:
+            repo.add_alert("warn", "dashboard",
+                           f"sessionend_async dashboard write failed: {e}",
+                           source="sessionend_async.py", db=db)
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        _recall_mod.embed_pending(conn, batch=200)
+    except Exception as e:  # noqa: BLE001
+        try:
+            repo.add_alert("warn", "embed",
+                           f"sessionend_async embed_pending failed: {e}",
+                           source="sessionend_async.py", db=db)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ── final audit ───────────────────────────────────────────────────────────
     if state_err and narrative_err:
         _write_final_audit(
             conn, sid, f"fail:state={state_err},narrative={narrative_err}")
         return 1
+
+    # Collect failures recorded by _run_writer above.
+    seg_rows = conn.execute(
+        "SELECT action, summary FROM audit_log"
+        " WHERE target_id=? AND action LIKE 'sessionend_extract_%'"
+        " AND action NOT IN ('sessionend_extract_state_call',"
+        "                    'sessionend_extract_narrative_call')",
+        (sid,),
+    ).fetchall()
+    failures: list[str] = [
+        r["action"].removeprefix("sessionend_extract_")
+        for r in seg_rows
+        if not r["summary"].startswith("ok")
+    ]
+    # Implicit skips for the failed call's writers.
     if state_err:
-        _write_segment_audit(conn, sid, "state_call", f"fail:{state_err}")
-    if narrative_err:
-        _write_segment_audit(conn, sid, "narrative_call",
-                             f"fail:{narrative_err}")
-
-    writers = (
-        ("affect",    "narrative", lambda: seg_affect(
-            conn, narrative_raw, sid, date)),
-        ("task_cand", "state",     lambda: seg_task_cand(conn, state_raw)),
-        ("digest",    "narrative", lambda: seg_digest(
-            conn, narrative_raw, sid, date)),
-        ("handover",  "state",     lambda: seg_handover(
-            conn, state_raw, sid)),
-    )
-    failures: list[str] = []
-    for name, src, writer in writers:
-        if src == "state" and state_err:
-            _write_segment_audit(
-                conn, sid, name, f"skip:state_failed_{state_err}")
-            failures.append(name)
-            continue
-        if src == "narrative" and narrative_err:
-            _write_segment_audit(
-                conn, sid, name, f"skip:narrative_failed_{narrative_err}")
-            failures.append(name)
-            continue
-        try:
-            writer()
-            _write_segment_audit(conn, sid, name, "ok")
-        except (ValueError, RuntimeError, TypeError, KeyError) as e:
-            failures.append(name)
-            try:
+        for w in ("handover", "task_cand"):
+            if w not in failures:
                 _write_segment_audit(
-                    conn, sid, name, f"fail:{type(e).__name__}")
-            except Exception:
-                pass
+                    conn, sid, w, f"skip:state_failed_{state_err}")
+                failures.append(w)
+    if narrative_err:
+        for w in ("affect", "digest"):
+            if w not in failures:
+                _write_segment_audit(
+                    conn, sid, w, f"skip:narrative_failed_{narrative_err}")
+                failures.append(w)
 
+    all_writers = ("handover", "task_cand", "affect", "digest")
     if not failures:
         _write_final_audit(conn, sid, f"{_OK_PREFIX}{count}")
         return 0
-    if len(failures) == len(writers):
+    if len(failures) >= len(all_writers):
         _write_final_audit(conn, sid, "fail:all")
         return 1
-    _write_final_audit(conn, sid, f"partial:{','.join(failures)}")
+    _write_final_audit(conn, sid, f"partial:{','.join(sorted(set(failures)))}")
     return 0
 
 
