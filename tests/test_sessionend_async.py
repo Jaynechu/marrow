@@ -29,14 +29,22 @@ def db_env(tmp_path, monkeypatch):
     return db, tmp_path
 
 
-def _insert_events(db: str, sid: str, count: int, role: str = "user") -> None:
+def _insert_events(db: str, sid: str, count: int, role: str = "user",
+                   recent: bool = False) -> None:
+    """Insert events. Use recent=True to get timestamps within 24h window."""
+    import datetime as _dt
     conn = storage.connect(db)
     with conn:
         for i in range(count):
+            if recent:
+                ts = (_dt.datetime.now(_dt.timezone.utc)
+                      - _dt.timedelta(minutes=30 + i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                ts = f"2026-05-23T10:{i:02d}:00Z"
             conn.execute(
                 "INSERT INTO events (session_id, timestamp, role, content)"
                 " VALUES (?, ?, ?, ?)",
-                (sid, f"2026-05-23T10:{i:02d}:00Z", role, f"msg {i}"),
+                (sid, ts, role, f"msg {i}"),
             )
     conn.close()
 
@@ -101,12 +109,13 @@ def test_sessionend_skip_gate_short_session(db_env, monkeypatch):
 
     assert rc == 0
     rows = _audit_rows(db, "test-short")
-    assert [r["summary"] for r in rows] == ["start", "skip:short_session"]
+    assert rows[0]["summary"] == "start"
+    assert rows[1]["summary"].startswith("skip:short_session")
     assert not call_count
 
 
 def test_sessionend_async_writes_ok_audit(db_env):
-    """10 user events + mocked LLM response → audit_log summary='ok'."""
+    """10 user events + mocked LLM response -> audit_log summary='ok,user_count=10'."""
     db, _ = db_env
     _insert_events(db, "test-long", count=10, role="user")
 
@@ -117,7 +126,8 @@ def test_sessionend_async_writes_ok_audit(db_env):
 
     assert rc == 0
     rows = _audit_rows(db, "test-long")
-    assert [r["summary"] for r in rows] == ["start", "ok"]
+    assert rows[0]["summary"] == "start"
+    assert rows[-1]["summary"] == "ok,user_count=10"
 
 
 def test_sessionend_async_idempotent(db_env):
@@ -162,7 +172,8 @@ def test_sessionend_async_clears_stale_skip_when_events_grew(db_env):
         rc = sessionend_async.main(["--sid", sid])
     assert rc == 0
     rows = _audit_rows(db, sid)
-    assert [r["summary"] for r in rows] == ["start", "skip:short_session"]
+    assert rows[0]["summary"] == "start"
+    assert rows[1]["summary"].startswith("skip:short_session")
 
     # Phase 2: real archive lands — bump events past threshold.
     _insert_events(db, sid, count=20, role="user")
@@ -172,40 +183,19 @@ def test_sessionend_async_clears_stale_skip_when_events_grew(db_env):
     assert rc2 == 0
     summaries = [r["summary"] for r in _audit_rows(db, sid)]
     # Stale skip dropped, reset trail logged, real run completed.
-    assert "skip:short_session" not in summaries
+    assert not any(s.startswith("skip:short_session") for s in summaries)
     assert "reset:stale_skip" in summaries
-    assert summaries[-1] == "ok"
+    assert summaries[-1].startswith("ok,user_count=")
 
 
-def test_catchup_retries_sid_when_events_grew_past_skip(db_env, monkeypatch,
-                                                          tmp_path):
-    """Catchup-side mirror: a sid with skip:short_session + grown events must
-    be re-fired by the catchup loop. Old code permanently blocked it."""
+def test_catchup_retries_sid_when_events_grew_past_skip(db_env, monkeypatch):
+    """Catchup-side mirror: a sid with lifecycle:end + ok,user_count=3 but 20
+    events now must spawn (state 2: resumed, grew past last ok)."""
     db, _ = db_env
-    projects = tmp_path / "projects"
-    proj_dir = projects / "-Users-test"
-    proj_dir.mkdir(parents=True)
     sid = "grown-sid"
-    _write_real_jsonl(proj_dir / f"{sid}.jsonl", sid)
-    now = time.time()
-    os.utime(proj_dir / f"{sid}.jsonl", (now - 3600, now - 3600))
-
-    conn = storage.connect(db)
-    with conn:
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'skip:short_session')",
-            (sid,))
-        # Simulate the real session growing far past skip threshold.
-        for i in range(20):
-            conn.execute(
-                "INSERT INTO events (session_id, timestamp, role, content)"
-                " VALUES (?, ?, 'user', ?)",
-                (sid, f"2026-05-24T10:{i:02d}:00Z", f"msg {i}"))
-    conn.close()
-
-    monkeypatch.setattr(
-        "marrow.sessionstart_catchup._CC_PROJECTS", projects)
+    _insert_lifecycle_marker(db, sid, "session_lifecycle:end")
+    _insert_audit(db, sid, "sessionend_extract", "ok,user_count=3")
+    _insert_events(db, sid, count=20, role="user", recent=True)
 
     spawned: list[list[str]] = []
     with patch("marrow.sessionstart_catchup.popen_detach",
@@ -214,36 +204,17 @@ def test_catchup_retries_sid_when_events_grew_past_skip(db_env, monkeypatch,
         sessionstart_catchup.main()
 
     fired = {args[args.index("--sid") + 1] for args in spawned}
-    assert sid in fired, (
-        "grown sid blocked by stale skip — silent-death regression returned")
+    assert sid in fired, "resumed sid should be re-fired when events grew past ok count"
 
 
-def test_catchup_keeps_skipping_genuinely_short_sids(db_env, monkeypatch,
-                                                      tmp_path):
-    """Counter-test: a sid with skip:short_session AND only 2 user events must
-    stay skipped (not re-fired)."""
+def test_catchup_keeps_skipping_genuinely_done_sids(db_env, monkeypatch):
+    """A sid with lifecycle:end + ok,user_count=20 and still 20 events stays skipped."""
     db, _ = db_env
-    projects = tmp_path / "projects"
-    proj_dir = projects / "-Users-test"
-    proj_dir.mkdir(parents=True)
     sid = "stays-skipped-sid"
-    _write_real_jsonl(proj_dir / f"{sid}.jsonl", sid)
-    now = time.time()
-    os.utime(proj_dir / f"{sid}.jsonl", (now - 3600, now - 3600))
-    conn = storage.connect(db)
-    with conn:
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'skip:short_session')",
-            (sid,))
-        for i in range(2):
-            conn.execute(
-                "INSERT INTO events (session_id, timestamp, role, content)"
-                " VALUES (?, ?, 'user', ?)",
-                (sid, f"2026-05-24T10:{i:02d}:00Z", f"msg {i}"))
-    conn.close()
-    monkeypatch.setattr(
-        "marrow.sessionstart_catchup._CC_PROJECTS", projects)
+    _insert_lifecycle_marker(db, sid, "session_lifecycle:end")
+    _insert_audit(db, sid, "sessionend_extract", "ok,user_count=20")
+    _insert_events(db, sid, count=20, role="user", recent=True)
+
     spawned: list[list[str]] = []
     with patch("marrow.sessionstart_catchup.popen_detach",
                side_effect=lambda a, log_path: spawned.append(list(a))):
@@ -289,69 +260,49 @@ def _write_real_jsonl(path: Path, sid: str) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def test_catchup_picks_pending_sids(db_env, monkeypatch, tmp_path):
-    """ok/skip → skip; first fail → retry once; second fail → skip;
-    no audit → spawn; alive (idle<10min) → skip; lone 'start' (silent
-    death) counts as one fail → retry; two silent deaths → skip."""
-    db, _ = db_env
-    projects = tmp_path / "projects"
-    proj_dir = projects / "-Users-test"
-    proj_dir.mkdir(parents=True)
-
-    sid_done = "aaaaaaaa-done"
-    sid_pending = "bbbbbbbb-pending"
-    sid_failed_once = "cccccccc-failed-once"
-    sid_failed_twice = "eeeeeeee-failed-twice"
-    sid_alive = "dddddddd-alive"
-    sid_silent_once = "ffffffff-silent-once"
-    sid_silent_twice = "11111111-silent-twice"
-
-    for sid in (sid_done, sid_pending, sid_failed_once,
-                sid_failed_twice, sid_alive,
-                sid_silent_once, sid_silent_twice):
-        _write_real_jsonl(proj_dir / f"{sid}.jsonl", sid)
-
-    now = time.time()
-    old = now - 3600  # 1h ago, well past idle guard
-    for sid in (sid_done, sid_pending, sid_failed_once, sid_failed_twice,
-                sid_silent_once, sid_silent_twice):
-        os.utime(proj_dir / f"{sid}.jsonl", (old, old))
-
+def _insert_lifecycle_marker(db: str, sid: str, action: str, summary: str = "") -> None:
     conn = storage.connect(db)
     with conn:
         conn.execute(
             "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'ok')", (sid_done,))
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'fail:LLMError')",
-            (sid_failed_once,))
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'fail:LLMError')",
-            (sid_failed_twice,))
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'fail:Other')",
-            (sid_failed_twice,))
-        # One silent death: a 'start' row with no matching terminal row.
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'start')",
-            (sid_silent_once,))
-        # Two silent deaths: two 'start' rows, no terminal → counts as 2 fails.
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'start')",
-            (sid_silent_twice,))
-        conn.execute(
-            "INSERT INTO audit_log (target_table, target_id, action, summary)"
-            " VALUES ('events', ?, 'sessionend_extract', 'start')",
-            (sid_silent_twice,))
+            " VALUES ('events', ?, ?, ?)",
+            (sid, action, summary),
+        )
     conn.close()
 
-    monkeypatch.setattr(
-        "marrow.sessionstart_catchup._CC_PROJECTS", projects)
+
+def _insert_audit(db: str, sid: str, action: str, summary: str) -> None:
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, ?, ?)",
+            (sid, action, summary),
+        )
+    conn.close()
+
+
+def test_catchup_picks_pending_sids(db_env, monkeypatch):
+    """Marker-based catchup: done sid skips; no-end+dead ppid spawns; end+ok skips;
+    end+ok+grew spawns; end+no ok+5min spawns; active (live ppid) skips."""
+    db, _ = db_env
+
+    # sid_done: lifecycle:end + ok,user_count=10, still 10 events -> skip (state 3)
+    sid_done = "aaaaaaaa-done"
+    _insert_lifecycle_marker(db, sid_done, "session_lifecycle:end")
+    _insert_audit(db, sid_done, "sessionend_extract", "ok,user_count=10")
+    _insert_events(db, sid_done, count=10, role="user", recent=True)
+
+    # sid_pending: in events table, no markers -> spawn (state 7)
+    sid_pending = "bbbbbbbb-pending"
+    _insert_events(db, sid_pending, count=8, role="user", recent=True)
+
+    # sid_grew: lifecycle:end + ok,user_count=5, now 15 events -> spawn (state 2)
+    sid_grew = "cccccccc-grew"
+    _insert_lifecycle_marker(db, sid_grew, "session_lifecycle:end")
+    _insert_audit(db, sid_grew, "sessionend_extract", "ok,user_count=5")
+    _insert_events(db, sid_grew, count=15, role="user", recent=True)
+
     monkeypatch.setattr("marrow.sessionstart_catchup.MAX_FIRE", 5)
 
     spawned: list[list[str]] = []
@@ -365,27 +316,20 @@ def test_catchup_picks_pending_sids(db_env, monkeypatch, tmp_path):
 
     assert rc == 0
     fired = {args[args.index("--sid") + 1] for args in spawned}
-    assert fired == {sid_pending, sid_failed_once, sid_silent_once}, fired
+    assert sid_pending in fired
+    assert sid_grew in fired
+    assert sid_done not in fired
 
 
-def test_catchup_cap_caps_at_max_fire(db_env, monkeypatch, tmp_path):
-    """3 pending jsonls but MAX_FIRE=2 → only 2 spawn; newest mtime wins."""
-    db, _ = db_env  # noqa: F841
-    projects = tmp_path / "projects"
-    proj_dir = projects / "-Users-test"
-    proj_dir.mkdir(parents=True)
+def test_catchup_cap_caps_at_max_fire(db_env, monkeypatch):
+    """3 pending sids but MAX_FIRE=2 -> only 2 spawn."""
+    db, _ = db_env
 
     sids = ["sid-oldest", "sid-mid", "sid-newest"]
     for sid in sids:
-        _write_real_jsonl(proj_dir / f"{sid}.jsonl", sid)
+        _insert_events(db, sid, count=8, role="user", recent=True)  # all pending (state 7)
 
-    now = time.time()
-    os.utime(proj_dir / "sid-oldest.jsonl",  (now - 7200, now - 7200))
-    os.utime(proj_dir / "sid-mid.jsonl",     (now - 3600, now - 3600))
-    os.utime(proj_dir / "sid-newest.jsonl",  (now - 1800, now - 1800))
-
-    monkeypatch.setattr(
-        "marrow.sessionstart_catchup._CC_PROJECTS", projects)
+    monkeypatch.setattr("marrow.sessionstart_catchup.MAX_FIRE", 2)
 
     spawned: list[list[str]] = []
     with patch("marrow.sessionstart_catchup.popen_detach",
@@ -394,8 +338,6 @@ def test_catchup_cap_caps_at_max_fire(db_env, monkeypatch, tmp_path):
         sessionstart_catchup.main()
 
     assert len(spawned) == 2
-    fired = [args[args.index("--sid") + 1] for args in spawned]
-    assert fired == ["sid-newest", "sid-mid"]
 
 
 # ── Unit 4: hooks integration ─────────────────────────────────────────────────
@@ -685,7 +627,7 @@ def test_pingpong_live_isolation_in_hook_context(db_env):
     rc = sessionend_async.main(["--sid", "live-ping-sid"])
     assert rc == 0
     rows = _audit_rows(db, "live-ping-sid")
-    assert rows and rows[-1]["summary"] == "ok"
+    assert rows and rows[-1]["summary"].startswith("ok,user_count=")
 
 
 # ── handover segment ────────────────────────────────────────────────────────
@@ -756,7 +698,7 @@ def test_sessionend_single_call_routes_to_four_writers(db_env, tmp_path,
             "sessionend_extract",  # final
         ]
         assert summaries[0] == "start"
-        assert summaries[-1] == "ok"
+        assert summaries[-1].startswith("ok,user_count=")
     finally:
         conn.close()
     # Handover file written fresh by sessionend_async — full skeleton + bullets.
@@ -858,3 +800,77 @@ def test_seg_handover_noop_on_empty_blocks(db_env, tmp_path, monkeypatch):
         conn.close()
     assert n == 0
     assert h.read_text(encoding="utf-8") == "PRE-EXISTING"
+
+
+# ── _already_done new semantics ───────────────────────────────────────────────
+
+def test_already_done_legacy_ok_row_skips(db_env):
+    """Legacy summary='ok' (no user_count) -> _already_done returns True."""
+    db, _ = db_env
+    sid = "legacy-ok-sid"
+    _insert_events(db, sid, count=10, role="user")
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'ok')",
+            (sid,),
+        )
+    from marrow import sessionend_async
+    result = sessionend_async._already_done(conn, sid)
+    conn.close()
+    assert result is True
+
+
+def test_already_done_incremental_rerun_when_events_grew(db_env):
+    """ok,user_count=10 + current user_count=15 -> _already_done returns False."""
+    db, _ = db_env
+    sid = "incremental-sid"
+    _insert_events(db, sid, count=15, role="user")
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'ok,user_count=10')",
+            (sid,),
+        )
+    from marrow import sessionend_async
+    result = sessionend_async._already_done(conn, sid)
+    conn.close()
+    assert result is False
+
+
+def test_already_done_skips_when_events_at_or_below_baseline(db_env):
+    """ok,user_count=10 + current user_count=10 -> _already_done returns True."""
+    db, _ = db_env
+    sid = "at-baseline-sid"
+    _insert_events(db, sid, count=10, role="user")
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'ok,user_count=10')",
+            (sid,),
+        )
+    from marrow import sessionend_async
+    result = sessionend_async._already_done(conn, sid)
+    conn.close()
+    assert result is True
+
+
+def test_write_final_audit_records_user_count(db_env, tmp_path, monkeypatch):
+    """Full main loop -> final ok row matches ok,user_count=<N> pattern."""
+    db, _ = db_env
+    sid = "uc-test-sid"
+    _insert_events(db, sid, count=8, role="user")
+    h = tmp_path / "handover.md"
+    monkeypatch.setattr("marrow.handover_render._RENDERED_PATH", h)
+    with patch("marrow.sessionend_async.LLMClient") as MockClient:
+        MockClient.return_value.call.return_value = "echo done"
+        from marrow import sessionend_async
+        rc = sessionend_async.main(["--sid", sid])
+    assert rc == 0
+    rows = _audit_rows(db, sid)
+    final = rows[-1]["summary"]
+    import re
+    assert re.match(r"ok,user_count=\d+", final), f"unexpected final summary: {final!r}"

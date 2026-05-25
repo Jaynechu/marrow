@@ -1,170 +1,318 @@
-"""SessionStart catchup: detect pending sids and fire sessionend_async.
+"""SessionStart catchup: detect pending sids via lifecycle markers and fire sessionend_async.
 
 CLI: python -m marrow.sessionstart_catchup
 
-Single data source = cc-side jsonls under ~/.claude/projects/*/*.jsonl.
-A jsonl is `pending` iff:
-  - mtime within [now-WINDOW_HOURS, now-IDLE_SECONDS]
-    (older = stale; newer = session likely still alive, skip this turn)
-  - is_headless == False (real manual session, not a worker spawn)
-  - audit_log has NO ok / skip:short_session row for the sid AND fewer
-    than RETRY_LIMIT fail/partial rows (catchup gives one retry; second
-    failure raises a critical alert via sessionend_async itself).
+Decision source = audit_log lifecycle markers + events table (last 24h).
+No jsonl mtime scanning — mtime was always an unreliable signal (idle
+thinking / context switch silences the file without killing the session).
 
-For each pending sid we archive_events on the fly (covers the case where
-hooks.session_end never ran because cc dropped SessionEnd), then spawn
-sessionend_async. Newest-mtime first; per-run spawn cap = MAX_FIRE; rest
-rolls over to next SessionStart.
+For each candidate sid, _classify returns spawn|skip per a 7-state table:
+  1. ppid live (start marker ppid in live_cc_ppids) -> skip (active session)
+  2. lifecycle:end + ok,user_count=N + events.user_count > N -> spawn (resumed, grew)
+  3. lifecycle:end + ok,user_count=N + events.user_count <= N -> skip (done)
+  4. lifecycle:end + no ok + (now - end_ts) < 5min -> skip (async still running)
+  5. lifecycle:end + no ok + (now - end_ts) >= 5min -> spawn (async died)
+  6. no lifecycle:end + start ppid dead -> spawn (endhook didn't fire)
+  7. no marker rows at all + sid in 24h events -> spawn (cc died before hooks)
+
+Alert: lifecycle:start >= 30min ago, ppid dead, no lifecycle:end -> silent_death alert.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
-from . import config, repo, storage, transcript
+from . import config, repo, storage
 from .popen_detach import popen_detach
 
 _LOGS_DIR = Path.home() / ".config" / "marrow" / "logs"
-_CC_PROJECTS = Path.home() / ".claude" / "projects"
 
-WINDOW_HOURS = 24
-IDLE_SECONDS = 600  # jsonl untouched ≥10min → treat as closed; alive sessions still flushing skip this turn
 MAX_FIRE = 2
-RETRY_LIMIT = 2  # max fail/partial extractions before catchup gives up
+RETRY_LIMIT = 2
+
+_WINDOW_HOURS = 24
+_END_GRACE_SECONDS = 300   # 5min grace after lifecycle:end before spawning
+_SILENT_DEATH_MIN = 30     # alert if start >= 30min ago, ppid dead, no end
 
 
-_SKIP_THRESHOLD = 5  # mirrors cfg.sessionend.skip_turn_threshold default
+def _parse_ppid_started_at(summary: str) -> tuple[int | None, int | None]:
+    """Parse ppid and started_at from summary `ppid=X,source=cc,started_at=Y`."""
+    ppid: int | None = None
+    started_at: int | None = None
+    for part in summary.split(","):
+        if part.startswith("ppid="):
+            try:
+                ppid = int(part[5:])
+            except ValueError:
+                pass
+        elif part.startswith("started_at="):
+            try:
+                started_at = int(part[11:])
+            except ValueError:
+                pass
+    return ppid, started_at
 
 
-def _should_skip(conn, sid: str) -> bool:
-    """Skip iff already succeeded (ok) or already hit RETRY_LIMIT effective
-    failures. Effective failures = explicit fail/partial rows + silent deaths
-    (start rows without a matching terminal row). Silent death =
-    sessionend_async stamped 'start' but died before writing ok/skip/fail/
-    partial.
+def _ps_started_at(ppid: int) -> int | None:
+    """Return process start epoch via `ps -o lstart= -p <ppid>`, or None."""
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(ppid)],
+            capture_output=True, text=True, check=False, timeout=2,
+        ).stdout.strip()
+        if out:
+            return int(datetime.strptime(out, "%a %b %d %H:%M:%S %Y").timestamp())
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
-    `skip:short_session` is NOT terminal: cc fires session_end mid-flush, so
-    the first hook can land a skip while only a partial slice of events is on
-    disk. If a later transcript archive grew past the skip threshold, we want
-    to retry. sessionend_async._drop_stale_skip clears the row on entry."""
-    row = conn.execute(
-        "SELECT"
-        " SUM(CASE WHEN summary='ok' THEN 1 ELSE 0 END) AS done,"
-        " SUM(CASE WHEN summary='skip:short_session' THEN 1 ELSE 0 END) AS skipped,"
-        " SUM(CASE WHEN summary LIKE 'fail:%' OR summary LIKE 'partial:%' THEN 1 ELSE 0 END) AS fails,"
-        " SUM(CASE WHEN summary='start' THEN 1 ELSE 0 END) AS starts"
-        " FROM audit_log"
-        " WHERE action='sessionend_extract' AND target_id=?",
+
+def _live_cc_ppids(conn) -> set[int]:
+    """Return set of ppids whose cc process is confirmed alive (os.kill + started_at match)."""
+    now = int(time.time())
+    cutoff_ts = datetime.fromtimestamp(
+        now - _WINDOW_HOURS * 3600, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        "SELECT DISTINCT summary FROM audit_log"
+        " WHERE action='session_lifecycle:start' AND occurred_at >= ?",
+        (cutoff_ts,),
+    ).fetchall()
+    live: set[int] = set()
+    for row in rows:
+        ppid, started_at = _parse_ppid_started_at(row["summary"] or "")
+        if ppid is None:
+            continue
+        try:
+            os.kill(ppid, 0)
+        except OSError:
+            continue  # process dead
+        if started_at is not None:
+            actual = _ps_started_at(ppid)
+            if actual is None or abs(actual - started_at) >= 2:
+                continue  # ppid reused by another process
+        live.add(ppid)
+    return live
+
+
+def _list_candidate_sids(conn, window_hours: int = 24) -> list[str]:
+    """Union of sids from audit_log lifecycle:start rows and events table within window."""
+    now = int(time.time())
+    cutoff_ts = datetime.fromtimestamp(
+        now - window_hours * 3600, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    sids: set[str] = set()
+
+    # From audit_log lifecycle:start rows.
+    rows = conn.execute(
+        "SELECT DISTINCT target_id FROM audit_log"
+        " WHERE action='session_lifecycle:start' AND occurred_at >= ?"
+        " AND target_id IS NOT NULL",
+        (cutoff_ts,),
+    ).fetchall()
+    for row in rows:
+        sids.add(row["target_id"])
+
+    # From events table.
+    rows = conn.execute(
+        "SELECT DISTINCT session_id FROM events"
+        " WHERE timestamp >= ? AND session_id IS NOT NULL",
+        (cutoff_ts,),
+    ).fetchall()
+    for row in rows:
+        sids.add(row["session_id"])
+
+    return list(sids)
+
+
+def _ts_to_epoch(ts: str) -> float:
+    """Convert ISO timestamp string (audit_log occurred_at) to epoch float."""
+    try:
+        s = ts.strip().replace("Z", "+00:00")
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _classify(conn, sid: str, live_ppids: set[int]) -> Literal["spawn", "skip"]:
+    """7-state decision table. Returns 'spawn' or 'skip'.
+
+    # TODO: WeClaude bridge integration — when source=wechat, ppid field carries
+    # the wechat bridge process pid. _live_cc_ppids already handles this correctly
+    # since it only checks os.kill + started_at; no special-casing needed here.
+    # Next step: weclaude bridge writes lifecycle:start/end markers into marrow.db
+    # on rotate_session / idle_fire_loop. See Task 5 in wt-lifecycle plan.
+    """
+    now = time.time()
+
+    # Fetch start marker rows for this sid.
+    start_rows = conn.execute(
+        "SELECT summary, occurred_at FROM audit_log"
+        " WHERE action='session_lifecycle:start' AND target_id=?"
+        " ORDER BY id DESC",
+        (sid,),
+    ).fetchall()
+
+    # Fetch end marker for this sid.
+    end_row = conn.execute(
+        "SELECT occurred_at FROM audit_log"
+        " WHERE action='session_lifecycle:end' AND target_id=?"
+        " ORDER BY id DESC LIMIT 1",
         (sid,),
     ).fetchone()
-    if not row:
-        return False
-    done = row["done"] or 0
-    skipped = row["skipped"] or 0
-    fails = row["fails"] or 0
-    starts = row["starts"] or 0
-    # Silent deaths: starts without a matching ok/skip/fail/partial. Skip
-    # rows count too — a stamped 'start' followed by a 'skip' is a clean exit.
-    silent_deaths = max(0, starts - (done + skipped + fails))
-    if done > 0:
-        return True
-    if (fails + silent_deaths) >= RETRY_LIMIT:
-        return True
-    if skipped > 0:
-        # Re-run only if the session grew past the threshold since the skip.
-        ev = conn.execute(
-            "SELECT COUNT(*) c FROM events WHERE session_id=? AND role='user'",
-            (sid,),
-        ).fetchone()
-        if (ev["c"] if ev else 0) <= _SKIP_THRESHOLD:
-            return True
-    return False
 
+    # Fetch most recent ok row for this sid.
+    ok_row = conn.execute(
+        "SELECT summary FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=?"
+        " AND (summary='ok' OR summary LIKE 'ok,user_count=%')"
+        " ORDER BY id DESC LIMIT 1",
+        (sid,),
+    ).fetchone()
 
-def _jsonl_orphans(conn) -> list[str]:
-    """Real manual jsonls touched in [now-WINDOW_HOURS, now-IDLE_SECONDS] with
-    no sessionend_extract audit. Archive on the fly. Ordered newest-mtime first
-    so the most recently closed session wins the MAX_FIRE cap."""
-    now = time.time()
-    floor = now - WINDOW_HOURS * 3600
-    ceil = now - IDLE_SECONDS
-    candidates: list[tuple[float, str, Path]] = []
-    if not _CC_PROJECTS.exists():
-        return []
-    for jsonl in _CC_PROJECTS.glob("*/*.jsonl"):
-        try:
-            m = jsonl.stat().st_mtime
-        except OSError:
-            continue
-        if m < floor or m > ceil:
-            continue
-        try:
-            if transcript.is_headless(str(jsonl)):
-                continue
-        except OSError:
-            continue
-        sid = jsonl.stem
-        if _should_skip(conn, sid):
-            continue
-        candidates.append((m, sid, jsonl))
-    candidates.sort(key=lambda t: t[0], reverse=True)
-    out: list[str] = []
-    for _, sid, jsonl in candidates:
-        try:
-            rows = transcript.clean(str(jsonl))
-        except OSError:
-            continue
-        if not rows:
-            continue
-        already = conn.execute(
-            "SELECT 1 FROM events WHERE session_id=? LIMIT 1", (sid,),
-        ).fetchone()
-        if not already:
+    # Count current user events.
+    user_count = conn.execute(
+        "SELECT COUNT(*) c FROM events WHERE session_id=? AND role='user'",
+        (sid,),
+    ).fetchone()["c"]
+
+    # State 1: ppid is live.
+    if start_rows:
+        ppid, _ = _parse_ppid_started_at(start_rows[0]["summary"] or "")
+        if ppid is not None and ppid in live_ppids:
+            return "skip"
+
+    # States 2-5: lifecycle:end exists.
+    if end_row:
+        if ok_row:
+            ok_summary = ok_row["summary"]
+            if ok_summary == "ok":
+                return "skip"  # legacy plain ok -> fully covered
             try:
-                repo.archive_events(conn, rows)
-            except Exception:  # noqa: BLE001 — never break catchup
-                continue
-        out.append(sid)
-    return out
+                n = int(ok_summary.split("=", 1)[1])
+            except (ValueError, IndexError):
+                return "skip"
+            # State 2: grew past last ok.
+            if user_count > n:
+                return "spawn"
+            # State 3: covered.
+            return "skip"
+        else:
+            # No ok row yet.
+            end_epoch = _ts_to_epoch(end_row["occurred_at"])
+            elapsed = now - end_epoch
+            # State 4: grace period.
+            if elapsed < _END_GRACE_SECONDS:
+                return "skip"
+            # State 5: async died.
+            return "spawn"
+
+    # No lifecycle:end.
+    # State 6: start marker exists + ppid dead.
+    if start_rows:
+        ppid, _ = _parse_ppid_started_at(start_rows[0]["summary"] or "")
+        if ppid is not None and ppid not in live_ppids:
+            return "spawn"
+        # ppid unknown (couldn't parse) -> spawn to be safe.
+        if ppid is None:
+            return "spawn"
+
+    # State 7: no marker rows but sid appears in events within window.
+    return "spawn"
 
 
 def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
     db = config.db_path()
     conn = storage.connect(db)
+    now = time.time()
+
     try:
-        pending = _jsonl_orphans(conn)
+        live_ppids = _live_cc_ppids(conn)
+        candidates = _list_candidate_sids(conn)
+
+        pending: list[str] = []
+        for sid in candidates:
+            if _classify(conn, sid, live_ppids) == "spawn":
+                pending.append(sid)
+
+        # Alert on silent deaths: start >= 30min ago, ppid dead, no lifecycle:end.
+        for sid in candidates:
+            start_rows = conn.execute(
+                "SELECT summary, occurred_at FROM audit_log"
+                " WHERE action='session_lifecycle:start' AND target_id=?"
+                " ORDER BY id DESC LIMIT 1",
+                (sid,),
+            ).fetchall()
+            if not start_rows:
+                continue
+            start_epoch = _ts_to_epoch(start_rows[0]["occurred_at"])
+            if (now - start_epoch) < _SILENT_DEATH_MIN * 60:
+                continue
+            ppid, _ = _parse_ppid_started_at(start_rows[0]["summary"] or "")
+            if ppid is None or ppid in live_ppids:
+                continue
+            end_exists = conn.execute(
+                "SELECT 1 FROM audit_log"
+                " WHERE action='session_lifecycle:end' AND target_id=? LIMIT 1",
+                (sid,),
+            ).fetchone()
+            if end_exists:
+                continue
+            # Idempotency: one alert row per sid per catchup pass.
+            already_alerted = conn.execute(
+                "SELECT 1 FROM audit_log"
+                " WHERE action='alert' AND target_id=?"
+                " AND summary LIKE 'silent_death_no_end:sid=%' LIMIT 1",
+                (sid,),
+            ).fetchone()
+            if already_alerted:
+                continue
+            try:
+                with conn:
+                    conn.execute(
+                        "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                        " VALUES ('events', ?, 'alert', ?)",
+                        (sid, f"silent_death_no_end:sid={sid}"),
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+        spawned = 0
+        failures: list[str] = []
+        for sid in pending[:MAX_FIRE]:
+            log_path = _LOGS_DIR / f"sessionend_async_{sid}.log"
+            try:
+                popen_detach(
+                    [sys.executable, "-m", "marrow.sessionend_async", "--sid", sid],
+                    log_path=log_path,
+                )
+                spawned += 1
+            except Exception as e:  # noqa: BLE001
+                failures.append(f"{sid[:8]}:{type(e).__name__}")
+
+        if failures:
+            try:
+                repo.add_alert(
+                    "warn", "catchup",
+                    f"catchup spawn failed: {', '.join(failures)}",
+                    source="sessionstart_catchup.py", db=db,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        print(
+            f"catchup: spawned {spawned} of {len(pending)} pending"
+            f" (cap={MAX_FIRE}, window={_WINDOW_HOURS}h)",
+            file=sys.stderr,
+        )
     finally:
         conn.close()
 
-    spawned = 0
-    failures: list[str] = []
-    for sid in pending[:MAX_FIRE]:
-        log_path = _LOGS_DIR / f"sessionend_async_{sid}.log"
-        try:
-            popen_detach(
-                [sys.executable, "-m", "marrow.sessionend_async", "--sid", sid],
-                log_path=log_path,
-            )
-            spawned += 1
-        except Exception as e:  # noqa: BLE001
-            failures.append(f"{sid[:8]}:{type(e).__name__}")
-
-    if failures:
-        try:
-            repo.add_alert(
-                "warn", "catchup",
-                f"catchup spawn failed: {', '.join(failures)}",
-                source="sessionstart_catchup.py", db=db,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
-    print(
-        f"catchup: spawned {spawned} of {len(pending)} pending workers"
-        f" (cap={MAX_FIRE}, window={WINDOW_HOURS}h, idle={IDLE_SECONDS}s)",
-        file=sys.stderr,
-    )
     return 0
 
 

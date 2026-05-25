@@ -444,3 +444,122 @@ def test_user_prompt_submit_emits_recall_block(env, monkeypatch, capsys):
     assert "## Recall" in ctx
     assert "phase 1 plan" in ctx
     assert data["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+
+
+# ── lifecycle marker tests ────────────────────────────────────────────────────
+
+def test_session_start_writes_lifecycle_marker(env, monkeypatch, capsys):
+    """session_start with a session_id -> audit_log has lifecycle:start row."""
+    db, _, _ = env
+    _stdin(monkeypatch, {"session_id": "test-lc-start"})
+    rc = hooks.main(["session_start"])
+    assert rc == 0
+    # Consume stdout to avoid pytest capsys noise.
+    capsys.readouterr()
+    conn = storage.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT summary FROM audit_log"
+            " WHERE action='session_lifecycle:start' AND target_id='test-lc-start'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "lifecycle:start row not written"
+    summary = row["summary"]
+    assert "ppid=" in summary
+    assert "source=cc" in summary
+    assert "started_at=" in summary
+
+
+def test_session_end_writes_lifecycle_end_marker(env, monkeypatch, tmp_path):
+    """session_end -> audit_log has lifecycle:end row."""
+    db, _, _ = env
+    jl = tmp_path / "s.jsonl"
+    jl.write_text(json.dumps({
+        "type": "user", "sessionId": "lc-end-sid",
+        "timestamp": "2026-05-25T10:00:00Z",
+        "message": {"role": "user", "content": "hello"},
+    }))
+    _stdin(monkeypatch, {"session_id": "lc-end-sid", "transcript_path": str(jl)})
+    with patch("marrow.hooks.popen_detach"):
+        rc = hooks.main(["session_end"])
+    assert rc == 0
+    conn = storage.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM audit_log"
+            " WHERE action='session_lifecycle:end' AND target_id='lc-end-sid' LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "lifecycle:end row not written"
+
+
+def test_session_end_skips_popen_when_already_covered(env, monkeypatch, tmp_path):
+    """session_end with ok,user_count=10 and 10 events -> popen_detach NOT called.
+
+    After archive_events runs, DB has 10 user events. ok,user_count=10 means
+    current_user (10) <= last_ok (10) -> gate fires, popen skipped.
+    """
+    db, _, _ = env
+    jl = tmp_path / "s.jsonl"
+    # Write 10 user events into transcript.
+    lines = []
+    for i in range(10):
+        lines.append(json.dumps({
+            "type": "user", "sessionId": "idem-sid",
+            "timestamp": f"2026-05-25T10:{i:02d}:00Z",
+            "message": {"role": "user", "content": f"msg {i}"},
+        }))
+    jl.write_text("\n".join(lines))
+    # Pre-seed ok,user_count=10 row only (no events — archive_events inserts them).
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', 'idem-sid', 'sessionend_extract', 'ok,user_count=10')"
+        )
+    conn.close()
+    _stdin(monkeypatch, {"session_id": "idem-sid", "transcript_path": str(jl)})
+    popen_calls: list = []
+    with patch("marrow.hooks.popen_detach",
+               side_effect=lambda a, log_path: popen_calls.append(a)):
+        rc = hooks.main(["session_end"])
+    assert rc == 0
+    async_calls = [c for c in popen_calls if "sessionend_async" in " ".join(c)]
+    assert async_calls == [], "popen_detach must be skipped when events already covered"
+
+
+def test_session_end_fires_popen_when_events_grew(env, monkeypatch, tmp_path):
+    """session_end with ok,user_count=10 but 15 new events -> popen_detach called.
+
+    Transcript has 15 user events. After archive_events, DB has 15. ok,user_count=10
+    means current_user (15) > last_ok (10) -> gate skipped, popen fires.
+    """
+    db, _, _ = env
+    jl = tmp_path / "s.jsonl"
+    lines = []
+    for i in range(15):
+        lines.append(json.dumps({
+            "type": "user", "sessionId": "grew-sid",
+            "timestamp": f"2026-05-25T10:{i:02d}:00Z",
+            "message": {"role": "user", "content": f"msg {i}"},
+        }))
+    jl.write_text("\n".join(lines))
+    # Pre-seed ok at count=10 only (no events — archive_events inserts 15).
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', 'grew-sid', 'sessionend_extract', 'ok,user_count=10')"
+        )
+    conn.close()
+    _stdin(monkeypatch, {"session_id": "grew-sid", "transcript_path": str(jl)})
+    popen_calls: list = []
+    with patch("marrow.hooks.popen_detach",
+               side_effect=lambda a, log_path: popen_calls.append(a)):
+        rc = hooks.main(["session_end"])
+    assert rc == 0
+    async_calls = [c for c in popen_calls if "sessionend_async" in " ".join(c)]
+    assert len(async_calls) == 1, "popen_detach must be called when events grew"

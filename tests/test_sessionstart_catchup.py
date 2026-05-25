@@ -1,0 +1,251 @@
+"""Tests for the rewritten marker-based sessionstart_catchup.
+
+Each test covers one state in the _classify 7-state decision table, plus
+alert idempotency and live-ppid started_at mismatch.
+"""
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
+from unittest.mock import patch
+
+import pytest
+
+from marrow import config, storage
+
+
+@pytest.fixture()
+def db_env(tmp_path, monkeypatch):
+    db = str(tmp_path / "t.db")
+    conn = storage.init_db(db)
+    conn.close()
+    monkeypatch.setattr(config, "db_path", lambda: db)
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    return db, tmp_path
+
+
+def _now_ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ago_ts(seconds: int) -> str:
+    from datetime import timedelta
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def _insert_lifecycle(db: str, sid: str, action: str, summary: str = "",
+                      occurred_at: str | None = None) -> None:
+    conn = storage.connect(db)
+    with conn:
+        if occurred_at:
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary, occurred_at)"
+                " VALUES ('events', ?, ?, ?, ?)",
+                (sid, action, summary, occurred_at),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('events', ?, ?, ?)",
+                (sid, action, summary),
+            )
+    conn.close()
+
+
+def _insert_extract(db: str, sid: str, summary: str) -> None:
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', ?)",
+            (sid, summary),
+        )
+    conn.close()
+
+
+def _insert_user_events(db: str, sid: str, count: int) -> None:
+    conn = storage.connect(db)
+    with conn:
+        for i in range(count):
+            ts = (datetime.now(timezone.utc)
+                  .strftime("%Y-%m-%dT%H:%M:%SZ"))
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content)"
+                " VALUES (?, ?, 'user', ?)",
+                (sid, ts, f"msg {i}"),
+            )
+    conn.close()
+
+
+def _connect(db: str):
+    return storage.connect(db)
+
+
+# ── helpers for _classify ─────────────────────────────────────────────────────
+
+def _classify(db: str, sid: str, live_ppids: set[int]):
+    from marrow import sessionstart_catchup
+    conn = storage.connect(db)
+    try:
+        return sessionstart_catchup._classify(conn, sid, live_ppids)
+    finally:
+        conn.close()
+
+
+# ── 7 state tests ─────────────────────────────────────────────────────────────
+
+def test_classify_state1_active_ppid_skips(db_env):
+    """State 1: ppid in live_ppids -> skip (session still active)."""
+    db, _ = db_env
+    sid = "s1-active"
+    _insert_lifecycle(db, sid, "session_lifecycle:start", "ppid=12345,source=cc,started_at=1000")
+    result = _classify(db, sid, live_ppids={12345})
+    assert result == "skip"
+
+
+def test_classify_state2_end_ok_grew_spawns(db_env):
+    """State 2: lifecycle:end + ok,user_count=5 + events.user_count=10 -> spawn."""
+    db, _ = db_env
+    sid = "s2-grew"
+    _insert_lifecycle(db, sid, "session_lifecycle:end")
+    _insert_extract(db, sid, "ok,user_count=5")
+    _insert_user_events(db, sid, 10)
+    result = _classify(db, sid, live_ppids=set())
+    assert result == "spawn"
+
+
+def test_classify_state3_end_ok_covered_skips(db_env):
+    """State 3: lifecycle:end + ok,user_count=10 + events.user_count=10 -> skip."""
+    db, _ = db_env
+    sid = "s3-covered"
+    _insert_lifecycle(db, sid, "session_lifecycle:end")
+    _insert_extract(db, sid, "ok,user_count=10")
+    _insert_user_events(db, sid, 10)
+    result = _classify(db, sid, live_ppids=set())
+    assert result == "skip"
+
+
+def test_classify_state4_end_no_ok_within_grace_skips(db_env, monkeypatch):
+    """State 4: lifecycle:end + no ok + elapsed < 5min -> skip (async still running)."""
+    db, _ = db_env
+    sid = "s4-grace"
+    # lifecycle:end just now -> within grace period
+    _insert_lifecycle(db, sid, "session_lifecycle:end")
+    result = _classify(db, sid, live_ppids=set())
+    assert result == "skip"
+
+
+def test_classify_state5_end_no_ok_past_grace_spawns(db_env):
+    """State 5: lifecycle:end + no ok + elapsed >= 5min -> spawn (async died)."""
+    db, _ = db_env
+    sid = "s5-async-died"
+    # Insert end marker with timestamp 10min ago
+    old_ts = _ago_ts(600)
+    _insert_lifecycle(db, sid, "session_lifecycle:end", occurred_at=old_ts)
+    result = _classify(db, sid, live_ppids=set())
+    assert result == "spawn"
+
+
+def test_classify_state6_no_end_dead_ppid_spawns(db_env):
+    """State 6: no lifecycle:end + ppid dead -> spawn (endhook didn't fire)."""
+    db, _ = db_env
+    sid = "s6-no-end"
+    _insert_lifecycle(db, sid, "session_lifecycle:start", "ppid=99999,source=cc,started_at=1000")
+    # ppid 99999 not in live_ppids -> dead
+    result = _classify(db, sid, live_ppids=set())
+    assert result == "spawn"
+
+
+def test_classify_state7_no_markers_in_events_spawns(db_env):
+    """State 7: no marker rows + sid in events -> spawn (cc died before hooks)."""
+    db, _ = db_env
+    sid = "s7-no-markers"
+    _insert_user_events(db, sid, 5)
+    result = _classify(db, sid, live_ppids=set())
+    assert result == "spawn"
+
+
+# ── alert tests ───────────────────────────────────────────────────────────────
+
+def test_silent_death_alert_written(db_env):
+    """lifecycle:start 31min ago, ppid dead, no end -> alert row written."""
+    db, _ = db_env
+    sid = "alert-sid"
+    old_ts = _ago_ts(31 * 60)
+    _insert_lifecycle(db, sid, "session_lifecycle:start",
+                      "ppid=88888,source=cc,started_at=1000", occurred_at=old_ts)
+    _insert_user_events(db, sid, 5)
+
+    with patch("marrow.sessionstart_catchup.popen_detach"):
+        from marrow import sessionstart_catchup
+        sessionstart_catchup.main()
+
+    conn = storage.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT summary FROM audit_log"
+            " WHERE action='alert' AND target_id=? AND summary LIKE 'silent_death_no_end:%' LIMIT 1",
+            (sid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "silent death alert should be written"
+    assert sid in row["summary"]
+
+
+def test_alert_idempotent(db_env):
+    """Running catchup twice for a silent death -> only one alert row."""
+    db, _ = db_env
+    sid = "idem-alert-sid"
+    old_ts = _ago_ts(31 * 60)
+    _insert_lifecycle(db, sid, "session_lifecycle:start",
+                      "ppid=77777,source=cc,started_at=1000", occurred_at=old_ts)
+    _insert_user_events(db, sid, 5)
+
+    with patch("marrow.sessionstart_catchup.popen_detach"):
+        from marrow import sessionstart_catchup
+        sessionstart_catchup.main()
+        sessionstart_catchup.main()
+
+    conn = storage.connect(db)
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) c FROM audit_log"
+            " WHERE action='alert' AND target_id=? AND summary LIKE 'silent_death_no_end:%'",
+            (sid,),
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    assert count == 1, f"expected 1 alert row, got {count}"
+
+
+def test_live_cc_ppids_started_at_mismatch(db_env, monkeypatch):
+    """If ps lstart doesn't match recorded started_at, ppid treated as dead."""
+    db, _ = db_env
+    sid = "mismatch-sid"
+    # started_at=1000 (epoch 1970) but ps will return current time -> mismatch
+    _insert_lifecycle(db, sid, "session_lifecycle:start",
+                      "ppid=55555,source=cc,started_at=1000")
+
+    def fake_kill(pid, sig):
+        # os.kill succeeds (process "alive")
+        pass
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            stdout = "Mon May 25 21:00:00 2026\n"  # != epoch 1000
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr("marrow.sessionstart_catchup.os.kill", fake_kill)
+    monkeypatch.setattr("marrow.sessionstart_catchup.subprocess.run", fake_run)
+
+    from marrow import sessionstart_catchup
+    conn = storage.connect(db)
+    try:
+        live = sessionstart_catchup._live_cc_ppids(conn)
+    finally:
+        conn.close()
+    assert 55555 not in live, "started_at mismatch should exclude ppid from live set"

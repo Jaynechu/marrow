@@ -15,13 +15,48 @@ PreToolUse is the global prompt-guard.py (scope already covers
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from . import config, dashboard, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach
 
 SESSION_START_HARD_CAP = 6000
+
+
+def _started_at_for(ppid: int) -> int:
+    """Return process start time as epoch for *ppid* via `ps -o lstart=`.
+    Falls back to current time on any failure."""
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(ppid)],
+            capture_output=True, text=True, check=False, timeout=2,
+        ).stdout.strip()
+        if out:
+            return int(datetime.strptime(out, "%a %b %d %H:%M:%S %Y").timestamp())
+    except Exception:  # noqa: BLE001
+        pass
+    return int(time.time())
+
+
+def _last_ok_user_count(conn: sqlite3.Connection, sid: str) -> int | None:
+    """Return N from the most recent `ok,user_count=N` audit row, or None."""
+    row = conn.execute(
+        "SELECT summary FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=?"
+        " AND summary LIKE 'ok,user_count=%'"
+        " ORDER BY id DESC LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        return int(row["summary"].split("=", 1)[1])
+    except (ValueError, IndexError):
+        return None
 
 
 def _now_utc() -> datetime:
@@ -119,10 +154,26 @@ def session_start() -> int:
                            source="hooks.py", db=config.db_path())
         except Exception:
             pass
-    _read_input()
+    inp = _read_input()
     db = config.db_path()
     conn = storage.connect(db)
     try:
+        # Write lifecycle:start marker so catchup can detect live vs dead sessions.
+        sid = inp.get("session_id") if isinstance(inp, dict) else None
+        if sid:
+            try:
+                ppid = os.getppid()
+                started_at = _started_at_for(ppid)
+                with conn:
+                    conn.execute(
+                        "INSERT INTO audit_log"
+                        " (target_table, target_id, action, summary)"
+                        " VALUES ('events', ?, 'session_lifecycle:start', ?)",
+                        (sid, f"ppid={ppid},source=cc,started_at={started_at}"),
+                    )
+            except Exception:  # noqa: BLE001 — never block session_start
+                pass
+
         parts: list[str] = []
 
         # Heartbeat block goes first so it is never buried.
@@ -206,16 +257,44 @@ def session_end() -> int:
                 f"session_end embed_pending failed: {e}",
                 source="hooks.py", db=db,
             )
-        # Fire async LLM extraction (SessionEnd async). Skip gate and audit
-        # trail live inside sessionend_async — hook stays dumb (§2.5b design).
+        # Fire async LLM extraction (SessionEnd async). Lifecycle markers and
+        # idempotent gate live here; sessionend_async owns its own skip gate too.
         try:
             sid = rows[0]["session_id"] if rows else None
             if sid:
-                log = config.DATA_DIR / "logs" / f"sessionend_async_{sid}.log"
-                popen_detach(
-                    [sys.executable, "-m", "marrow.sessionend_async", "--sid", sid],
-                    log_path=log,
-                )
+                # 1. Write lifecycle:end marker (always, best-effort).
+                try:
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO audit_log"
+                            " (target_table, target_id, action, summary)"
+                            " VALUES ('events', ?, 'session_lifecycle:end', '')",
+                            (sid,),
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
+                # 2. Idempotent gate: skip popen if events haven't grown since last ok.
+                skip_spawn = False
+                try:
+                    last_ok = _last_ok_user_count(conn, sid)
+                    if last_ok is not None:
+                        current_user = conn.execute(
+                            "SELECT COUNT(*) c FROM events"
+                            " WHERE session_id=? AND role='user'",
+                            (sid,),
+                        ).fetchone()["c"]
+                        if current_user <= last_ok:
+                            skip_spawn = True
+                except Exception:  # noqa: BLE001 — gate failure → safe to spawn
+                    pass
+
+                if not skip_spawn:
+                    log = config.DATA_DIR / "logs" / f"sessionend_async_{sid}.log"
+                    popen_detach(
+                        [sys.executable, "-m", "marrow.sessionend_async", "--sid", sid],
+                        log_path=log,
+                    )
         except Exception as e:
             try:
                 repo.add_alert(

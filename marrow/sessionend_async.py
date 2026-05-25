@@ -28,7 +28,8 @@ _LOGS_DIR = Path.home() / ".config" / "marrow" / "logs"
 _TZ = ZoneInfo("Australia/Melbourne")
 _CUTOFF_H = 6  # 6AM day boundary (per pipeline §6)
 
-_SUMMARY_OK = "ok"
+_OK_PREFIX = "ok,user_count="
+_SUMMARY_OK = "ok"  # legacy; kept for backward-compat checks
 _SUMMARY_SKIP = "skip:short_session"
 _SUMMARY_START = "start"
 
@@ -79,12 +80,35 @@ def _user_event_count(conn, sid: str) -> int:
 
 
 def _already_done(conn, sid: str) -> bool:
-    row = conn.execute(
+    """True iff this sid has already been fully covered.
+
+    New semantics: look for the most recent `ok,user_count=N` row; if current
+    user_count > N, return False so incremental runs trigger. Backward compat:
+    a legacy `summary='ok'` row (no user_count) is treated as fully covered
+    to avoid needless re-runs on historical data.
+    """
+    # Check for new-style ok row with user_count.
+    ok_row = conn.execute(
+        "SELECT summary FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=?"
+        " AND summary LIKE 'ok,user_count=%'"
+        " ORDER BY id DESC LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if ok_row:
+        try:
+            n = int(ok_row["summary"].split("=", 1)[1])
+        except (ValueError, IndexError):
+            return True  # malformed but row exists → treat as done
+        return _user_event_count(conn, sid) <= n
+
+    # Backward compat: legacy plain 'ok' row.
+    legacy_row = conn.execute(
         "SELECT 1 FROM audit_log"
         " WHERE action='sessionend_extract' AND target_id=? AND summary=?",
         (sid, _SUMMARY_OK),
     ).fetchone()
-    return row is not None
+    return legacy_row is not None
 
 
 def _drop_stale_skip(conn, sid: str, threshold: int) -> bool:
@@ -98,9 +122,10 @@ def _drop_stale_skip(conn, sid: str, threshold: int) -> bool:
     extraction path run. Returns True if a stale skip was cleared."""
     skip_row = conn.execute(
         "SELECT id FROM audit_log"
-        " WHERE action='sessionend_extract' AND target_id=? AND summary=?"
+        " WHERE action='sessionend_extract' AND target_id=?"
+        " AND (summary=? OR summary LIKE ?)"
         " ORDER BY id DESC LIMIT 1",
-        (sid, _SUMMARY_SKIP),
+        (sid, _SUMMARY_SKIP, f"{_SUMMARY_SKIP},%"),
     ).fetchone()
     if not skip_row:
         return False
@@ -150,7 +175,8 @@ def _write_final_audit(conn, sid: str, summary: str) -> None:
         row = conn.execute(
             "SELECT"
             " SUM(CASE WHEN summary LIKE 'fail:%' OR summary LIKE 'partial:%' THEN 1 ELSE 0 END) AS fails,"
-            " SUM(CASE WHEN summary IN ('ok','skip:short_session') THEN 1 ELSE 0 END) AS done,"
+            " SUM(CASE WHEN summary='ok' OR summary LIKE 'ok,user_count=%'"
+            "          OR summary LIKE 'skip:short_session%' THEN 1 ELSE 0 END) AS done,"
             " SUM(CASE WHEN summary='start' THEN 1 ELSE 0 END) AS starts"
             " FROM audit_log"
             " WHERE action='sessionend_extract' AND target_id=?",
@@ -469,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
 
         count = _user_event_count(conn, sid)
         if count <= threshold:
-            _write_final_audit(conn, sid, _SUMMARY_SKIP)
+            _write_final_audit(conn, sid, f"{_SUMMARY_SKIP},user_count={count}")
             return 0
 
         events_text, date = _session_events_text(conn, sid)
@@ -514,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
                     pass
 
         if not failures:
-            _write_final_audit(conn, sid, _SUMMARY_OK)
+            _write_final_audit(conn, sid, f"{_OK_PREFIX}{count}")
             return 0
         if len(failures) == len(writers):
             _write_final_audit(conn, sid, "fail:all")
