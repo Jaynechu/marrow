@@ -84,7 +84,14 @@ def _read_input() -> dict:
 
 def _handoff_text(conn) -> str:
     h = repo.handoff(conn)
-    lines = ["# Marrow handoff", "", "## Open Tasks"]
+    lines = ["# Marrow handoff", ""]
+    archived = repo.archived_today(conn)
+    if archived:
+        lines.append(f"## Today Archived [{len(archived)}]")
+        for t in archived:
+            lines.append(f"- [{t['category']}] {t['title']} #{t['id']}")
+        lines.append("")
+    lines.append("## Open Tasks")
     if h["tasks"]:
         for t in h["tasks"]:
             due = f" [Due {t['due']}]" if t.get("due") else ""

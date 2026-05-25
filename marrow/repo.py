@@ -8,6 +8,7 @@ import sqlite3
 
 from . import storage
 from . import recall as _recall_mod
+from . import top_sections as _top_sections
 
 
 def _fts_query(q: str) -> str:
@@ -39,6 +40,19 @@ def open_alerts(conn: sqlite3.Connection) -> list[dict]:
         "FROM alerts WHERE resolved = 0 "
         "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 "
         "ELSE 2 END, created_at ASC"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def archived_today(conn: sqlite3.Connection) -> list[dict]:
+    """Tasks done since today's 6AM cutoff, sorted by updated_at ASC."""
+    cutoff = _top_sections._day_cutoff_utc()
+    cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+    rows = conn.execute(
+        "SELECT id, category, title, updated_at FROM tasks "
+        "WHERE status = 'done' AND updated_at >= ? "
+        "ORDER BY updated_at ASC",
+        (cutoff_iso,),
     ).fetchall()
     return [dict(r) for r in rows]
 
