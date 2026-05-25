@@ -1,0 +1,182 @@
+"""Per-subpage InserterSpec smoke tests (Plan M Phase B).
+
+Verifies each builder returns a usable spec and that bootstrap from a
+populated DB produces the expected blocks. The fine-grained inserter
+behaviour (user-edit-wins / tombstone) is covered by test_inserter.py;
+here we focus on the wiring per subpage.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from marrow import storage, subpage_specs
+from marrow.inserter import write_subpage_inserter
+from marrow.md_index import MdIndex
+
+
+@pytest.fixture()
+def db(tmp_path):
+    p = str(tmp_path / "t.db")
+    conn = storage.init_db(p)
+    with conn:
+        conn.execute("INSERT INTO diary(date,content,mood)"
+                     " VALUES('2026-05-20','Today was a good day.','calm')")
+        conn.execute("INSERT INTO milestones(scope,date,title,description,pinned)"
+                     " VALUES('us','2026-01-17','First meeting','In the rain',1)")
+        conn.execute("INSERT INTO milestones(scope,date,title,pinned)"
+                     " VALUES('me','2026-03-01','Head of school award',1)")
+        conn.execute("INSERT INTO memes(type,key,value,context,use_count)"
+                     " VALUES('paw','大龙虾','Openclaw','popular',5)")
+        conn.execute("INSERT INTO memes(type,key,value)"
+                     " VALUES('meme','rickroll','GG')")
+        conn.execute("INSERT INTO goose_bites(date,bites,best)"
+                     " VALUES('2026-05-20','quack quack',1)")
+        conn.execute("INSERT INTO tasks(category,title,status,next_step)"
+                     " VALUES('project','Marrow','active','build subpages')")
+    conn.close()
+    return p
+
+
+def _run(spec, db_path):
+    conn = storage.connect(db_path)
+    try:
+        store = MdIndex(conn)
+        return write_subpage_inserter(spec, conn, store)
+    finally:
+        conn.close()
+
+
+# ── milestone ──────────────────────────────────────────────────────────────
+
+
+def test_milestone_bootstrap_emits_us_and_me_sections(db, tmp_path):
+    spec = subpage_specs.build_milestone_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "## Us" in text
+    assert "## Me" in text
+    assert "##### [2026-01-17] First meeting" in text
+    assert "##### [2026-03-01] Head of school award" in text
+    assert "<!-- id:1 -->" in text and "<!-- id:2 -->" in text
+    assert counts["bootstrapped"] == 2
+
+
+# ── diary ──────────────────────────────────────────────────────────────────
+
+
+def test_diary_bootstrap_uses_date_block_ids(db, tmp_path):
+    spec = subpage_specs.build_diary_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "## 2026" in text
+    assert "#### 2026-05-20" in text
+    assert "Today was a good day." in text
+    assert "<!-- id:2026-05-20 -->" in text
+    assert counts["bootstrapped"] == 1
+
+
+# ── memes ──────────────────────────────────────────────────────────────────
+
+
+def test_memes_bootstrap_personal_and_public(db, tmp_path):
+    spec = subpage_specs.build_memes_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "## Personal" in text
+    assert "## Public" in text
+    assert "大龙虾" in text
+    assert "rickroll" in text
+    assert counts["bootstrapped"] == 2
+    # Personal section appears before Public.
+    assert text.index("## Personal") < text.index("## Public")
+
+
+# ── goose ──────────────────────────────────────────────────────────────────
+
+
+def test_goose_bootstrap_uses_year_section_and_row_id(db, tmp_path):
+    spec = subpage_specs.build_goose_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "## 2026" in text
+    assert "quack quack" in text
+    # block_id is the DB row id, not the date (multiple bites per day possible).
+    assert "<!-- id:1 -->" in text
+    assert counts["bootstrapped"] == 1
+
+
+# ── projects index ─────────────────────────────────────────────────────────
+
+
+def test_projects_index_bootstrap_active_section(db, tmp_path):
+    spec = subpage_specs.build_projects_index_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "## Active" in text
+    assert "Marrow" in text
+    assert counts["bootstrapped"] == 1
+
+
+# ── stub subpages (profile / stickers / wallet) ────────────────────────────
+
+
+def test_profile_bootstrap_emits_empty_placeholder(db, tmp_path):
+    spec = subpage_specs.build_profile_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "Profile entries land here" in text
+    assert counts["bootstrapped"] == 0
+
+
+def test_stickers_bootstrap_emits_empty_placeholder(db, tmp_path):
+    spec = subpage_specs.build_stickers_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "auto-describe" in text
+    assert counts["bootstrapped"] == 0
+
+
+def test_wallet_bootstrap_emits_empty_placeholder(db, tmp_path):
+    spec = subpage_specs.build_wallet_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "Phase 5" in text
+    assert counts["bootstrapped"] == 0
+
+
+# ── registry ───────────────────────────────────────────────────────────────
+
+
+def test_registry_covers_expected_subpages():
+    keys = set(subpage_specs.SPEC_BUILDERS)
+    expected = {"profile", "milestone", "diary", "memes",
+                "stickers", "wallet", "goose", "projects"}
+    assert expected.issubset(keys)
+    # Cheatsheet stays disk-driven; not in the registry.
+    assert "cheatsheet" not in keys
+
+
+# ── append flow: rerun after row added ─────────────────────────────────────
+
+
+def test_milestone_new_row_appended_on_rerun(db, tmp_path):
+    spec = subpage_specs.build_milestone_spec(str(tmp_path / "ny"))
+    _run(spec, db)
+    # Add another milestone.
+    conn = storage.connect(db)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO milestones(scope,date,title,pinned)"
+                " VALUES('us','2026-04-10','Anniversary',1)"
+            )
+    finally:
+        conn.close()
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    assert "Anniversary" in text
+    assert "First meeting" in text  # preserved
+    assert counts["appended"] == 1
+    assert counts["preserved"] == 2
