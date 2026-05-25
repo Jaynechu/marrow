@@ -165,7 +165,6 @@ def _classify(conn, sid: str, live_ppids: set[int]) -> Literal["spawn", "skip"]:
         " ORDER BY id DESC LIMIT 1",
         (sid,),
     ).fetchone()
-
     # Fetch most recent ok row for this sid.
     ok_row = conn.execute(
         "SELECT summary FROM audit_log"
