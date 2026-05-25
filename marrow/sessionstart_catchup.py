@@ -34,15 +34,24 @@ MAX_FIRE = 2
 RETRY_LIMIT = 2  # max fail/partial extractions before catchup gives up
 
 
+_SKIP_THRESHOLD = 5  # mirrors cfg.sessionend.skip_turn_threshold default
+
+
 def _should_skip(conn, sid: str) -> bool:
-    """Skip iff already succeeded (ok / skip:short_session) or already
-    hit RETRY_LIMIT effective failures. Effective failures = explicit
-    fail/partial rows + silent deaths (start rows without a matching
-    terminal row). Silent death = sessionend_async stamped 'start' but
-    died before writing ok/skip/fail/partial."""
+    """Skip iff already succeeded (ok) or already hit RETRY_LIMIT effective
+    failures. Effective failures = explicit fail/partial rows + silent deaths
+    (start rows without a matching terminal row). Silent death =
+    sessionend_async stamped 'start' but died before writing ok/skip/fail/
+    partial.
+
+    `skip:short_session` is NOT terminal: cc fires session_end mid-flush, so
+    the first hook can land a skip while only a partial slice of events is on
+    disk. If a later transcript archive grew past the skip threshold, we want
+    to retry. sessionend_async._drop_stale_skip clears the row on entry."""
     row = conn.execute(
         "SELECT"
-        " SUM(CASE WHEN summary IN ('ok','skip:short_session') THEN 1 ELSE 0 END) AS done,"
+        " SUM(CASE WHEN summary='ok' THEN 1 ELSE 0 END) AS done,"
+        " SUM(CASE WHEN summary='skip:short_session' THEN 1 ELSE 0 END) AS skipped,"
         " SUM(CASE WHEN summary LIKE 'fail:%' OR summary LIKE 'partial:%' THEN 1 ELSE 0 END) AS fails,"
         " SUM(CASE WHEN summary='start' THEN 1 ELSE 0 END) AS starts"
         " FROM audit_log"
@@ -52,10 +61,25 @@ def _should_skip(conn, sid: str) -> bool:
     if not row:
         return False
     done = row["done"] or 0
+    skipped = row["skipped"] or 0
     fails = row["fails"] or 0
     starts = row["starts"] or 0
-    silent_deaths = max(0, starts - (done + fails))
-    return done > 0 or (fails + silent_deaths) >= RETRY_LIMIT
+    # Silent deaths: starts without a matching ok/skip/fail/partial. Skip
+    # rows count too — a stamped 'start' followed by a 'skip' is a clean exit.
+    silent_deaths = max(0, starts - (done + skipped + fails))
+    if done > 0:
+        return True
+    if (fails + silent_deaths) >= RETRY_LIMIT:
+        return True
+    if skipped > 0:
+        # Re-run only if the session grew past the threshold since the skip.
+        ev = conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE session_id=? AND role='user'",
+            (sid,),
+        ).fetchone()
+        if (ev["c"] if ev else 0) <= _SKIP_THRESHOLD:
+            return True
+    return False
 
 
 def _jsonl_orphans(conn) -> list[str]:

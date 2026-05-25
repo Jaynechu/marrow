@@ -146,6 +146,113 @@ def test_sessionend_async_idempotent(db_env):
     assert len(rows) == 1  # no duplicate row added
 
 
+def test_sessionend_async_clears_stale_skip_when_events_grew(db_env):
+    """Silent-death regression: cc fires session_end mid-flush, only a partial
+    slice of events on disk → sessionend_async writes skip:short_session. Then
+    the real session ends with 41 events. Re-running with grown event count
+    must drop the stale skip and process normally."""
+    db, _ = db_env
+    sid = "stale-skip-sid"
+    # Phase 1: partial archive — 3 user events, below threshold.
+    _insert_events(db, sid, count=3, role="user")
+    with patch("marrow.sessionend_async.LLMClient") as MockClient:
+        MockClient.return_value.call.side_effect = AssertionError(
+            "must not call LLM for short session")
+        from marrow import sessionend_async
+        rc = sessionend_async.main(["--sid", sid])
+    assert rc == 0
+    rows = _audit_rows(db, sid)
+    assert [r["summary"] for r in rows] == ["start", "skip:short_session"]
+
+    # Phase 2: real archive lands — bump events past threshold.
+    _insert_events(db, sid, count=20, role="user")
+    with patch("marrow.sessionend_async.LLMClient") as MockClient:
+        MockClient.return_value.call.return_value = "echo done"
+        rc2 = sessionend_async.main(["--sid", sid])
+    assert rc2 == 0
+    summaries = [r["summary"] for r in _audit_rows(db, sid)]
+    # Stale skip dropped, reset trail logged, real run completed.
+    assert "skip:short_session" not in summaries
+    assert "reset:stale_skip" in summaries
+    assert summaries[-1] == "ok"
+
+
+def test_catchup_retries_sid_when_events_grew_past_skip(db_env, monkeypatch,
+                                                          tmp_path):
+    """Catchup-side mirror: a sid with skip:short_session + grown events must
+    be re-fired by the catchup loop. Old code permanently blocked it."""
+    db, _ = db_env
+    projects = tmp_path / "projects"
+    proj_dir = projects / "-Users-test"
+    proj_dir.mkdir(parents=True)
+    sid = "grown-sid"
+    _write_real_jsonl(proj_dir / f"{sid}.jsonl", sid)
+    now = time.time()
+    os.utime(proj_dir / f"{sid}.jsonl", (now - 3600, now - 3600))
+
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'skip:short_session')",
+            (sid,))
+        # Simulate the real session growing far past skip threshold.
+        for i in range(20):
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content)"
+                " VALUES (?, ?, 'user', ?)",
+                (sid, f"2026-05-24T10:{i:02d}:00Z", f"msg {i}"))
+    conn.close()
+
+    monkeypatch.setattr(
+        "marrow.sessionstart_catchup._CC_PROJECTS", projects)
+
+    spawned: list[list[str]] = []
+    with patch("marrow.sessionstart_catchup.popen_detach",
+               side_effect=lambda a, log_path: spawned.append(list(a))):
+        from marrow import sessionstart_catchup
+        sessionstart_catchup.main()
+
+    fired = {args[args.index("--sid") + 1] for args in spawned}
+    assert sid in fired, (
+        "grown sid blocked by stale skip — silent-death regression returned")
+
+
+def test_catchup_keeps_skipping_genuinely_short_sids(db_env, monkeypatch,
+                                                      tmp_path):
+    """Counter-test: a sid with skip:short_session AND only 2 user events must
+    stay skipped (not re-fired)."""
+    db, _ = db_env
+    projects = tmp_path / "projects"
+    proj_dir = projects / "-Users-test"
+    proj_dir.mkdir(parents=True)
+    sid = "stays-skipped-sid"
+    _write_real_jsonl(proj_dir / f"{sid}.jsonl", sid)
+    now = time.time()
+    os.utime(proj_dir / f"{sid}.jsonl", (now - 3600, now - 3600))
+    conn = storage.connect(db)
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'skip:short_session')",
+            (sid,))
+        for i in range(2):
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content)"
+                " VALUES (?, ?, 'user', ?)",
+                (sid, f"2026-05-24T10:{i:02d}:00Z", f"msg {i}"))
+    conn.close()
+    monkeypatch.setattr(
+        "marrow.sessionstart_catchup._CC_PROJECTS", projects)
+    spawned: list[list[str]] = []
+    with patch("marrow.sessionstart_catchup.popen_detach",
+               side_effect=lambda a, log_path: spawned.append(list(a))):
+        from marrow import sessionstart_catchup
+        sessionstart_catchup.main()
+    fired = {args[args.index("--sid") + 1] for args in spawned}
+    assert sid not in fired
+
+
 def test_sessionend_async_writes_fail_audit_on_exception(db_env):
     """Single sonnet call raises → final summary='fail:RuntimeError', rc=1."""
     db, _ = db_env
