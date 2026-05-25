@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -338,6 +338,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v7(conn)
         _migrate_to_v8(conn)
         _migrate_to_v9(conn)
+        _migrate_to_v10(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -507,3 +508,31 @@ def _migrate_to_v9(conn: sqlite3.Connection) -> None:
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 9:
         return
+
+
+def _migrate_to_v10(conn: sqlite3.Connection) -> None:
+    """v10: md_index table (Phase 3 md=SoT). Per-block content hash per file,
+    keyed (path, block_id). tombstone_at non-null = user deleted the block;
+    blocks the auto-writer from resurrecting same id with same hash. Watcher
+    + inserter share this table. Idempotent.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 10:
+        return
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS md_index ("
+        "  path TEXT NOT NULL,"
+        "  block_id TEXT NOT NULL,"
+        "  content_hash TEXT NOT NULL,"
+        "  last_seen_at TEXT NOT NULL,"
+        "  tombstone_at TEXT,"
+        "  PRIMARY KEY (path, block_id)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_md_index_path ON md_index(path)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_md_index_tombstone"
+        " ON md_index(tombstone_at) WHERE tombstone_at IS NOT NULL"
+    )
