@@ -243,9 +243,9 @@ def render_affect(conn: sqlite3.Connection) -> str:
         "date FROM affect WHERE superseded_by IS NULL AND date>=?",
         (week_floor,)).fetchall()]
 
-    # Line 1 — last sessionend batch (tone header + one anchored ep sub-bullet).
-    # Anchoring per ep lets reconcile_affect absorb description/label edits
-    # back into the specific DB row Lumi edited.
+    # Line 1 — last sessionend batch: tone header + inline eph/epl segments
+    # joined by ` · `, trailing ` [<ago>]`. Each ep segment carries its own
+    # `<!-- id:affect.N -->` anchor inline so reconcile_affect can absorb edits.
     if last_batch:
         tone_row = max(last_batch, key=lambda r: (r["importance"], r["valence"]))
         last_tone = tone_row.get("label") or _tone(
@@ -254,21 +254,23 @@ def render_affect(conn: sqlite3.Connection) -> str:
         ep_h = max(last_batch, key=lambda r: r["valence"])
         ep_l = min(last_batch, key=lambda r: r["valence"])
         ago = _rel_time(last_ts)
-        out.append(f"- 【{last_tone}】 [{ago}]")
-        out.append(f"  - {_ep_phrase(ep_h, 'h')} {_affect_anchor(ep_h)}")
+        segs = [f"{_ep_phrase(ep_h, 'h')} {_affect_anchor(ep_h)}"]
         if ep_l["id"] != ep_h["id"]:
-            out.append(f"  - {_ep_phrase(ep_l, 'l')} {_affect_anchor(ep_l)}")
+            segs.append(f"{_ep_phrase(ep_l, 'l')} {_affect_anchor(ep_l)}")
+        body = " · ".join(segs)
+        out.append(f"- 【{last_tone}】 · {body} [{ago}]")
 
-    # Line 2 — 24h (today, anchored to last_date).
+    # Line 2 — 24h aggregate (today, anchored to last_date).
     if today_rows:
         mv, ma = _wmean(today_rows, "valence"), _wmean(today_rows, "arousal")
         ep_h = max(today_rows, key=lambda r: (r["valence"], r["importance"]))
         ep_l = min(today_rows, key=lambda r: (r["valence"], -r["importance"]))
         tone = _tone(mv, ma)
-        out.append(f"- 【{tone}】 [24h]")
-        out.append(f"  - {_ep_phrase(ep_h, 'h')} {_affect_anchor(ep_h)}")
+        segs = [f"{_ep_phrase(ep_h, 'h')} {_affect_anchor(ep_h)}"]
         if ep_l["id"] != ep_h["id"]:
-            out.append(f"  - {_ep_phrase(ep_l, 'l')} {_affect_anchor(ep_l)}")
+            segs.append(f"{_ep_phrase(ep_l, 'l')} {_affect_anchor(ep_l)}")
+        body = " · ".join(segs)
+        out.append(f"- 【{tone}】 · {body} [24h]")
 
     out.append("")
     out.append("### This Week")
@@ -297,10 +299,14 @@ def render_affect(conn: sqlite3.Connection) -> str:
             week_rows,
             key=lambda r: (-abs(r["valence"] - simple_mean), -r["importance"]),
         )[:4]
-        out.append(f"- 【{tone_label}】")
+        segs = []
         for r in outliers:
             side = "h" if r["valence"] >= simple_mean else "l"
-            out.append(f"  - {_ep_phrase(r, side)} {_affect_anchor(r)}")
+            segs.append(f"{_ep_phrase(r, side)} {_affect_anchor(r)}")
+        if segs:
+            out.append(f"- 【{tone_label}】 · " + " · ".join(segs))
+        else:
+            out.append(f"- 【{tone_label}】")
     else:
         out.append("_none_")
 

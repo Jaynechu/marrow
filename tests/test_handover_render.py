@@ -215,7 +215,7 @@ def test_render_affect_today_band_low(env):
 
 
 def test_render_affect_today_single_ep_dedup(env):
-    """One today-ep → ep_h == ep_l, only the eph sub-bullet, no epl line."""
+    """One today-ep → ep_h == ep_l, only the eph segment, no epl on the line."""
     db, _, _, _ = env
     conn = _conn(db)
     today = datetime.now(timezone.utc).date().isoformat()
@@ -225,14 +225,14 @@ def test_render_affect_today_single_ep_dedup(env):
     conn.close()
     today_block = out.split("### Today")[1].split("###")[0]
     assert "eph2 平静 | 散步" in today_block
-    # No second-side sub-bullet for dedup case.
+    # No second-side segment for dedup case.
     assert "epl" not in today_block
-    # Anchor per ep — reconcile_affect relies on `<!-- id:affect.N -->`.
+    # Inline anchor — reconcile_affect relies on `<!-- id:affect.N -->`.
     assert "<!-- id:affect." in today_block
 
 
 def test_render_affect_today_multi_ep_phrase_format(env):
-    """Multi-ep day → eph sub-bullet then epl sub-bullet, each anchored."""
+    """Multi-ep day → eph and epl segments inline on one bullet, each anchored."""
     db, _, _, _ = env
     conn = _conn(db)
     today = datetime.now(timezone.utc).date().isoformat()
@@ -247,6 +247,11 @@ def test_render_affect_today_multi_ep_phrase_format(env):
     assert "epl3 委屈 | 猪一样的队友" in today_block
     # Both eps anchored so reconcile can absorb edits on either side.
     assert today_block.count("<!-- id:affect.") >= 2
+    # eph + epl share the same bullet line (inline format, not sub-bullets).
+    bullet = [ln for ln in today_block.splitlines()
+              if "eph4" in ln and "epl3" in ln]
+    assert bullet, "eph + epl must render on the same bullet line"
+    assert " · " in bullet[0], "ep segments joined by ` · `"
 
 
 def test_render_affect_week_variance_label(env):

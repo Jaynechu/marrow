@@ -650,18 +650,24 @@ def reconcile_tasks(conn: sqlite3.Connection,
 
 # ── affect reconcile ──────────────────────────────────────────────────────────
 
-# Affect rows in the dashboard carry `<!-- id:affect.<id> -->` anchors. Format
-# of each anchored line is one of:
-#   - 【tone】 [ago]       (no anchor — derived stats only)
-#     - ep{h|l}N <label> | <description> <!-- id:affect.N -->
-#   - [ ] <desc> <!-- id:affect.N -->     (pending sub-section)
+# Affect rows in the dashboard carry inline `<!-- id:affect.<id> -->` anchors.
+# Bullet shapes:
+#   - 【tone】 · eph<N> label | desc <!-- id:affect.N --> · epl<N> label | desc <!-- id:affect.N --> [<ago>|24h]
+#   - 【tone】 · segA <anchor> · segB <anchor> · segC <anchor> · segD <anchor>     (This Week)
+#   - [ ] <desc> <!-- id:affect.N -->                                              (Pending)
 _AFFECT_ID_RE = re.compile(r"<!-- id:affect\.(?P<id>\d+) -->")
-_AFFECT_EP_RE = re.compile(
-    r"^\s*-\s+ep[hl]\d+\s+(?P<label>.+?)\s*\|\s*(?P<desc>.+?)\s*$"
+# Segment parser: `eph<N> <label> | <desc>` or `epl<N> <label> | <desc>`.
+_AFFECT_EP_SEG_RE = re.compile(
+    r"^ep[hl]\d+\s+(?P<label>.+?)\s*\|\s*(?P<desc>.+?)\s*$"
 )
 _AFFECT_PENDING_RE = re.compile(
     r"^\s*-\s+\[[ x]\]\s+(?P<text>.+?)\s*$"
 )
+# Trailing ` [<token>]` suffix on Today/24h lines (e.g. ` [1m ago]`, ` [24h]`).
+_AFFECT_AGO_SUFFIX_RE = re.compile(r"\s+\[[^\]]+\]\s*$")
+# Middle-dot separator used to join tone header with ep segments and segments
+# with each other. Literal: space + U+00B7 + space.
+_AFFECT_SEG_SEP = " · "
 _AFFECT_H2 = "## Affect"
 
 
@@ -673,41 +679,67 @@ def _affect_audit(conn, aid: int, action: str, summary: str) -> None:
     )
 
 
-def _parse_affect_line(line: str, db_label: str | None,
-                       db_desc: str | None) -> tuple[str | None, str | None]:
-    """Recover (label, description) from a rendered affect anchored line.
+def _parse_affect_segments(line: str) -> list[tuple[int, str | None, str | None]]:
+    """Extract (id, label, description) tuples from a Today/Week affect line.
 
-    Strip the trailing `<!-- id:affect.N -->`. Try ep-phrase shape first
-    (`ep{h|l}N label | desc`); fall back to pending-shape (`[ ] text`).
-    Returns (None, None) when the line doesn't match either shape — caller
-    treats as unchanged.
+    Line shape (after the leading tone bracket):
+      - 【tone】 · ep{h|l}N <label> | <desc> <!-- id:affect.N --> · ... [<ago>]
+
+    Strategy: strip the trailing ` [<...>]` suffix if present, split by the
+    middle-dot separator ` · `, drop the first segment (tone header), then
+    for each remaining segment pull the inline anchor + parse the ep shape.
+    Segments that don't carry an anchor are skipped (e.g. tone header at
+    position 0). Malformed segments contribute (id, None, None) so caller
+    can mark them unchanged without crashing.
     """
+    body = line.rstrip()
+    # Strip trailing ` [<...>]` if present (Today line). This Week line has
+    # no trailing bracket so the regex no-ops.
+    body = _AFFECT_AGO_SUFFIX_RE.sub("", body)
+    parts = body.split(_AFFECT_SEG_SEP)
+    out: list[tuple[int, str | None, str | None]] = []
+    for seg in parts:
+        m_id = _AFFECT_ID_RE.search(seg)
+        if not m_id:
+            continue  # tone-header segment, or stray text
+        try:
+            aid = int(m_id.group("id"))
+        except ValueError:
+            continue
+        inner = _AFFECT_ID_RE.sub("", seg).strip()
+        m = _AFFECT_EP_SEG_RE.match(inner)
+        if m:
+            out.append((aid, m.group("label").strip(), m.group("desc").strip()))
+        else:
+            out.append((aid, None, None))
+    return out
+
+
+def _parse_affect_pending_line(line: str, db_label: str | None,
+                                db_desc: str | None
+                                ) -> tuple[str | None, str | None]:
+    """Recover (label, description) for a Pending row `- [ ] <text> <anchor>`."""
     body = _AFFECT_ID_RE.sub("", line).rstrip()
-    m = _AFFECT_EP_RE.match(body)
-    if m:
-        return m.group("label").strip(), m.group("desc").strip()
     m = _AFFECT_PENDING_RE.match(body)
-    if m:
-        text = m.group("text").strip()
-        # pending render emits `description or label or (ep)`. Map md text
-        # back to whichever field the DB sourced it from.
-        if db_desc and text == db_desc:
-            return None, db_desc  # unchanged
-        if db_label and text == db_label and not db_desc:
-            return db_label, None  # unchanged label-only source
-        # Edit detected — assume the user wrote into description (richer field).
-        return None, text
-    return None, None
+    if not m:
+        return None, None
+    text = m.group("text").strip()
+    if db_desc and text == db_desc:
+        return None, db_desc  # unchanged
+    if db_label and text == db_label and not db_desc:
+        return db_label, None
+    return None, text
 
 
 def reconcile_affect(conn: sqlite3.Connection,
                      dashboard_path: str | Path) -> ReconcileReport:
     """Absorb dashboard `## Affect` description/label edits back into the
-    affect table. Each anchored line maps 1:1 to one DB row via the
-    `<!-- id:affect.N -->` marker. Aggregate stats lines (no anchor) and
-    sub-section headings (`### Today`, `### Pending`) are left alone.
+    affect table. Each inline anchor `<!-- id:affect.N -->` maps to one DB
+    row. Today/Week bullets carry multiple anchored segments per line joined
+    by ` · `; Pending rows are one anchor per `- [ ] ...` line. Aggregate
+    stats text outside anchored segments is left alone.
 
-    No-op when the affect block has no anchored lines (cold-start / empty).
+    No-op when the affect block has no anchored segments (cold-start / empty).
     """
     rpt = ReconcileReport()
     dashboard_path = Path(dashboard_path)
@@ -721,42 +753,65 @@ def reconcile_affect(conn: sqlite3.Connection,
     next_h2 = re.search(r"\n##\s", after_h2)
     block = after_h2[: next_h2.start()] if next_h2 else after_h2
 
-    # Collect anchored lines: id -> raw line.
-    anchored: dict[int, str] = {}
+    # Two passes: collect anchored segments + remember section per id so the
+    # pending parser (which needs DB context for label-vs-desc) can be applied
+    # after DB rows load.
+    ep_segs: dict[int, tuple[str | None, str | None]] = {}
+    pending_lines: dict[int, str] = {}
+    in_pending = False
     for raw in block.splitlines():
-        m = _AFFECT_ID_RE.search(raw)
-        if not m:
+        s = raw.rstrip()
+        stripped = s.lstrip()
+        if stripped.startswith("### Pending"):
+            in_pending = True
+            continue
+        if stripped.startswith("### "):
+            in_pending = False
+            continue
+        if not _AFFECT_ID_RE.search(s):
+            continue
+        if in_pending:
+            m_id = _AFFECT_ID_RE.search(s)
+            try:
+                aid = int(m_id.group("id"))
+            except ValueError:
+                continue
+            pending_lines[aid] = s
             continue
         try:
-            aid = int(m.group("id"))
-        except ValueError:
-            continue
-        anchored[aid] = raw
+            for aid, lbl, desc in _parse_affect_segments(s):
+                ep_segs[aid] = (lbl, desc)
+        except Exception as e:  # noqa: BLE001 — parse must never crash refresh
+            rpt.conflicts.append(f"affect line malformed: {e}")
 
-    if not anchored:
+    all_ids = set(ep_segs) | set(pending_lines)
+    if not all_ids:
         return rpt
 
-    placeholders = ",".join("?" for _ in anchored)
+    placeholders = ",".join("?" for _ in all_ids)
     db_rows: dict[int, dict] = {}
     for row in conn.execute(
         f"SELECT id, label, description FROM affect "
         f"WHERE id IN ({placeholders})",
-        list(anchored.keys()),
+        list(all_ids),
     ).fetchall():
         db_rows[row["id"]] = dict(row)
 
+    parsed: dict[int, tuple[str | None, str | None]] = dict(ep_segs)
+    for aid, line in pending_lines.items():
+        row = db_rows.get(aid)
+        if row is None:
+            parsed[aid] = (None, None)
+            continue
+        parsed[aid] = _parse_affect_pending_line(
+            line, row.get("label"), row.get("description")
+        )
+
     with conn:
-        for aid, line in anchored.items():
+        for aid, (new_label, new_desc) in parsed.items():
             row = db_rows.get(aid)
             if row is None:
                 rpt.conflicts.append(f"anchored affect id {aid} not in db")
-                continue
-            try:
-                new_label, new_desc = _parse_affect_line(
-                    line, row.get("label"), row.get("description")
-                )
-            except Exception as e:  # noqa: BLE001 — parse must never crash
-                rpt.conflicts.append(f"affect line {aid} malformed: {e}")
                 continue
             updates: list[tuple[str, str | None]] = []
             db_label = row.get("label")
