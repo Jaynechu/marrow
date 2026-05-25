@@ -61,13 +61,19 @@ Include — by category: examples
 - Appointment: GP / physio / dining with friend
 - Assignment: 370AT2 Essay, exams
 - Study: Lec note 3, GAMSAT S1 20 MCQs
-  - Title prefix Uni-/Gamsat-, e.g. Uni-370 AT2 essay
-- Project: large task or project phase only. Exclude single steps.
-  - Title prefix project tag, e.g. mw-phase 2: ...
-  - Max per session: 1 todo + 1 done (Project category only — Study / Daily / \
-etc. unbounded)
+- Project: large task or project phase only. 
 - Daily: flu vac / recharge SIM / buy hand cream
 - Others: anything not above
+
+IMPORTANT
+- For study and project, add title prefix in title.
+  Study: Uni-/Gamsat-, e.g. Uni-370 AT2 essay
+  Project: e.g. mw-phase 2
+- Project: record large phase ONLY. 
+  - Max 2 per day - overwrite or append for the same project.
+    - Exclude all steps/details in task section.
+    - e.g. currently working on marrow then just leave mw-phase 2-3 as active. \
+    Don't add debug, py, config, launchd ... as a task.
 
 Field semantics:
 - title: short imperative phrase
@@ -96,17 +102,16 @@ is still alive vs done vs abandoned this session):
 {prior_handover}
 ===END===
 
-Audit procedure:
-1. Classify each PRIOR bullet: done / abandoned / still-alive / blocked. \
-Drop done + abandoned.
-2. Append new bullets that emerged this session.
-3. Merge duplicates across PRIOR and new.
-4. Sort each section oldest → newest.
+1. Classify each PRIOR bullet
+  - Drop: completed / resolved / cancelled / abandoned items.
+  - Keep: untouched and unresolved items
+    - tag [N] if unsure e.g. Write eassy P2-4 ... [N]
+    - Always keep bullets with [P](pin)
+  - Merge: updated but still unresolved items
+    - merge new info into the prior ones - no duplicates
+  
 
-Plan items may sit for days; drop only if the transcript explicitly cancels \
-or completes them.
-
-Write four bullet sections that drop into `## Done / ## Open / ## Plan / \
+2. Write four bullet sections that drop into `## Done / ## Open / ## Plan / \
 ## Reference` of the handover document.
 
 Global rules:
@@ -115,9 +120,10 @@ Global rules:
 - Merge overlapping items into one bullet.
 - Do NOT restate content captured in other artifacts (plans, commits, diffs, \
 instruction, rubric). Point to them in REFERENCE.
-- If a section has no content, output a single bullet `- N/A`.
+- If a section is totally empty, output a single bullet `- N/A`.
 
 Marker bodies:
+> Do not repeat each other. If no clear plan -> open only.
 - DONE: decisions, findings, work useful for next session.
 - OPEN: unfinished / blocked / undecided (state + blocker).
 - PLAN: next-step plans; exclude user-disagreed or FUTURE.
