@@ -21,6 +21,9 @@ from typing import Callable
 
 from . import config as _config
 from . import repo
+from . import subpage_specs
+from .inserter import InserterSpec, write_subpage_inserter
+from .md_index import MdIndex
 from .reconcile import reconcile_milestones
 from .subpages_render import (
     render_cheatsheet,
@@ -56,9 +59,19 @@ def _m1(key: str) -> str:
 
 @dataclass
 class SubPageConfig:
-    """Render config for one sub-page or sub-page folder."""
+    """Render config for one sub-page or sub-page folder.
+
+    Two write paths share this config:
+    - inserter (Phase 3, Plan M Phase B): `inserter` set → block-level
+      upsert via md_index, hand-edits preserved.
+    - legacy full-render (cheatsheet read-only + children that haven't
+      been ported): `render` produces the whole block, write_subpage
+      atomic-writes the file.
+    Exactly one of (inserter, render) must be set per config; the inserter
+    path takes precedence when both are present.
+    """
     key: str                          # marker key
-    render: Callable[[sqlite3.Connection], str]  # returns full block incl markers
+    render: Callable[[sqlite3.Connection], str]  # full-block fallback render
     path: str                         # absolute path to the .md file
     state_dir: str                    # dir for sub-page state (reserved)
     read_only: bool = False           # always overwrite full file
@@ -66,6 +79,7 @@ class SubPageConfig:
     # back to DB and the freshly-rendered block reflects them. None = skip.
     reconcile: Callable[[sqlite3.Connection, "Path"], object] | None = None
     subpages: list["SubPageConfig"] = field(default_factory=list)
+    inserter: InserterSpec | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -98,15 +112,18 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
                   db: str | None = None) -> None:
     """Render + write one sub-page; recurse into children.
 
-    Order: reconcile (md->DB) -> render -> atomic write.
-    Reconcile absorbs anchored md edits into DB so the new render reflects
-    them. Free-form text inside the rendered block is silently overwritten;
-    Lumi's hand-edits are intentional and DB stays SoT.
+    Two write paths:
+    - inserter (cfg.inserter set): md-as-SoT block-level upsert. Reconcile
+      still runs first so anchored md edits flow back to DB before the
+      inserter computes which blocks need appending.
+    - legacy full-render (no inserter): reconcile -> render -> atomic write
+      of the marker block. Free-form text inside the rendered block is
+      silently overwritten. Used by cheatsheet (read_only) + children.
     """
     path, key = cfg.path, cfg.key
     Path(cfg.state_dir).mkdir(parents=True, exist_ok=True)
 
-    # Run reconcile BEFORE render so the new block reflects Lumi's edits.
+    # Run reconcile BEFORE the writer so the new render reflects Lumi's edits.
     if cfg.reconcile is not None and os.path.exists(path) and not cfg.read_only:
         try:
             cfg.reconcile(conn, Path(path))
@@ -117,20 +134,31 @@ def write_subpage(cfg: SubPageConfig, conn: sqlite3.Connection,
                 source="subpages.py", db=db,
             )
 
-    block = cfg.render(conn)
-    existing = Path(path).read_text(encoding="utf-8") if os.path.exists(path) else ""
-
-    if cfg.read_only:
-        _atomic_write(path, block + "\n")
+    if cfg.inserter is not None:
+        try:
+            store = MdIndex(conn)
+            write_subpage_inserter(cfg.inserter, conn, store)
+        except Exception as e:
+            repo.add_alert(
+                "warn", "db_pages",
+                f"{key} inserter failed: {e}",
+                source="subpages.py", db=db,
+            )
     else:
-        before, cur_block, after = _split(existing, key)
-        if cur_block:
-            new = before + block + after
-        elif existing:
-            new = block + "\n\n" + existing
+        block = cfg.render(conn)
+        existing = (Path(path).read_text(encoding="utf-8")
+                    if os.path.exists(path) else "")
+        if cfg.read_only:
+            _atomic_write(path, block + "\n")
         else:
-            new = block + "\n"
-        _atomic_write(path, new)
+            before, cur_block, after = _split(existing, key)
+            if cur_block:
+                new = before + block + after
+            elif existing:
+                new = block + "\n\n" + existing
+            else:
+                new = block + "\n"
+            _atomic_write(path, new)
 
     for child in cfg.subpages:
         write_subpage(child, conn, db=db)
@@ -225,6 +253,7 @@ def build_projects_configs(conn: sqlite3.Connection,
         path=str(Path(folder) / "projects.md"),
         state_dir=state_dir,
         subpages=children,
+        inserter=subpage_specs.build_projects_index_spec(folder),
     )
 
 
@@ -233,26 +262,50 @@ def build_projects_configs(conn: sqlite3.Connection,
 # ---------------------------------------------------------------------------
 
 # Registry: known keys → builder(conn, folder, state_dir) returning a
-# SubPageConfig. Folder-based views (study, projects) build their own
-# children; the rest are single-file flat configs.
+# SubPageConfig. Plan M Phase B: per-subpage inserter specs wired here.
+# Each entry pairs the legacy `render` (kept as fallback if inserter fails)
+# with an `inserter` spec when the subpage has been flipped to md-as-SoT.
+# Folder-based views (study, projects) build their own children.
+def _flat_with_inserter(key: str, render, filename: str, spec_builder,
+                        *, reconcile=None):
+    """Helper: SubPageConfig with both the legacy render and an InserterSpec."""
+    def _build(_c: sqlite3.Connection, f: str, s: str) -> SubPageConfig:
+        return SubPageConfig(
+            key=key,
+            render=render,
+            path=str(Path(f) / filename),
+            state_dir=s,
+            reconcile=reconcile,
+            inserter=spec_builder(f),
+        )
+    return _build
+
+
 _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = {
-    "profile":    lambda c, f, s: SubPageConfig(
-        "profile",   render_profile,   str(Path(f)/"profile.md"),   s),
-    "milestone":  lambda c, f, s: SubPageConfig(
-        "milestone", render_milestone, str(Path(f)/"milestone.md"), s,
+    "profile":    _flat_with_inserter(
+        "profile", render_profile, "profile.md",
+        subpage_specs.build_profile_spec),
+    "milestone":  _flat_with_inserter(
+        "milestone", render_milestone, "milestone.md",
+        subpage_specs.build_milestone_spec,
         reconcile=reconcile_milestones),
-    "diary":      lambda c, f, s: SubPageConfig(
-        "diary",     render_diary,     str(Path(f)/"diary.md"),     s),
-    "memes":      lambda c, f, s: SubPageConfig(
-        "memes",     render_memes,     str(Path(f)/"memes.md"),     s),
-    "stickers":   lambda c, f, s: SubPageConfig(
-        "stickers",  render_stickers,  str(Path(f)/"stickers.md"),  s),
-    "wallet":     lambda c, f, s: SubPageConfig(
-        "wallet",    render_wallet,    str(Path(f)/"wallet.md"),    s),
-    "goose":      lambda c, f, s: SubPageConfig(
-        "goose",     render_goose,     str(Path(f)/"goose-bites.md"),     s),
+    "diary":      _flat_with_inserter(
+        "diary", render_diary, "diary.md",
+        subpage_specs.build_diary_spec),
+    "memes":      _flat_with_inserter(
+        "memes", render_memes, "memes.md",
+        subpage_specs.build_memes_spec),
+    "stickers":   _flat_with_inserter(
+        "stickers", render_stickers, "stickers.md",
+        subpage_specs.build_stickers_spec),
+    "wallet":     _flat_with_inserter(
+        "wallet", render_wallet, "wallet.md",
+        subpage_specs.build_wallet_spec),
+    "goose":      _flat_with_inserter(
+        "goose", render_goose, "goose-bites.md",
+        subpage_specs.build_goose_spec),
     "cheatsheet": lambda c, f, s: SubPageConfig(
-        "cheatsheet", render_cheatsheet, str(Path(f)/"cheatsheet.md"), s,
+        "cheatsheet", render_cheatsheet, str(Path(f) / "cheatsheet.md"), s,
         read_only=True),
     "study":      lambda c, f, s: build_study_configs(c, f, s),
     "projects":   lambda c, f, s: build_projects_configs(c, f, s),
