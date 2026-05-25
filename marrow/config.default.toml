@@ -72,7 +72,7 @@ min_score = 0.35
 [sessionend]
 # Sessions with ≤ this many user turns skip async LLM extraction (§2.7).
 # Threshold tunes after 1-week sample.
-skip_turn_threshold = 5
+skip_turn_threshold = 3
 
 [subpages]
 # Sub-page render order + visibility (DESIGN L43-65). Known keys:

@@ -239,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cfg = config.load()
-    threshold = cfg.get("sessionend", {}).get("skip_turn_threshold", 5)
+    threshold = cfg.get("sessionend", {}).get("skip_turn_threshold", 3)
     db = config.db_path()
     conn = storage.connect(db)
     try:

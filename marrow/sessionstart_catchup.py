@@ -176,11 +176,14 @@ def _classify(conn, sid: str, live_ppids: set[int]) -> Literal["spawn", "skip"]:
         " ORDER BY id DESC LIMIT 1",
         (sid,),
     ).fetchone()
-    # Fetch most recent ok row for this sid.
+    # Fetch most recent terminal row for this sid. `skip:short_session[,user_count=N]`
+    # counts as terminal: short sessions need no LLM digest, and the embedded
+    # user_count lets State 2 detect resume-and-grow without an extra DB hit.
     ok_row = conn.execute(
         "SELECT summary FROM audit_log"
         " WHERE action='sessionend_extract' AND target_id=?"
-        " AND (summary='ok' OR summary LIKE 'ok,user_count=%')"
+        " AND (summary='ok' OR summary LIKE 'ok,user_count=%'"
+        "      OR summary LIKE 'skip:short_session%')"
         " ORDER BY id DESC LIMIT 1",
         (sid,),
     ).fetchone()
