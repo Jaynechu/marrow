@@ -206,102 +206,126 @@ def _ep_phrase(row: dict, side: str) -> str:
     return f"ep{side}{n} {label} | {desc}"
 
 
-def _affect_trail(ids: list[int]) -> str:
-    """Trail marker placed on its own line below an affect bullet, listing
-    the ids of each ep segment in left-to-right order. reconcile_affect
-    pairs segments to ids via this trail so the bullet body stays clean.
+def _affect_anchor_inline(ids: list[int]) -> str:
+    """Inline end-of-line anchor for an affect bullet, ids left-to-right.
+    Parity with task `<!-- id:N -->`: one space before the comment so it
+    glues to the visible body and reconcile_affect can read it from the
+    same line.
     """
     return f"<!-- aff:{','.join(str(i) for i in ids)} -->"
 
 
-def _affect_anchor(row: dict) -> str:
-    """Stable anchor for one affect record. Now used only by Pending rows
-    (single-record single-line bullets — anchor at the end stays readable).
-    Today/This Week bullets carry a trail marker on the next line instead;
-    see `_affect_trail`.
-    """
+def _affect_pending_anchor(row: dict) -> str:
+    """Per-row anchor for Pending bullets (single-record lines)."""
     return f"<!-- id:affect.{row['id']} -->"
 
 
+def _ep_side(row: dict, baseline: float = 0.5) -> str:
+    """Resolve eph/epl side from valence relative to a baseline (default 0.5)."""
+    return "h" if row["valence"] >= baseline else "l"
+
+
 def render_affect(conn: sqlite3.Connection) -> str:
-    # Anchor everything to the latest sessionend batch's date — so after 6AM
-    # rollover the prior day stays visible until the next sessionend writes.
+    # Line 1 = latest sessionend batch (event-anchored). Lines 2/3 = rolling
+    # time windows from now (24h / 7d). Headers stay stable; bodies emit
+    # `_none_` when empty so structure is constant.
     latest = conn.execute(
-        "SELECT date, created_at FROM affect "
+        "SELECT created_at FROM affect "
         "WHERE superseded_by IS NULL "
         "ORDER BY created_at DESC, id DESC LIMIT 1"
     ).fetchone()
 
-    out = ["## Affect", "", "### Today"]
-    if not latest:
-        out.append("_none_")
-        out.append("### This Week")
-        out.append("_none_")
-        return "\n".join(out)
-    last_date, last_ts = latest[0], latest[1]
-    week_floor = (datetime.fromisoformat(last_date).date()
-                  - timedelta(days=6)).isoformat()
+    now = datetime.now(timezone.utc)
+    day_cut = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    week_cut = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    last_batch = [dict(r) for r in conn.execute(
-        "SELECT id, valence, arousal, importance, label, description, ep "
-        "FROM affect WHERE superseded_by IS NULL AND created_at=? "
-        "ORDER BY ep", (last_ts,)).fetchall()]
+    out: list[str] = ["## Affect", "", "### Today"]
+
+    last_batch: list[dict] = []
+    last_ts: str | None = None
+    if latest:
+        last_ts = latest[0]
+        last_batch = [dict(r) for r in conn.execute(
+            "SELECT id, valence, arousal, importance, label, description, ep "
+            "FROM affect WHERE superseded_by IS NULL AND created_at=? "
+            "ORDER BY ep", (last_ts,)).fetchall()]
     today_rows = [dict(r) for r in conn.execute(
         "SELECT id, valence, arousal, importance, label, description, ep "
-        "FROM affect WHERE superseded_by IS NULL AND date=? "
-        "ORDER BY ep", (last_date,)).fetchall()]
+        "FROM affect WHERE superseded_by IS NULL AND created_at>=? "
+        "ORDER BY created_at, ep", (day_cut,)).fetchall()]
     week_rows = [dict(r) for r in conn.execute(
         "SELECT id, valence, arousal, importance, label, description, ep, "
-        "date FROM affect WHERE superseded_by IS NULL AND date>=?",
-        (week_floor,)).fetchall()]
+        "created_at FROM affect WHERE superseded_by IS NULL "
+        "AND created_at>=?", (week_cut,)).fetchall()]
 
-    # Line 1 — last sessionend batch: tone header + inline eph/epl segments
-    # joined by ` · `, trailing ` [<ago>]`. ep ids live on a trail-marker
-    # line directly below the bullet so reconcile_affect can pair segments
-    # to ids without polluting the visible body.
+    line1_ids: set[int] = set()
+    line2_ids: set[int] = set()
+
+    # Line 1 — last sessionend batch (event-anchored). Single-ep batch uses
+    # eph/epl based on valence sign, not a forced 'h'.
     if last_batch:
         tone_row = max(last_batch, key=lambda r: (r["importance"], r["valence"]))
         last_tone = tone_row.get("label") or _tone(
             tone_row["valence"], tone_row["arousal"]
         )
-        ep_h = max(last_batch, key=lambda r: r["valence"])
-        ep_l = min(last_batch, key=lambda r: r["valence"])
-        ago = _rel_time(last_ts)
-        segs = [_ep_phrase(ep_h, 'h')]
-        ids = [ep_h["id"]]
-        if ep_l["id"] != ep_h["id"]:
-            segs.append(_ep_phrase(ep_l, 'l'))
-            ids.append(ep_l["id"])
+        ago = _rel_time(last_ts) if last_ts else "?"
+        if len(last_batch) == 1:
+            only = last_batch[0]
+            segs = [_ep_phrase(only, _ep_side(only))]
+            ids = [only["id"]]
+        else:
+            ep_h = max(last_batch, key=lambda r: r["valence"])
+            ep_l = min(last_batch, key=lambda r: r["valence"])
+            segs = [_ep_phrase(ep_h, 'h')]
+            ids = [ep_h["id"]]
+            if ep_l["id"] != ep_h["id"]:
+                segs.append(_ep_phrase(ep_l, 'l'))
+                ids.append(ep_l["id"])
         body = " · ".join(segs)
-        out.append(f"- 【{last_tone}】 · {body} [{ago}]")
-        out.append(_affect_trail(ids))
+        out.append(
+            f"- 【{last_tone}】 · {body} [{ago}] {_affect_anchor_inline(ids)}"
+        )
+        line1_ids.update(ids)
 
-    # Line 2 — 24h aggregate (today, anchored to last_date).
-    if today_rows:
-        mv, ma = _wmean(today_rows, "valence"), _wmean(today_rows, "arousal")
-        ep_h = max(today_rows, key=lambda r: (r["valence"], r["importance"]))
-        ep_l = min(today_rows, key=lambda r: (r["valence"], -r["importance"]))
+    # Line 2 — rolling 24h aggregate, deduped against line 1.
+    today_pool = [r for r in today_rows if r["id"] not in line1_ids]
+    if today_pool:
+        mv, ma = _wmean(today_pool, "valence"), _wmean(today_pool, "arousal")
         tone = _tone(mv, ma)
-        segs = [_ep_phrase(ep_h, 'h')]
-        ids = [ep_h["id"]]
-        if ep_l["id"] != ep_h["id"]:
-            segs.append(_ep_phrase(ep_l, 'l'))
-            ids.append(ep_l["id"])
+        if len(today_pool) == 1:
+            only = today_pool[0]
+            segs = [_ep_phrase(only, _ep_side(only))]
+            ids = [only["id"]]
+        else:
+            ep_h = max(today_pool, key=lambda r: (r["valence"], r["importance"]))
+            ep_l = min(today_pool, key=lambda r: (r["valence"], -r["importance"]))
+            segs = [_ep_phrase(ep_h, 'h')]
+            ids = [ep_h["id"]]
+            if ep_l["id"] != ep_h["id"]:
+                segs.append(_ep_phrase(ep_l, 'l'))
+                ids.append(ep_l["id"])
         body = " · ".join(segs)
-        out.append(f"- 【{tone}】 · {body} [24h]")
-        out.append(_affect_trail(ids))
+        out.append(
+            f"- 【{tone}】 · {body} [24h] {_affect_anchor_inline(ids)}"
+        )
+        line2_ids.update(ids)
+    elif not last_batch:
+        out.append("_none_")
 
     out.append("")
     out.append("### This Week")
-    if week_rows:
-        mv, ma = _wmean(week_rows, "valence"), _wmean(week_rows, "arousal")
-        simple_mean = sum(r["valence"] for r in week_rows) / len(week_rows)
+    week_pool = [r for r in week_rows
+                 if r["id"] not in line1_ids and r["id"] not in line2_ids]
+    if week_pool:
+        mv, ma = _wmean(week_pool, "valence"), _wmean(week_pool, "arousal")
+        simple_mean = sum(r["valence"] for r in week_pool) / len(week_pool)
         std_v = math.sqrt(
-            sum((r["valence"] - simple_mean) ** 2 for r in week_rows)
-            / len(week_rows)
+            sum((r["valence"] - simple_mean) ** 2 for r in week_pool)
+            / len(week_pool)
         )
         if std_v > 0.3:
-            srt = sorted(week_rows, key=lambda r: (r["date"], r.get("ep", 0)))
+            srt = sorted(week_pool,
+                         key=lambda r: (r["created_at"], r.get("ep", 0)))
             mid = len(srt) // 2
 
             def ht(rs: list[dict]) -> str:
@@ -314,29 +338,27 @@ def render_affect(conn: sqlite3.Connection) -> str:
             tone_label = f"{ht(srt[:mid] or srt)} → {ht(srt[mid:] or srt)}"
         else:
             tone_label = _tone(mv, ma)
-        outliers = sorted(
-            week_rows,
-            key=lambda r: (-abs(r["valence"] - simple_mean), -r["importance"]),
-        )[:4]
-        segs: list[str] = []
-        ids: list[int] = []
-        for r in outliers:
-            side = "h" if r["valence"] >= simple_mean else "l"
-            segs.append(_ep_phrase(r, side))
-            ids.append(r["id"])
-        if segs:
-            out.append(f"- 【{tone_label}】 · " + " · ".join(segs))
-            out.append(_affect_trail(ids))
+        if len(week_pool) == 1:
+            only = week_pool[0]
+            outliers = [only]
         else:
-            out.append(f"- 【{tone_label}】")
+            outliers = sorted(
+                week_pool,
+                key=lambda r: (-abs(r["valence"] - simple_mean), -r["importance"]),
+            )[:4]
+        segs = [_ep_phrase(r, _ep_side(r, simple_mean)) for r in outliers]
+        ids = [r["id"] for r in outliers]
+        out.append(
+            f"- 【{tone_label}】 · " + " · ".join(segs) + " [7d] "
+            f"{_affect_anchor_inline(ids)}"
+        )
     else:
         out.append("_none_")
 
     pending_rows = conn.execute(
         "SELECT id, description, label, resolved_at FROM affect "
-        "WHERE superseded_by IS NULL AND unresolved=1 AND date>=? "
-        "ORDER BY created_at, id",
-        (week_floor,),
+        "WHERE superseded_by IS NULL AND unresolved=1 AND created_at>=? "
+        "ORDER BY created_at, id", (week_cut,),
     ).fetchall()
     # Pending sub-section hides entirely when empty (no heading, no body).
     if pending_rows:
@@ -345,7 +367,7 @@ def render_affect(conn: sqlite3.Connection) -> str:
         for r in pending_rows:
             text = r["description"] or r["label"] or "(ep)"
             box = "x" if r["resolved_at"] else " "
-            out.append(f"- [{box}] {text} {_affect_anchor(dict(r))}")
+            out.append(f"- [{box}] {text} {_affect_pending_anchor(dict(r))}")
     return "\n".join(out)
 
 

@@ -770,13 +770,10 @@ def _insert_unanchored_tasks(conn: sqlite3.Connection,
 
 # ── affect reconcile ──────────────────────────────────────────────────────────
 
-# Affect rows in the dashboard carry their ids on a trail-marker line below
-# the bullet (`<!-- aff:1,2[,3,4] -->`). Bullet shapes:
-#   - 【tone】 · eph<N> label | desc · epl<N> label | desc [<ago>|24h]
-#     <!-- aff:<id1>,<id2> -->                                              (Today / 24h)
-#   - 【tone】 · segA · segB · segC · segD                                  (This Week)
-#     <!-- aff:<id1>,<id2>,<id3>,<id4> -->
-#   - [ ] <desc> <!-- id:affect.N -->                                       (Pending — inline anchor stays)
+# Affect rows in the dashboard carry their ids inline at end-of-line, parity
+# with task `<!-- id:N -->`. Bullet shapes:
+#   - 【tone】 · eph<N> label | desc · epl<N> label | desc [<ago>|24h|7d] <!-- aff:<id1>,<id2> -->
+#   - [ ] <desc> <!-- id:affect.N -->                                       (Pending — per-row anchor)
 _AFFECT_ID_RE = re.compile(r"<!-- id:affect\.(?P<id>\d+) -->")
 _AFFECT_TRAIL_RE = re.compile(r"<!--\s*aff:(?P<ids>[0-9,\s]*?)\s*-->")
 # Segment parser: `eph<N> <label> | <desc>` or `epl<N> <label> | <desc>`.
@@ -786,8 +783,15 @@ _AFFECT_EP_SEG_RE = re.compile(
 _AFFECT_PENDING_RE = re.compile(
     r"^\s*-\s+\[[ x]\]\s+(?P<text>.+?)\s*$"
 )
-# Trailing ` [<token>]` suffix on Today/24h lines (e.g. ` [1m ago]`, ` [24h]`).
+# Trailing ` [<token>]` suffix on Today/24h/7d lines (e.g. ` [1m ago]`, ` [24h]`).
 _AFFECT_AGO_SUFFIX_RE = re.compile(r"\s+\[[^\]]+\]\s*$")
+# Stand-alone trailing `[N(m|h|d|hr|min|hour|day)s? ago]` / `[24h]` / `[7d]`
+# suffix used by the sanitizer to strip render-leakage from free text.
+_AFFECT_TAG_TAIL_RE = re.compile(
+    r"\s*\[\d+\s*(?:m|min|h|hr|hour|d|day)s?\s+ago\]\s*$",
+    re.IGNORECASE,
+)
+_AFFECT_WINDOW_TAIL_RE = re.compile(r"\s*\[(?:24h|7d)\]\s*$", re.IGNORECASE)
 # Middle-dot separator used to join tone header with ep segments and segments
 # with each other. Literal: space + U+00B7 + space.
 _AFFECT_SEG_SEP = " · "
@@ -803,7 +807,7 @@ def _affect_audit(conn, aid: int, action: str, summary: str) -> None:
 
 
 def _parse_affect_trail_ids(trail_line: str) -> list[int]:
-    """Pull the comma-separated affect ids out of a `<!-- aff:1,2,3 -->` line."""
+    """Pull the comma-separated affect ids out of a `<!-- aff:1,2,3 -->` token."""
     m = _AFFECT_TRAIL_RE.search(trail_line)
     if not m:
         return []
@@ -815,21 +819,76 @@ def _parse_affect_trail_ids(trail_line: str) -> list[int]:
     return ids
 
 
+def _sanitize_affect_text(text: str | None) -> str | None:
+    """Strip render leakage (anchor + time-tag suffix) from free-text fields.
+    Root-cause fix: parser used to capture `<!-- aff:N -->` and `[Nm ago]`
+    suffixes into label/description before the inline-anchor format. Always
+    strip them on the way back into the DB so the description stays clean.
+    Returns the same shape (None stays None, '' stays '').
+    """
+    if text is None:
+        return None
+    out = text
+    # Strip any inline aff/id-affect anchors anywhere in the text.
+    out = _AFFECT_TRAIL_RE.sub("", out)
+    out = _AFFECT_ID_RE.sub("", out)
+    # Peel trailing time tags repeatedly (cover `[24h] <!-- aff:N -->` chains).
+    for _ in range(4):
+        prev = out
+        out = _AFFECT_TAG_TAIL_RE.sub("", out)
+        out = _AFFECT_WINDOW_TAIL_RE.sub("", out)
+        if out == prev:
+            break
+    return out.strip()
+
+
+def _scrub_affect_pollution(conn: sqlite3.Connection) -> int:
+    """One-shot idempotent cleanup of affect.description / .label rows whose
+    text was polluted by the prior trail-marker render bug. Cheap when
+    nothing matches (no-op UPDATE skipped via WHERE), runs every reconcile.
+    Returns rows touched.
+    """
+    rows = conn.execute(
+        "SELECT id, label, description FROM affect "
+        "WHERE description LIKE '%<!-- aff:%' "
+        "   OR description LIKE '%<!-- id:affect.%' "
+        "   OR label LIKE '%<!-- aff:%' "
+        "   OR label LIKE '%<!-- id:affect.%'"
+    ).fetchall()
+    touched = 0
+    with conn:
+        for r in rows:
+            new_desc = _sanitize_affect_text(r["description"])
+            new_label = _sanitize_affect_text(r["label"])
+            if (new_desc != r["description"]) or (new_label != r["label"]):
+                conn.execute(
+                    "UPDATE affect SET label=?, description=? WHERE id=?",
+                    (new_label, new_desc, r["id"]),
+                )
+                _affect_audit(conn, r["id"], "scrub",
+                              "stripped render-leakage anchor/time-tag")
+                touched += 1
+    return touched
+
+
 def _parse_affect_segments(line: str, ids: list[int]
                            ) -> list[tuple[int, str | None, str | None]]:
     """Extract (id, label, description) tuples from a Today/Week affect bullet.
 
-    Bullet shape (after the leading tone bracket):
-      - 【tone】 · ep{h|l}N <label> | <desc> · ep{h|l}N <label> | <desc> [<ago>]
+    Bullet shape:
+      - 【tone】 · ep{h|l}N <label> | <desc> · ep{h|l}N <label> | <desc> [<ago>] <!-- aff:... -->
 
-    `ids` comes from the trail-marker line directly below the bullet (left-
-    to-right segment order). Strategy: strip the trailing ` [<...>]` suffix,
-    split by middle-dot separator ` · `, drop the first segment (tone
-    header), then pair each remaining segment with the next id from `ids`.
-    Segments that don't match the ep shape contribute (id, None, None) so
-    caller can mark them unchanged without crashing.
+    `ids` comes from the inline `<!-- aff:... -->` anchor at end-of-line
+    (left-to-right segment order). Strategy: strip the trailing anchor +
+    ` [<...>]` suffix, split by middle-dot separator ` · `, drop the first
+    segment (tone header), then pair each remaining segment with the next
+    id from `ids`. Segments that don't match the ep shape contribute
+    (id, None, None) so caller can mark them unchanged without crashing.
+    Description/label are run through the sanitizer before return so any
+    accidental anchor/tag leftover never reaches the DB.
     """
     body = line.rstrip()
+    body = _AFFECT_TRAIL_RE.sub("", body).rstrip()
     body = _AFFECT_AGO_SUFFIX_RE.sub("", body)
     parts = body.split(_AFFECT_SEG_SEP)
     # parts[0] is the tone-header segment (`- 【tone】`) — skip.
@@ -839,7 +898,11 @@ def _parse_affect_segments(line: str, ids: list[int]
         inner = seg.strip()
         m = _AFFECT_EP_SEG_RE.match(inner)
         if m:
-            out.append((aid, m.group("label").strip(), m.group("desc").strip()))
+            out.append((
+                aid,
+                _sanitize_affect_text(m.group("label").strip()),
+                _sanitize_affect_text(m.group("desc").strip()),
+            ))
         else:
             out.append((aid, None, None))
     return out
@@ -853,7 +916,7 @@ def _parse_affect_pending_line(line: str, db_label: str | None,
     m = _AFFECT_PENDING_RE.match(body)
     if not m:
         return None, None
-    text = m.group("text").strip()
+    text = _sanitize_affect_text(m.group("text").strip()) or ""
     if db_desc and text == db_desc:
         return None, db_desc  # unchanged
     if db_label and text == db_label and not db_desc:
@@ -864,14 +927,25 @@ def _parse_affect_pending_line(line: str, db_label: str | None,
 def reconcile_affect(conn: sqlite3.Connection,
                      dashboard_path: str | Path) -> ReconcileReport:
     """Absorb dashboard `## Affect` description/label edits back into the
-    affect table. Each inline anchor `<!-- id:affect.N -->` maps to one DB
-    row. Today/Week bullets carry multiple anchored segments per line joined
-    by ` · `; Pending rows are one anchor per `- [ ] ...` line. Aggregate
+    affect table. Today/Week bullets carry an inline end-of-line anchor
+    `<!-- aff:id1,id2[,id3,id4] -->` paired left-to-right with each ep
+    segment. Pending rows are one `<!-- id:affect.N -->` per line. Aggregate
     stats text outside anchored segments is left alone.
+
+    Always scrubs known affect-row pollution (anchor/time-tag leakage) up
+    front — cheap when nothing matches.
 
     No-op when the affect block has no anchored segments (cold-start / empty).
     """
     rpt = ReconcileReport()
+    # Idempotent cleanup of historic render leakage (free-text fields holding
+    # `<!-- aff:N -->` or `[Nm ago]` suffixes). Runs every reconcile — guard
+    # via WHERE so the no-op path is one cheap LIKE scan.
+    try:
+        _scrub_affect_pollution(conn)
+    except Exception as e:  # noqa: BLE001 — never block refresh
+        rpt.conflicts.append(f"affect scrub failed: {e}")
+
     dashboard_path = Path(dashboard_path)
     if not dashboard_path.exists():
         return rpt
@@ -883,51 +957,41 @@ def reconcile_affect(conn: sqlite3.Connection,
     next_h2 = re.search(r"\n##\s", after_h2)
     block = after_h2[: next_h2.start()] if next_h2 else after_h2
 
-    # Two passes: collect anchored segments + remember section per id so the
-    # pending parser (which needs DB context for label-vs-desc) can be applied
-    # after DB rows load. Today / This Week bullets carry their ids on the
-    # NEXT line (`<!-- aff:1,2[,3,4] -->`) — pair the bullet body with the
-    # trail line in one forward scan. Pending rows keep the per-row anchor.
+    # Anchored bullets and pending rows live in the same block; the inline
+    # `<!-- aff:... -->` anchor identifies Today/Week ep bullets while the
+    # per-row `<!-- id:affect.N -->` identifies Pending rows.
     ep_segs: dict[int, tuple[str | None, str | None]] = {}
     pending_lines: dict[int, str] = {}
     in_pending = False
-    lines = block.splitlines()
-    i = 0
-    while i < len(lines):
-        s = lines[i].rstrip()
+    for raw in block.splitlines():
+        s = raw.rstrip()
         stripped = s.lstrip()
         if stripped.startswith("### Pending"):
             in_pending = True
-            i += 1
             continue
         if stripped.startswith("### "):
             in_pending = False
-            i += 1
             continue
         if in_pending:
-            if _AFFECT_ID_RE.search(s):
-                m_id = _AFFECT_ID_RE.search(s)
+            m_id = _AFFECT_ID_RE.search(s)
+            if m_id:
                 try:
                     aid = int(m_id.group("id"))
                 except ValueError:
-                    i += 1
                     continue
                 pending_lines[aid] = s
-            i += 1
             continue
-        # Today / This Week bullet line — pair with the next trail-marker line.
-        if stripped.startswith("- 【") and i + 1 < len(lines):
-            trail = lines[i + 1].rstrip()
-            ids = _parse_affect_trail_ids(trail)
-            if ids:
-                try:
-                    for aid, lbl, desc in _parse_affect_segments(s, ids):
-                        ep_segs[aid] = (lbl, desc)
-                except Exception as e:  # noqa: BLE001 — never crash refresh
-                    rpt.conflicts.append(f"affect line malformed: {e}")
-                i += 2
-                continue
-        i += 1
+        # Today / This Week bullet — inline anchor at end-of-line.
+        if not stripped.startswith("- 【"):
+            continue
+        ids = _parse_affect_trail_ids(s)
+        if not ids:
+            continue
+        try:
+            for aid, lbl, desc in _parse_affect_segments(s, ids):
+                ep_segs[aid] = (lbl, desc)
+        except Exception as e:  # noqa: BLE001 — never crash refresh
+            rpt.conflicts.append(f"affect line malformed: {e}")
 
     all_ids = set(ep_segs) | set(pending_lines)
     if not all_ids:

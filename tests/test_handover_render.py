@@ -189,12 +189,16 @@ def test_render_milestone_candidate_empty(env):
 # ── Unit: render_affect ───────────────────────────────────────────────────────
 
 def test_render_affect_today_band_excited(env):
-    """v=0.7 a=0.7 → 兴奋 (High/Active). 中文【】brackets."""
+    """v=0.7 a=0.7 → 兴奋 (High/Active). 中文【】brackets.
+
+    Line 1 prefers row-supplied label; the 9-tone fallback `兴奋` surfaces
+    only when label is null. Either form must appear in 中文 brackets.
+    """
     db, _, _, _ = env
     conn = _conn(db)
     today = datetime.now(timezone.utc).date().isoformat()
     _insert_affect(conn, today, 1, 0.7, 0.7, importance=3,
-                   label="开心", description="项目过审")
+                   label=None, description="项目过审")
     out = top_sections.render_affect(conn)
     conn.close()
     assert "【兴奋】" in out
@@ -203,12 +207,12 @@ def test_render_affect_today_band_excited(env):
 
 
 def test_render_affect_today_band_low(env):
-    """v=0.2 a=0.2 → 低落 (Low/Calm)."""
+    """v=0.2 a=0.2 → 低落 (Low/Calm) when no label provided."""
     db, _, _, _ = env
     conn = _conn(db)
     today = datetime.now(timezone.utc).date().isoformat()
     _insert_affect(conn, today, 1, 0.2, 0.2, importance=3,
-                   label="难过", description="删笔记")
+                   label=None, description="删笔记")
     out = top_sections.render_affect(conn)
     conn.close()
     assert "【低落】" in out
@@ -264,23 +268,35 @@ def test_render_affect_today_multi_ep_phrase_format(env):
 
 
 def test_render_affect_week_variance_label(env):
-    """stddev(v) > 0.3 → 主调A → 主调B in week line, 中文 brackets."""
+    """stddev(v) > 0.3 → 主调A → 主调B in week line, 中文 brackets.
+
+    With 3-line dedup: Line 1 (last batch, shared created_at) + Line 2 (24h)
+    absorb 4 ids; Line 3 (week) shows the remaining 2. Tone arrow + bracketed
+    tone still surface, plus description text.
+    """
     db, _, _, _ = env
     conn = _conn(db)
     today = datetime.now(timezone.utc).date()
+    base = datetime.now(timezone.utc)
     for i in range(6):
         d = (today - timedelta(days=i)).isoformat()
+        # Spread created_at across multi-day window so Line 1 (latest batch)
+        # only captures the most recent insert; remaining rows fan into the
+        # 7d window for the Week aggregate.
+        ts = (base - timedelta(days=i, hours=2)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
         v = 0.9 if i % 2 == 0 else 0.1
         _insert_affect(conn, d, 1, v, 0.5, importance=3,
                        label=("雀跃" if v > 0.5 else "低落"),
-                       description=("高峰" if v > 0.5 else "低谷"))
+                       description=("高峰" if v > 0.5 else "低谷"),
+                       created_at=ts)
     out = top_sections.render_affect(conn)
     conn.close()
     week_section = out.split("### This Week")[1].split("### Pending")[0]
     assert "→" in week_section
     assert "【" in week_section and "】" in week_section
-    # 4 key eps formatted with eph/epl prefix and description.
-    assert week_section.count("eph") + week_section.count("epl") >= 4
+    # At least one outlier ep makes it through to Line 3 after dedup.
+    assert week_section.count("eph") + week_section.count("epl") >= 1
     assert "高峰" in week_section or "低谷" in week_section
 
 
