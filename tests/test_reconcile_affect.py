@@ -11,7 +11,7 @@ Coverage:
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -40,27 +40,22 @@ def _insert_affect(conn, *, date: str, ep: int, v: float, a: float,
 
 
 def _replace_in_anchored(text: str, aid: int, old_sub: str, new_sub: str) -> str:
-    """Edit the bullet line whose NEXT line's trail marker contains `aid`.
-    Pending rows fall back to the inline `<!-- id:affect.N -->` anchor on
-    the same line. Mirrors the new render layout (anchor lives below).
+    """Edit the bullet line whose inline `<!-- aff:... -->` anchor contains
+    `aid`. Pending rows fall back to the per-row `<!-- id:affect.N -->`
+    anchor on the same line. Mirrors the inline end-of-line render layout.
     """
     inline_needle = f"<!-- id:affect.{aid} -->"
     trail_needle = re.compile(r"<!--\s*aff:([0-9,\s]*)-->")
-    lines = text.splitlines()
     out: list[str] = []
-    i = 0
-    while i < len(lines):
-        ln = lines[i]
-        if i + 1 < len(lines):
-            m = trail_needle.search(lines[i + 1])
-            if m:
-                ids = [t.strip() for t in m.group(1).split(",") if t.strip()]
-                if str(aid) in ids and old_sub in ln:
-                    ln = ln.replace(old_sub, new_sub, 1)
+    for ln in text.splitlines():
+        m = trail_needle.search(ln)
+        if m:
+            ids = [t.strip() for t in m.group(1).split(",") if t.strip()]
+            if str(aid) in ids and old_sub in ln:
+                ln = ln.replace(old_sub, new_sub, 1)
         if inline_needle in ln and old_sub in ln:
             ln = ln.replace(old_sub, new_sub, 1)
         out.append(ln)
-        i += 1
     return "\n".join(out)
 
 
@@ -161,10 +156,10 @@ def test_reconcile_noop_when_no_anchors(conn, tmp_path):
     assert not rpt.conflicts
 
 
-def test_render_each_ep_carries_trail_marker(conn, tmp_path):
-    """Each bullet line is followed by a `<!-- aff:<ids> -->` trail marker
-    whose id count matches the number of ep segments on the bullet, in
-    left-to-right order.
+def test_render_each_ep_carries_inline_anchor(conn, tmp_path):
+    """Each bullet line carries an inline end-of-line `<!-- aff:<ids> -->`
+    anchor whose id count matches the number of ep segments on the bullet,
+    in left-to-right order. Parity with task `<!-- id:N -->` shape.
     """
     today = datetime.now(timezone.utc).date().isoformat()
     aid_h = _insert_affect(conn, date=today, ep=1, v=0.8, a=0.6, importance=3,
@@ -173,24 +168,178 @@ def test_render_each_ep_carries_trail_marker(conn, tmp_path):
                             label="低落", description="B 事件")
     out = top_sections.render_affect(conn)
     lines = out.splitlines()
-    # Bullet body MUST NOT carry the inline `<!-- id:affect.N -->` form anymore.
+    # Bullet body MUST NOT carry the per-row `<!-- id:affect.N -->` form here.
     bullets = [ln for ln in lines
                 if ln.startswith("- 【") and ("eph" in ln or "epl" in ln)]
     assert bullets, "expected eph/epl bullets"
+    trail_re = re.compile(r"<!--\s*aff:([0-9,\s]*)-->")
     for ln in bullets:
         assert "<!-- id:affect." not in ln, \
-            f"inline anchor should have moved to trail line: {ln}"
-    # For each bullet, the next line must be a trail marker covering each ep.
-    trail_re = re.compile(r"<!--\s*aff:([0-9,\s]*)-->")
-    for i, ln in enumerate(lines):
-        if not ln.startswith("- 【") or ("eph" not in ln and "epl" not in ln):
-            continue
-        assert i + 1 < len(lines), f"bullet without trail line: {ln}"
-        m = trail_re.search(lines[i + 1])
-        assert m, f"missing trail marker after bullet: {ln} / {lines[i + 1]!r}"
+            f"per-row anchor should not appear on Today/Week bullets: {ln}"
+        m = trail_re.search(ln)
+        assert m, f"missing inline anchor on bullet: {ln}"
+        # Anchor must be glued to end-of-line (only optional trailing space).
+        assert ln.rstrip().endswith("-->"), \
+            f"anchor must sit at end-of-line: {ln!r}"
         ids = [t.strip() for t in m.group(1).split(",") if t.strip()]
         eps = ln.count(" eph") + ln.count(" epl")
         assert len(ids) == eps, \
-            f"trail ids ({ids}) must match seg count ({eps}) on bullet: {ln}"
-    # Both affect ids appear in the trail markers across the rendered output.
+            f"anchor ids ({ids}) must match seg count ({eps}) on bullet: {ln}"
     assert f"{aid_h}" in out and f"{aid_l}" in out
+
+
+# ── New coverage: single-ep side, dedup, rolling windows, sanitizer ─────────
+
+
+def test_single_ep_low_valence_renders_epl(conn):
+    """One ep with v < 0.5 must render as `epl…` (not forced to `eph`)."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    _insert_affect(conn, date=today, ep=1, v=0.2, a=0.5, importance=3,
+                    label="低落", description="只一个 ep")
+    out = top_sections.render_affect(conn)
+    today_block = out.split("### Today")[1].split("###")[0]
+    assert " epl3 " in today_block, f"expected epl segment, got: {today_block!r}"
+    assert " eph" not in today_block
+
+
+def test_dedup_across_three_lines(conn):
+    """Same id never appears in the trail-marker anchors of two lines.
+    Line 1 picks 2 ids, Line 2 picks ids not in Line 1, Line 3 picks ids
+    not in Line 1 or Line 2.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    base = datetime.now(timezone.utc)
+    # Fan ids across staggered created_at within the 24h window so Line 1
+    # (latest batch) only captures the most recent few, Lines 2/3 still have
+    # rows to surface after dedup.
+    for i in range(5):
+        ts = (base - timedelta(hours=i + 1, minutes=10 * i)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        v = 0.85 if i % 2 == 0 else 0.15
+        _insert_affect(conn, date=today, ep=i + 1, v=v, a=0.5, importance=3,
+                        label=("雀跃" if v > 0.5 else "低落"),
+                        description=f"事件 {i}", created_at=ts)
+    out = top_sections.render_affect(conn)
+    trail_re = re.compile(r"<!--\s*aff:([0-9,\s]*)-->")
+    bullet_ids: list[set[int]] = []
+    for ln in out.splitlines():
+        m = trail_re.search(ln)
+        if m:
+            ids = {int(t.strip()) for t in m.group(1).split(",") if t.strip()}
+            bullet_ids.append(ids)
+    # Pairwise disjoint.
+    for i in range(len(bullet_ids)):
+        for j in range(i + 1, len(bullet_ids)):
+            assert bullet_ids[i].isdisjoint(bullet_ids[j]), (
+                f"line {i} {bullet_ids[i]} and line {j} {bullet_ids[j]} share "
+                "an id; dedup broken"
+            )
+
+
+def test_rolling_7d_cutoff_excludes_old(conn):
+    """A row created 10 days ago must not surface in any line."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    new_ts = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    aid_old = _insert_affect(conn, date=today, ep=1, v=0.8, a=0.5, importance=3,
+                              label="远古", description="陈年旧事",
+                              created_at=old_ts)
+    aid_new = _insert_affect(conn, date=today, ep=2, v=0.7, a=0.5, importance=3,
+                              label="新事", description="刚发生",
+                              created_at=new_ts)
+    out = top_sections.render_affect(conn)
+    assert "陈年旧事" not in out, "10-day-old row must not appear"
+    assert "刚发生" in out
+    # Old id absent from any anchor; new id present.
+    assert f"aff:{aid_old}" not in out and f",{aid_old}" not in out
+    assert str(aid_new) in out
+
+
+def test_rolling_24h_cutoff_excludes_yesterday(conn):
+    """A row created 30 hours ago must not appear in Line 2 (24h window).
+    It can still show up in Line 3 if within the 7d window.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    far_ts = (datetime.now(timezone.utc) - timedelta(hours=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    near_ts = (datetime.now(timezone.utc) - timedelta(minutes=2)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    aid_far = _insert_affect(conn, date=today, ep=1, v=0.8, a=0.5, importance=3,
+                              label="远", description="昨天的事",
+                              created_at=far_ts)
+    aid_near = _insert_affect(conn, date=today, ep=2, v=0.7, a=0.5, importance=3,
+                               label="近", description="刚刚的事",
+                               created_at=near_ts)
+    out = top_sections.render_affect(conn)
+    today_block = out.split("### Today")[1].split("### This Week")[0]
+    week_block = out.split("### This Week")[1].split("### Pending")[0] \
+        if "### Pending" in out else out.split("### This Week")[1]
+    # Yesterday's row out of Today/24h.
+    assert "昨天的事" not in today_block
+    # But surfaces in the 7d Week line.
+    assert str(aid_far) in week_block
+
+
+def test_sanitizer_strips_anchor_and_tag_suffix():
+    s = reconcile._sanitize_affect_text(
+        "以为provider接口没做 [25m ago] <!-- aff:67 -->")
+    assert s == "以为provider接口没做"
+
+    s2 = reconcile._sanitize_affect_text(
+        "演讲前夜 [24h] <!-- aff:1,2 -->")
+    assert s2 == "演讲前夜"
+
+    s3 = reconcile._sanitize_affect_text(
+        "干净文本 <!-- id:affect.5 -->")
+    assert s3 == "干净文本"
+
+    # No-op on clean text.
+    assert reconcile._sanitize_affect_text("纯净描述") == "纯净描述"
+    assert reconcile._sanitize_affect_text(None) is None
+
+
+def test_scrub_pollution_idempotent(conn):
+    """Inserting a polluted description; scrub must clean it and a second
+    pass must be a no-op (returns 0 touched).
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    aid = _insert_affect(
+        conn, date=today, ep=1, v=0.5, a=0.5, importance=2,
+        label="开心", description="以为provider接口没做 [25m ago] <!-- aff:67 -->",
+    )
+    touched = reconcile._scrub_affect_pollution(conn)
+    assert touched == 1
+    row = conn.execute(
+        "SELECT description FROM affect WHERE id=?", (aid,)
+    ).fetchone()
+    assert row["description"] == "以为provider接口没做"
+    # Second pass is no-op.
+    again = reconcile._scrub_affect_pollution(conn)
+    assert again == 0
+
+
+def test_inline_anchor_parsed_by_reconcile(conn, tmp_path):
+    """End-to-end: dashboard with inline `<!-- aff:N -->` on bullet line
+    is parsed by reconcile_affect; description edit lands in DB.
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    aid = _insert_affect(conn, date=today, ep=1, v=0.7, a=0.7, importance=3,
+                          label="开心", description="原始")
+    dash = tmp_path / "dashboard.md"
+    dashboard.write_dashboard(str(dash), conn, state_dir=str(tmp_path / "s"))
+    text = dash.read_text()
+    # Sanity: anchor is end-of-line (one space before `<!--`, then `-->`).
+    bullet = next(ln for ln in text.splitlines()
+                   if ln.startswith("- 【") and "eph" in ln)
+    assert bullet.rstrip().endswith(f"<!-- aff:{aid} -->"), \
+        f"anchor must be inline end-of-line: {bullet!r}"
+    edited = text.replace("原始", "改过")
+    dash.write_text(edited)
+    rpt = reconcile.reconcile_affect(conn, dash)
+    assert rpt.updated == 1
+    desc = conn.execute(
+        "SELECT description FROM affect WHERE id=?", (aid,)
+    ).fetchone()["description"]
+    assert desc == "改过"
