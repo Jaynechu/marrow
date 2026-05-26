@@ -3,6 +3,12 @@
 Format: [YYYY-MM-DD] <unit> done | <delta vs DESIGN, or "as designed"> | verify: <cmd/test>
 Delta only. Never restate DESIGN / SCHEMA.
 
+[2026-05-27] paths.toml L2 done | new marrow/paths.py loader + ~/.config/marrow/paths.toml with 10 keys (marrow_db / ny_root / dashboard_md / handover_md / drift_pending_dir / drift_backup_dir / dir_tree_md / logs_dir / state_dir / goose_log_dir); MARROW_PATHS_FILE env override; fallback to baked defaults when toml absent; aging / config / goose_bites / migrate / sessionend_async / sessionstart_catchup / subpages_render swapped to paths.xxx; config.DATA_DIR retained as runtime monkeypatch surface for tests (paths = external truth, config = test redirect); 8 tests | verify: pytest tests/test_paths_toml.py -q → 8 passed; commit a5bf4ef
+
+[2026-05-27] drift_sweep L1 done | new marrow/drift_sweep.py (583 LOC): 6 authorized roots, hardcoded binary/dir/size excludes, ripgrep + os.walk Python fallback (rg shell wrapper guard), batch debounce 30s, path-shaped match rule (quoted/slash/.ext + word boundary), Triggers A (on_moved same-root) + B (cross-root via basename+size cache on delete+create) + C (dangling delete reports only) + D CLI; mw drift <old> <new> queues pending json, mw drift confirm/reject id applies/discards (git add first then replace, non-git backed up to drift_backup_dir); dir_tree.md side-output refreshed per-root max-depth=4 after each run; 8 tests | verify: pytest tests/test_drift_sweep.py -q → 8 passed; commit 907abe0
+
+[2026-05-27] session_archive_skip_manual done | mm- writes manual_skip/skip row → sessionend_async bypasses LLM+diary+handover + writes skip:manual audit; mm+ (no arg = current sid, mm+ <sid> = named) fires sessionend rerun via reset:mm_plus audit; SessionStart resume detection (_has_prior_lifecycle_start) writes skip_cleared so resumed sids run normally; latest manual_skip row wins (ORDER BY id DESC); sessionend_async _already_done honors reset:* as force-rerun; new mw sessionend rerun <sid> CLI; ≤3-turn auto-skip + stale-skip recovery unchanged; 5 tests | verify: pytest tests/test_session_archive_skip.py -q → 5 passed; pytest -q → 668 passed + 1 skipped (zero regression); commit bf72f1a
+
 [2026-05-25] milestone-candidate drop-by-row-delete + 2 anti-revive holes plugged done | render_milestone_candidate trails `<!-- cand:milestone:ids=[..] -->`; reconcile picks "row deleted" as drop+tombstone; tombstone sha=<natkey_hash>|title=<title> where natkey=milestones|scope|date|title; write_milestone_cand + migrate._insert LIKE-match before INSERT; closes revive holes (sonnet re-extraction, timeline.md id 34-38); pinned-row skipped; tests +2 | verify: pytest 387/387 + 1 skipped (6.95s)
 
 [2026-05-24] db-pages rename + 5 stale .bak rm done | folder ~/Desktop/NY/sub_pages → ~/Desktop/NY/db-pages (signals "rendered from DB" vs hand-written notes); config.toml key sub_pages → db_pages (legacy key still read as fallback so old configs survive); new accessors config.db_pages_path() / db_pages_state_path(), legacy sub_pages_path / sub_pages_state_path retained as aliases (Python identifier rename deferred — other-window pending diff in daily.py still calls the old names, alias keeps zero conflict); subpages.py alert tags + folder default updated; dashboard ## Content links now point to db-pages/<name>.md; tests/test_config + test_hooks + test_handover_render + test_sessionend_async aligned; on-disk: 5 stale milestone.*.bak.md (1779445743/605839/615389/626762/626847) deleted from sub_pages before the mv — leftover artifacts from pre-b8cf11c reconcile backups (code path itself was already removed in commits b8cf11c / 1e4d308; the running other-window has the corresponding strip in its uncommitted diff and will land it next commit). | verify: pytest 375/375 + 1 skipped (6.77s); live re-render: ls ~/Desktop/NY/db-pages shows 10 md + projects/, dashboard ## Content lists Profile→Cheatsheet with db-pages/<name>.md links, ~/Desktop/NY/sub_pages absent
@@ -82,3 +88,56 @@ Delta only. Never restate DESIGN / SCHEMA.
   3. Rebound guard: `body == db_title` skips colon-split when `db_next_step` is NULL
 - Hook timing root cause confirmed: `sessionend_async` / `mw refresh` / launchd import **disk code** at call time — half-patched code runs live during edits; `mw refresh` safe as long as DB isn't corrupted by bad write
 - Lesson locked in: patches to `reconcile.py` / `dashboard` / `top_sections` must go through worktree to avoid live disk pollution
+
+[2026-05-26 sid:164b0073]
+- Phase 3 closeout complete: 6 outcomes merged — HIGH-1 (dashboard/inserter write-before-record_block), MED-3 (writer exception catch broadened), watchdog round-trip integration test, SoT audit doc, recall body_nonempty filter, md_index 30-day tombstone prune (weekly aging job)
+- Additional fixes landed: inserter h3/h4 substring match corrected (`"\n## "`), subpages legacy full-render fallback now logs alert, recall early-return guard removed so entity force-include surfaces alone, `_atomic_write` consolidated into `marrow/_atomic.py`
+- Phase 3 review fully closed: HIGH-2 already resolved by MdIndexTombstoneStore refactor; MED-2 fd-leak is intentional design; handover partial fallback non-issue (user never renames partial files)
+- Subagent file-writing rules updated: agents report inline to main session by default; write to `docs/` only when main prompt explicitly specifies path
+- Both repos pushed; main at `4fb6d45`, pytest 621 pass / 1 skip
+
+[2026-05-26 sid:73fbf47d]
+- entity write-dedup fixed (commit `cc118de`): added `_alias_dedup_lookup` + `_merge_aliases_into` helpers; `write_entity_cand` now bidirectional alias-aware (new name ↔ existing aliases; new aliases ↔ existing name/aliases), case-insensitive; hit → skip + merge aliases into existing row; 627 pass / 1 skip
+- Phase 3 closeout (carried): 6 outcomes merged — HIGH-1 dashboard/inserter write-before-record_block, MED-3 writer exception, watchdog integration test, SoT audit doc, recall body_nonempty filter, md_index 30-day tombstone prune
+
+[2026-05-26 sid:013295f5]
+- Note passthrough section added to handover (commit `f5ddf93`): `## Note` appended to template after Reference; renderer extracts prior Note body and re-injects verbatim; Note stripped from diff before tombstone hash to avoid pollution; 4 tests added
+- User-added bullet protection for Done/Open/Plan/Reference (commit `ff0b90f`): `_diff_user_added` diffs `last_snapshot ↔ prior_text`; hash-merges hand-added bullets into sonnet's new body; N/A body replaced by user content; tombstone takes priority over revival; partial path excluded (unstable prior); 4 tests added — 635 pass / 1 skip
+- Template cleanup (commit `8cb47cb`): removed top `>` markers + flanking blank lines; handover now opens directly with `# Marrow handover — …` then `## Done` with no gap
+- Phase 3 closeout (carried): 6 outcomes merged — HIGH-1 dashboard/inserter write-before-record_block, MED-3 writer exception, watchdog integration test, SoT audit doc, recall body_nonempty filter, md_index 30-day tombstone prune
+
+[2026-05-26 sid:103cb368]
+- FUTURE.md全面重组：`docs/plans/brainstorm-future.md` 确认内容全收后删除；4条SHIPPED条目删除；文件从根目录移至`docs/plans/FUTURE.md`；极简英文风格重写；共47条
+- Phase 4 condensed 27→9：`weclaude_runtime_rebuild`吸收8条，`weclaude_bridge_bugfix_pile`(new)吸收7条bugfix，4条Stellan主动行为类删除（Phase 5 pulse loop已覆盖）
+- Affect三件套合并为`affect_advanced_holdoff` dormant（dashboard已有lastsession+today mean+week mean+peak轨迹，chord_progression_dim只是存储层）
+- Recall校准7条合并为`recall_calibration_holdoff` dormant（study/project走grep，diary/tasks vec召不出但不降0.40，anchor +0.10继续观察）
+- P3过度设计删除：`convention_injection`+`claude_md_render_guard`删除（rules/commands/agents是cc官方机制自动注入，不需要daemon写CLAUDE.md）
+- 新增条目：`dir_tree_for_cc`（工作区目录树给cc grep用）、`cheatsheet_index`（MCP/skill/py/shortcut/plist一张表）、`weclaude_multimsg_window_5s`（微信多消息窗口，无法监测typing，pending/cyberboss方向）、`ny_memm_retire`（P1 closeout，memm系统退休+code-project部分archive）
+- Dashboard & Subpages单独成节（跨phase输出层，不归属某一phase）；Stale节3条由用户手动删除
+
+[2026-05-26 sid:535f9a3a]
+- Semantic dedup layer shipped (`61c2d86`): new `marrow/semantic_dedup.py` shared bge-m3 helper; tasks/milestones/entities all get cosine ≥0.85 on top of existing string-match layer
+- Tasks dedup scope: archived **excluded** (user decision — archived = time-distant, re-open = new task); active + 24h done only
+- Milestones dedup scope: **all-in** full table (only ~21 rows, no time window needed)
+- Entities: cosine hit → **merge alias**, not block; alias field serves this purpose
+- `memes_dedup.cosine_dup_score` refactored to call shared helper; external signature unchanged
+- Fixed `test_day_events_filters_by_6am` (`79151a4`): root cause was missing `date.today()` freeze (fixture used 2026-05-16; cutoff = today−9d = 2026-05-18 → fixture rows filtered out). Not a timezone bug. Monkeypatched to 2026-05-17; 6 tests green.
+- 641 pass + 1 skip, zero regression
+
+[2026-05-26 sid:564b7f0c]
+- `docs/plans/drift-sweep.md` created: full spec for three parallel wt tasks (wt-drift L1, wt-paths L2, wt-ssarchive mm+/mm-)
+- DESIGN.md patched: cheatsheet promoted from read-only to md-as-SoT (Phase 3 contract); was an open conflict with Phase 3 reversal
+- FUTURE.md patched: `paths_registry_early` absorbed into drift_sweep L2; cheatsheet expanded (scan sources + md-as-SoT); drift_sweep L1/L2/L3 layers clarified
+- Authorized roots locked: `~/cc-lab/` · `~/.config/marrow/` · `~/.claude/` · `~/Toolkit/` · `~/Desktop/NY/` · iCloud Study
+- Trigger strategy locked: FSEvents watcher (real-time) for same-root mv; content-hash + 30-min TTL queue for cross-root mv; CLI `mw drift <old> <new>` for manual/batch; always dry-run → `mw drift confirm/reject <id>`; batch mv within 30s merged to one alert
+- Delete policy: refs=0 → silent; refs>0 →悬挂引用 report in Alert, nothing auto-deleted
+- Same-name overwrite (`on_modified`) → drift_sweep ignores; md-as-SoT watcher handles content change
+- mm+ unified: bare = current sid immediate sessionend rerun (overrides done + ≤3-turn skip); `mm+ <sid>` = historical sid rerun; both identical pipeline
+- /goal text finalized (drift-sweep.md scope, 3 parallel sonnet wt, merge order paths→drift→ssarchive, pytest exit 0)
+
+[2026-05-26 sid:07d1a56e]
+- Dashboard ghost bug investigated: audit_log clean (no background writes in 24h), catchup/sessionend_async did NOT fire spuriously today — mechanism exists but not the active cause
+- watcher.log shows dashboard.md modified ~dozen times 14:42–16:10 UTC with zero corresponding audit_log entries → external writer (iCloud sync / editor undo) is leading hypothesis
+- task 150 ("123") confirmed archived in db since 11:16:50; any "completed" appearance is from stale markdown content, not db state
+- Diagnostic one-liner ready (`;`-separated, not `&&`) to capture ghost event in the act: cp snapshot + stat mtime + lsof + watcher tail + audit_log tail
+- drift-sweep.md spec complete, DESIGN.md + FUTURE.md patched, authorized roots locked, trigger/delete/mm+ strategy locked (carried from prior)
