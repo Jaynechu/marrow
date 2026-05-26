@@ -105,8 +105,10 @@ def test_memes_meme_type_freq_gate_passes_high_count(db):
     assert row["type"] == "meme" and row["pinned"] == 0
 
 
-def test_memes_paw_bypasses_freq_gate(db):
-    """type=paw — direct insert regardless of event frequency."""
+def test_memes_paw_freq_gate_drops_low_count(db):
+    """type=paw — inside jokes must also be repeated ≥3 times in 7d events.
+    A dyad-private catchphrase that only shows up once is noise, not a meme.
+    """
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\":\"绿茶豹\",\"type\":\"paw\","
@@ -114,7 +116,26 @@ def test_memes_paw_bypasses_freq_gate(db):
         "===END===\n"
     )
     n = candidates.write_memes_cand(db, raw, date="2026-05-16")
+    assert n == 0
+    assert db.execute(
+        "SELECT 1 FROM memes WHERE key='绿茶豹'").fetchone() is None
+
+
+def test_memes_paw_freq_gate_passes_high_count(db):
+    """type=paw + key seen ≥3 times in 7d events → inserted (auto-pinned)."""
+    _seed_events_with_key(db, "绿茶豹yy", 4, "2026-05-16")
+    raw = (
+        "===MEMES_CAND===\n"
+        "[{\"key\":\"绿茶豹yy\",\"type\":\"paw\","
+        " \"value\":\"私\",\"context\":\"\",\"pinned\":0,\"conf\":0.9}]\n"
+        "===END===\n"
+    )
+    n = candidates.write_memes_cand(db, raw, date="2026-05-16")
     assert n == 1
+    row = db.execute(
+        "SELECT type, pinned FROM memes WHERE key='绿茶豹yy'"
+    ).fetchone()
+    assert row["type"] == "paw" and row["pinned"] == 1
 
 
 def test_memes_fact_bypasses_freq_gate(db):
@@ -143,6 +164,7 @@ def test_memes_others_bypasses_freq_gate(db):
 # ── memes pinned defaults by type ───────────────────────────────────────────
 
 def test_memes_paw_auto_pinned(db):
+    _seed_events_with_key(db, "大笨鸭子", 4, "2026-05-16")
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\":\"大笨鸭子\",\"type\":\"paw\","
@@ -210,6 +232,187 @@ class _RecordingLLM:
     def call(self, role, body, *, tier="cheap"):
         self.bodies[role] = body
         return self.per_role.get(role, "—")
+
+
+# ── memes 7d gate edge cases ────────────────────────────────────────────────
+
+def test_memes_gate_short_cjk_key_uses_like_not_fts(db):
+    """2-char CJK keys (野鸡) — FTS5 trigram tokenizer can't match phrases
+    shorter than 3 chars and silently returns 0. The gate must fall back to
+    LIKE for short keys, otherwise valid-but-short keys are auto-dropped.
+    Here 4 events mention 野鸡 → gate must accept.
+    """
+    _seed_events_with_key(db, "野鸡", 4, "2026-05-16")
+    raw = (
+        "===MEMES_CAND===\n"
+        "[{\"key\":\"野鸡\",\"type\":\"paw\","
+        " \"value\":\"x\",\"context\":\"\",\"pinned\":0,\"conf\":0.9}]\n"
+        "===END===\n"
+    )
+    n = candidates.write_memes_cand(db, raw, date="2026-05-16")
+    assert n == 1
+
+
+def test_memes_gate_excludes_events_older_than_7d(db):
+    """Event 8 days before ref_date must NOT count toward the gate."""
+    base = dt.date.fromisoformat("2026-05-16")
+    # 4 hits, all 8 days before the ref_date → all out of window.
+    for i in range(4):
+        ts = (base - dt.timedelta(days=8 + i)).isoformat() + "T10:00:00Z"
+        _ev(db, f"old{i}", ts, "user", f"random oldmeme tail {i}")
+    db.commit()
+    raw = (
+        "===MEMES_CAND===\n"
+        "[{\"key\":\"oldmeme\",\"type\":\"meme\","
+        " \"value\":\"x\",\"context\":\"\",\"pinned\":0,\"conf\":0.9}]\n"
+        "===END===\n"
+    )
+    n = candidates.write_memes_cand(db, raw, date="2026-05-16")
+    assert n == 0
+
+
+def test_memes_gate_two_then_three_days(db):
+    """2 distinct days → drop; add a 3rd-day event → next run inserts once.
+    Gate counts distinct calendar days, not raw events: a key only sticks
+    once it earns ≥3 separate days of organic repetition.
+    """
+    _seed_events_with_key(db, "newmeme", 2, "2026-05-16")  # days 0 + -1
+    raw = (
+        "===MEMES_CAND===\n"
+        "[{\"key\":\"newmeme\",\"type\":\"meme\","
+        " \"value\":\"x\",\"context\":\"\",\"pinned\":0,\"conf\":0.9}]\n"
+        "===END===\n"
+    )
+    assert candidates.write_memes_cand(db, raw, date="2026-05-16") == 0
+    # Add a 3rd distinct day → meme now lands.
+    _ev(db, "s_d2", "2026-05-14T11:00:00Z", "user", "another newmeme line")
+    db.commit()
+    assert candidates.write_memes_cand(db, raw, date="2026-05-16") == 1
+    row = db.execute(
+        "SELECT use_count FROM memes WHERE key='newmeme'"
+    ).fetchone()
+    assert row is not None and row["use_count"] == 1
+
+
+def test_memes_gate_same_day_repeats_dont_count(db):
+    """5 events on the same calendar day → still fails the 3-day gate.
+    Prevents a meme from sticking just because one session was chatty.
+    """
+    for i in range(5):
+        _ev(db, f"s_same{i}", f"2026-05-16T{10+i:02d}:00:00Z",
+            "user", f"chatter samedaymeme blah {i}")
+    db.commit()
+    raw = (
+        "===MEMES_CAND===\n"
+        "[{\"key\":\"samedaymeme\",\"type\":\"meme\","
+        " \"value\":\"x\",\"context\":\"\",\"pinned\":0,\"conf\":0.9}]\n"
+        "===END===\n"
+    )
+    assert candidates.write_memes_cand(db, raw, date="2026-05-16") == 0
+    assert db.execute(
+        "SELECT 1 FROM memes WHERE key='samedaymeme'"
+    ).fetchone() is None
+
+
+# ── bump_use_counts ─────────────────────────────────────────────────────────
+
+def _seed_meme(conn, key, *, vtype="paw", status="active", use_count=0):
+    cur = conn.execute(
+        "INSERT INTO memes (type, key, value, use_count, status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (vtype, key, "v", use_count, status),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _uc(conn, mid):
+    return conn.execute(
+        "SELECT use_count FROM memes WHERE id=?", (mid,)
+    ).fetchone()["use_count"]
+
+
+def test_bump_use_counts_single_event_single_meme(db):
+    mid = _seed_meme(db, "野鸡")
+    rows = [{"session_id": "s1", "timestamp": "2026-05-17T01:00:00Z",
+             "role": "user", "content": "又是一个野鸡 codex"}]
+    n = candidates.bump_use_counts(db, rows)
+    assert n == 1 and _uc(db, mid) == 1
+
+
+def test_bump_use_counts_same_event_double_mention_counts_once(db):
+    mid = _seed_meme(db, "野鸡")
+    rows = [{"session_id": "s1", "timestamp": "2026-05-17T02:00:00Z",
+             "role": "user", "content": "野鸡野鸡都是野鸡"}]
+    n = candidates.bump_use_counts(db, rows)
+    assert n == 1 and _uc(db, mid) == 1
+
+
+def test_bump_use_counts_multiple_events_accumulate(db):
+    mid = _seed_meme(db, "野鸡")
+    rows = [
+        {"session_id": "s1", "timestamp": "2026-05-17T03:00:00Z",
+         "role": "user", "content": "野鸡 one"},
+        {"session_id": "s1", "timestamp": "2026-05-17T03:01:00Z",
+         "role": "assistant", "content": "野鸡 two"},
+    ]
+    candidates.bump_use_counts(db, rows)
+    assert _uc(db, mid) == 2
+
+
+def test_bump_use_counts_non_matching_no_bump(db):
+    mid = _seed_meme(db, "野鸡")
+    rows = [{"session_id": "s1", "timestamp": "2026-05-17T04:00:00Z",
+             "role": "user", "content": "完全没有这个词"}]
+    candidates.bump_use_counts(db, rows)
+    assert _uc(db, mid) == 0
+
+
+def test_bump_use_counts_skips_non_user_assistant(db):
+    mid = _seed_meme(db, "野鸡")
+    rows = [{"session_id": "s1", "timestamp": "2026-05-17T05:00:00Z",
+             "role": "system", "content": "野鸡 system noise"}]
+    candidates.bump_use_counts(db, rows)
+    assert _uc(db, mid) == 0
+
+
+def test_bump_use_counts_case_insensitive(db):
+    mid = _seed_meme(db, "Codex")
+    rows = [{"session_id": "s1", "timestamp": "2026-05-17T06:00:00Z",
+             "role": "user", "content": "tried codex today"}]
+    candidates.bump_use_counts(db, rows)
+    assert _uc(db, mid) == 1
+
+
+def test_bump_use_counts_dormant_meme_skipped(db):
+    mid = _seed_meme(db, "野鸡", status="dormant")
+    rows = [{"session_id": "s1", "timestamp": "2026-05-17T07:00:00Z",
+             "role": "user", "content": "野鸡 again"}]
+    candidates.bump_use_counts(db, rows)
+    assert _uc(db, mid) == 0
+
+
+def test_archive_events_bumps_use_count_end_to_end(db):
+    """Real wiring via repo.archive_events — single inserted event matching
+    a seeded meme key must bump use_count.
+    """
+    from marrow import repo
+    mid = _seed_meme(db, "野鸡", use_count=5)
+    rows = [{"session_id": "s_wire", "timestamp": "2026-05-17T08:00:00Z",
+             "role": "user", "content": "又来一只野鸡"}]
+    repo.archive_events(db, rows)
+    assert _uc(db, mid) == 6
+
+
+def test_archive_events_idempotent_rerun_no_double_bump(db):
+    """Re-archiving the same event (dedup by source_hash) must NOT re-bump."""
+    from marrow import repo
+    mid = _seed_meme(db, "野鸡", use_count=0)
+    rows = [{"session_id": "s_idem", "timestamp": "2026-05-17T09:00:00Z",
+             "role": "user", "content": "野鸡 only once"}]
+    repo.archive_events(db, rows)
+    repo.archive_events(db, rows)
+    assert _uc(db, mid) == 1
 
 
 def test_daily_material_includes_importance5_affect_ep(tmp_path):

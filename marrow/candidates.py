@@ -22,8 +22,9 @@ _MILESTONE_SCOPES = {"me", "us"}
 #   others — catch-all reserved slot
 _MEMES_TYPES = {"paw", "meme", "news", "event", "fact", "others"}
 
-# Types subject to the 7d events_fts frequency gate (≥3 hits or drop).
-_MEMES_FREQ_GATED = {"meme", "news", "event"}
+# Types subject to the 7d frequency gate (≥3 distinct event hits or drop).
+# fact/others are setup config / catch-all — direct insert, no repetition needed.
+_MEMES_FREQ_GATED = {"paw", "meme", "news", "event"}
 
 # Types auto-pinned=1 regardless of LLM-emitted flag.
 _MEMES_AUTO_PINNED = {"paw", "fact"}
@@ -151,36 +152,79 @@ def write_milestone_cand(conn, raw: str, date: str,
     return n
 
 
-def _fts_phrase(q: str) -> str:
-    # Mirror aging._fts_phrase: phrase match, FTS5-safe (trigram tokenizer).
-    return '"' + q.replace('"', '""').strip() + '"'
-
-
-def _events_fts_count_7d(conn, key: str, ref_date: str | None) -> int:
-    """Count events_fts hits for `key` over the 7d window ending at ref_date
-    (or now if None). Returns 0 on FTS error (malformed expression).
+def _events_like_count_7d(conn, key: str, ref_date: str | None) -> int:
+    """Count distinct CALENDAR DAYS on which an event's content LIKE '%key%'
+    over the 7d window ending at ref_date (or now if None). LIKE not FTS —
+    trigram tokenizer silently drops <3-char CJK keys (野鸡 etc.). Distinct
+    days, not distinct events: same-day repetition does not count toward the
+    3-in-7d gate.
     """
+    pat = "%" + key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     if ref_date:
         sql = (
-            "SELECT COUNT(DISTINCT f.rowid) FROM events_fts f "
-            "JOIN events e ON e.id = f.rowid "
-            "WHERE events_fts MATCH ? "
-            "AND e.timestamp >= datetime(?, '-7 days') "
-            "AND e.timestamp < datetime(?, '+1 day')"
+            "SELECT COUNT(DISTINCT date(timestamp)) FROM events "
+            "WHERE content LIKE ? ESCAPE '\\' "
+            "AND timestamp >= datetime(?, '-7 days') "
+            "AND timestamp < datetime(?, '+1 day')"
         )
-        params = (_fts_phrase(key), ref_date, ref_date)
+        params = (pat, ref_date, ref_date)
     else:
         sql = (
-            "SELECT COUNT(DISTINCT f.rowid) FROM events_fts f "
-            "JOIN events e ON e.id = f.rowid "
-            "WHERE events_fts MATCH ? "
-            "AND e.timestamp >= datetime('now', '-7 days')"
+            "SELECT COUNT(DISTINCT date(timestamp)) FROM events "
+            "WHERE content LIKE ? ESCAPE '\\' "
+            "AND timestamp >= datetime('now', '-7 days')"
         )
-        params = (_fts_phrase(key),)
+        params = (pat,)
     try:
         return conn.execute(sql, params).fetchone()[0]
     except Exception:
         return 0
+
+
+def bump_use_counts(conn, rows: list[dict]) -> int:
+    """Scan inserted event contents against active memes; +1 use_count per
+    meme per matching event (set-dedup per row). Caller owns the transaction
+    (no commit here). Mirrors entity_recall.bump_mention_counts.
+
+    Substring match (case-insensitive) on memes.key — same approach as the
+    insertion-time gate, so a key that passed the gate also bumps reliably.
+    Only status='active' rows participate; dormant memes don't auto-revive
+    here (aging.py owns revive).
+    """
+    if not rows:
+        return 0
+    memes = conn.execute(
+        "SELECT id, key FROM memes WHERE status='active'"
+    ).fetchall()
+    if not memes:
+        return 0
+    triggers = [(m["id"], (m["key"] or "").lower()) for m in memes if m["key"]]
+    bumps: dict[int, int] = {}
+    for row in rows:
+        if row.get("role") not in ("user", "assistant"):
+            continue
+        content = (row.get("content") or "").lower()
+        if not content:
+            continue
+        hit: set[int] = set()
+        for mid, key_lc in triggers:
+            if mid in hit:
+                continue
+            if key_lc and key_lc in content:
+                hit.add(mid)
+        for mid in hit:
+            bumps[mid] = bumps.get(mid, 0) + 1
+    if not bumps:
+        return 0
+    ts_now = _dt.datetime.now(_dt.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    for mid, n in bumps.items():
+        conn.execute(
+            "UPDATE memes SET use_count = use_count + ?, last_seen = ? "
+            "WHERE id = ? AND status='active'",
+            (n, ts_now, mid),
+        )
+    return sum(bumps.values())
 
 
 def write_memes_cand(conn, raw: str, source: str = "daily",
@@ -222,10 +266,11 @@ def write_memes_cand(conn, raw: str, source: str = "daily",
             llm_pinned = 1 if int(it.get("pinned", 0)) else 0
         except (TypeError, ValueError):
             llm_pinned = 0
-        # Frequency gate — public-meme types must be repeated ≥3 times in
-        # 7d events. paw/fact/others are direct insert.
+        # Frequency gate — paw/meme/news/event must be mentioned ≥3 times
+        # in distinct events over the 7d window ending at `date`. fact /
+        # others bypass (setup config / catch-all).
         if vtype in _MEMES_FREQ_GATED:
-            if _events_fts_count_7d(conn, key, date) < 3:
+            if _events_like_count_7d(conn, key, date) < 3:
                 continue
         # Pinned default by type. paw/fact force pinned=1; other types use
         # llm flag OR anchor list.

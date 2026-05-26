@@ -10,6 +10,7 @@ from . import storage
 from . import recall as _recall_mod
 from . import top_sections as _top_sections
 from . import entity_recall as _entity_recall
+from . import candidates as _candidates
 
 
 def _fts_query(q: str) -> str:
@@ -120,6 +121,10 @@ def archive_events(conn: sqlite3.Connection, rows: list[dict]) -> int:
         # dedup-aware (only `inserted`, not `rows`) so re-runs don't double-count.
         if inserted:
             _entity_recall.bump_mention_counts(conn, inserted)
+            # Same pattern for memes.use_count — meme key substring match,
+            # one bump per event per meme. recall_fusion._memes_candidates
+            # reads use_count as the heat score for the meme lane.
+            _candidates.bump_use_counts(conn, inserted)
         # One batch audit row per call (Monitor Zone), atomic with the inserts.
         # Skip when n == 0 so a fully-deduped re-run shows no phantom archive.
         if n:

@@ -196,6 +196,11 @@ _CAND_RAW = (
 
 def test_run_day_extracts_three_candidate_blocks(db):
     p, conn = db
+    # Seed 3 events with the paw key so it passes the 7d frequency gate.
+    for i in range(3):
+        _ev(conn, f"s_seed{i}", f"2026-05-{12+i:02d}T10:00:00Z",
+            "user", f"今天又吃了小笼包 {i}")
+    conn.commit()
     f = FakeLLM(per_role={"daily_cand": _CAND_RAW,
                           "daily": "diary prose"})
     assert daily.run_day(conn, "2026-05-16", f, db=p) is True
@@ -283,6 +288,12 @@ def test_memes_writer_upgrades_pinned_but_never_downgrades(db):
     """Existing pinned=1 row stays pinned even if a later session emits 0."""
     p, conn = db
     from marrow import candidates as cmod
+    # paw type now goes through the freq gate — seed 3 events with the key
+    # within the 7d window ending at the test's reference date.
+    for i in range(3):
+        _ev(conn, f"s_seed{i}", f"2026-05-{12+i:02d}T10:00:00Z",
+            "user", f"叫老公叫得真甜 {i}")
+    conn.commit()
     # First insert: anchor + paw both pin → pinned=1
     raw1 = (
         "===MEMES_CAND===\n"
@@ -291,10 +302,10 @@ def test_memes_writer_upgrades_pinned_but_never_downgrades(db):
         " \"pinned\": 1, \"conf\": 0.9}]\n"
         "===END===\n"
     )
-    cmod.write_memes_cand(conn, raw1)
+    cmod.write_memes_cand(conn, raw1, date="2026-05-16")
     # Second insert: LLM emits pinned=0, but paw auto-pins → stays 1.
     raw2 = raw1.replace("\"pinned\": 1", "\"pinned\": 0")
-    cmod.write_memes_cand(conn, raw2)
+    cmod.write_memes_cand(conn, raw2, date="2026-05-16")
     vc = conn.execute(
         "SELECT pinned, use_count FROM memes WHERE key='老公'"
     ).fetchone()
