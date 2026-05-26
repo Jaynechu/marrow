@@ -182,6 +182,42 @@ def cmd_handover(args) -> int:
     return 0
 
 
+def cmd_drift(args) -> int:
+    """mw drift <old> <new> — manual one-shot trigger."""
+    from .drift_sweep import handle_move
+    old = getattr(args, "old", None)
+    new = getattr(args, "new_path", None)
+    if not old or not new:
+        return _fail("usage: mw drift <old_path> <new_path>")
+    pid = handle_move(old, new)
+    if pid:
+        print(f"drift queued: {pid}")
+    else:
+        print("drift: no refs found — nothing queued")
+    return 0
+
+
+def cmd_drift_confirm(args) -> int:
+    from .drift_sweep import apply_confirm
+    result = apply_confirm(args.id)
+    if not result["ok"]:
+        return _fail(result.get("error", "confirm failed"))
+    changed = result.get("changed", [])
+    print(f"drift confirm {args.id}: {len(changed)} files updated")
+    for f in changed:
+        print(f"  {f}")
+    return 0
+
+
+def cmd_drift_reject(args) -> int:
+    from .drift_sweep import apply_reject
+    result = apply_reject(args.id)
+    if not result["ok"]:
+        return _fail(result.get("error", "reject failed"))
+    print(f"drift reject {args.id}: pending discarded")
+    return 0
+
+
 def _refresh_scan(conn, *, include_subpages: bool) -> None:
     """Walk watched md files and OBSERVE each into md_index before re-render.
 
@@ -415,6 +451,25 @@ def build_parser() -> argparse.ArgumentParser:
     ho.add_argument("--sid", required=True,
                     help="session id to re-extract")
     ho.set_defaults(fn=cmd_handover)
+
+    dr = sub.add_parser("drift", parents=[common],
+                        help="drift_sweep: queue or apply file-move ref updates")
+    dr_sub = dr.add_subparsers(dest="drift_action", required=False)
+
+    # mw drift <old> <new>  — manual one-shot
+    dr.add_argument("old", nargs="?", default=None, help="old file path")
+    dr.add_argument("new_path", nargs="?", default=None, help="new file path")
+    dr.set_defaults(fn=cmd_drift)
+
+    # mw drift confirm <id>
+    dr_confirm = dr_sub.add_parser("confirm")
+    dr_confirm.add_argument("id")
+    dr_confirm.set_defaults(fn=cmd_drift_confirm)
+
+    # mw drift reject <id>
+    dr_reject = dr_sub.add_parser("reject")
+    dr_reject.add_argument("id")
+    dr_reject.set_defaults(fn=cmd_drift_reject)
 
     return p
 
