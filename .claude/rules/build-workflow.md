@@ -35,13 +35,18 @@ One-shot: `/rr <phase>` runs step 0 then steps 1 + 2a + 2b concurrently; main se
 - Serialize first (main, in order, commit): schema / migrate.py / shared CLI skeleton / common module.
 - Parallelize after (one worktree subagent each): feature modules on a frozen schema. Main merges in report order; main adjudicates conflicts.
 - Review steps 1 / 2a / 2b run as concurrent subagents in one message; main only adjudicates.
-- Context: implementation never expands in main; long diff / test output / research scratch stay in subagent → `docs/notes/`; main at ~200k → /handoff.
+- Context: implementation never expands in main; subagent reports inline (long diff / test output / research scratch in transcript, summarized in report, never to disk). Main at ~200k → /handoff.
+
+## Subagent file-writing
+- Default: do NOT write md to disk. All findings / scratch / research return inline in report.
+- Exception: write `docs/notes/<slug>.md` or `docs/plans/<slug>.md` ONLY when main explicitly names output path.
+- These are curated long-term memos. Never use for "I might forget this" — that's the report's job. Raise if unsure; main decides.
 
 ## Housekeeping
 - After each agent worktree merges into main: `git worktree remove -f -f <path> && git branch -D <branch>`. Safe gate = `git merge-base --is-ancestor <worktree-head> main`. Never delete an un-merged worktree.
 - Drop empty / stale stash entries (`git stash list` then `git stash drop`) once their content is verified landed or irrelevant.
 - Sweep abandoned `/tmp/*.py`, `/tmp/*.db` scratch files created mid-session at session end.
 - Prune local-only branches that have no commits ahead of main.
-- Untracked `docs/notes/` scratch belongs to the author session
+- Untracked `docs/notes/` or `docs/plans/` only when main explicitly requests them (see Subagent file-writing)
 - Each session clean it's own rubbish - if find previous stale left-over, clean it together.
 - Just do it - don't ask Lumi!
