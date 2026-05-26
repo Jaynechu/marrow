@@ -23,16 +23,6 @@
 
 ---
 
-## 2. 钱包拆分 — 两个 addon 不能混
-
-- `stellan_wallet` = 亲密关系玩具账户（月 50 零花、奶茶请念念），简陋是设计
-- `lumi_accounting_addon` = 完整记账工具（分类 / 预算 / 银行 csv / 月报 / 对账 / 周期规则）
-- 底层 `wallet_mcp_extraction` = 通用引擎，account_id 分账户，两者共用一份代码
-
-三条都已写入 FUTURE Phase 5 addons 顶部。
-
----
-
 ## 3. 多端入口路径（按时间分档）
 
 短期（现在 → Phase 4 收尾）：
@@ -51,10 +41,6 @@
   - 解锁：HealthKit 全套 / CoreLocation 后台 / APNs 自控 / ScreenTime 日汇总
   - 触发时机：第一次想要 APNs 推送，且微信/TG 替代不了
   - 不要预期性建设
-
----
-
-## 4. Pass - 不要写现在能做什么不能做什么，没有深度investigate之前都是屁话
 
 ---
 
