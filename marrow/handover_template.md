@@ -1,7 +1,4 @@
 # Marrow handover — {{YYYY-MM-DD HH:MM}}
-> handover = state snapshot for next session. 4 state-axis sections (Done / Open / Plan / Reference). oldest top → newest bottom.
-> all-project all-in-one (not just coding). hand-edits preserved — auto-writer hash-checks each block; deleted bullets tombstoned, never re-emit.
-> coding too long → push to PROGRESS.md; handover stays tight.
 
 <!-- marrow:top:start -->
 <!-- marrow:top:end -->

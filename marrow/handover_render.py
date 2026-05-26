@@ -20,7 +20,7 @@ from pathlib import Path
 
 from . import config
 from .dashboard import _atomic_write
-from .handover_norm import bullet_lines
+from .handover_norm import bullet_lines, hash_bullet
 from .tombstone import (MdIndexTombstoneStore, TombstoneStore,
                         filter_tombstoned, record_user_deletes)
 
@@ -204,27 +204,69 @@ def _apply_tombstones(body: str, tombstones: set[str]) -> str:
     return "\n".join(kept) if kept else "- N/A"
 
 
+# ── hand-edit "add" preservation ────────────────────────────────────────────
+
+_NA_NORMS = {"n a", "none"}
+
+
+def _diff_user_added(last_section: str, prior_section: str) -> list[str]:
+    """Bullets present in prior (current disk) but missing from last snapshot
+    → user added them by hand. N/A placeholders are skipped."""
+    last_hashes = {hash_bullet(l) for l in bullet_lines(last_section)}
+    out = []
+    for ln in bullet_lines(prior_section):
+        from .handover_norm import normalize_bullet
+        if normalize_bullet(ln) in _NA_NORMS:
+            continue
+        if hash_bullet(ln) in last_hashes:
+            continue
+        out.append(ln)
+    return out
+
+
+def _merge_user_added(sonnet_body: str, added: list[str]) -> str:
+    """Append hand-added bullets that sonnet did not re-emit. Drops a lone
+    `- N/A` placeholder when real user content exists."""
+    if not added:
+        return sonnet_body
+    from .handover_norm import normalize_bullet
+    sonnet_lines = bullet_lines(sonnet_body)
+    if (len(sonnet_lines) == 1
+            and normalize_bullet(sonnet_lines[0]) in _NA_NORMS):
+        sonnet_lines = []
+    existing = {hash_bullet(l) for l in sonnet_lines}
+    extra = [l for l in added if hash_bullet(l) not in existing]
+    if not extra:
+        return sonnet_body
+    return "\n".join(sonnet_lines + extra)
+
+
 # ── public render / write ──────────────────────────────────────────────────
 
 def render_full(conn: sqlite3.Connection, sid: str,
                 *, done: str, open_: str, plan: str, reference: str,
                 tombstones: set[str] | None = None,
                 note: str | None = None,
+                user_added: dict[str, list[str]] | None = None,
                 now_epoch: int | None = None) -> str:
     """Compose skeleton + 4 state-axis sections + ready stamp.
 
     `note` is a passthrough section: when provided, replaces the template
-    Note body verbatim (no tombstone filter, no N/A coercion). None keeps
-    the template default — used on first render before any hand-edit."""
+    Note body verbatim (no tombstone filter, no N/A coercion).
+    `user_added` is per-section hand-added bullets merged into sonnet output
+    so additions survive the next auto-write (paired with tombstones for
+    deletions = symmetric hand-edit support)."""
     if now_epoch is None:
         now_epoch = int(time.time())
     tombs = tombstones if tombstones is not None else set()
-    bodies = {
-        "Done":      _apply_tombstones(done, tombs),
-        "Open":      _apply_tombstones(open_, tombs),
-        "Plan":      _apply_tombstones(plan, tombs),
-        "Reference": _apply_tombstones(reference, tombs),
+    added_map = user_added or {}
+    raw = {
+        "Done":      _merge_user_added(done, added_map.get("Done", [])),
+        "Open":      _merge_user_added(open_, added_map.get("Open", [])),
+        "Plan":      _merge_user_added(plan, added_map.get("Plan", [])),
+        "Reference": _merge_user_added(reference, added_map.get("Reference", [])),
     }
+    bodies = {h: _apply_tombstones(raw[h], tombs) for h in _SECTIONS}
     text = render_skeleton(conn)
     for header in _SECTIONS:
         text = _inject_section(text, header, bodies[header])
@@ -296,10 +338,17 @@ def write_handover_full(conn: sqlite3.Connection, sid: str,
         prior_note = (_split_section_body(prior_text, _NOTE_HEADER)
                       if _section_present(prior_text, _NOTE_HEADER)
                       else None)
+        user_added: dict[str, list[str]] = {}
+        if prior_text:
+            for header in _SECTIONS:
+                last_section = _split_section_body(last_body, header)
+                prior_section = _split_section_body(prior_text, header)
+                user_added[header] = _diff_user_added(last_section, prior_section)
         text = render_full(conn, sid, done=done, open_=open_, plan=plan,
                            reference=reference,
                            tombstones=store.list_tombstones(),
                            note=prior_note,
+                           user_added=user_added,
                            now_epoch=now_epoch)
         # Snapshot the body we are about to write — that becomes the canonical
         # "last auto-write" against which the next turn's user-edit diff runs.

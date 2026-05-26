@@ -661,6 +661,77 @@ def test_empty_inputs_render_na_in_all_sections(env):
         assert "- N/A" in section, f"{header} missing N/A placeholder"
 
 
+# ── Hand-added bullet preservation (symmetric with tombstone delete) ────────
+
+def test_user_added_bullet_survives_next_write(env):
+    """User adds a bullet in Done; sonnet next run doesn't re-emit it; merger
+    appends it back so the addition is not lost."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s1", done="- alpha", plan="- p")
+    body_1 = rendered_path.read_text(encoding="utf-8")
+    edited = body_1.replace("- alpha\n", "- alpha\n- hand-added\n")
+    rendered_path.write_text(edited, encoding="utf-8")
+
+    _write_full(env, "s2", done="- alpha", plan="- p")
+    body_2 = rendered_path.read_text(encoding="utf-8")
+    done_section = body_2.split("## Done")[1].split("## Open")[0]
+    assert "- alpha" in done_section
+    assert "- hand-added" in done_section
+
+
+def test_user_added_bullet_into_na_section(env):
+    """User adds a bullet into a section sonnet leaves as N/A; the N/A
+    placeholder drops and the user bullet stands alone."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s1", done="- a", open_="- N/A", plan="- p")
+    body_1 = rendered_path.read_text(encoding="utf-8")
+    edited = body_1.replace(
+        "## Open\n- N/A\n", "## Open\n- 自己加的 open 项\n")
+    rendered_path.write_text(edited, encoding="utf-8")
+
+    _write_full(env, "s2", done="- a", open_="- N/A", plan="- p")
+    body_2 = rendered_path.read_text(encoding="utf-8")
+    open_section = body_2.split("## Open")[1].split("## Plan")[0]
+    assert "- 自己加的 open 项" in open_section
+    assert "- N/A" not in open_section
+
+
+def test_user_added_bullet_dedup_with_sonnet_reemit(env):
+    """Sonnet later emits the same bullet sonnet missed before; merger must
+    not duplicate it."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s1", done="- alpha", plan="- p")
+    body_1 = rendered_path.read_text(encoding="utf-8")
+    edited = body_1.replace("- alpha\n", "- alpha\n- beta\n")
+    rendered_path.write_text(edited, encoding="utf-8")
+
+    _write_full(env, "s2", done="- alpha\n- beta", plan="- p")
+    body_2 = rendered_path.read_text(encoding="utf-8")
+    done_section = body_2.split("## Done")[1].split("## Open")[0]
+    assert done_section.count("- beta") == 1
+
+
+def test_user_added_then_deleted_does_not_revive(env):
+    """User adds X, then on a later edit deletes X. Tombstone wins — X must
+    not come back via the user-added path."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s1", done="- alpha", plan="- p")
+    # Round 1: user adds beta.
+    body_1 = rendered_path.read_text(encoding="utf-8")
+    rendered_path.write_text(
+        body_1.replace("- alpha\n", "- alpha\n- beta\n"), encoding="utf-8")
+    _write_full(env, "s2", done="- alpha", plan="- p")
+    # Round 2: user deletes beta.
+    body_2 = rendered_path.read_text(encoding="utf-8")
+    assert "- beta" in body_2
+    rendered_path.write_text(
+        body_2.replace("\n- beta", ""), encoding="utf-8")
+    _write_full(env, "s3", done="- alpha", plan="- p")
+    body_3 = rendered_path.read_text(encoding="utf-8")
+    done_section = body_3.split("## Done")[1].split("## Open")[0]
+    assert "- beta" not in done_section
+
+
 # ── Note passthrough section (hand-edit only, never auto-modified) ──────────
 
 def test_note_section_present_on_first_render(env):
