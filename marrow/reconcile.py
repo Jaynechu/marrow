@@ -498,16 +498,18 @@ def _task_audit(conn, tid: int, action: str, summary: str) -> None:
     )
 
 
-def _parse_task_row_body(body: str, db_next_step: str | None) -> str:
-    """Recover the title text from a rendered task row body.
+def _parse_task_row_body(body: str, db_title: str | None,
+                         db_next_step: str | None) -> tuple[str, str | None] | None:
+    """Recover (title, next_step) from an edited task row body.
 
-    Render shape: `[<tag>] <title>{: <next_step>}{ [<date>]}`. We peel the
-    optional tag prefix, the optional trailing `[<date>]`, then the optional
-    trailing `: <next_step>` IF the suffix matches the DB's next_step verbatim.
-    Whatever remains is the (possibly edited) title.
+    Render shape: `[<tag>] <title>{: <next_step>}{ [<date>]}`. Title and
+    next_step both may contain `: ` internally so we can't naively split —
+    we anchor against the DB values to identify which field was edited:
 
-    Conservative: if shapes don't match, return the body as-is — caller diffs
-    that against the DB title; equal → no edit, differ → absorb.
+    - body endswith `: <db_next_step>`  → title-only edit
+    - body startswith `<db_title>: `    → next_step-only edit
+    - db_next_step is None              → whole body is title
+    - none of the above                 → return None (ambiguous; caller logs)
     """
     text = body.strip()
     m = _TAG_PREFIX_RE.match(text)
@@ -516,11 +518,33 @@ def _parse_task_row_body(body: str, db_next_step: str | None) -> str:
     dm = _TRAILING_DATE_RE.match(text)
     if dm:
         text = dm.group("rest").rstrip()
+    if not text:
+        return None
+    db_title_v = (db_title or "").strip()
     if db_next_step:
         suffix = f": {db_next_step}"
         if text.endswith(suffix):
-            text = text[: -len(suffix)].rstrip()
-    return text
+            return (text[: -len(suffix)].rstrip(), db_next_step)
+        prefix = f"{db_title_v}: "
+        if db_title_v and text.startswith(prefix):
+            new_ns = text[len(prefix):].strip()
+            return (db_title_v, new_ns or None)
+        # next_step deleted entirely, title kept — body equals db_title.
+        if db_title_v and text == db_title_v:
+            return (db_title_v, None)
+        return None
+    # db had no next_step. Title may legitimately contain `: ` (e.g. Lumi's
+    # task 148 title = "mw-phase 3: Almost done") — never split a body that
+    # already matches db_title.
+    if db_title_v and text == db_title_v:
+        return (db_title_v, None)
+    if ": " in text:
+        head, _, tail = text.partition(": ")
+        head = head.rstrip()
+        tail = tail.strip()
+        if head and tail:
+            return (head, tail)
+    return (text, None)
 
 
 def _parse_unanchored_task_body(body: str) -> dict | None:
@@ -665,29 +689,61 @@ def reconcile_tasks(conn: sqlite3.Connection,
                 _task_audit(conn, tid, "untick", "md-reconcile: unticked active")
                 rpt.updated += 1
                 status_changed = True
-            # Title edit absorption — parse the title text out of the row body
-            # and UPDATE the DB if it differs. Done independently of tick/
-            # untick so both can land in one pass.
+            # Title / next_step edit absorption — parse the body and UPDATE
+            # whichever field changed. Done independently of tick/untick so
+            # both can land in one pass.
             try:
-                md_title = _parse_task_row_body(body, row.get("next_step"))
+                parsed = _parse_task_row_body(
+                    body, row.get("title"), row.get("next_step")
+                )
             except Exception as e:  # noqa: BLE001 — parse must never crash
                 rpt.conflicts.append(f"task row {tid} malformed: {e}")
                 if not status_changed:
                     rpt.unchanged += 1
                 continue
-            db_title = row.get("title") or ""
-            if md_title and md_title != db_title:
-                conn.execute(
-                    "UPDATE tasks SET title=?, updated_at=? WHERE id=?",
-                    (md_title, _now(), tid),
+            if parsed is None:
+                rpt.conflicts.append(
+                    f"task row {tid} ambiguous edit; keeping DB"
                 )
+                if not status_changed:
+                    rpt.unchanged += 1
+                continue
+            md_title, md_next_step = parsed
+            db_title = row.get("title") or ""
+            db_next_step = row.get("next_step")
+            title_changed = bool(md_title) and md_title != db_title
+            ns_changed = md_next_step != db_next_step
+            if title_changed or ns_changed:
+                sets = []
+                params: list = []
+                if title_changed:
+                    sets.append("title=?")
+                    params.append(md_title)
+                if ns_changed:
+                    sets.append("next_step=?")
+                    params.append(md_next_step)
+                sets.append("updated_at=?")
+                params.append(_now())
+                params.append(tid)
+                conn.execute(
+                    f"UPDATE tasks SET {', '.join(sets)} WHERE id=?",
+                    params,
+                )
+                bits = []
+                if title_changed:
+                    bits.append(f"title={md_title[:60]}")
+                if ns_changed:
+                    bits.append(f"next_step={(md_next_step or '<null>')[:60]}")
                 _task_audit(conn, tid, "retitle",
-                            f"md-reconcile: title={md_title[:80]}")
+                            "md-reconcile: " + " ".join(bits))
                 rpt.updated += 1
             elif not status_changed:
                 rpt.unchanged += 1
 
-        # archive: ids in trail but not present as anchored rows in this block
+        # archive: ids in trail but not present as anchored rows in this block.
+        # done rows count too — render keeps them on dashboard for the 6AM
+        # cutoff window, so deleting them mid-day must stick (status='done'
+        # → 'archived' makes render skip them).
         for tid in trail_ids:
             if tid in anchored:
                 continue  # still rendered
@@ -695,14 +751,14 @@ def reconcile_tasks(conn: sqlite3.Connection,
             if row is None:
                 continue  # already gone
             current = row["status"]
-            if current in ("done", "archived"):
+            if current == "archived":
                 continue  # already terminal
             conn.execute(
                 "UPDATE tasks SET status='archived', updated_at=? WHERE id=?",
                 (_now(), tid),
             )
             _task_audit(conn, tid, "archive",
-                        "md-reconcile: removed from dashboard")
+                        f"md-reconcile: removed from dashboard (was {current})")
             rpt.deleted += 1
 
         # insert: hand-typed unanchored rows → new tasks. Next render emits

@@ -147,6 +147,85 @@ def test_title_edit_with_next_step_suffix(conn, tmp_path):
     assert row["next_step"] == "write intro"
 
 
+def test_next_step_edit_only(conn, tmp_path):
+    """Edit the next_step text inline — title stays, DB next_step updates.
+
+    Repro for Lumi's task #148: title contains `: ` and the next_step text
+    is the part Lumi wants to rewrite; suffix match fails but prefix match
+    on `<title>: ` should still absorb the edit.
+    """
+    tid = _insert_task(conn, "mw-phase 3: Almost done")
+    conn.execute("UPDATE tasks SET next_step=? WHERE id=?",
+                 ("Merge wt first; HIGH-2 + MED-2 still pending.", tid))
+    conn.commit()
+    dash = _render_dashboard(conn, tmp_path)
+    dash.write_text(_swap_title(
+        dash.read_text(), tid,
+        ": Merge wt first; HIGH-2 + MED-2 still pending.",
+        ": HIGH-2 patched, MED-2 left.",
+    ))
+    reconcile.reconcile_tasks(conn, dash)
+    row = conn.execute(
+        "SELECT title, next_step FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    assert row["title"] == "mw-phase 3: Almost done"
+    assert row["next_step"] == "HIGH-2 patched, MED-2 left."
+
+
+def test_next_step_cleared(conn, tmp_path):
+    """Lumi deletes the `: <next_step>` segment entirely → next_step NULL."""
+    tid = _insert_task(conn, "mw-phase 3")
+    conn.execute("UPDATE tasks SET next_step=? WHERE id=?", ("foo bar", tid))
+    conn.commit()
+    dash = _render_dashboard(conn, tmp_path)
+    dash.write_text(_swap_title(
+        dash.read_text(), tid, ": foo bar", "",
+    ))
+    reconcile.reconcile_tasks(conn, dash)
+    row = conn.execute(
+        "SELECT title, next_step FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    assert row["title"] == "mw-phase 3"
+    assert row["next_step"] is None
+
+
+def test_title_with_colon_no_next_step_round_trip(conn, tmp_path):
+    """After clearing next_step, a second reconcile pass on the unchanged
+    title (which contains `: `) must not split the title in half.
+
+    Regression for task #148: title='mw-phase 3: Almost done', next_step=NULL
+    → second reconcile re-rendered as `mw-phase 3: Almost done` and the
+    parser wrongly split into ('mw-phase 3', 'Almost done').
+    """
+    tid = _insert_task(conn, "mw-phase 3: Almost done")
+    # next_step starts NULL.
+    dash = _render_dashboard(conn, tmp_path)
+    reconcile.reconcile_tasks(conn, dash)
+    row = conn.execute(
+        "SELECT title, next_step FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    assert row["title"] == "mw-phase 3: Almost done"
+    assert row["next_step"] is None
+
+
+def test_ambiguous_edit_keeps_db(conn, tmp_path):
+    """Both fields edited beyond recognition → conflict, DB unchanged."""
+    tid = _insert_task(conn, "alpha")
+    conn.execute("UPDATE tasks SET next_step=? WHERE id=?", ("beta", tid))
+    conn.commit()
+    dash = _render_dashboard(conn, tmp_path)
+    dash.write_text(_swap_title(
+        dash.read_text(), tid, "] alpha: beta [", "] gamma: delta [",
+    ))
+    rpt = reconcile.reconcile_tasks(conn, dash)
+    row = conn.execute(
+        "SELECT title, next_step FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    assert row["title"] == "alpha"
+    assert row["next_step"] == "beta"
+    assert any("ambiguous" in c for c in rpt.conflicts)
+
+
 # ── 3. delete-by-trail: id in trail, missing from md -> archived ──────────────
 
 def test_delete_by_trail_archives(conn, tmp_path):
@@ -165,6 +244,30 @@ def test_delete_by_trail_archives(conn, tmp_path):
     assert rpt.deleted == 1
     row = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
     assert row["status"] == "archived"
+
+
+def test_delete_done_row_archives(conn, tmp_path):
+    """Deleting a Completed row mid-day must stick — was a bug: archive
+    branch treated `done` as terminal, so the row resurrected on every
+    render until the 6AM cutoff window expired."""
+    after_cutoff = (top_sections._day_cutoff_utc() +
+                    datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tid = _insert_task(conn, "Finished thing", status="done",
+                       updated_at=after_cutoff)
+    dash = _render_dashboard(conn, tmp_path)
+    text = dash.read_text()
+    assert "Finished thing" in text
+    lines = [ln for ln in text.splitlines() if f"<!-- id:{tid} -->" not in ln]
+    dash.write_text("\n".join(lines))
+
+    rpt = reconcile.reconcile_tasks(conn, dash)
+
+    assert rpt.deleted == 1
+    row = conn.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert row["status"] == "archived"
+    # Re-render must not bring it back.
+    dashboard.write_dashboard(str(dash), conn, state_dir=str(tmp_path / "s2"))
+    assert "Finished thing" not in dash.read_text()
 
 
 # ── 4. no-op when trail absent ────────────────────────────────────────────────
