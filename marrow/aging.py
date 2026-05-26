@@ -16,6 +16,9 @@ Passes (single txn):
    > 7d ago AND resolved=0 → set resolved=1, resolved_at=now.
 4. prune_goose_quotes — delete ### YYYY-MM-DD blocks older than 7d from
    ~/.config/marrow/goose_log/*.md; delete empty monthly files.
+5. prune_md_index_tombstones — DELETE md_index rows whose tombstone_at is
+   older than 30 days. Stops the table accumulating dead rows from blocks
+   the user permanently removed.
 """
 from __future__ import annotations
 
@@ -155,8 +158,24 @@ def prune_goose_quotes(quote_dir: Path | None = None) -> int:
     return pruned
 
 
+def prune_md_index_tombstones(conn: sqlite3.Connection) -> int:
+    """DELETE md_index rows whose tombstone_at is older than 30 days.
+
+    Keeps the table from accumulating dead rows. Live rows (tombstone_at
+    IS NULL) and recently-tombstoned rows (≤30d) are preserved so the
+    inserter's anti-resurrection guard still fires for blocks the user
+    deleted recently.
+    """
+    cur = conn.execute(
+        "DELETE FROM md_index "
+        "WHERE tombstone_at IS NOT NULL "
+        "AND tombstone_at < datetime('now', '-30 days')"
+    )
+    return cur.rowcount or 0
+
+
 def main() -> None:
-    """Single entrypoint: run all four passes, log summary."""
+    """Single entrypoint: run all five passes, log summary."""
     conn = storage.init_db()
     try:
         with conn:
@@ -164,16 +183,17 @@ def main() -> None:
             archived = archive_tasks(conn)
             confirmed = confirm_milestone_alerts(conn)
             pruned = prune_goose_quotes()
+            tombs = prune_md_index_tombstones(conn)
             conn.execute(
                 "INSERT INTO audit_log "
                 "(target_table, target_id, action, summary) "
                 "VALUES ('aging', NULL, 'weekly', ?)",
                 (f"retired={retired} archived={archived} "
-                 f"confirmed={confirmed} pruned={pruned}",),
+                 f"confirmed={confirmed} pruned={pruned} tombs={tombs}",),
             )
         sys.stderr.write(
             f"[aging] retired={retired} archived={archived} "
-            f"confirmed={confirmed} pruned={pruned}\n"
+            f"confirmed={confirmed} pruned={pruned} tombs={tombs}\n"
         )
     finally:
         conn.close()

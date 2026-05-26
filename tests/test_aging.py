@@ -316,3 +316,102 @@ def test_prune_goose_empty_after_prune_file_deleted(tmp_path):
     n = aging.prune_goose_quotes(d)
     assert n == 1
     assert not p.exists()
+
+
+# ── prune_md_index_tombstones ────────────────────────────────────────────────
+
+def test_prune_md_index_tombstones_deletes_old_only(db):
+    """Old-tombstoned rows (>30d) → deleted; recent / live rows preserved."""
+    # Live row — must survive.
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at, "
+        "tombstone_at) VALUES ('/p/a.md', 'live', 'h-a', "
+        "datetime('now'), NULL)"
+    )
+    # Recently tombstoned (5 days ago) — must survive.
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at, "
+        "tombstone_at) VALUES ('/p/b.md', 'recent', 'h-b', "
+        "datetime('now', '-5 days'), datetime('now', '-5 days'))"
+    )
+    # Just outside the cliff (29 days ago) — must survive.
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at, "
+        "tombstone_at) VALUES ('/p/c.md', 'boundary', 'h-c', "
+        "datetime('now', '-29 days'), datetime('now', '-29 days'))"
+    )
+    # Old tombstoned (40 days ago) — must be pruned.
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at, "
+        "tombstone_at) VALUES ('/p/d.md', 'old1', 'h-d', "
+        "datetime('now', '-40 days'), datetime('now', '-40 days'))"
+    )
+    # Very old tombstoned (120 days ago) — must be pruned.
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at, "
+        "tombstone_at) VALUES ('/p/e.md', 'old2', 'h-e', "
+        "datetime('now', '-120 days'), datetime('now', '-120 days'))"
+    )
+    db.commit()
+
+    n = aging.prune_md_index_tombstones(db)
+    assert n == 2
+
+    surviving = {r["block_id"] for r in db.execute(
+        "SELECT block_id FROM md_index ORDER BY block_id"
+    ).fetchall()}
+    assert surviving == {"boundary", "live", "recent"}
+
+
+def test_prune_md_index_tombstones_empty_noop(db):
+    """Empty md_index → 0 deletes, no error."""
+    assert aging.prune_md_index_tombstones(db) == 0
+
+
+def test_prune_md_index_tombstones_no_old_tombstones_noop(db):
+    """Only live + recent rows → 0 deletes."""
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at) "
+        "VALUES ('/p/a.md', 'live1', 'h', datetime('now'))"
+    )
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at, "
+        "tombstone_at) VALUES ('/p/b.md', 'fresh-tomb', 'h2', "
+        "datetime('now'), datetime('now'))"
+    )
+    db.commit()
+    assert aging.prune_md_index_tombstones(db) == 0
+    n_rows = db.execute(
+        "SELECT COUNT(*) c FROM md_index"
+    ).fetchone()["c"]
+    assert n_rows == 2
+
+
+def test_main_audit_includes_tombs_count(db, monkeypatch, tmp_path):
+    """main() must include `tombs=N` in audit_log summary."""
+    db.execute(
+        "INSERT INTO md_index (path, block_id, content_hash, last_seen_at, "
+        "tombstone_at) VALUES ('/p/old.md', 'stale', 'h', "
+        "datetime('now', '-50 days'), datetime('now', '-50 days'))"
+    )
+    db.commit()
+    p = db.execute("PRAGMA database_list").fetchone()["file"]
+    db.close()
+    _route_init_db(monkeypatch, p)
+    monkeypatch.setattr(aging, "_GOOSE_DIR", tmp_path / "fake_goose")
+    aging.main()
+    fresh = sqlite3.connect(p)
+    fresh.row_factory = sqlite3.Row
+    try:
+        row = fresh.execute(
+            "SELECT summary FROM audit_log "
+            "WHERE target_table='aging' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert "tombs=1" in row["summary"]
+        # Verify the old row actually went.
+        n = fresh.execute(
+            "SELECT COUNT(*) c FROM md_index WHERE block_id='stale'"
+        ).fetchone()["c"]
+        assert n == 0
+    finally:
+        fresh.close()
