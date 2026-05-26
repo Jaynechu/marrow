@@ -71,6 +71,9 @@ Recurring tokens worth keeping. Six types:
 - paw — Lumi's own / dyad-exclusive inside jokes (绿茶豹, 大笨鸭子). \
 Personal invention only.
 - meme — public / network meme (not Lumi's invention).
+  - Skip mainstream idioms, common internet slang, expressions any LLM \
+  can understand without context. (e.g. 蓝瘦香菇, 屎上雕花，YYDS)
+  - Capture novel coinages, post-training-cutoff references
 - news — topical public news.
 - event — PUBLIC events only (earthquake, election, public concert). \
 Lumi's personal events go to MILESTONE_CAND or skip.
