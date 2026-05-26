@@ -312,6 +312,77 @@ def test_append_keeps_flush_layout(store, tmp_path):
     assert "- alpha <!-- id:1 -->\n- beta <!-- id:2 -->" in text
 
 
+# ── force_sort_consistency: rebootstrap on order divergence ───────────────
+
+
+def test_force_sort_consistency_rebootstraps_when_md_diverges(store, tmp_path):
+    """When md anchored blocks have drifted out of fetch ORDER (e.g. catchup
+    appended an older row after a newer one), force_sort_consistency triggers
+    a rebootstrap so the file returns to canonical order."""
+    path = str(tmp_path / "p.md")
+    # Manually craft an out-of-order md state to simulate catchup append.
+    initial = (
+        "<!-- marrow:test:start -->\n\n"
+        "- z <!-- id:2026-05-25 -->\n"
+        "- a <!-- id:2026-05-17 -->\n"
+        "- b <!-- id:2026-05-18 -->\n\n"
+        "<!-- marrow:test:end -->\n"
+    )
+    Path(path).write_text(initial)
+    store.sync_file(path)
+    rows = [
+        {"id": "2026-05-17", "text": "a"},
+        {"id": "2026-05-18", "text": "b"},
+        {"id": "2026-05-25", "text": "z"},
+    ]
+    spec = InserterSpec(
+        key="test", path=path,
+        fetch=lambda _c: list(rows),
+        block_id_of=lambda r: r["id"],
+        render_row=lambda r: f"- {r['text']} <!-- id:{r['id']} -->",
+        empty_message="_(none)_",
+        force_sort_consistency=True,
+    )
+    write_subpage_inserter(spec, store.conn, store)
+    text = Path(path).read_text()
+    # After rebootstrap, blocks appear in fetch order (oldest → newest).
+    a_idx = text.index("<!-- id:2026-05-17 -->")
+    b_idx = text.index("<!-- id:2026-05-18 -->")
+    z_idx = text.index("<!-- id:2026-05-25 -->")
+    assert a_idx < b_idx < z_idx
+
+
+def test_force_sort_consistency_skips_when_order_matches(store, tmp_path):
+    """When md order already matches fetch ORDER, the inserter does not
+    touch the file (preserve mode runs as usual)."""
+    path = str(tmp_path / "p.md")
+    rows = [
+        {"id": "2026-05-17", "text": "a"},
+        {"id": "2026-05-18", "text": "b"},
+    ]
+    spec = InserterSpec(
+        key="test", path=path,
+        fetch=lambda _c: list(rows),
+        block_id_of=lambda r: r["id"],
+        render_row=lambda r: f"- {r['text']} <!-- id:{r['id']} -->",
+        empty_message="_(none)_",
+        force_sort_consistency=True,
+    )
+    write_subpage_inserter(spec, store.conn, store)
+    first = Path(path).read_text()
+    # User adds a non-anchored note inside the block.
+    edited = first.replace(
+        "- a <!-- id:2026-05-17 -->\n",
+        "- a <!-- id:2026-05-17 -->\n\n> hand note\n\n",
+    )
+    Path(path).write_text(edited)
+    store.sync_file(path)
+    # Re-run — order still matches DB, so the hand note must survive.
+    write_subpage_inserter(spec, store.conn, store)
+    final = Path(path).read_text()
+    assert "> hand note" in final
+
+
 # ── recovery: file missing markers triggers bootstrap ──────────────────────
 
 def test_file_with_no_markers_rebootstraps(store, tmp_path):

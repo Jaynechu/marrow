@@ -85,6 +85,12 @@ class InserterSpec:
         default=lambda label: f"### {label}",
     )
     empty_message: str = "_(none yet)_"
+    # When True, the inserter rebootstraps the file whenever the md block
+    # order diverges from `fetch`'s canonical order. Reserved for views
+    # where chronological order is a hard contract (diary, goose, milestone).
+    # Side effect — non-anchored hand-edits inside the marker block are
+    # wiped on rebootstrap. Tombstoned rows stay tombstoned.
+    force_sort_consistency: bool = False
 
     def m0(self) -> str:
         return _M0.format(key=self.key)
@@ -137,6 +143,33 @@ def write_subpage_inserter(spec: InserterSpec, conn: sqlite3.Connection,
         return counts
 
     tombstoned = {tid for tid, _ts in store.list_tombstones(path)}
+
+    # Sort-consistency check — diary / goose / milestone want canonical
+    # chronological order. If catchup-style inserts have left md blocks
+    # out of fetch-order, rebootstrap the marker block from scratch.
+    # db_order mirrors _bootstrap's emit order: rows grouped by section in
+    # section_order, then fetch order inside each section.
+    if spec.force_sort_consistency:
+        sections_db: dict[str, list[str]] = {}
+        for r in rows:
+            bid = spec.block_id_of(r)
+            if bid in md_ids:
+                sections_db.setdefault(spec.section_of(r), []).append(bid)
+        db_order: list[str] = []
+        for label in spec.section_order(sections_db.keys()):
+            db_order.extend(sections_db.get(label, []))
+        md_order = [b.block_id for b in md_blocks]
+        if md_order != db_order:
+            live_rows = [r for r in rows
+                         if spec.block_id_of(r) not in tombstoned]
+            text = _bootstrap(spec, live_rows)
+            _atomic_write(path, text)
+            for r in live_rows:
+                bid = spec.block_id_of(r)
+                store.record_block(path, bid, _hash(spec.render_row(r)))
+                counts["bootstrapped"] += 1
+            counts["tombstoned_skipped"] += len(rows) - len(live_rows)
+            return counts
     new_rows_by_section: dict[str, list[tuple[str, str]]] = {}
     for r in rows:
         bid = spec.block_id_of(r)

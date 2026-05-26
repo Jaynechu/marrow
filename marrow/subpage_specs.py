@@ -55,9 +55,10 @@ def _canonical_order(canonical: list[str]):
 
 
 def build_profile_spec(folder: str) -> InserterSpec:
-    """Profile — entity-backed, currently empty until Phase 2 entity render.
+    """Profile — entity-backed, grouped by kind (person / pref / place).
 
-    group_by = append. Each entity row → one bullet block.
+    Section per kind gives a visual divider between tag types. Rows inside
+    a section keep mention_count DESC, id ASC ordering.
     """
     def fetch(conn: sqlite3.Connection) -> list[dict]:
         try:
@@ -80,7 +81,10 @@ def build_profile_spec(folder: str) -> InserterSpec:
         fetch=fetch,
         block_id_of=lambda r: str(r["id"]),
         render_row=render,
-        group_by="append",
+        group_by="tag",
+        section_of=lambda r: r["kind"],
+        section_order=_canonical_order(["person", "pref", "place"]),
+        render_section_header=lambda k: f"## {k.capitalize()}",
         empty_message=(
             "_Profile entries land here once Phase 2 entity render is wired._"
         ),
@@ -126,6 +130,7 @@ def build_milestone_spec(folder: str) -> InserterSpec:
         section_of=lambda r: "Us" if r["scope"] == "us" else "Me",
         section_order=_canonical_order(["Us", "Me"]),
         empty_message="_No milestones yet._",
+        force_sort_consistency=True,
     )
 
 
@@ -169,6 +174,7 @@ def build_diary_spec(folder: str) -> InserterSpec:
         section_order=lambda labels: sorted(set(labels)),
         render_section_header=lambda y: f"## {y}",
         empty_message="_No diary entries yet._",
+        force_sort_consistency=True,
     )
 
 
@@ -308,6 +314,7 @@ def build_goose_spec(folder: str) -> InserterSpec:
         subsection_of=lambda r: _month_name(r["date"]),
         render_subsection_header=lambda m: f"### {m}",
         empty_message="_No goose-bites yet._",
+        force_sort_consistency=True,
     )
 
 
