@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -339,6 +339,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v8(conn)
         _migrate_to_v9(conn)
         _migrate_to_v10(conn)
+        _migrate_to_v11(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -535,4 +536,30 @@ def _migrate_to_v10(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_md_index_tombstone"
         " ON md_index(tombstone_at) WHERE tombstone_at IS NOT NULL"
+    )
+
+
+def _migrate_to_v11(conn: sqlite3.Connection) -> None:
+    """v11: memes_reject_log — persistent (key, type, reason) counter so a
+    repeat-rejected candidate fast-skips the gate (no sonnet tokens burnt re-
+    extracting the same dup next round). Only persistent reasons land here
+    (dup_milestone / dup_entity / cosine_dup); freq_gate rejects are
+    time-relative and never logged.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 11:
+        return
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS memes_reject_log ("
+        "  key TEXT NOT NULL,"
+        "  type TEXT NOT NULL,"
+        "  reason TEXT NOT NULL,"
+        "  count INTEGER NOT NULL DEFAULT 1,"
+        "  last_rejected_at TEXT NOT NULL,"
+        "  PRIMARY KEY (key, type, reason)"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memes_reject_log_key_type"
+        " ON memes_reject_log(key, type)"
     )

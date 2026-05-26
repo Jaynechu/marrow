@@ -234,13 +234,20 @@ def write_memes_cand(conn, raw: str, source: str = "daily",
 
     - Type whitelist: {paw, meme, news, event, fact, others}. Items with
       type outside this set are dropped silently.
+    - Persistent-reject fast-skip (memes_reject_log SUM(count) ≥ N): drop
+      the candidate before any further work — protects sonnet tokens from
+      re-extracting a known dup next round.
     - 7d events_fts frequency gate applied to meme/news/event only — key
       must appear ≥3 times in events over the 7d window ending at `date`
       (or now). paw/fact/others bypass the gate.
+    - Dedup against milestones.title / entities_live.name+aliases (exact
+      case-insensitive) and cosine ≥ threshold against active memes.key /
+      milestones.title / entities_live.name (bge-m3). Hits → reject + log.
     - Auto pinned=1 for type=paw / type=fact. For other types, pinned
       comes from LLM emission OR anchor-key force list.
     - On existing row, pinned is upgrade-only (0→1 stays, 1→0 never).
     """
+    from . import memes_dedup  # local: avoid heavy import unless used
     items = extract_block(raw, "MEMES_CAND")
     if not items:
         return 0
@@ -260,44 +267,74 @@ def write_memes_cand(conn, raw: str, source: str = "daily",
         vtype = (it.get("type") or "").strip()
         if vtype not in _MEMES_TYPES:
             continue
+        # Fast-skip BEFORE any other gate — if this (key, type) has been
+        # rejected ≥N times for persistent reasons (dup_milestone /
+        # dup_entity / cosine_dup), don't burn cycles or sonnet tokens.
+        if memes_dedup.fast_skip_already_rejected(conn, key, vtype):
+            continue
         value = (it.get("value") or "").strip() or None
         context = (it.get("context") or "").strip() or None
         try:
             llm_pinned = 1 if int(it.get("pinned", 0)) else 0
         except (TypeError, ValueError):
             llm_pinned = 0
-        # Frequency gate — paw/meme/news/event must be mentioned ≥3 times
-        # in distinct events over the 7d window ending at `date`. fact /
-        # others bypass (setup config / catch-all).
+        existing = conn.execute(
+            "SELECT id, use_count, pinned FROM memes WHERE type=? AND key=?"
+            " LIMIT 1", (vtype, key),
+        ).fetchone()
+        # Existing row → bump path (already accepted historically, no dedup).
+        if existing:
+            # Pinned default by type. paw/fact force pinned=1; other types
+            # use llm flag OR anchor list.
+            if vtype in _MEMES_AUTO_PINNED:
+                pinned = 1
+            else:
+                pinned = 1 if (llm_pinned or key in anchor_keys) else 0
+            ts_now = _dt.datetime.now(_dt.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+            with conn:
+                new_pinned = 1 if (existing["pinned"] or pinned) else 0
+                conn.execute(
+                    "UPDATE memes SET use_count=use_count+1, last_seen=?,"
+                    " pinned=? WHERE id=?",
+                    (ts_now, new_pinned, existing["id"]),
+                )
+            n += 1
+            continue
+        # New row path. Frequency gate first (cheap), then dedup (string +
+        # cosine). freq_gate rejects are time-relative — NOT logged.
         if vtype in _MEMES_FREQ_GATED:
             if _events_like_count_7d(conn, key, date) < 3:
                 continue
+        # Exact-string dedup against milestones / entities (incl. aliases).
+        reason = memes_dedup.string_dup_reason(conn, key)
+        if reason is not None:
+            with conn:
+                memes_dedup.log_reject(conn, key, vtype, reason)
+            continue
+        # Cosine dedup (bge-m3). Skip on missing embedder (alert raised).
+        cos = memes_dedup.cosine_dup_score(conn, key)
+        if cos is None:
+            with conn:
+                memes_dedup.warn_embedder_missing(conn)
+        elif cos >= memes_dedup.cosine_dup_threshold():
+            with conn:
+                memes_dedup.log_reject(conn, key, vtype, "cosine_dup")
+            continue
         # Pinned default by type. paw/fact force pinned=1; other types use
         # llm flag OR anchor list.
         if vtype in _MEMES_AUTO_PINNED:
             pinned = 1
         else:
             pinned = 1 if (llm_pinned or key in anchor_keys) else 0
-        row = conn.execute(
-            "SELECT id, use_count, pinned FROM memes WHERE type=? AND key=?"
-            " LIMIT 1", (vtype, key),
-        ).fetchone()
         ts_now = _dt.datetime.now(_dt.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
         with conn:
-            if row:
-                new_pinned = 1 if (row["pinned"] or pinned) else 0
-                conn.execute(
-                    "UPDATE memes SET use_count=use_count+1, last_seen=?,"
-                    " pinned=? WHERE id=?",
-                    (ts_now, new_pinned, row["id"]),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO memes (type, key, value, context,"
-                    " use_count, last_seen, pinned, source_hash)"
-                    " VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
-                    (vtype, key, value, context, ts_now, pinned, source),
-                )
+            conn.execute(
+                "INSERT INTO memes (type, key, value, context,"
+                " use_count, last_seen, pinned, source_hash)"
+                " VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+                (vtype, key, value, context, ts_now, pinned, source),
+            )
         n += 1
     return n

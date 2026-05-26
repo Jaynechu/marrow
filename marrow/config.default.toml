@@ -74,6 +74,19 @@ min_score = 0.35
 # Threshold tunes after 1-week sample.
 skip_turn_threshold = 3
 
+[memes_dedup]
+# Cosine similarity threshold for the bge-m3 dedup check against existing
+# milestones.title / entities_live.name / active memes.key. Hits ≥ this score
+# are treated as concept duplicates and rejected (logged with reason
+# 'cosine_dup'). bge-m3 on CN paraphrases (合同 vs 契约) usually scores
+# 0.85–0.92; unrelated CN/EN noise stays under 0.50.
+cosine_threshold = 0.85
+# Persistent-reject backoff: a (key, type) whose SUM(count) in memes_reject_log
+# crosses this threshold across persistent reasons (dup_milestone / dup_entity /
+# cosine_dup) is fast-skipped — no further gate work, no sonnet token waste on
+# repeat candidates.
+fast_skip_count = 3
+
 [subpages]
 # Sub-page render order + visibility (DESIGN L43-65). Known keys:
 #   profile · milestone · diary · memes · stickers · wallet · goose
