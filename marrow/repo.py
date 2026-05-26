@@ -9,6 +9,7 @@ import sqlite3
 from . import storage
 from . import recall as _recall_mod
 from . import top_sections as _top_sections
+from . import entity_recall as _entity_recall
 
 
 def _fts_query(q: str) -> str:
@@ -95,6 +96,7 @@ def archive_events(conn: sqlite3.Connection, rows: list[dict]) -> int:
     # Write path for #7 SessionEnd. Idempotent by source_hash; re-run skips.
     n = 0
     sessions: set[str] = set()
+    inserted: list[dict] = []
     with conn:
         for r in rows:
             h = _hash(r["session_id"], r["timestamp"], r["role"],
@@ -111,7 +113,13 @@ def archive_events(conn: sqlite3.Connection, rows: list[dict]) -> int:
                  r.get("channel"), h),
             )
             sessions.add(r["session_id"])
+            inserted.append(r)
             n += 1
+        # Bump entities.mention_count for entities whose name/alias appears
+        # in newly-inserted events. Same transaction = atomic with inserts;
+        # dedup-aware (only `inserted`, not `rows`) so re-runs don't double-count.
+        if inserted:
+            _entity_recall.bump_mention_counts(conn, inserted)
         # One batch audit row per call (Monitor Zone), atomic with the inserts.
         # Skip when n == 0 so a fully-deduped re-run shows no phantom archive.
         if n:

@@ -224,6 +224,119 @@ def test_archive_events_audit_atomic_rollback(tmp_path):
         chk.close()
 
 
+# ── archive_events: entity mention_count bump ─────────────────────────────────
+
+def _seed_entity(conn, name, *, kind="person", aliases=None, fact=""):
+    import json as _json
+    al = _json.dumps(aliases) if aliases else None
+    cur = conn.execute(
+        "INSERT INTO entities (kind, name, fact, aliases) VALUES (?, ?, ?, ?)",
+        (kind, name, fact, al),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _mc(conn, eid):
+    return conn.execute(
+        "SELECT mention_count FROM entities_live WHERE id=?", (eid,)
+    ).fetchone()["mention_count"]
+
+
+def test_archive_events_bumps_mention_count_on_user_event(db):
+    eid = _seed_entity(db, "(李小云)")
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:00:00Z",
+        "role": "user", "content": "我跟(李小云)吃饭",
+    }]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 1
+
+
+def test_archive_events_bumps_mention_count_on_assistant_event(db):
+    eid = _seed_entity(db, "(铁锅)")
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:01:00Z",
+        "role": "assistant", "content": "(铁锅)在看你",
+    }]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 1
+
+
+def test_archive_events_alias_match_counts(db):
+    eid = _seed_entity(db, "(屿忱)", aliases=["Stellan", "(阿屿)"])
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:02:00Z",
+        "role": "user", "content": "talked to Stellan today",
+    }]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 1
+
+
+def test_archive_events_same_message_double_mention_counts_once(db):
+    eid = _seed_entity(db, "(李小云)")
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:03:00Z",
+        "role": "user", "content": "(李小云)说(李小云)累了",
+    }]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 1
+
+
+def test_archive_events_multiple_events_accumulate(db):
+    eid = _seed_entity(db, "(李小云)")
+    rows = [
+        {"session_id": "s1", "timestamp": "2026-05-17T04:04:00Z",
+         "role": "user", "content": "(李小云)来了"},
+        {"session_id": "s1", "timestamp": "2026-05-17T04:05:00Z",
+         "role": "assistant", "content": "(李小云)走了"},
+    ]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 2
+
+
+def test_archive_events_idempotent_rerun_no_double_bump(db):
+    eid = _seed_entity(db, "(李小云)")
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:06:00Z",
+        "role": "user", "content": "(李小云)来了",
+    }]
+    repo.archive_events(db, rows)
+    repo.archive_events(db, rows)  # full dedup, no new inserts
+    assert _mc(db, eid) == 1
+
+
+def test_archive_events_non_matching_event_no_bump(db):
+    eid = _seed_entity(db, "(李小云)")
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:07:00Z",
+        "role": "user", "content": "just talking about the weather",
+    }]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 0
+
+
+def test_archive_events_skips_non_user_assistant_roles(db):
+    eid = _seed_entity(db, "(李小云)")
+    # system role: present in schema, ignored by bump logic
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:08:00Z",
+        "role": "system", "content": "(李小云)is mentioned here",
+    }]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 0
+
+
+def test_archive_events_case_insensitive_match(db):
+    eid = _seed_entity(db, "Bendigo")
+    rows = [{
+        "session_id": "s1", "timestamp": "2026-05-17T04:09:00Z",
+        "role": "user", "content": "driving to bendigo this weekend",
+    }]
+    repo.archive_events(db, rows)
+    assert _mc(db, eid) == 1
+
+
 # ── archived_today ────────────────────────────────────────────────────────────
 
 def test_archived_today_returns_done_today(tmp_path, monkeypatch):
