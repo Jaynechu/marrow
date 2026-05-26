@@ -107,15 +107,20 @@ def _assemble_top_region(bodies: list[str]) -> str:
 
 
 def _resolve_blocks(path: str, conn, fresh: list[tuple[str, str]],
-                    current_top: str) -> list[str]:
+                    current_top: str) -> tuple[list[str], list[tuple[str, str]]]:
     """For each canonical fresh block decide: skip / preserve user edit / overwrite.
 
-    Returns the list of block bodies to splice back into the top region, in
-    canonical order. Tombstoned blocks are omitted.
+    Returns (bodies, pending_records) — bodies splice back into the top
+    region in canonical order; pending_records is the list of
+    (block_id, content_hash) tuples the caller must record_block AFTER the
+    atomic write succeeds. Recording before the write would leave md_index
+    pointing at content that never reached disk on a write failure (SIGTERM
+    mid-write / ENOSPC / EACCES) — permanent hash desync.
     """
     store = MdIndex(conn)
     current = _parse_top_blocks(current_top)
     out: list[str] = []
+    pending: list[tuple[str, str]] = []
     for bid, fresh_body in fresh:
         if store.is_tombstoned(path, bid):
             # User deleted this block — watcher tombstoned it; do not re-emit.
@@ -125,26 +130,26 @@ def _resolve_blocks(path: str, conn, fresh: list[tuple[str, str]],
         # the DB, so the fresh body IS the resolved state. Always overwrite.
         if bid in top_sections.RECONCILED_BLOCK_IDS:
             out.append(fresh_body)
-            store.record_block(path, bid, _hash(fresh_body))
+            pending.append((bid, _hash(fresh_body)))
             continue
         if cur_body is None:
             # First render or user wiped this block but watcher hasn't
             # tombstoned yet — re-emit canonical fresh.
             out.append(fresh_body)
-            store.record_block(path, bid, _hash(fresh_body))
+            pending.append((bid, _hash(fresh_body)))
             continue
         cur_hash = _hash(cur_body)
         stored = store.get_hash(path, bid)
         if stored is None or stored == cur_hash:
             # No user edit since last auto-write — safe to overwrite.
             out.append(fresh_body)
-            store.record_block(path, bid, _hash(fresh_body))
+            pending.append((bid, _hash(fresh_body)))
         else:
             # User has edited this block — preserve their body verbatim and
             # do not bump the stored hash, so subsequent renders keep skipping
             # until the user re-aligns it (or watcher tombstones).
             out.append(cur_body)
-    return out
+    return out, pending
 
 
 def write_dashboard(path: str, conn, *, state_dir: str,
@@ -185,7 +190,7 @@ def write_dashboard(path: str, conn, *, state_dir: str,
     current_top = _current_top_text(existing) if cur_block else ""
 
     fresh = top_sections.iter_top_blocks(conn, dashboard_path=path)
-    resolved = _resolve_blocks(path, conn, fresh, current_top)
+    resolved, pending = _resolve_blocks(path, conn, fresh, current_top)
     new_top_region = _assemble_top_region(resolved)
 
     if cur_block:
@@ -195,7 +200,13 @@ def write_dashboard(path: str, conn, *, state_dir: str,
     else:
         new = new_top_region + "\n"
 
+    # Write first, record hashes only on success. If _atomic_write raises
+    # (ENOSPC, EACCES, SIGTERM mid-write), md_index keeps its prior baseline
+    # so the next refresh still recognises Lumi's edits as user edits.
     _atomic_write(path, new)
+    store = MdIndex(conn)
+    for bid, h in pending:
+        store.record_block(path, bid, h)
 
 
 def _main() -> int:

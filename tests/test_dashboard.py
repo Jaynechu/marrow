@@ -272,3 +272,48 @@ def test_tick_in_md_moves_row_to_completed(db, tmp_path):
     assert status == "done"
     assert "### Completed [1]" in result
     assert "- [x] [study] Essay 370" in result
+
+
+def test_dashboard_write_failure_preserves_baseline(db, tmp_path, monkeypatch):
+    """Outcome 1: if _atomic_write raises, md_index must keep the prior
+    baseline so the next refresh still recognises Lumi's edits as user edits.
+    Today the dashboard records hashes BEFORE the write — a SIGTERM /
+    ENOSPC mid-write leaves md_index pointing at content that never landed,
+    a permanent hash desync that makes the next refresh overwrite Lumi's text.
+    """
+    from marrow import dashboard as dash_mod
+
+    dash = tmp_path / "dashboard.md"
+    state = tmp_path / "state"
+    # First, a successful render establishes the baseline.
+    conn = storage.connect(db)
+    try:
+        dash_mod.write_dashboard(str(dash), conn, state_dir=str(state), db=db)
+        on_disk_v1 = dash.read_text(encoding="utf-8")
+        baseline_v1 = MdIndex(conn).get_hash(str(dash), "dashboard.alerts")
+        assert baseline_v1 is not None
+
+        # Add a new alert so the next render produces different content.
+        conn.execute(
+            "INSERT INTO alerts(severity,type,message) "
+            "VALUES('warn','bug','second alert ' || hex(randomblob(4)))"
+        )
+        conn.commit()
+
+        real_write = dash_mod._atomic_write
+        monkeypatch.setattr(
+            dash_mod, "_atomic_write",
+            lambda p, d: (_ for _ in ()).throw(OSError("disk full")),
+        )
+        with pytest.raises(OSError):
+            dash_mod.write_dashboard(
+                str(dash), conn, state_dir=str(state), db=db)
+        monkeypatch.setattr(dash_mod, "_atomic_write", real_write)
+
+        # File untouched (failed write never landed).
+        assert dash.read_text(encoding="utf-8") == on_disk_v1
+        # Baseline untouched — still matches v1, not the failed v2.
+        baseline_after = MdIndex(conn).get_hash(str(dash), "dashboard.alerts")
+        assert baseline_after == baseline_v1
+    finally:
+        conn.close()

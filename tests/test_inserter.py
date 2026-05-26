@@ -398,3 +398,45 @@ def test_file_with_no_markers_rebootstraps(store, tmp_path):
     # If we ever need to preserve prior text, do it via a backup, not in-file.
     assert "no markers here" not in text
     assert counts["bootstrapped"] == 1
+
+
+# ── write-failure isolation (Outcome 1) ────────────────────────────────────
+
+def test_write_failure_does_not_corrupt_baseline(store, tmp_path, monkeypatch):
+    """If _atomic_write raises (ENOSPC / EACCES / SIGTERM mid-write), md_index
+    must keep its prior baseline — never the body that failed to land. Today
+    the inserter would have recorded the new hash before the write attempt,
+    making the next refresh think Lumi's old on-disk content was a user edit
+    against fresh DB rows.
+    """
+    from marrow import inserter
+
+    path = str(tmp_path / "p.md")
+    rows_v1 = [{"id": 1, "text": "alpha"}]
+    spec_v1 = _spec(path, rows_v1)
+    write_subpage_inserter(spec_v1, store.conn, store)
+    on_disk_text = Path(path).read_text(encoding="utf-8")
+    baseline_v1 = store.get_hash(path, "1")
+    assert baseline_v1 is not None
+
+    # Append a brand-new row, but force the second write to fail.
+    rows_v2 = rows_v1 + [{"id": 2, "text": "beta"}]
+    spec_v2 = _spec(path, rows_v2)
+    call_count = {"n": 0}
+    real_write = inserter._atomic_write
+
+    def flaky_write(p, data):
+        call_count["n"] += 1
+        raise OSError("disk full")
+
+    monkeypatch.setattr(inserter, "_atomic_write", flaky_write)
+    with pytest.raises(OSError):
+        write_subpage_inserter(spec_v2, store.conn, store)
+    monkeypatch.setattr(inserter, "_atomic_write", real_write)
+
+    # File must still hold the v1 content — the failed write never landed.
+    assert Path(path).read_text(encoding="utf-8") == on_disk_text
+    # md_index must NOT have a baseline for the row whose write failed; the
+    # v1 baseline must be untouched.
+    assert store.get_hash(path, "1") == baseline_v1
+    assert store.get_hash(path, "2") is None
