@@ -21,3 +21,6 @@
 ## Reference
 > file:line + 4-6 word hint. path / doc URL / skill / commit. drop when stale.
 - N/A
+
+## Note
+- N/A

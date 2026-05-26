@@ -33,6 +33,7 @@ _SEP_CLOSE = "<!-- marrow:top:end -->"
 _RENDERED_PATH = config.DATA_DIR / "handover.md"
 
 _SECTIONS = ("Done", "Open", "Plan", "Reference")
+_NOTE_HEADER = "Note"
 
 _LOCK_RETRIES = 3
 _LOCK_BACKOFF = 0.05
@@ -71,6 +72,36 @@ def _split_section_body(text: str, header: str) -> str:
     if not m:
         return ""
     return m.group(1).strip("\n")
+
+
+def _section_present(text: str, header: str) -> bool:
+    return bool(re.search(
+        rf"^## {re.escape(header)}[ \t]*$", text or "", re.MULTILINE))
+
+
+def _inject_section_raw(text: str, header: str, body: str) -> str:
+    """Replace section body verbatim. No N/A coercion, no tombstone filter."""
+    pat = re.compile(
+        rf"(^## {re.escape(header)}[ \t]*\n)(.*?)(?=^## |^<!--|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    if not pat.search(text):
+        return text
+    safe = body if body.endswith("\n") else body + "\n"
+    return pat.sub(lambda m: f"{m.group(1)}{safe}\n", text, count=1)
+
+
+def _strip_note_section(text: str) -> str:
+    """Remove `## Note` ... block from text. Used to keep Note hand-edits out
+    of the tombstone diff baseline so user can freely edit Note without
+    poisoning Done/Open/Plan/Reference bullet hashes."""
+    if not text:
+        return text
+    pat = re.compile(
+        rf"^## {re.escape(_NOTE_HEADER)}[ \t]*\n.*?(?=^## |^<!--|\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    return pat.sub("", text)
 
 
 def render_skeleton(conn: sqlite3.Connection) -> str:
@@ -178,8 +209,13 @@ def _apply_tombstones(body: str, tombstones: set[str]) -> str:
 def render_full(conn: sqlite3.Connection, sid: str,
                 *, done: str, open_: str, plan: str, reference: str,
                 tombstones: set[str] | None = None,
+                note: str | None = None,
                 now_epoch: int | None = None) -> str:
-    """Compose skeleton + 4 state-axis sections + ready stamp."""
+    """Compose skeleton + 4 state-axis sections + ready stamp.
+
+    `note` is a passthrough section: when provided, replaces the template
+    Note body verbatim (no tombstone filter, no N/A coercion). None keeps
+    the template default — used on first render before any hand-edit."""
     if now_epoch is None:
         now_epoch = int(time.time())
     tombs = tombstones if tombstones is not None else set()
@@ -192,6 +228,8 @@ def render_full(conn: sqlite3.Connection, sid: str,
     text = render_skeleton(conn)
     for header in _SECTIONS:
         text = _inject_section(text, header, bodies[header])
+    if note is not None:
+        text = _inject_section_raw(text, _NOTE_HEADER, note)
     stamp = f"<!-- handover: ready sid:{sid} ts:{now_epoch} -->"
     return _append_stamp(text, stamp)
 
@@ -199,6 +237,17 @@ def render_full(conn: sqlite3.Connection, sid: str,
 def _new_store(conn: sqlite3.Connection) -> TombstoneStore:
     """MdIndex-backed bullet store, bound to handover.md absolute path."""
     return MdIndexTombstoneStore(conn, str(_RENDERED_PATH))
+
+
+def _read_prior_note() -> str | None:
+    """Best-effort Note body from current handover.md; None if absent."""
+    try:
+        text = _RENDERED_PATH.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    if not _section_present(text, _NOTE_HEADER):
+        return None
+    return _split_section_body(text, _NOTE_HEADER)
 
 
 def write_handover_full(conn: sqlite3.Connection, sid: str,
@@ -212,9 +261,11 @@ def write_handover_full(conn: sqlite3.Connection, sid: str,
     if fd is None:
         store = _new_store(conn)
         partial = _RENDERED_PATH.with_suffix(f".md.partial.{sid}")
+        prior_note = _read_prior_note()
         text = render_full(conn, sid, done=done, open_=open_, plan=plan,
                            reference=reference,
                            tombstones=store.list_tombstones(),
+                           note=prior_note,
                            now_epoch=now_epoch)
         _atomic_write(str(partial), text)
         try:
@@ -235,12 +286,20 @@ def write_handover_full(conn: sqlite3.Connection, sid: str,
         store = _new_store(conn)
         # Snapshot = "what marrow last wrote." Compare against `prior_text`
         # (what's on disk right now) to detect Lumi's hand-edits since.
+        # Strip Note section first — it's hand-edited passthrough and must
+        # not feed bullet hashes into the tombstone table.
         last_body = _load_last_snapshot_body(conn)
-        if last_body and prior_text and last_body.strip() != prior_text.strip():
-            record_user_deletes(store, last_body, prior_text)
+        last_for_diff = _strip_note_section(last_body)
+        prior_for_diff = _strip_note_section(prior_text)
+        if last_for_diff and prior_for_diff and last_for_diff.strip() != prior_for_diff.strip():
+            record_user_deletes(store, last_for_diff, prior_for_diff)
+        prior_note = (_split_section_body(prior_text, _NOTE_HEADER)
+                      if _section_present(prior_text, _NOTE_HEADER)
+                      else None)
         text = render_full(conn, sid, done=done, open_=open_, plan=plan,
                            reference=reference,
                            tombstones=store.list_tombstones(),
+                           note=prior_note,
                            now_epoch=now_epoch)
         # Snapshot the body we are about to write — that becomes the canonical
         # "last auto-write" against which the next turn's user-edit diff runs.

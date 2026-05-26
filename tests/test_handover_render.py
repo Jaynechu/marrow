@@ -661,6 +661,80 @@ def test_empty_inputs_render_na_in_all_sections(env):
         assert "- N/A" in section, f"{header} missing N/A placeholder"
 
 
+# ── Note passthrough section (hand-edit only, never auto-modified) ──────────
+
+def test_note_section_present_on_first_render(env):
+    """First-ever write places `## Note` with template default body."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s-note-1")
+    content = rendered_path.read_text(encoding="utf-8")
+    assert "## Note" in content
+    note_section = content.split("## Note")[1].split("<!--")[0]
+    assert note_section.strip() == "- N/A"
+
+
+def test_note_hand_edit_survives_next_write(env):
+    """User hand-edits Note; next auto-write preserves it verbatim."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s1", done="- a", plan="- b")
+    body_1 = rendered_path.read_text(encoding="utf-8")
+    edited = body_1.replace(
+        "## Note\n- N/A\n",
+        "## Note\n- carryover idea\n- 自己写的备忘\n")
+    rendered_path.write_text(edited, encoding="utf-8")
+
+    _write_full(env, "s2", done="- a2", plan="- b2")
+    body_2 = rendered_path.read_text(encoding="utf-8")
+    note_section = body_2.split("## Note")[1].split("<!--")[0]
+    assert "- carryover idea" in note_section
+    assert "- 自己写的备忘" in note_section
+    # And the auto-managed sections still updated.
+    assert "- a2" in body_2 and "- b2" in body_2
+
+
+def test_note_edit_does_not_pollute_tombstones(env):
+    """Adding then removing a Note bullet must not tombstone any Done bullet,
+    even if the Note bullet text happens to hash like a real Done bullet."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s1", done="- decision X", plan="- next")
+    body_1 = rendered_path.read_text(encoding="utf-8")
+    # Lumi writes a Note bullet with the same text as a Done bullet, then deletes it.
+    with_note = body_1.replace(
+        "## Note\n- N/A\n", "## Note\n- decision X\n- decision Y\n")
+    rendered_path.write_text(with_note, encoding="utf-8")
+    _write_full(env, "s2", done="- decision X", plan="- next")
+    body_2 = rendered_path.read_text(encoding="utf-8")
+
+    # Done bullet survives — Note edit must not tombstone it.
+    done_section = body_2.split("## Done")[1].split("## Open")[0]
+    assert "- decision X" in done_section
+
+    # No tombstone rows landed for either Note bullet.
+    conn = _conn(db)
+    rows = conn.execute(
+        "SELECT content_hash FROM md_index WHERE path=?"
+        " AND tombstone_at IS NOT NULL",
+        (str(rendered_path),),
+    ).fetchall()
+    conn.close()
+    joined = " ".join((r["content_hash"] or "") for r in rows)
+    assert "decision X" not in joined
+    assert "decision Y" not in joined
+
+
+def test_note_empty_after_user_clears(env):
+    """User clears Note body entirely; renderer keeps it empty (no N/A revive)."""
+    db, _, _, rendered_path = env
+    _write_full(env, "s1", done="- a", plan="- b")
+    body_1 = rendered_path.read_text(encoding="utf-8")
+    cleared = body_1.replace("## Note\n- N/A\n", "## Note\n")
+    rendered_path.write_text(cleared, encoding="utf-8")
+    _write_full(env, "s2", done="- a", plan="- b")
+    body_2 = rendered_path.read_text(encoding="utf-8")
+    note_section = body_2.split("## Note")[1].split("<!--")[0]
+    assert note_section.strip() == ""
+
+
 # ── wt-md-f: MdIndex-backed tombstone adapter ───────────────────────────────
 
 def test_new_store_is_md_index_backed(env):
