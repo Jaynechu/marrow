@@ -192,3 +192,176 @@ def test_logs_dir_created(tmp_path, monkeypatch):
     d = watcher._logs_dir()
     assert d.exists() and d.is_dir()
     assert d == tmp_path / "logs"
+
+
+# ── outcome 3 — watchdog end-to-end round-trip ────────────────────────────
+
+def _wait_for_md_index(db_path: str, predicate, *, timeout: float = 5.0,
+                       poll: float = 0.1) -> bool:
+    """Poll the md_index table until `predicate(rows)` is True or timeout.
+
+    `rows` is a list of dicts {block_id, content_hash, tombstone_at} from the
+    given db path. Returns the truthy value `predicate` returns, or False.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        conn = storage.connect(db_path)
+        try:
+            rs = [dict(r) for r in conn.execute(
+                "SELECT path, block_id, content_hash, tombstone_at "
+                "FROM md_index ORDER BY block_id"
+            ).fetchall()]
+        finally:
+            conn.close()
+        result = predicate(rs)
+        if result:
+            return result
+        time.sleep(poll)
+    return False
+
+
+def test_watchdog_roundtrip_delete_restore_add(tmp_path, monkeypatch):
+    """End-to-end: md edit → debounce → sync_file_observe → md_index state.
+
+    Three transitions, each driven by a real on-disk write, observed by a
+    live watchdog Observer:
+    1. delete a bullet → tombstone_at set for that block_id, baseline hash
+       for surviving blocks unchanged
+    2. restore file (cmd+Z equivalent — identical bytes) → tombstone cleared
+       on the restored block, baseline matches original content
+    3. add a brand-new block → new row inserted with fresh baseline
+
+    Coverage gap before this test: no pytest exercised the full chain
+    (watcher.run → Observer thread → on_modified → debounce → sync_file_observe
+    → md_index UPSERT). _DEBOUNCE_S is 0.2s so polling within 5s is sufficient.
+    """
+    from marrow.watcher import Watcher, _DEBOUNCE_S
+
+    db = tmp_path / "t.db"
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "db_path", lambda: str(db))
+    db_pages = tmp_path / "db-pages"
+    db_pages.mkdir()
+    dashboard = tmp_path / "dashboard.md"
+    dashboard.write_text("")
+    (tmp_path / "handover.md").write_text("")
+
+    def fake_load():
+        return {"paths": {"db": str(db), "dashboard": str(dashboard),
+                          "db_pages": str(db_pages)},
+                "embedding": {"dim": 1024}, "backup": {"keep": 14}}
+
+    monkeypatch.setattr(config, "load", fake_load)
+
+    target = db_pages / "page.md"
+    initial = (
+        "- one <!-- id:a -->\n"
+        "- two <!-- id:b -->\n"
+    )
+    target.write_text(initial, encoding="utf-8")
+
+    w = Watcher()
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    try:
+        # Wait for boot full_scan to land both blocks.
+        bootstrap = _wait_for_md_index(
+            str(db),
+            lambda rs: (
+                {r["block_id"] for r in rs if r["path"] == str(target.resolve())}
+                == {"a", "b"}
+                and all(r["tombstone_at"] is None for r in rs
+                        if r["path"] == str(target.resolve()))
+            ),
+            timeout=4.0,
+        )
+        assert bootstrap, "boot full_scan did not record both blocks as active"
+
+        # Snapshot baseline hashes for later equality checks.
+        conn = storage.connect(str(db))
+        try:
+            base_a = conn.execute(
+                "SELECT content_hash FROM md_index "
+                "WHERE path=? AND block_id='a'",
+                (str(target.resolve()),),
+            ).fetchone()["content_hash"]
+            base_b = conn.execute(
+                "SELECT content_hash FROM md_index "
+                "WHERE path=? AND block_id='b'",
+                (str(target.resolve()),),
+            ).fetchone()["content_hash"]
+        finally:
+            conn.close()
+        assert base_a and base_b and base_a != base_b
+
+        # ── step 1: delete bullet `a` ──
+        target.write_text("- two <!-- id:b -->\n", encoding="utf-8")
+        deleted = _wait_for_md_index(
+            str(db),
+            lambda rs: any(
+                r["block_id"] == "a"
+                and r["path"] == str(target.resolve())
+                and r["tombstone_at"] is not None
+                for r in rs
+            ),
+            timeout=4.0,
+        )
+        assert deleted, "block `a` was not tombstoned after deletion"
+        # Surviving block `b` baseline must not have been overwritten —
+        # sync_file_observe is the observe-only path.
+        conn = storage.connect(str(db))
+        try:
+            b_after = conn.execute(
+                "SELECT content_hash, tombstone_at FROM md_index "
+                "WHERE path=? AND block_id='b'",
+                (str(target.resolve()),),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert b_after["content_hash"] == base_b
+        assert b_after["tombstone_at"] is None
+
+        # ── step 2: restore (cmd+Z) — write identical original bytes ──
+        target.write_text(initial, encoding="utf-8")
+        restored = _wait_for_md_index(
+            str(db),
+            lambda rs: all(
+                r["tombstone_at"] is None
+                for r in rs
+                if r["path"] == str(target.resolve())
+                and r["block_id"] in {"a", "b"}
+            ),
+            timeout=4.0,
+        )
+        assert restored, "tombstone on `a` was not cleared after restore"
+        # Baseline for `a` must match the original (record_block on
+        # tombstone-clear writes the on-disk hash, which equals the original).
+        conn = storage.connect(str(db))
+        try:
+            a_after = conn.execute(
+                "SELECT content_hash FROM md_index "
+                "WHERE path=? AND block_id='a'",
+                (str(target.resolve()),),
+            ).fetchone()["content_hash"]
+        finally:
+            conn.close()
+        assert a_after == base_a
+
+        # ── step 3: add a brand-new block `c` ──
+        target.write_text(initial + "- three <!-- id:c -->\n",
+                          encoding="utf-8")
+        added = _wait_for_md_index(
+            str(db),
+            lambda rs: any(
+                r["block_id"] == "c"
+                and r["path"] == str(target.resolve())
+                and r["content_hash"]
+                and r["tombstone_at"] is None
+                for r in rs
+            ),
+            timeout=4.0,
+        )
+        assert added, "new block `c` was not inserted with a fresh baseline"
+    finally:
+        w._stop.set()
+        t.join(timeout=5)
