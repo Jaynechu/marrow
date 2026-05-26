@@ -307,8 +307,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(prog="marrow.migrate")
     ap.add_argument("--apply", action="store_true",
                     help="write to db (default: dry-run preview)")
+    from .paths import paths as _paths
     ap.add_argument("--ny-root",
-                    default=str(Path.home() / "Desktop" / "NY"))
+                    default=str(_paths.ny_root))
     ap.add_argument("--timeline-only", action="store_true",
                     help="only run idempotent timeline.md backfill "
                          "(keyed on scope+date+title, safe re-run after pins)")

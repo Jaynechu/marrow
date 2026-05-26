@@ -34,6 +34,7 @@ def _deep_merge(base: dict, overlay: dict) -> dict:
 
 def load() -> dict:
     ensure_data_dir()
+    from .paths import paths as _mpaths  # lazy to avoid circular at module init
     with _DEFAULT.open("rb") as f:
         cfg = tomllib.load(f)
     if CONFIG_PATH.exists():
@@ -47,15 +48,13 @@ def load() -> dict:
         Path.home() / "Library" / "Mobile Documents"
         / "com~apple~CloudDocs" / "marrow-backup"
     )
-    dash = paths.get("dashboard") or str(
-        Path.home() / "Desktop" / "NY" / "dashboard.md"
-    )
+    dash = paths.get("dashboard") or str(_mpaths.dashboard_md)
     # `db_pages` = folder of md files rendered from DB (was `sub_pages` until
     # 2026-05-24). Name signals provenance: rendered-from-DB vs hand-written
     # notes elsewhere in the Obsidian vault. Legacy `sub_pages` key still read
     # as a fallback so an old config.toml keeps working until rewritten.
     sub = paths.get("db_pages") or paths.get("sub_pages") or str(
-        Path.home() / "Desktop" / "NY" / "db-pages"
+        _mpaths.ny_root / "db-pages"
     )
     sub_state = (
         paths.get("db_pages_state")

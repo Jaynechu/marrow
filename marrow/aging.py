@@ -32,9 +32,10 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import storage
+from .paths import paths
 
 _MEL_TZ = ZoneInfo("Australia/Melbourne")
-_GOOSE_DIR = Path.home() / ".config" / "marrow" / "goose_log"
+_GOOSE_DIR = paths.goose_log_dir
 _BANNER_RE = re.compile(r"^!\[\[")
 _DAY_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2})\s*$")
 

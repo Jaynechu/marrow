@@ -23,12 +23,13 @@ from zoneinfo import ZoneInfo
 
 from . import config, handover_render, repo, storage
 from .llm import LLMClient, LLMError
+from .paths import paths
 from .sessionend_prompts import (NARRATIVE_PROMPT, STATE_PROMPT,
                                  parse_handover_output)
 from .sessionend_writers import (append_progress, seg_affect, seg_digest,
                                  seg_handover, seg_task_cand)
 
-_LOGS_DIR = Path.home() / ".config" / "marrow" / "logs"
+_LOGS_DIR = paths.logs_dir
 _TZ = ZoneInfo("Australia/Melbourne")
 _CUTOFF_H = 6  # 6AM day boundary (per pipeline §6)
 

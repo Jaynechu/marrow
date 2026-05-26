@@ -375,12 +375,13 @@ def render_project_page(thread: dict) -> str:
 
 def render_cheatsheet(conn: sqlite3.Connection) -> str:
     """Disk-rendered. Reads scripts, hooks, skills, aliases + dir map."""
+    from .paths import paths as _paths
     key = "cheatsheet"
     home = Path.home()
     cc_dir = home / ".claude"
     marrow_dir = home / "cc-lab" / "marrow"
-    config_dir = home / ".config" / "marrow"
-    ny_dir = home / "Desktop" / "NY"
+    config_dir = _paths.marrow_db.parent
+    ny_dir = _paths.ny_root
 
     out = [_m0(key), "",
            "> Read-only — disk is source of truth. Hand-edits are overwritten.", ""]

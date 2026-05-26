@@ -28,9 +28,10 @@ from pathlib import Path
 from typing import Literal
 
 from . import config, repo, storage
+from .paths import paths
 from .popen_detach import popen_detach
 
-_LOGS_DIR = Path.home() / ".config" / "marrow" / "logs"
+_LOGS_DIR = paths.logs_dir
 
 MAX_FIRE = 2
 RETRY_LIMIT = 2

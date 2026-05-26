@@ -4,12 +4,12 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from pathlib import Path
 
 from .llm import LLMClient, LLMError  # noqa: F401 — re-exported for patching
+from .paths import paths
 
 _LOG = logging.getLogger(__name__)
-_QUOTE_DIR = Path.home() / ".config" / "marrow" / "goose_log"
+_QUOTE_DIR = paths.goose_log_dir
 _LINE_RE = re.compile(r"^- `\d{2}:\d{2}` (.+)$")
 
 _SYSTEM_PROMPT = (
