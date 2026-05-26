@@ -22,6 +22,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import config, handover_render, repo, storage
+from .hooks import _is_manual_skip
 from .llm import LLMClient, LLMError
 from .paths import paths
 from .sessionend_prompts import (NARRATIVE_PROMPT, STATE_PROMPT,
@@ -71,7 +72,20 @@ def _already_done(conn, sid: str) -> bool:
     user_count > N, return False so incremental runs trigger. Backward compat:
     a legacy `summary='ok'` row (no user_count) is treated as fully covered
     to avoid needless re-runs on historical data.
+
+    Reset rows (reset:mm_plus, reset:stale_skip) posted after the last ok row
+    act as force-rerun signals — return False so the pipeline runs again.
     """
+    # If the most recent sessionend_extract row is a reset:*, treat as not done.
+    latest_row = conn.execute(
+        "SELECT summary FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=?"
+        " ORDER BY id DESC LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if latest_row and latest_row["summary"].startswith("reset:"):
+        return False
+
     # Check for new-style ok row with user_count.
     ok_row = conn.execute(
         "SELECT summary FROM audit_log"
@@ -246,6 +260,10 @@ def main(argv: list[str] | None = None) -> int:
     conn = storage.connect(db)
     try:
         if _already_done(conn, sid):
+            return 0
+        # Manual skip: mm- prefix wrote a manual_skip/skip row; latest row wins.
+        if _is_manual_skip(conn, sid):
+            _write_final_audit(conn, sid, "skip:manual")
             return 0
         # Silent-death root cause: cc fires session_end mid-flush while only
         # a partial slice of events is on disk. The original skip:short_session

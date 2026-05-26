@@ -182,6 +182,30 @@ def cmd_handover(args) -> int:
     return 0
 
 
+def cmd_sessionend(args) -> int:
+    """mw sessionend rerun <sid> — force rerun sessionend_async, overwriting done marker."""
+    if getattr(args, "sessionend_action", None) != "rerun":
+        return _fail("usage: mw sessionend rerun <sid>")
+    target_sid = args.sid
+    if not target_sid:
+        return _fail("mw sessionend rerun requires a sid argument")
+    from .popen_detach import popen_detach
+    with _conn(args.db) as conn:
+        with conn:
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('events', ?, 'sessionend_extract', 'reset:mm_plus')",
+                (target_sid,),
+            )
+    log = config.DATA_DIR / "logs" / f"sessionend_async_{target_sid}.log"
+    popen_detach(
+        [sys.executable, "-m", "marrow.sessionend_async", "--sid", target_sid],
+        log_path=log,
+    )
+    print(f"sessionend rerun queued for sid={target_sid} (log: {log})")
+    return 0
+
+
 def cmd_drift(args) -> int:
     """mw drift <old> <new> — manual one-shot trigger."""
     from .drift_sweep import handle_move
@@ -451,6 +475,12 @@ def build_parser() -> argparse.ArgumentParser:
     ho.add_argument("--sid", required=True,
                     help="session id to re-extract")
     ho.set_defaults(fn=cmd_handover)
+
+    se = sub.add_parser("sessionend", parents=[common])
+    se_sub = se.add_subparsers(dest="sessionend_action", required=True)
+    se_rerun = se_sub.add_parser("rerun")
+    se_rerun.add_argument("sid", help="session id to rerun")
+    se_rerun.set_defaults(fn=cmd_sessionend)
 
     dr = sub.add_parser("drift", parents=[common],
                         help="drift_sweep: queue or apply file-move ref updates")

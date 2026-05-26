@@ -5,12 +5,17 @@ marrow registers ALONGSIDE them, never replaces. Logic lives in the marrow
 package; this only does hook I/O (stdin JSON in, stdout JSON for
 SessionStart additionalContext, side effects for SessionEnd).
 
-  session_start      -> inject open tasks + alerts + affect backdrop
+  session_start      -> inject open tasks + alerts + affect backdrop; clear skip on resume
   session_end        -> clean transcript, archive events, regen dashboard top
-  user_prompt_submit -> deterministic vector recall fallback (scaffold; default off)
+  user_prompt_submit -> mm-/mm+ skip control + recall fallback
 
 PreToolUse is the global prompt-guard.py (scope already covers
 ~/cc-lab/marrow/), not duplicated here.
+
+mm- prefix: writes audit_log manual_skip row; sessionend_async skips LLM pipeline.
+mm+ prefix: immediately reruns sessionend_async for current (or named) sid.
+resume detection: session_start fires on cc resume with same sid; if skip row exists,
+  write skip_cleared row so sessionend_async runs normally.
 """
 from __future__ import annotations
 
@@ -25,6 +30,47 @@ from . import config, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach
 
 SESSION_START_HARD_CAP = 6000
+
+# ── manual skip helpers ───────────────────────────────────────────────────────
+
+_MANUAL_SKIP_ACTION = "manual_skip"
+_STATUS_SKIP = "skip"
+_STATUS_SKIP_CLEARED = "skip_cleared"
+
+
+def _write_manual_skip_flag(conn: sqlite3.Connection, sid: str, status: str) -> None:
+    """Write a manual_skip audit row. status = 'skip' or 'skip_cleared'."""
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, ?, ?)",
+            (sid, _MANUAL_SKIP_ACTION, status),
+        )
+
+
+def _is_manual_skip(conn: sqlite3.Connection, sid: str) -> bool:
+    """Latest manual_skip row wins. skip -> True, skip_cleared/absent -> False."""
+    row = conn.execute(
+        "SELECT summary FROM audit_log"
+        " WHERE action=? AND target_id=?"
+        " ORDER BY id DESC LIMIT 1",
+        (_MANUAL_SKIP_ACTION, sid),
+    ).fetchone()
+    if not row:
+        return False
+    return row["summary"] == _STATUS_SKIP
+
+
+def _has_prior_lifecycle_start(conn: sqlite3.Connection, sid: str) -> bool:
+    """True iff sid already has at least one session_lifecycle:start row — i.e. this
+    is a resume, not a fresh start."""
+    row = conn.execute(
+        "SELECT 1 FROM audit_log"
+        " WHERE action='session_lifecycle:start' AND target_id=?"
+        " LIMIT 1",
+        (sid,),
+    ).fetchone()
+    return row is not None
 
 
 def _started_at_for(ppid: int) -> int:
@@ -169,6 +215,11 @@ def session_start() -> int:
         sid = inp.get("session_id") if isinstance(inp, dict) else None
         if sid:
             try:
+                # Resume detection: if sid already has a lifecycle:start row, this
+                # is a cc resume. Clear any manual skip so sessionend runs normally.
+                is_resume = _has_prior_lifecycle_start(conn, sid)
+                if is_resume and _is_manual_skip(conn, sid):
+                    _write_manual_skip_flag(conn, sid, _STATUS_SKIP_CLEARED)
                 ppid = os.getppid()
                 started_at = _started_at_for(ppid)
                 with conn:
@@ -282,15 +333,72 @@ def session_end() -> int:
     return 0
 
 
+def _handle_mm_prefix(inp: dict) -> bool:
+    """Handle mm- / mm+ prefixes. Returns True if handled (skip further processing).
+
+    mm-: writes manual_skip audit row for current sid.
+    mm+: fires sessionend_async rerun for current sid (or mm+ <sid>).
+    Fail-soft: any error is swallowed — hook must never block the user turn.
+    """
+    prompt = (inp.get("prompt") or "").strip()
+    if not (prompt.startswith("mm-") or prompt.startswith("mm+")):
+        return False
+
+    sid = (inp.get("session_id") or "").strip()
+    prefix = prompt[:3]
+
+    try:
+        db = config.db_path()
+        conn = storage.connect(db)
+        try:
+            if prefix == "mm-":
+                if sid:
+                    _write_manual_skip_flag(conn, sid, _STATUS_SKIP)
+            else:  # mm+
+                # Optional explicit sid after prefix + optional space.
+                rest = prompt[3:].strip()
+                target_sid = rest if rest else sid
+                if target_sid:
+                    # Force-clear any done marker so sessionend_async reruns.
+                    with conn:
+                        conn.execute(
+                            "INSERT INTO audit_log"
+                            " (target_table, target_id, action, summary)"
+                            " VALUES ('events', ?, 'sessionend_extract', 'reset:mm_plus')",
+                            (target_sid,),
+                        )
+                    conn.close()
+                    conn = None
+                    log = config.DATA_DIR / "logs" / f"sessionend_async_{target_sid}.log"
+                    from .popen_detach import popen_detach as _popen
+                    _popen(
+                        [sys.executable, "-m", "marrow.sessionend_async",
+                         "--sid", target_sid],
+                        log_path=log,
+                    )
+        finally:
+            if conn is not None:
+                conn.close()
+    except Exception:  # noqa: BLE001 — never block prompt
+        pass
+    return True
+
+
 def user_prompt_submit() -> int:
     """Inject top-K recall hits as UserPromptSubmit additionalContext.
 
+    Also handles mm- (manual skip) and mm+ (sessionend rerun) prefixes.
     Config flag: [recall] vector = true (default on). Set false to disable.
     Fusion weights come from [recall] in config; recall.recall_fusion blends
     vec + bm25 + recency + affect. Fail-soft: any error falls through to a
     no-op so the user prompt always reaches the model.
     """
     inp = _read_input()
+
+    # mm- / mm+ control plane — check before recall, independent of recall config.
+    if isinstance(inp, dict) and _handle_mm_prefix(inp):
+        return 0  # no additionalContext injection for control prompts
+
     cfg = config.load()
     if not cfg.get("recall", {}).get("vector", False):
         return 0
