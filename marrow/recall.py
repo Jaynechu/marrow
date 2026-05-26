@@ -108,6 +108,20 @@ def _blob_to_vec(b: bytes) -> NDArray[np.float32]:
     return np.array(struct.unpack(f"{n}f", b), dtype=np.float32)
 
 
+def _body_nonempty(body) -> bool:
+    """True iff `body` carries at least one non-whitespace character.
+
+    Used by recall fusion to drop entity force-include rows whose content
+    is None / "" / whitespace-only — surfacing such rows wastes prompt
+    tokens without adding signal.
+    """
+    if not body:
+        return False
+    if not isinstance(body, str):
+        return True  # non-string truthy — preserve, downstream owns shape
+    return bool(body.strip())
+
+
 # ── write path ────────────────────────────────────────────────────────────────
 
 # Cross-table vec lane recipes (2026-05-25). Each lane = (vec_table, meta_table,
@@ -1074,9 +1088,12 @@ def recall_fusion(
     # ── entity force-include (prepend before ms_cap reservation) ─────────────
     # Two streams: substring/LIKE via entity_recall, semantic via entities_vec.
     # Dedup by entity id; substring score wins when both fire (it carries the
-    # +0.5 card boost already).
+    # +0.5 card boost already). body_nonempty filter drops rows whose
+    # content is None / "" / whitespace-only — surface them in recall would
+    # waste prompt tokens and crowd out signal.
     from .entity_recall import entity_force_include
-    force_rows = entity_force_include(conn, q, limit)
+    force_rows = [r for r in entity_force_include(conn, q, limit)
+                  if _body_nonempty(r.get("content"))]
     seen_entity_ids = {
         r["id"] for r in force_rows if r.get("kind") == "entity"
     }

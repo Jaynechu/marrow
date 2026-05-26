@@ -148,3 +148,75 @@ def test_milestone_reverse_substring_match(seeded_db):
         f"Expected kw_score=1.0 via reverse-substring boost, "
         f"got {bendigo[0]['bm25']}"
     )
+
+
+# ── Outcome 5 — body_nonempty filter on entity force-include ──────────────
+
+def test_body_nonempty_unit():
+    """Helper: None / "" / whitespace-only → False; anything with a char → True."""
+    from marrow.recall import _body_nonempty
+    assert _body_nonempty(None) is False
+    assert _body_nonempty("") is False
+    assert _body_nonempty("   ") is False
+    assert _body_nonempty("\n\t ") is False
+    assert _body_nonempty("x") is True
+    assert _body_nonempty(" hello ") is True
+    # Non-string truthy (defensive) → preserved.
+    assert _body_nonempty(["non-string"]) is True
+
+
+def test_entity_force_include_card_with_whitespace_fact_dropped(tmp_path):
+    """Seed an entity whose name appears in the query but whose `fact` is
+    whitespace-only. Without body_nonempty, entity_force_include builds a
+    card whose content reads like `"Zara (person):    "` — visible
+    truthy string, but the prose payload is empty whitespace that wastes
+    prompt tokens. body_nonempty must reject the card before recall.
+
+    Setup: one real FTS-matchable event so recall_fusion's early-return
+    guard does not fire before entity force-include runs.
+    """
+    import datetime as _dt
+    from marrow import recall as rm, repo, storage
+
+    conn = storage.init_db(str(tmp_path / "f.db"))
+    try:
+        base = _dt.datetime(2026, 5, 1, 10, 0, 0, tzinfo=_dt.timezone.utc)
+        # Real event so recall has at least one candidate (avoids early
+        # return at `not candidates and ...`).
+        repo.archive_events(conn, [{
+            "session_id": "good-sid",
+            "timestamp": base.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "role": "user",
+            "content": "Zara helped me debug recall today",
+        }])
+        # Entity row with whitespace-only fact — card surfaces today.
+        conn.execute(
+            "INSERT INTO entities (kind, name, fact, mention_count, source) "
+            "VALUES ('person', 'Zara', '   ', 1, 'test')"
+        )
+        conn.commit()
+
+        with patch.object(rm, "_ensure_embedder", return_value=None):
+            results = rm.recall_fusion(conn, "Zara", limit=10)
+
+        # No row in the recall output may carry whitespace-only body, and
+        # specifically: no entity card whose content body after the prefix
+        # `"Zara (person):"` is just whitespace.
+        for r in results:
+            content = r.get("content") or ""
+            assert content.strip(), (
+                f"recall returned whitespace-body row: {r!r}"
+            )
+            if r.get("kind") == "entity":
+                # Card format = `"<name> (<kind>): <fact>"` or `"<name>: <fact>"`.
+                # The body after the last `: ` must carry real prose.
+                if ": " in content:
+                    fact_part = content.rsplit(": ", 1)[1]
+                    assert fact_part.strip(), (
+                        f"entity card carries whitespace-only fact: {r!r}"
+                    )
+        # Sanity: at least the FTS event still surfaces.
+        assert any("Zara helped" in (r.get("content") or "")
+                   for r in results), f"no FTS event in {results!r}"
+    finally:
+        conn.close()

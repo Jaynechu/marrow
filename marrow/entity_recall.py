@@ -139,8 +139,9 @@ def entity_force_include(
         # Entity-card: the entity row's own fact field. Outranks event score so
         # the identity sheet always lands first in the recall block.
         # Timestamp = entities.created_at so same-score cards order newest-first
-        # (Outcome 2, 2026-05-25 goal).
-        if fact:
+        # (Outcome 2, 2026-05-25 goal). Strip-check rejects whitespace-only
+        # facts that would render as wasteful empty-body cards.
+        if fact and fact.strip():
             card_content = f"{name} ({ekind}): {fact}" if ekind else f"{name}: {fact}"
             results.append({
                 "kind": "entity",
