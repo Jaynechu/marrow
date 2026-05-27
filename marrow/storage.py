@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -340,6 +340,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v9(conn)
         _migrate_to_v10(conn)
         _migrate_to_v11(conn)
+        _migrate_to_v12(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -562,4 +563,29 @@ def _migrate_to_v11(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memes_reject_log_key_type"
         " ON memes_reject_log(key, type)"
+    )
+
+
+def _migrate_to_v12(conn: sqlite3.Connection) -> None:
+    """v12: atlas table — manually editable heading-tree subpage that replaces
+    dir_tree.md. One row per directory; depth controls auto-stub expansion;
+    stale marks dirs no longer found on fs (NEVER deleted, preserves manual
+    fields). Idempotent.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 12:
+        return
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS atlas ("
+        "  path TEXT PRIMARY KEY,"
+        "  note TEXT,"
+        "  write_hint TEXT,"
+        "  naming_hint TEXT,"
+        "  depth INTEGER NOT NULL DEFAULT 0,"
+        "  stale INTEGER NOT NULL DEFAULT 0,"
+        "  updated_at TEXT NOT NULL"
+        ")"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_atlas_stale ON atlas(stale)"
     )
