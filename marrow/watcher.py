@@ -24,6 +24,7 @@ import sqlite3
 import sqlite_vec
 
 from . import config, storage
+from .drift_sweep import AUTHORIZED_ROOTS, DriftWatcher
 from .md_index import MdIndex
 from .sync_loop import SyncLoop, build_targets
 
@@ -182,6 +183,39 @@ class _MdHandler(FileSystemEventHandler):
         self.debouncer.trigger(path, path)
 
 
+class _DriftHandler(FileSystemEventHandler):
+    """Watchdog bridge → DriftWatcher event methods."""
+
+    def __init__(self, drift: DriftWatcher, log: logging.Logger) -> None:
+        self._drift = drift
+        self._log = log
+
+    def on_moved(self, event) -> None:
+        if event.is_directory:
+            return
+        try:
+            self._drift.on_moved(event.src_path, event.dest_path)
+        except Exception:
+            self._log.exception("drift on_moved failed: %s → %s",
+                                event.src_path, event.dest_path)
+
+    def on_deleted(self, event) -> None:
+        if event.is_directory:
+            return
+        try:
+            self._drift.on_deleted(event.src_path)
+        except Exception:
+            self._log.exception("drift on_deleted failed: %s", event.src_path)
+
+    def on_created(self, event) -> None:
+        if event.is_directory:
+            return
+        try:
+            self._drift.on_created(event.src_path)
+        except Exception:
+            self._log.exception("drift on_created failed: %s", event.src_path)
+
+
 class Watcher:
     """Lifecycle wrapper. Build, start, join, stop."""
 
@@ -211,6 +245,7 @@ class Watcher:
         self.debouncer = _Debouncer(_DEBOUNCE_S, self._fire_sync)
         self._stop = threading.Event()
         self._sync_loop: SyncLoop | None = None
+        self.drift_watcher = DriftWatcher(roots=list(AUTHORIZED_ROOTS))
 
     def _fire_sync(self, path: str) -> None:
         # observe-only — keep auto-write baseline frozen so the dashboard
@@ -275,6 +310,13 @@ class Watcher:
         # Build watched_files set BEFORE we start — handler already holds the
         # reference, so additions land in time. (_MdHandler reads it on each
         # event.)
+        # Attach DriftWatcher to each AUTHORIZED_ROOTS dir that exists.
+        drift_handler = _DriftHandler(self.drift_watcher, self.log)
+        for root in AUTHORIZED_ROOTS:
+            if root.is_dir():
+                self.observer.schedule(drift_handler, str(root), recursive=True)
+                self.log.info("drift_watcher watching %s", root)
+
         self.observer.start()
         # Start sync loop — boot tick fires immediately (after _reconcile_boot)
         # to catch drift while watcher was down.

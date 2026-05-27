@@ -41,6 +41,32 @@ BINARY_EXTS = {
     ".gz", ".dmg", ".so", ".dylib", ".o",
 }
 
+# Under ~/.claude only these top-level names are swept; everything else
+# (projects/, image-cache/, file-history/, ...) is blacklisted.
+CLAUDE_WHITELIST: set[str] = {
+    "CLAUDE.md", "rules", "commands", "skills", "agents",
+    "output-styles", "hooks", "keybindings.json", "settings.json",
+}
+
+_CLAUDE_ROOT = Path.home() / ".claude"
+
+
+def _claude_scope_ok(path: Path) -> bool:
+    """Return True if path is allowed to be scanned.
+
+    Paths NOT under ~/.claude always pass.
+    Paths under ~/.claude pass only if their first segment after ~/.claude is
+    in CLAUDE_WHITELIST (or they ARE ~/.claude itself).
+    """
+    try:
+        rel = path.relative_to(_CLAUDE_ROOT)
+    except ValueError:
+        return True  # not under ~/.claude — allowed
+    parts = rel.parts
+    if not parts:
+        return True  # ~/.claude itself — allowed
+    return parts[0] in CLAUDE_WHITELIST
+
 # Files we skip during ref scan / apply: binaries + append-only history.
 # cc session jsonl + log files quote old paths from past sessions as
 # historical record; rewriting those would corrupt history without fixing
@@ -110,7 +136,20 @@ def _find_refs_rg(old_name: str, rg_bin: str, roots: list[Path]) -> list[dict] |
         args += ["--glob", f"!{d}/**"]
     for ext in SKIP_SCAN_EXTS:
         args += ["--glob", f"!*{ext}"]
-    args += [str(r) for r in roots if r.exists()]
+    # For ~/.claude, only pass whitelisted sub-dirs as individual roots so
+    # rg never descends into blacklisted siblings.
+    expanded: list[Path] = []
+    for r in roots:
+        if not r.exists():
+            continue
+        if r == _CLAUDE_ROOT:
+            for name in CLAUDE_WHITELIST:
+                child = r / name
+                if child.exists():
+                    expanded.append(child)
+        else:
+            expanded.append(r)
+    args += [str(r) for r in expanded]
 
     try:
         r = subprocess.run(args, capture_output=True, text=True, timeout=30)
@@ -137,10 +176,18 @@ def _find_refs_python(old_name: str, roots: list[Path]) -> list[dict]:
         if not root.exists():
             continue
         for dirpath, dirnames, filenames in os.walk(root):
-            # Prune excluded dirs in-place
+            cur = Path(dirpath)
+            # Under ~/.claude: prune blacklisted top-level dirs immediately
+            if cur == _CLAUDE_ROOT:
+                dirnames[:] = [d for d in dirnames if d in CLAUDE_WHITELIST
+                               and d not in EXCLUDE_DIRS_SCAN]
+                continue
+            # Prune excluded dirs in-place; also gate individual files below
             dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIRS_SCAN]
             for fname in filenames:
                 fpath = Path(dirpath) / fname
+                if not _claude_scope_ok(fpath):
+                    continue
                 if fpath.suffix.lower() in SKIP_SCAN_EXTS:
                     continue
                 try:
@@ -316,6 +363,8 @@ def _tree_lines(path: Path, prefix: str, depth: int, max_depth: int) -> list[str
 
 def _include_entry(p: Path) -> bool:
     if p.name in EXCLUDE_DIRS_TREE:
+        return False
+    if not _claude_scope_ok(p):
         return False
     if p.is_file():
         if p.suffix.lower() in SKIP_SCAN_EXTS:
