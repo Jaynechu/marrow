@@ -31,7 +31,6 @@ from .subpages_render import (
     render_goose,
     render_memes,
     render_milestone,
-    render_pit,
     render_profile,
     render_project_page,
     render_projects_index,
@@ -193,6 +192,7 @@ def build_study_configs(conn: sqlite3.Connection,
             render=_make_unit_render(u["name"], units[u["name"]]),
             path=str(Path(folder) / "study" / f"{u['name']}.md"),
             state_dir=str(Path(state_dir) / "study"),
+            read_only=True,
         )
         for u in unit_list
     ]
@@ -203,6 +203,7 @@ def build_study_configs(conn: sqlite3.Connection,
         path=index_path,
         state_dir=state_dir,
         subpages=children,
+        inserter=subpage_specs.build_study_index_spec(folder),
     )
 
 
@@ -225,17 +226,11 @@ def build_projects_configs(conn: sqlite3.Connection,
 
     children = [
         SubPageConfig(
-            key="pit",
-            render=render_pit,
-            path=str(Path(folder) / "projects" / "pit.md"),
-            state_dir=proj_state,
-        )
-    ] + [
-        SubPageConfig(
             key=f"project-{t['title']}",
             render=_make_proj_render(t),
             path=str(Path(folder) / "projects" / f"{t['title']}.md"),
             state_dir=proj_state,
+            read_only=True,
         )
         for t in tasks
     ]

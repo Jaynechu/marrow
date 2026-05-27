@@ -110,6 +110,20 @@ def _already_done(conn, sid: str) -> bool:
     return legacy_row is not None
 
 
+def _has_mm_plus_reset(conn, sid: str) -> bool:
+    """True iff latest non-start sessionend_extract row for sid is reset:mm_plus."""
+    # Skip the 'start' row stamped at line 296; the marker is consumed once
+    # _run_extraction writes a fresh ok,user_count=N row over it.
+    row = conn.execute(
+        "SELECT summary FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=?"
+        " AND summary != ?"
+        " ORDER BY id DESC LIMIT 1",
+        (sid, _SUMMARY_START),
+    ).fetchone()
+    return bool(row and row["summary"] == "reset:mm_plus")
+
+
 def _drop_stale_skip(conn, sid: str, threshold: int) -> bool:
     """Silent-death fix: cc fires session_end mid-flush — first hook archives
     a partial 7-8 events, sessionend_async skips (below threshold), then the
@@ -284,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
             pass
 
         count = _user_event_count(conn, sid)
-        if count <= threshold:
+        if count <= threshold and not _has_mm_plus_reset(conn, sid):
             _write_final_audit(conn, sid, f"{_SUMMARY_SKIP},user_count={count}")
             return 0
 

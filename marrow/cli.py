@@ -206,6 +206,24 @@ def cmd_sessionend(args) -> int:
     return 0
 
 
+def cmd_export_pit(args) -> int:
+    """mw export-pit [--out PATH] — write pit table rows to a markdown file.
+
+    Idempotent — overwrites the output file. Run once before dropping the pit
+    table to preserve the content in a hand-managed markdown file.
+    """
+    from pathlib import Path as _Path
+    from . import subpages_render as _sr
+    default_out = str(_Path(config.sub_pages_path()) / "projects" / "pit.md")
+    out_path = getattr(args, "out", None) or default_out
+    with _conn(args.db) as conn:
+        block = _sr.render_pit(conn)
+    _Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    _Path(out_path).write_text(block + "\n", encoding="utf-8")
+    print(f"pit exported to {out_path}")
+    return 0
+
+
 def cmd_drift(args) -> int:
     """mw drift <old> <new> — manual one-shot trigger."""
     from .drift_sweep import handle_move
@@ -481,6 +499,13 @@ def build_parser() -> argparse.ArgumentParser:
     se_rerun = se_sub.add_parser("rerun")
     se_rerun.add_argument("sid", help="session id to rerun")
     se_rerun.set_defaults(fn=cmd_sessionend)
+
+    ep = sub.add_parser("export-pit", parents=[common],
+                        help="export pit table rows to markdown (run before dropping table)")
+    ep.add_argument("--out", default=None,
+                    metavar="PATH",
+                    help="output path (default: db-pages/projects/pit.md)")
+    ep.set_defaults(fn=cmd_export_pit)
 
     dr = sub.add_parser("drift", parents=[common],
                         help="drift_sweep: queue or apply file-move ref updates")

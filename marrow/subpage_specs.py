@@ -359,6 +359,46 @@ def build_projects_index_spec(folder: str) -> InserterSpec:
     )
 
 
+# ── study (index) ─────────────────────────────────────────────────────────
+
+
+def build_study_index_spec(folder: str) -> InserterSpec:
+    """Study index — one row per unit (tasks grouped by title prefix).
+
+    Unit name = title.split(':')[0].strip() when a colon is present,
+    else the full title. Rows rendered as Obsidian links to study/<name>.md.
+    No sections — flat append list, ordered alphabetically by unit name.
+    """
+    def fetch(conn: sqlite3.Connection) -> list[dict]:
+        rows = conn.execute(
+            "SELECT id, title FROM tasks WHERE category = 'study'"
+            " ORDER BY title"
+        ).fetchall()
+        seen: dict[str, int] = {}
+        units: list[dict] = []
+        for r in rows:
+            title = r["title"]
+            name = title.split(":")[0].strip() if ":" in title else title
+            if name not in seen:
+                seen[name] = r["id"]
+                units.append({"id": r["id"], "name": name})
+        return units
+
+    def render(r: dict) -> str:
+        name = r["name"]
+        return f"- [[study/{name}|{name}]] {_anchor(r['id'])}"
+
+    return InserterSpec(
+        key="study",
+        path=str(Path(folder) / "study.md"),
+        fetch=fetch,
+        block_id_of=lambda r: str(r["id"]),
+        render_row=render,
+        group_by="append",
+        empty_message="_No study units yet._",
+    )
+
+
 # Registry keyed by subpage name; same surface as subpages._REGISTRY.
 SPEC_BUILDERS = {
     "profile":  build_profile_spec,
@@ -369,4 +409,5 @@ SPEC_BUILDERS = {
     "wallet":   build_wallet_spec,
     "goose":    build_goose_spec,
     "projects": build_projects_index_spec,
+    "study":    build_study_index_spec,
 }

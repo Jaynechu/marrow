@@ -115,8 +115,34 @@ class _MdHandler(FileSystemEventHandler):
         self.debouncer = debouncer
         self.log = log
 
+    _DETAIL_SUFFIXES = (
+        os.sep + "study" + os.sep,   # db-pages/study/<unit>.md
+        os.sep + "projects" + os.sep, # db-pages/projects/<page>.md
+    )
+    _DETAIL_INDEX_NAMES = (
+        "study.md",
+        "projects.md",
+        "dashboard.md",
+        "handover.md",
+    )
+
+    def _is_detail_page(self, path: str) -> bool:
+        """True for db-pages/{study,projects}/*.md detail pages; index pages stay watched."""
+        # study/<unit>.md and projects/<name>.md (incl. pit.md) flow through
+        # inserter or user edits, not md_index. study.md/projects.md/dashboard.md/
+        # handover.md remain candidates.
+        basename = os.path.basename(path)
+        if basename in self._DETAIL_INDEX_NAMES:
+            return False
+        for suffix in self._DETAIL_SUFFIXES:
+            if suffix in path:
+                return True
+        return False
+
     def _candidate(self, path: str) -> bool:
         if not path.endswith(".md"):
+            return False
+        if self._is_detail_page(path):
             return False
         if path in self.watched_files:
             return True

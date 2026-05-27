@@ -365,3 +365,44 @@ def test_watchdog_roundtrip_delete_restore_add(tmp_path, monkeypatch):
     finally:
         w._stop.set()
         t.join(timeout=5)
+
+
+def test_handler_detail_pages_excluded_from_reindex(tmp_path):
+    """db-pages/study/<unit>.md and db-pages/projects/<page>.md must not trigger
+    md_index reindex; their index pages (study.md, projects.md) still do."""
+    import os
+    conn = storage.init_db(str(tmp_path / "t.db"))
+    store = MdIndex(conn)
+    fired: list[str] = []
+    deb = _Debouncer(0.01, lambda p: fired.append(p))
+
+    # Simulate db-pages dir structure
+    db_pages = tmp_path / "db-pages"
+    db_pages.mkdir()
+    (db_pages / "study").mkdir()
+    (db_pages / "projects").mkdir()
+
+    h = _MdHandler(store, watched_files=set(),
+                   watched_dirs={str(db_pages)},
+                   debouncer=deb, log=watcher._setup_logger())
+
+    detail_study = db_pages / "study" / "Biochem.md"
+    detail_proj = db_pages / "projects" / "Marrow.md"
+    index_study = db_pages / "study.md"
+    index_proj = db_pages / "projects.md"
+
+    for f in (detail_study, detail_proj, index_study, index_proj):
+        f.write_text("- x <!-- id:1 -->\n")
+
+    h.on_modified(_FakeEvent(str(detail_study)))
+    h.on_modified(_FakeEvent(str(detail_proj)))
+    h.on_modified(_FakeEvent(str(index_study)))
+    h.on_modified(_FakeEvent(str(index_proj)))
+    time.sleep(0.1)
+
+    fired_basenames = [os.path.basename(p) for p in fired]
+    assert "Biochem.md" not in fired_basenames, "detail study page should be excluded"
+    assert "Marrow.md" not in fired_basenames, "detail project page should be excluded"
+    assert "study.md" in fired_basenames, "index study page should pass through"
+    assert "projects.md" in fired_basenames, "index project page should pass through"
+    conn.close()

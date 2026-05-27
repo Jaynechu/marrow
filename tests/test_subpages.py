@@ -251,9 +251,11 @@ def test_projects_index_active_and_done(db):
 
 
 def test_pit_render(db):
+    # render_pit is no longer imported through subpages; call via subpages_render.
+    from marrow.subpages_render import render_pit
     conn = storage.connect(db)
     try:
-        block = subpages.render_pit(conn)
+        block = render_pit(conn)
     finally:
         conn.close()
     assert "old feature" in block
@@ -261,7 +263,8 @@ def test_pit_render(db):
     assert "<!-- marrow:pit:start -->" in block
 
 
-def test_projects_build_creates_pit_child(db, tmp_path):
+def test_projects_build_no_pit_child(db, tmp_path):
+    """pit child removed from build_projects_configs — mw export-pit handles it."""
     folder = str(tmp_path / "ny")
     state = str(tmp_path / "state")
     conn = storage.connect(db)
@@ -270,7 +273,7 @@ def test_projects_build_creates_pit_child(db, tmp_path):
     finally:
         conn.close()
     keys = [c.key for c in cfg.subpages]
-    assert "pit" in keys
+    assert "pit" not in keys
     assert any("Marrow" in k for k in keys)
 
 
@@ -390,7 +393,8 @@ def test_write_all_subpages_creates_files(db, tmp_path):
                   "goose-bites.md", "cheatsheet.md", "study.md", "projects.md",
                   "profile.md", "stickers.md", "wallet.md"):
         assert (Path(folder) / name).exists(), f"Missing {name}"
-    assert (Path(folder) / "projects" / "pit.md").exists()
+    # pit.md no longer auto-created; mw export-pit writes it on demand.
+    assert not (Path(folder) / "projects" / "pit.md").exists()
 
 
 # ---------------------------------------------------------------------------

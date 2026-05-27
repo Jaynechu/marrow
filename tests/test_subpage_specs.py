@@ -35,6 +35,12 @@ def db(tmp_path):
                      " VALUES('2026-05-20','quack quack',1)")
         conn.execute("INSERT INTO tasks(category,title,status,next_step)"
                      " VALUES('project','Marrow','active','build subpages')")
+        conn.execute("INSERT INTO tasks(category,title,status)"
+                     " VALUES('study','Biochem:Unit 3','active')")
+        conn.execute("INSERT INTO tasks(category,title,status)"
+                     " VALUES('study','Biochem:Unit 4','active')")
+        conn.execute("INSERT INTO tasks(category,title,status)"
+                     " VALUES('study','Physiology:Week 1','active')")
     conn.close()
     return p
 
@@ -119,6 +125,22 @@ def test_projects_index_bootstrap_active_section(db, tmp_path):
     assert counts["bootstrapped"] == 1
 
 
+# ── study index ────────────────────────────────────────────────────────────
+
+
+def test_study_index_bootstrap_emits_unit_links(db, tmp_path):
+    """study inserter: two units from Biochem tasks + one Physiology unit."""
+    spec = subpage_specs.build_study_index_spec(str(tmp_path / "ny"))
+    counts = _run(spec, db)
+    text = Path(spec.path).read_text()
+    # Two distinct units: Biochem and Physiology
+    assert "[[study/Biochem|Biochem]]" in text
+    assert "[[study/Physiology|Physiology]]" in text
+    # Deduplication: Biochem:Unit 3 and Unit 4 collapse to one Biochem row
+    assert text.count("[[study/Biochem|Biochem]]") == 1
+    assert counts["bootstrapped"] == 2
+
+
 # ── stub subpages (profile / stickers / wallet) ────────────────────────────
 
 
@@ -152,7 +174,7 @@ def test_wallet_bootstrap_emits_empty_placeholder(db, tmp_path):
 def test_registry_covers_expected_subpages():
     keys = set(subpage_specs.SPEC_BUILDERS)
     expected = {"profile", "milestone", "diary", "memes",
-                "stickers", "wallet", "goose", "projects"}
+                "stickers", "wallet", "goose", "projects", "study"}
     assert expected.issubset(keys)
     # Cheatsheet stays disk-driven; not in the registry.
     assert "cheatsheet" not in keys
