@@ -19,6 +19,7 @@ import sqlite3
 from pathlib import Path
 
 from .inserter import InserterSpec
+from . import atlas as _atlas_mod
 
 
 def _year(date_str: str) -> str:
@@ -399,6 +400,62 @@ def build_study_index_spec(folder: str) -> InserterSpec:
     )
 
 
+# ── atlas ─────────────────────────────────────────────────────────────────
+
+
+def build_atlas_spec(folder: str) -> InserterSpec:
+    """Atlas — manually editable directory heading tree (replaces dir_tree.md).
+
+    One InserterSpec block per db row (directory). Grouped by root path.
+    Section header: ## ~/<root>/   Row: ### dir/ + bullet fields.
+    block_id = path (absolute).
+    """
+    from .drift_sweep import AUTHORIZED_ROOTS
+    roots = [r.expanduser().resolve() for r in AUTHORIZED_ROOTS]
+
+    def fetch(conn: sqlite3.Connection) -> list[dict]:
+        try:
+            rows = conn.execute(
+                "SELECT path, note, write_hint, naming_hint, depth, stale"
+                " FROM atlas ORDER BY path"
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        return [dict(r) for r in rows]
+
+    def section_of(r: dict) -> str:
+        root = _atlas_mod._root_of(r["path"], roots)
+        return str(root) if root else r["path"]
+
+    def section_order(labels: list[str]) -> list[str]:
+        canonical = [str(r) for r in roots]
+        seen = set(labels)
+        out = [lab for lab in canonical if lab in seen]
+        for lab in labels:
+            if lab not in out:
+                out.append(lab)
+        return out
+
+    def render_section_header(root_path: str) -> str:
+        return _atlas_mod._section_header(root_path)
+
+    def render_row(r: dict) -> str:
+        return _atlas_mod._render_atlas_row(r, roots)
+
+    return InserterSpec(
+        key="atlas",
+        path=str(Path(folder) / "atlas.md"),
+        fetch=fetch,
+        block_id_of=lambda r: r["path"],
+        render_row=render_row,
+        group_by="tag",
+        section_of=section_of,
+        section_order=section_order,
+        render_section_header=render_section_header,
+        empty_message="_No atlas entries yet. Run `mw refresh atlas` to seed._",
+    )
+
+
 # Registry keyed by subpage name; same surface as subpages._REGISTRY.
 SPEC_BUILDERS = {
     "profile":  build_profile_spec,
@@ -410,4 +467,5 @@ SPEC_BUILDERS = {
     "goose":    build_goose_spec,
     "projects": build_projects_index_spec,
     "study":    build_study_index_spec,
+    "atlas":    build_atlas_spec,
 }
