@@ -364,6 +364,29 @@ def _inject_locate_request(prefix: str, clue: str) -> None:
     )
 
 
+def _locate_jsonl(sid: str) -> str | None:
+    """Glob ~/.claude/projects/**/<sid>.jsonl; return most-recent match or None."""
+    import pathlib
+    matches = list(pathlib.Path.home().glob(f".claude/projects/**/{sid}.jsonl"))
+    if not matches:
+        return None
+    return str(max(matches, key=lambda p: p.stat().st_mtime))
+
+
+def _pre_archive_jsonl(conn: sqlite3.Connection, tpath: str | None) -> None:
+    """Archive events from an active-session jsonl. Fail-soft — never raises."""
+    if not tpath:
+        return
+    try:
+        if transcript.is_headless(tpath):
+            return
+        rows = transcript.clean(tpath)
+        if rows:
+            repo.archive_events(conn, rows)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _handle_mm_prefix(inp: dict) -> bool:
     """Handle mm- / mm+ prefixes. Returns True if handled (skip further processing).
 
@@ -407,6 +430,11 @@ def _handle_mm_prefix(inp: dict) -> bool:
                             " VALUES ('events', ?, 'sessionend_extract', 'reset:mm_plus')",
                             (target_sid,),
                         )
+                    # Active-session pre-archive: events table is empty until
+                    # SessionEnd fires. Archive now so sessionend_async finds rows.
+                    if target_sid == sid:
+                        tpath = inp.get("transcript_path") or _locate_jsonl(target_sid)
+                        _pre_archive_jsonl(conn, tpath)
                     conn.close()
                     conn = None
                     log = config.DATA_DIR / "logs" / f"sessionend_async_{target_sid}.log"

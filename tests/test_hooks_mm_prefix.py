@@ -7,6 +7,9 @@ Covers:
   - mm- natural-language → same handoff
   - mm- empty            → current sid manual_skip (existing behaviour)
   - mm- UUID arg         → named sid manual_skip
+  - mm+ current sid      → pre-archives jsonl before spawn
+  - mm+ named sid        → skips archive (other sid's session)
+  - mm+ missing jsonl    → fails silently, spawn still fires
 """
 from __future__ import annotations
 
@@ -226,3 +229,135 @@ def test_mm_minus_uuid_skips_named_sid(env, monkeypatch, capsys):
         conn.close()
     assert row is not None
     assert row["summary"] == "skip"
+
+
+# ── mm+ active session → pre-archive events before spawn ─────────────────────
+
+def _make_jsonl(path, sid: str, n_turns: int = 5) -> None:
+    """Write a minimal non-headless jsonl with n_turns user turns."""
+    lines = []
+    for i in range(n_turns):
+        lines.append(json.dumps({
+            "type": "user",
+            "sessionId": sid,
+            "timestamp": f"2026-05-27T0{i}:00:00Z",
+            "message": {"role": "user", "content": f"turn {i}"},
+        }))
+    path.write_text("\n".join(lines))
+
+
+def test_mm_plus_active_session_archives_events_before_spawn(env, monkeypatch, capsys):
+    """mm+ on current sid pre-archives jsonl; events table has rows after hook."""
+    db, tmp_path = env
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    sid = "aabbccdd-1111-2222-3333-444455556666"
+    jl = tmp_path / f"{sid}.jsonl"
+    _make_jsonl(jl, sid, n_turns=5)
+
+    _stdin(monkeypatch, {
+        "prompt": "mm+",
+        "session_id": sid,
+        "transcript_path": str(jl),
+    })
+    popen_calls = []
+    with patch("marrow.hooks.popen_detach",
+               side_effect=lambda a, log_path: popen_calls.append(a)):
+        rc = hooks.main(["user_prompt_submit"])
+    assert rc == 0
+
+    # Spawn fired
+    assert any("sessionend_async" in " ".join(c) for c in popen_calls)
+    spawned = [c for c in popen_calls if "sessionend_async" in " ".join(c)]
+    assert any(sid in " ".join(c) for c in spawned)
+
+    # Events were archived before spawn
+    conn = storage.connect(db)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE session_id=?", (sid,)
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    assert n == 5
+
+
+def test_mm_plus_named_sid_skips_archive(env, monkeypatch, capsys):
+    """mm+ <other-uuid> does NOT archive current session's jsonl."""
+    db, tmp_path = env
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    current_sid = "c0ffee00-0000-0000-0000-000000000000"
+    other_sid = "deadbeef-1111-2222-3333-444455556666"
+    jl = tmp_path / "current.jsonl"
+    _make_jsonl(jl, current_sid, n_turns=3)
+
+    _stdin(monkeypatch, {
+        "prompt": f"mm+ {other_sid}",
+        "session_id": current_sid,
+        "transcript_path": str(jl),
+    })
+    popen_calls = []
+    clean_calls = []
+
+    import marrow.transcript as _transcript
+    orig_clean = _transcript.clean
+
+    def _spy_clean(path):
+        clean_calls.append(path)
+        return orig_clean(path)
+
+    with patch("marrow.hooks.popen_detach",
+               side_effect=lambda a, log_path: popen_calls.append(a)):
+        with patch("marrow.transcript.clean", side_effect=_spy_clean):
+            rc = hooks.main(["user_prompt_submit"])
+    assert rc == 0
+
+    # Spawn called with other_sid
+    spawned = [c for c in popen_calls if "sessionend_async" in " ".join(c)]
+    assert any(other_sid in " ".join(c) for c in spawned)
+
+    # clean was NOT called (no archive for current sid)
+    assert clean_calls == []
+
+    # events table for current_sid stays empty
+    conn = storage.connect(db)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE session_id=?", (current_sid,)
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    assert n == 0
+
+
+def test_mm_plus_jsonl_missing_still_spawns(env, monkeypatch, capsys):
+    """Non-existent transcript_path silently skipped; spawn still fires."""
+    db, tmp_path = env
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    sid = "missing0-ffff-eeee-dddd-ccccbbbbaaaa"
+    nonexistent = str(tmp_path / "no_such_file.jsonl")
+
+    _stdin(monkeypatch, {
+        "prompt": "mm+",
+        "session_id": sid,
+        "transcript_path": nonexistent,
+    })
+    popen_calls = []
+    with patch("marrow.hooks.popen_detach",
+               side_effect=lambda a, log_path: popen_calls.append(a)):
+        rc = hooks.main(["user_prompt_submit"])
+    assert rc == 0
+
+    # Spawn still happened despite missing file
+    assert any("sessionend_async" in " ".join(c) for c in popen_calls)
+    spawned = [c for c in popen_calls if "sessionend_async" in " ".join(c)]
+    assert any(sid in " ".join(c) for c in spawned)
+
+    # No events written (file was missing)
+    conn = storage.connect(db)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE session_id=?", (sid,)
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    assert n == 0
