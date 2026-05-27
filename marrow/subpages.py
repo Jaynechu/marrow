@@ -22,6 +22,7 @@ from . import config as _config
 from . import repo
 from . import subpage_specs
 from ._atomic import atomic_write as _atomic_write
+from .atlas import atlas_sweep_fs, reconcile_atlas, seed_atlas_from_roots
 from .inserter import InserterSpec, write_subpage_inserter
 from .md_index import MdIndex
 from .reconcile import reconcile_milestones
@@ -269,6 +270,38 @@ def _flat_with_inserter(key: str, render, filename: str, spec_builder,
     return _build
 
 
+def _build_atlas_config(conn: sqlite3.Connection,
+                        folder: str, state_dir: str) -> SubPageConfig:
+    """Atlas — runs seed + sweep before inserter writes.
+
+    Seed: first call inserts root stubs (depth=1) if atlas table is empty.
+    Sweep: atlas_sweep_fs runs before reconcile so new dirs are already
+    stubbed when md->db reconcile runs, and stale flags are up-to-date.
+    Reconcile (reconcile_atlas): md heading tree → db upsert/delete.
+    Inserter (build_atlas_spec): db rows → md heading tree.
+    """
+    # Seed on first run (table empty)
+    if not conn.execute("SELECT 1 FROM atlas LIMIT 1").fetchone():
+        seed_atlas_from_roots(conn)
+
+    # Sweep: stub new dirs, mark stale. Runs before reconcile so the md
+    # reflects newly-discovered dirs on the same refresh pass.
+    try:
+        atlas_sweep_fs(conn)
+    except Exception as e:
+        repo.add_alert("warn", "atlas", f"sweep failed: {e}",
+                       source="subpages.py")
+
+    return SubPageConfig(
+        key="atlas",
+        render=lambda _c: "",  # inserter is SoT; legacy path not used
+        path=str(Path(folder) / "atlas.md"),
+        state_dir=state_dir,
+        reconcile=reconcile_atlas,
+        inserter=subpage_specs.build_atlas_spec(folder),
+    )
+
+
 _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = {
     "profile":    _flat_with_inserter(
         "profile", render_profile, "profile.md",
@@ -297,13 +330,14 @@ _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = 
         read_only=True),
     "study":      lambda c, f, s: build_study_configs(c, f, s),
     "projects":   lambda c, f, s: build_projects_configs(c, f, s),
+    "atlas":      _build_atlas_config,
 }
 
 # Render order when [subpages] is absent from config — covers fresh installs
 # and tests. Mirrors DESIGN L43-65 default order.
 _DEFAULT_TOP = ["profile", "milestone", "diary", "memes",
                 "stickers", "wallet", "goose"]
-_DEFAULT_BOTTOM = ["study", "projects", "cheatsheet"]
+_DEFAULT_BOTTOM = ["study", "projects", "cheatsheet", "atlas"]
 
 
 def _subpages_cfg() -> dict:
@@ -401,6 +435,7 @@ _DISPLAY = {
     "study":      "Study",
     "projects":   "Projects",
     "cheatsheet": "Cheatsheet",
+    "atlas":      "Atlas",
 }
 
 

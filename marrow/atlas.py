@@ -234,20 +234,32 @@ def _parse_atlas_md(md_text: str, roots: list[Path]) -> list[dict]:
 
 
 def _match_root(name: str, roots: list[Path]) -> Path | None:
-    """Match section header name (e.g. `~/cc-lab/`) to a root path."""
+    """Match section header name (e.g. `~/cc-lab/` or `/abs/path/`) to a root."""
     home = Path.home()
-    # Strip leading ~/ or / and trailing /
-    clean = name.lstrip("~/").rstrip("/")
+    # Normalise: strip trailing slash, expand ~/
+    stripped = name.rstrip("/")
+    if stripped.startswith("~/"):
+        stripped = str(home / stripped[2:])
+    # Try to resolve the name directly as an absolute path first
+    try:
+        candidate = Path(stripped).resolve()
+        for root in roots:
+            r = root.expanduser().resolve()
+            if r == candidate:
+                return r
+    except Exception:
+        pass
+    # Fall back: match by name or relative-from-home
+    clean = stripped.lstrip("/")
     for root in roots:
         r = root.expanduser().resolve()
-        # Try ~/relative shorthand
         try:
             rel = str(r.relative_to(home))
             if rel == clean or r.name == clean:
                 return r
         except ValueError:
             pass
-        if r.name == clean or str(r) == clean:
+        if r.name == clean or str(r) == clean or str(r) == stripped:
             return r
     return None
 
@@ -264,8 +276,8 @@ def reconcile_atlas(conn: sqlite3.Connection, md_path: Path) -> int:
     Paths in db NOT in md → DELETE (user explicitly removed the row).
     Returns number of rows changed (insert + update + delete).
     """
-    from .drift_sweep import AUTHORIZED_ROOTS
-    roots = [r.expanduser().resolve() for r in AUTHORIZED_ROOTS]
+    from . import drift_sweep
+    roots = [r.expanduser().resolve() for r in drift_sweep.AUTHORIZED_ROOTS]
 
     md_path = Path(md_path)
     if not md_path.exists():
@@ -330,9 +342,8 @@ def atlas_sweep_fs(conn: sqlite3.Connection) -> dict[str, int]:
     Respects EXCLUDE_DIRS_TREE and ~/.claude whitelist.
     Returns {"stubbed": N, "unstaled": N, "staled": N}.
     """
-    from .drift_sweep import AUTHORIZED_ROOTS
-
-    roots = [r.expanduser().resolve() for r in AUTHORIZED_ROOTS]
+    from . import drift_sweep
+    roots = [r.expanduser().resolve() for r in drift_sweep.AUTHORIZED_ROOTS]
     counts = {"stubbed": 0, "unstaled": 0, "staled": 0}
     now = _NOW()
 
@@ -447,12 +458,12 @@ def seed_atlas_from_roots(conn: sqlite3.Connection) -> int:
     Called once after v12 migration (or first `mw refresh atlas`).
     Idempotent — INSERT OR IGNORE.
     """
-    from .drift_sweep import AUTHORIZED_ROOTS
+    from . import drift_sweep
 
     now = _NOW()
     inserted = 0
     with conn:
-        for root in AUTHORIZED_ROOTS:
+        for root in drift_sweep.AUTHORIZED_ROOTS:
             p = root.expanduser().resolve()
             conn.execute(
                 "INSERT OR IGNORE INTO atlas"

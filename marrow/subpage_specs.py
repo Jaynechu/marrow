@@ -410,8 +410,8 @@ def build_atlas_spec(folder: str) -> InserterSpec:
     Section header: ## ~/<root>/   Row: ### dir/ + bullet fields.
     block_id = path (absolute).
     """
-    from .drift_sweep import AUTHORIZED_ROOTS
-    roots = [r.expanduser().resolve() for r in AUTHORIZED_ROOTS]
+    from . import drift_sweep
+    roots = [r.expanduser().resolve() for r in drift_sweep.AUTHORIZED_ROOTS]
 
     def fetch(conn: sqlite3.Connection) -> list[dict]:
         try:

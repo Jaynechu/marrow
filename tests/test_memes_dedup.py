@@ -325,7 +325,7 @@ def test_embedder_missing_alert_idempotent(db, monkeypatch):
 def test_v11_migration_idempotent(tmp_path):
     p = str(tmp_path / "mig.db")
     conn = storage.init_db(p)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == storage.SCHEMA_VERSION
     # Insert a row then re-init.
     conn.execute(
         "INSERT INTO memes_reject_log (key, type, reason, count,"
