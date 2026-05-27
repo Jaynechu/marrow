@@ -25,6 +25,7 @@ import sqlite_vec
 
 from . import config, storage
 from .md_index import MdIndex
+from .sync_loop import SyncLoop, build_targets
 
 _DEBOUNCE_S = 0.2
 _LOG_NAME = "watcher.log"
@@ -209,6 +210,7 @@ class Watcher:
         self.observer = Observer()
         self.debouncer = _Debouncer(_DEBOUNCE_S, self._fire_sync)
         self._stop = threading.Event()
+        self._sync_loop: SyncLoop | None = None
 
     def _fire_sync(self, path: str) -> None:
         # observe-only — keep auto-write baseline frozen so the dashboard
@@ -274,6 +276,19 @@ class Watcher:
         # reference, so additions land in time. (_MdHandler reads it on each
         # event.)
         self.observer.start()
+        # Start sync loop — boot tick fires immediately (after _reconcile_boot)
+        # to catch drift while watcher was down.
+        try:
+            cfg = config.load()
+            folder = cfg["paths"]["db_pages"]
+            state_dir = cfg["paths"]["db_pages_state"]
+            dash = cfg["paths"]["dashboard"]
+            targets = build_targets(self.conn, folder, state_dir, dash)
+            self._sync_loop = SyncLoop(self.conn, targets)
+            self._sync_loop.start()
+            self.log.info("sync_loop started targets=%d", len(targets))
+        except Exception:
+            self.log.exception("sync_loop failed to start; watcher continues without it")
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, self._on_signal)
             signal.signal(signal.SIGINT, self._on_signal)
@@ -282,6 +297,8 @@ class Watcher:
                 time.sleep(0.5)
         finally:
             self.log.info("watcher stopping")
+            if self._sync_loop is not None:
+                self._sync_loop.stop()
             self.debouncer.flush()
             self.observer.stop()
             self.observer.join(timeout=5)
