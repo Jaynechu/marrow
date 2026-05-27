@@ -131,10 +131,11 @@ class SyncTarget:
 class SyncLoop:
     """Periodic md↔db sync loop. Call start() once, stop() on shutdown."""
 
-    def __init__(self, conn: sqlite3.Connection,
+    def __init__(self, conn_factory: Callable[[], sqlite3.Connection],
                  targets: list[SyncTarget],
                  tick_s: float = _SYNC_TICK_S) -> None:
-        self._conn = conn
+        self._conn_factory = conn_factory
+        self._conn: sqlite3.Connection | None = None
         self._targets = targets
         self._tick_s = tick_s
         self._stop = threading.Event()
@@ -152,10 +153,18 @@ class SyncLoop:
             self._thread.join(timeout=timeout)
 
     def _run(self) -> None:
-        # Boot tick fires immediately (catch drift while watcher was down).
-        self._tick()
-        while not self._stop.wait(self._tick_s):
+        self._conn = self._conn_factory()
+        try:
+            # Boot tick fires immediately (catch drift while watcher was down).
             self._tick()
+            while not self._stop.wait(self._tick_s):
+                self._tick()
+        finally:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = None
 
     def _tick(self) -> None:
         for target in self._targets:
@@ -166,6 +175,7 @@ class SyncLoop:
 
     def _process(self, target: SyncTarget) -> None:
         md_path = target.md_path
+        conn = self._conn
 
         # Step 1-2: md path + mtime
         try:
@@ -174,7 +184,7 @@ class SyncLoop:
             return  # file missing — skip this tick
 
         # Step 3: db mtime
-        db_mtime = target.db_mtime_fn(self._conn)
+        db_mtime = target.db_mtime_fn(conn)
         if db_mtime is None:
             return  # no table / empty — skip
 
@@ -184,7 +194,7 @@ class SyncLoop:
             # Step 4: md newer → reconcile
             if target.reconcile_fn is None:
                 return
-            target.reconcile_fn(self._conn, Path(md_path))
+            target.reconcile_fn(conn, Path(md_path))
             # Race防御: re-check md mtime after reconcile
             try:
                 md_mtime_after = Path(md_path).stat().st_mtime
@@ -195,18 +205,18 @@ class SyncLoop:
                           target.name)
                 return
             # md stable after reconcile — render to reflect the absorbed edits
-            target.render_fn(self._conn)
+            target.render_fn(conn)
 
         elif db_mtime > md_mtime + _MTIME_EPSILON_S:
             # Step 5: db newer → render
             # Run reconcile first (same as write_subpage contract) if available.
             if target.reconcile_fn is not None:
                 try:
-                    target.reconcile_fn(self._conn, Path(md_path))
+                    target.reconcile_fn(conn, Path(md_path))
                 except Exception:  # noqa: BLE001
                     log.exception("sync_loop reconcile before render failed: %s",
                                   target.name)
-            target.render_fn(self._conn)
+            target.render_fn(conn)
 
         # else: within epsilon — skip
 
@@ -216,16 +226,12 @@ class SyncLoop:
 # ---------------------------------------------------------------------------
 
 class AtlasSweepLoop:
-    """Runs atlas_sweep_fs on a periodic tick.
+    """Runs atlas_sweep_fs on a periodic tick, owning its own connection."""
 
-    Wired by S2b sync_loop integration after merge. Main session starts
-    this alongside SyncLoop once S2b is merged. Scaffold is here so tests
-    can import and exercise it independently.
-    """
-
-    def __init__(self, conn: sqlite3.Connection,
+    def __init__(self, conn_factory: Callable[[], sqlite3.Connection],
                  tick_s: float = _ATLAS_SWEEP_TICK_S) -> None:
-        self._conn = conn
+        self._conn_factory = conn_factory
+        self._conn: sqlite3.Connection | None = None
         self._tick_s = tick_s
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -242,15 +248,23 @@ class AtlasSweepLoop:
             self._thread.join(timeout=timeout)
 
     def sweep_once(self) -> dict[str, int]:
-        """Run one sweep pass and return counts."""
+        """Run one sweep pass and return counts (uses current thread conn)."""
         from .atlas import atlas_sweep_fs
         return atlas_sweep_fs(self._conn)
 
     def _run(self) -> None:
-        # Boot sweep fires immediately
-        self._safe_sweep()
-        while not self._stop.wait(self._tick_s):
+        self._conn = self._conn_factory()
+        try:
+            # Boot sweep fires immediately
             self._safe_sweep()
+            while not self._stop.wait(self._tick_s):
+                self._safe_sweep()
+        finally:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = None
 
     def _safe_sweep(self) -> None:
         try:
@@ -263,23 +277,25 @@ class AtlasSweepLoop:
 # Factory: build targets from _REGISTRY + dashboard
 # ---------------------------------------------------------------------------
 
-def build_targets(conn: sqlite3.Connection,
-                  folder: str,
+def build_targets(folder: str,
                   state_dir: str,
                   dashboard_path: str) -> list[SyncTarget]:
     """Build SyncTarget list from subpages._REGISTRY + dashboard."""
     from . import config as _config
-    from . import subpages
+    from . import storage, subpages
     from .dashboard import write_dashboard
 
     targets: list[SyncTarget] = []
 
-    # Subpage targets
+    # Subpage targets — use a short-lived conn just for config building
+    conn = storage.connect()
     try:
         cfgs = subpages.build_all_configs(conn, folder=folder, state_dir=state_dir)
     except Exception:
         log.exception("sync_loop: build_all_configs failed")
         cfgs = []
+    finally:
+        conn.close()
 
     for cfg in cfgs:
         key = cfg.key

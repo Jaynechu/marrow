@@ -413,6 +413,8 @@ def build_atlas_spec(folder: str) -> InserterSpec:
     from . import drift_sweep
     roots = [r.expanduser().resolve() for r in drift_sweep.AUTHORIZED_ROOTS]
 
+    root_strs = {str(r) for r in roots}
+
     def fetch(conn: sqlite3.Connection) -> list[dict]:
         try:
             rows = conn.execute(
@@ -421,7 +423,13 @@ def build_atlas_spec(folder: str) -> InserterSpec:
             ).fetchall()
         except sqlite3.Error:
             return []
-        return [dict(r) for r in rows]
+        result = [dict(r) for r in rows if r["path"] not in root_strs]
+        # stable sort by (section, path)
+        result.sort(key=lambda r: (
+            str(_atlas_mod._root_of(r["path"], roots) or r["path"]),
+            r["path"],
+        ))
+        return result
 
     def section_of(r: dict) -> str:
         root = _atlas_mod._root_of(r["path"], roots)

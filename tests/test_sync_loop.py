@@ -140,7 +140,7 @@ def test_sync_loop_tick_fires(tmp_path):
         calls.append("render")
 
     t = _target(str(md), db_fn, render_fn=render_fn, name="tick-test")
-    loop = SyncLoop(_conn(), [t], tick_s=0.05)
+    loop = SyncLoop(_conn, [t], tick_s=0.05)
     loop.start()
     time.sleep(0.3)
     loop.stop()
@@ -152,7 +152,7 @@ def test_sync_loop_shutdown_stops_cleanly(tmp_path):
     md = tmp_path / "x.md"
     md.write_text("x")
     t = _target(str(md), lambda c: None, name="shutdown-test")
-    loop = SyncLoop(_conn(), [t], tick_s=0.1)
+    loop = SyncLoop(_conn, [t], tick_s=0.1)
     loop.start()
     time.sleep(0.05)
     loop.stop(timeout=2.0)
@@ -180,7 +180,7 @@ def test_md_newer_calls_reconcile_only(tmp_path):
         rendered.append(1)
 
     t = _target(str(md), lambda c: db_mtime, reconcile_fn=recon, render_fn=render)
-    loop = SyncLoop(_conn(), [t], tick_s=100.0)  # only boot tick
+    loop = SyncLoop(_conn, [t], tick_s=100.0)  # only boot tick
     loop.start()
     time.sleep(0.1)
     loop.stop()
@@ -199,7 +199,7 @@ def test_md_newer_no_reconcile_fn_skips(tmp_path):
 
     t = _target(str(md), lambda c: db_mtime,
                 reconcile_fn=None, render_fn=lambda c: rendered.append(1))
-    loop = SyncLoop(_conn(), [t], tick_s=100.0)
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()
@@ -220,7 +220,7 @@ def test_db_newer_calls_render(tmp_path):
     rendered: list[int] = []
 
     t = _target(str(md), lambda c: db_mtime, render_fn=lambda c: rendered.append(1))
-    loop = SyncLoop(_conn(), [t], tick_s=100.0)
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()
@@ -247,7 +247,7 @@ def test_equal_mtimes_noop(tmp_path):
 
     t = _target(str(md), lambda c: db_mtime,
                 reconcile_fn=recon, render_fn=lambda c: rendered.append(1))
-    loop = SyncLoop(_conn(), [t], tick_s=100.0)
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()
@@ -279,7 +279,7 @@ def test_race_defense_mid_reconcile_md_write(tmp_path):
 
     t = _target(str(md), lambda c: db_mtime,
                 reconcile_fn=recon, render_fn=lambda c: rendered.append(1))
-    loop = SyncLoop(_conn(), [t], tick_s=100.0)
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.2)
     loop.stop()
@@ -307,7 +307,7 @@ def test_multiple_targets_independent(tmp_path):
     t2 = _target(str(md2), lambda c: now + 10.0,
                  render_fn=lambda c: calls["b_render"].append(1), name="b")
 
-    loop = SyncLoop(_conn(), [t1, t2], tick_s=100.0)
+    loop = SyncLoop(_conn, [t1, t2], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()
@@ -326,7 +326,7 @@ def test_missing_md_skipped(tmp_path):
         lambda c: time.time() + 10.0,
         render_fn=lambda c: rendered.append(1),
     )
-    loop = SyncLoop(_conn(), [t], tick_s=100.0)
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()
@@ -342,7 +342,7 @@ def test_db_mtime_none_skipped(tmp_path):
     md.write_text("x")
     rendered: list[int] = []
     t = _target(str(md), lambda c: None, render_fn=lambda c: rendered.append(1))
-    loop = SyncLoop(_conn(), [t], tick_s=100.0)
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()

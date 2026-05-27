@@ -1,8 +1,9 @@
 """atlas — dir-tree subpage: parse, reconcile, render helpers, fs walk.
 
 Public API:
-- reconcile_atlas(conn, md_path) — md heading tree -> db upsert/delete
+- reconcile_atlas(conn, md_path) — md marker list -> db upsert/delete
 - atlas_sweep_fs(conn) — depth-aware walk: stub new dirs, mark vanished stale
+- rekey_paths(conn, ops) — migrate atlas rows on dir-mv
 - _heading_level(path, root) — compute h-level (2-6) for a path under root
 - _root_shorthand(root) — ~/path display form
 
@@ -15,6 +16,7 @@ import os
 import re
 import sqlite3
 import time
+import urllib.parse
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -95,27 +97,34 @@ def _root_of(path: str | Path, roots: list[Path]) -> Path | None:
 
 
 def _render_atlas_row(r: dict, roots: list[Path]) -> str:
-    """Heading + bullet block for one atlas row.
+    """List-based block for one atlas row, with inline id marker.
 
-    Heading level determined by depth relative to root.
-    `(stale)` suffix when stale=1.
-    Bullets: note, write_hint (as 'write'), naming_hint (as 'naming'), depth.
-    Empty fields omitted; depth always rendered.
+    Layout:
+      - **dirname/** <!-- id:/abs/path --> [open](file:///abs/path)
+          - note: <value or empty>
+          - write: <value or empty>
+          - naming: <value or empty>
+          - depth: <int>
+
+    Appends ` (stale)` when stale=1. Always emits all four sub-bullets.
     """
     path = r["path"]
-    root = _root_of(path, roots)
-    level = _heading_level(path, root) if root else 6
-    hashes = "#" * level
     name = Path(path).name + "/"
     stale_sfx = " (stale)" if r.get("stale") else ""
-    lines: list[str] = [f"{hashes} {name}{stale_sfx}", ""]
-    if r.get("note"):
-        lines.append(f"- note: {r['note']}")
-    if r.get("write_hint"):
-        lines.append(f"- write: {r['write_hint']}")
-    if r.get("naming_hint"):
-        lines.append(f"- naming: {r['naming_hint']}")
-    lines.append(f"- depth: {r.get('depth', 0)}")
+    encoded = urllib.parse.quote(path, safe="/")
+    marker = f"<!-- id:{path} -->"
+    header = f"- **{name}**{stale_sfx} {marker} [open](file://{encoded})"
+    note = r.get("note") or ""
+    write = r.get("write_hint") or ""
+    naming = r.get("naming_hint") or ""
+    depth = r.get("depth") or 0
+    lines = [
+        header,
+        f"    - note: {note}",
+        f"    - write: {write}",
+        f"    - naming: {naming}",
+        f"    - depth: {depth}",
+    ]
     return "\n".join(lines)
 
 
@@ -124,38 +133,27 @@ def _section_header(root_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Parser — md heading tree → list[dict]
+# Parser — marker-based, reads inline <!-- id:path --> anchors
 # ---------------------------------------------------------------------------
 
-_H_RE = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
+_ID_RE = re.compile(r"<!--\s*id:(?P<path>[^\s>]+)\s*-->")
 _BULLET_RE = re.compile(
-    r"^-\s+(note|write|naming|depth):\s*(.*)$"
+    r"^\s*-\s+(note|write|naming|depth)\s*:\s*(.*)$"
 )
 _STALE_RE = re.compile(r"\s*\(stale\)\s*$")
 
 
 def _parse_atlas_md(md_text: str, roots: list[Path]) -> list[dict]:
-    """Parse atlas heading tree into list of row dicts.
+    """Parse atlas marker list into row dicts.
 
+    Scans for <!-- id:/abs/path --> markers; sub-bullets populate fields.
+    `roots` kept in signature for back-compat but unused (path from marker).
     Each dict: {path, note, write_hint, naming_hint, depth}.
-    Heading levels used to reconstruct absolute path:
-    - ## = root section header (path = root absolute)
-    - ### = first-level dir under root
-    - #### / ##### / ###### = deeper levels
-
-    Root stack: we track current path at each heading level to reconstruct
-    children. Dir name stripped of trailing `/` and `(stale)` suffix.
     """
     rows: list[dict] = []
-
-    # Map heading level -> path for ancestry reconstruction.
-    # level_stack[N] = absolute Path at heading level N.
-    level_stack: dict[int, Path] = {}
-
     cur_row: dict | None = None
-    cur_root: Path | None = None
 
-    def _flush():
+    def _flush() -> None:
         nonlocal cur_row
         if cur_row and cur_row.get("path"):
             rows.append(cur_row)
@@ -164,46 +162,11 @@ def _parse_atlas_md(md_text: str, roots: list[Path]) -> list[dict]:
     for raw in md_text.splitlines():
         line = raw.rstrip()
 
-        m = _H_RE.match(line)
+        m = _ID_RE.search(line)
         if m:
             _flush()
-            level = len(m.group(1))
-            raw_name = m.group(2)
-            # Strip (stale) suffix before resolving path
-            name = _STALE_RE.sub("", raw_name).rstrip("/").strip()
-
-            if level == 2:
-                # Section header — find matching root by shorthand or name
-                path = _match_root(name, roots)
-                cur_root = path
-                level_stack = {2: path} if path else {}
-                cur_row = None  # root rows are not db rows
-                continue
-
-            if cur_root is None:
-                continue
-
-            # Reconstruct absolute path from current level context
-            parent_level = level - 1
-            parent = level_stack.get(parent_level)
-            if parent is None:
-                # Try to walk up until we find a known level
-                for lvl in range(parent_level - 1, 1, -1):
-                    parent = level_stack.get(lvl)
-                    if parent:
-                        break
-            if parent is None:
-                continue
-
-            abs_path = parent / name
-            level_stack[level] = abs_path
-            # Invalidate deeper levels (sibling replaces children)
-            for lvl in list(level_stack.keys()):
-                if lvl > level:
-                    del level_stack[lvl]
-
             cur_row = {
-                "path": str(abs_path),
+                "path": m.group("path"),
                 "note": None,
                 "write_hint": None,
                 "naming_hint": None,
@@ -233,35 +196,40 @@ def _parse_atlas_md(md_text: str, roots: list[Path]) -> list[dict]:
     return rows
 
 
-def _match_root(name: str, roots: list[Path]) -> Path | None:
-    """Match section header name (e.g. `~/cc-lab/` or `/abs/path/`) to a root."""
-    home = Path.home()
-    # Normalise: strip trailing slash, expand ~/
-    stripped = name.rstrip("/")
-    if stripped.startswith("~/"):
-        stripped = str(home / stripped[2:])
-    # Try to resolve the name directly as an absolute path first
-    try:
-        candidate = Path(stripped).resolve()
-        for root in roots:
-            r = root.expanduser().resolve()
-            if r == candidate:
-                return r
-    except Exception:
-        pass
-    # Fall back: match by name or relative-from-home
-    clean = stripped.lstrip("/")
-    for root in roots:
-        r = root.expanduser().resolve()
-        try:
-            rel = str(r.relative_to(home))
-            if rel == clean or r.name == clean:
-                return r
-        except ValueError:
-            pass
-        if r.name == clean or str(r) == clean or str(r) == stripped:
-            return r
-    return None
+# ---------------------------------------------------------------------------
+# rekey_paths — migrate atlas rows on dir-mv
+# ---------------------------------------------------------------------------
+
+def rekey_paths(conn: sqlite3.Connection,
+                ops: list[tuple[str, str]]) -> int:
+    """For each (src, dest), migrate atlas row from src → dest.
+
+    Preserves note/write_hint/naming_hint/depth. If dest already exists,
+    delete the src row (sweep reconciles on next pass).
+    Returns number of rows updated.
+    """
+    now = _NOW()
+    updated = 0
+    with conn:
+        for src, dest in ops:
+            row = conn.execute(
+                "SELECT note, write_hint, naming_hint, depth FROM atlas WHERE path=?",
+                (src,),
+            ).fetchone()
+            if row is None:
+                continue
+            dest_exists = conn.execute(
+                "SELECT 1 FROM atlas WHERE path=?", (dest,)
+            ).fetchone()
+            if dest_exists:
+                conn.execute("DELETE FROM atlas WHERE path=?", (src,))
+            else:
+                conn.execute(
+                    "UPDATE atlas SET path=?, updated_at=? WHERE path=?",
+                    (dest, now, src),
+                )
+                updated += 1
+    return updated
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ import sqlite_vec
 from . import config, storage
 from .drift_sweep import AUTHORIZED_ROOTS, DriftWatcher
 from .md_index import MdIndex
-from .sync_loop import SyncLoop, build_targets
+from .sync_loop import AtlasSweepLoop, SyncLoop, build_targets
 
 _DEBOUNCE_S = 0.2
 _LOG_NAME = "watcher.log"
@@ -192,6 +192,16 @@ class _DriftHandler(FileSystemEventHandler):
 
     def on_moved(self, event) -> None:
         if event.is_directory:
+            try:
+                from .atlas import rekey_paths
+                conn = storage.connect()
+                try:
+                    rekey_paths(conn, [(event.src_path, event.dest_path)])
+                finally:
+                    conn.close()
+            except Exception:
+                self._log.exception("atlas rekey on dir mv failed: %s → %s",
+                                    event.src_path, event.dest_path)
             return
         try:
             self._drift.on_moved(event.src_path, event.dest_path)
@@ -245,6 +255,7 @@ class Watcher:
         self.debouncer = _Debouncer(_DEBOUNCE_S, self._fire_sync)
         self._stop = threading.Event()
         self._sync_loop: SyncLoop | None = None
+        self._atlas_sweep: AtlasSweepLoop | None = None
         self.drift_watcher = DriftWatcher(roots=list(AUTHORIZED_ROOTS))
 
     def _fire_sync(self, path: str) -> None:
@@ -253,13 +264,20 @@ class Watcher:
         # debounce fires → block_id stays in md_index but content_hash
         # baseline is NOT updated → dashboard._resolve_blocks sees stored
         # != cur_hash → preserves user body.
-        report = self.store.sync_file_observe(path)
-        if report.inserted or report.updated or report.tombstoned or report.cleared:
-            self.log.info(
-                "sync %s inserted=%d updated=%d tombstoned=%d cleared=%d",
-                path, report.inserted, report.updated,
-                report.tombstoned, report.cleared,
-            )
+        # Each debouncer worker thread opens its own conn to avoid sharing
+        # SQLite connection state across threads.
+        conn = storage.connect()
+        try:
+            store = MdIndex(conn)
+            report = store.sync_file_observe(path)
+            if report.inserted or report.updated or report.tombstoned or report.cleared:
+                self.log.info(
+                    "sync %s inserted=%d updated=%d tombstoned=%d cleared=%d",
+                    path, report.inserted, report.updated,
+                    report.tombstoned, report.cleared,
+                )
+        finally:
+            conn.close()
 
     def _attach_dir(self, handler: _MdHandler, root: str) -> None:
         if not Path(root).is_dir():
@@ -325,9 +343,11 @@ class Watcher:
             folder = cfg["paths"]["db_pages"]
             state_dir = cfg["paths"]["db_pages_state"]
             dash = cfg["paths"]["dashboard"]
-            targets = build_targets(self.conn, folder, state_dir, dash)
-            self._sync_loop = SyncLoop(self.conn, targets)
+            targets = build_targets(folder, state_dir, dash)
+            self._sync_loop = SyncLoop(storage.connect, targets)
             self._sync_loop.start()
+            self._atlas_sweep = AtlasSweepLoop(storage.connect)
+            self._atlas_sweep.start()
             self.log.info("sync_loop started targets=%d", len(targets))
         except Exception:
             self.log.exception("sync_loop failed to start; watcher continues without it")
@@ -341,6 +361,8 @@ class Watcher:
             self.log.info("watcher stopping")
             if self._sync_loop is not None:
                 self._sync_loop.stop()
+            if self._atlas_sweep is not None:
+                self._atlas_sweep.stop()
             self.debouncer.flush()
             self.observer.stop()
             self.observer.join(timeout=5)

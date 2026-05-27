@@ -284,7 +284,7 @@ def _refresh_scan(conn, *, include_subpages: bool) -> None:
 
 def cmd_refresh(args) -> int:
     db = args.db or config.db_path()
-    conn = storage.connect(db)
+    conn = storage.init_db(db)
     try:
         _refresh_scan(conn, include_subpages=args.all)
         dashboard.write_dashboard(

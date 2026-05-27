@@ -19,6 +19,7 @@ from marrow.atlas import (
     _root_shorthand,
     atlas_sweep_fs,
     reconcile_atlas,
+    rekey_paths,
     seed_atlas_from_roots,
 )
 from marrow.inserter import write_subpage_inserter
@@ -50,6 +51,17 @@ def _insert_row(conn, path, note=None, write_hint=None, naming_hint=None,
         (path, note, write_hint, naming_hint, depth, stale, _now()),
     )
     conn.commit()
+
+
+def _marker_md(path: str, note="", write="", naming="", depth=0) -> str:
+    """Build a single marker-format atlas block for one path."""
+    return (
+        f"- **{Path(path).name}/** <!-- id:{path} --> [open](file://{path})\n"
+        f"    - note: {note}\n"
+        f"    - write: {write}\n"
+        f"    - naming: {naming}\n"
+        f"    - depth: {depth}\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -120,37 +132,10 @@ def test_build_atlas_spec_fetch_returns_rows(conn, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 3. reconcile_atlas parses heading tree → db
+# 3. reconcile_atlas parses marker list → db
 # ---------------------------------------------------------------------------
 
-def _make_md(roots, rows_by_root):
-    """Build a minimal atlas.md from a dict of root → list of (name, fields)."""
-    home = Path.home()
-    lines = []
-    for root, dirs in rows_by_root.items():
-        try:
-            rel = Path(root).relative_to(home)
-            shorthand = f"~/{rel}/"
-        except ValueError:
-            shorthand = str(root) + "/"
-        lines.append(f"## {shorthand}")
-        lines.append("")
-        for name, fields in dirs:
-            lines.append(f"### {name}/")
-            lines.append("")
-            if fields.get("note"):
-                lines.append(f"- note: {fields['note']}")
-            if fields.get("write"):
-                lines.append(f"- write: {fields['write']}")
-            if fields.get("naming"):
-                lines.append(f"- naming: {fields['naming']}")
-            lines.append(f"- depth: {fields.get('depth', 0)}")
-            lines.append("")
-    return "\n".join(lines)
-
-
 def test_reconcile_parses_note_write_naming_depth(conn, tmp_path, monkeypatch):
-    # Use tmp_path as a fake root to avoid real fs dependency
     root = tmp_path / "fakeroots"
     root.mkdir()
     child = root / "mydir"
@@ -160,27 +145,16 @@ def test_reconcile_parses_note_write_naming_depth(conn, tmp_path, monkeypatch):
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
     md_file = tmp_path / "atlas.md"
-    try:
-        rel = root.relative_to(Path.home())
-        shorthand = f"~/{rel}/"
-    except ValueError:
-        shorthand = str(root) + "/"
-
-    md_file.write_text(
-        f"## {shorthand}\n\n"
-        f"### mydir/\n\n"
-        f"- note: Test note\n"
-        f"- write: docs/\n"
-        f"- naming: snake_case\n"
-        f"- depth: 2\n"
-    )
+    child_path = str(child.resolve())
+    md_file.write_text(_marker_md(child_path, note="Test note", write="docs/",
+                                  naming="snake_case", depth=2))
 
     n = reconcile_atlas(conn, md_file)
     assert n > 0
 
     row = conn.execute(
         "SELECT note, write_hint, naming_hint, depth FROM atlas WHERE path=?",
-        (str(child.resolve()),),
+        (child_path,),
     ).fetchone()
     assert row is not None
     assert row["note"] == "Test note"
@@ -201,23 +175,12 @@ def test_reconcile_deletes_paths_removed_from_md(conn, tmp_path, monkeypatch):
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
     # Pre-insert both with note so reconcile treats them as user-edited
-    # (stub-only rows are kept across reconcile to protect sweep-added stubs).
     _insert_row(conn, str(child_a.resolve()), note="manual note A")
     _insert_row(conn, str(child_b.resolve()), note="manual note B")
 
-    try:
-        rel = root.relative_to(Path.home())
-        shorthand = f"~/{rel}/"
-    except ValueError:
-        shorthand = str(root) + "/"
-
     # md only has dirA
     md_file = tmp_path / "atlas.md"
-    md_file.write_text(
-        f"## {shorthand}\n\n"
-        f"### dirA/\n\n"
-        f"- depth: 0\n"
-    )
+    md_file.write_text(_marker_md(str(child_a.resolve()), depth=0))
     reconcile_atlas(conn, md_file)
 
     paths = {r[0] for r in conn.execute("SELECT path FROM atlas").fetchall()}
@@ -277,9 +240,12 @@ def test_render_row_bullets(tmp_path):
     assert "- naming: snake_case" in rendered
     assert "- depth: 2" in rendered
     assert "mydir/" in rendered
+    # new: inline id marker
+    assert f"<!-- id:{str(child.resolve())} -->" in rendered
 
 
-def test_render_row_empty_fields_omitted(tmp_path):
+def test_render_row_empty_fields_show_placeholders(tmp_path):
+    """Empty fields must emit placeholder lines so user can see where to type."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "mydir"
@@ -294,10 +260,11 @@ def test_render_row_empty_fields_omitted(tmp_path):
         "stale": 0,
     }
     rendered = _render_atlas_row(r, [root.resolve()])
-    assert "- note" not in rendered
-    assert "- write" not in rendered
-    assert "- naming" not in rendered
-    assert "- depth: 0" in rendered  # depth always rendered
+    # All four lines always emitted even when values are empty
+    assert "    - note: " in rendered
+    assert "    - write: " in rendered
+    assert "    - naming: " in rendered
+    assert "    - depth: 0" in rendered
 
 
 def test_render_row_stale_suffix(tmp_path):
@@ -326,8 +293,33 @@ def test_render_section_header():
     assert header == "## ~/cc-lab/"
 
 
+def test_render_row_has_open_link(tmp_path):
+    """Rendered row must include a file:// open link."""
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "mydir"
+    child.mkdir()
+    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
+         "naming_hint": None, "depth": 0, "stale": 0}
+    rendered = _render_atlas_row(r, [root.resolve()])
+    assert "[open](file://" in rendered
+
+
+def test_render_row_no_heading_emitted(tmp_path):
+    """_render_atlas_row must not emit any ## heading — only list bullet."""
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "mydir"
+    child.mkdir()
+    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
+         "naming_hint": None, "depth": 0, "stale": 0}
+    rendered = _render_atlas_row(r, [root.resolve()])
+    for line in rendered.splitlines():
+        assert not line.startswith("#"), f"unexpected heading: {line!r}"
+
+
 def test_build_atlas_spec_bootstrap_writes_sections(conn, tmp_path, monkeypatch):
-    """Bootstrap renders ## per root, ### per first-level dir."""
+    """Bootstrap renders ## per root section header, marker bullet per dir."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "mydir"
@@ -349,9 +341,31 @@ def test_build_atlas_spec_bootstrap_writes_sections(conn, tmp_path, monkeypatch)
     except ValueError:
         shorthand = str(root.resolve()) + "/"
     assert f"## {shorthand}" in md
-    assert "### mydir/" in md
+    # New list layout: bullet with marker, not ### heading
+    assert f"<!-- id:{str(child.resolve())} -->" in md
     assert "- note: hello" in md
     assert "- depth: 0" in md
+
+
+def test_build_atlas_spec_fetch_skips_root_rows(conn, tmp_path, monkeypatch):
+    """fetch() must not return rows for AUTHORIZED_ROOTS paths."""
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "mydir"
+    child.mkdir()
+
+    from marrow import drift_sweep
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
+
+    # Insert both root and child
+    _insert_row(conn, str(root.resolve()), depth=1)
+    _insert_row(conn, str(child.resolve()), note="child note")
+
+    spec = subpage_specs.build_atlas_spec(str(tmp_path))
+    rows = spec.fetch(conn)
+    paths = [r["path"] for r in rows]
+    assert str(root.resolve()) not in paths
+    assert str(child.resolve()) in paths
 
 
 # ---------------------------------------------------------------------------
@@ -520,26 +534,16 @@ def test_reconcile_preserves_fields_on_path_rekey(conn, tmp_path, monkeypatch):
                 write_hint="docs/", depth=1)
 
     # md now has new path + same note (simulate user updated md after rename)
-    try:
-        rel = root.resolve().relative_to(Path.home())
-        shorthand = f"~/{rel}/"
-    except ValueError:
-        shorthand = str(root.resolve()) + "/"
-
+    new_path = str(new_dir.resolve())
     md_file = tmp_path / "atlas.md"
-    md_file.write_text(
-        f"## {shorthand}\n\n"
-        f"### new_name/\n\n"
-        f"- note: precious note\n"
-        f"- write: docs/\n"
-        f"- depth: 1\n"
-    )
+    md_file.write_text(_marker_md(new_path, note="precious note",
+                                  write="docs/", depth=1))
     reconcile_atlas(conn, md_file)
 
     # New path is in db with preserved fields
     row = conn.execute(
         "SELECT note, write_hint, depth FROM atlas WHERE path=?",
-        (str(new_dir.resolve()),),
+        (new_path,),
     ).fetchone()
     assert row is not None
     assert row["note"] == "precious note"
@@ -625,3 +629,121 @@ def test_atlas_spec_key_and_path(tmp_path):
     spec = subpage_specs.build_atlas_spec(str(tmp_path))
     assert spec.key == "atlas"
     assert str(tmp_path / "atlas.md") == spec.path
+
+
+# ---------------------------------------------------------------------------
+# 15. _parse_atlas_md round-trip
+# ---------------------------------------------------------------------------
+
+def test_parse_atlas_md_round_trip(tmp_path):
+    """render → parse gives back the same row dict."""
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "mydir"
+    child.mkdir()
+    from marrow import drift_sweep
+    from unittest.mock import patch
+    roots = [root.resolve()]
+
+    r = {
+        "path": str(child.resolve()),
+        "note": "round trip note",
+        "write_hint": "src/",
+        "naming_hint": "kebab-case",
+        "depth": 3,
+        "stale": 0,
+    }
+    rendered = _render_atlas_row(r, roots)
+    parsed = _parse_atlas_md(rendered, roots)
+    assert len(parsed) == 1
+    p = parsed[0]
+    assert p["path"] == r["path"]
+    assert p["note"] == r["note"]
+    assert p["write_hint"] == r["write_hint"]
+    assert p["naming_hint"] == r["naming_hint"]
+    assert p["depth"] == r["depth"]
+
+
+def test_parse_atlas_md_empty_fields(tmp_path):
+    """Empty field placeholders parse back as None (note/write/naming) or 0 (depth)."""
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "emptydir"
+    child.mkdir()
+    roots = [root.resolve()]
+
+    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
+         "naming_hint": None, "depth": 0, "stale": 0}
+    rendered = _render_atlas_row(r, roots)
+    parsed = _parse_atlas_md(rendered, roots)
+    assert len(parsed) == 1
+    p = parsed[0]
+    assert p["note"] is None
+    assert p["write_hint"] is None
+    assert p["naming_hint"] is None
+    assert p["depth"] == 0
+
+
+def test_parse_atlas_md_depth_field(tmp_path):
+    """Parser must handle - depth: N and not revert to 0."""
+    root = tmp_path / "root"
+    root.mkdir()
+    child = root / "depthdir"
+    child.mkdir()
+    roots = [root.resolve()]
+
+    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
+         "naming_hint": None, "depth": 5, "stale": 0}
+    rendered = _render_atlas_row(r, roots)
+    parsed = _parse_atlas_md(rendered, roots)
+    assert parsed[0]["depth"] == 5
+
+
+# ---------------------------------------------------------------------------
+# 16. rekey_paths
+# ---------------------------------------------------------------------------
+
+def test_rekey_paths_migrates_note(conn, tmp_path):
+    """rekey_paths moves src row to dest, preserving all fields."""
+    src = str(tmp_path / "old")
+    dest = str(tmp_path / "new")
+    _insert_row(conn, src, note="keep me", write_hint="x/", depth=2)
+
+    n = rekey_paths(conn, [(src, dest)])
+    assert n == 1
+
+    dest_row = conn.execute(
+        "SELECT note, write_hint, depth FROM atlas WHERE path=?", (dest,)
+    ).fetchone()
+    assert dest_row is not None
+    assert dest_row["note"] == "keep me"
+    assert dest_row["write_hint"] == "x/"
+    assert dest_row["depth"] == 2
+
+    src_row = conn.execute(
+        "SELECT path FROM atlas WHERE path=?", (src,)
+    ).fetchone()
+    assert src_row is None
+
+
+def test_rekey_paths_conflict_drops_src(conn, tmp_path):
+    """If dest already exists in atlas, src is removed; dest is untouched."""
+    src = str(tmp_path / "old")
+    dest = str(tmp_path / "new")
+    _insert_row(conn, src, note="src note")
+    _insert_row(conn, dest, note="dest note")
+
+    n = rekey_paths(conn, [(src, dest)])
+    assert n == 0  # dest pre-existed → src deleted, no UPDATE
+
+    src_row = conn.execute("SELECT path FROM atlas WHERE path=?", (src,)).fetchone()
+    assert src_row is None
+
+    dest_row = conn.execute("SELECT note FROM atlas WHERE path=?", (dest,)).fetchone()
+    assert dest_row["note"] == "dest note"  # dest untouched
+
+
+def test_rekey_paths_src_absent_is_noop(conn, tmp_path):
+    """Missing src row is silently skipped."""
+    n = rekey_paths(conn, [(str(tmp_path / "ghost"), str(tmp_path / "dest"))])
+    assert n == 0
