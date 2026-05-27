@@ -9,6 +9,18 @@ One skill, two modes. Default = morning. Pass `evening` to switch.
 
 User is non-coder. Lead every visible line with user-visible outcome in plain words.
 
+This is a pure planning/brainstorming session.
+
+## Rules
+- Write plan in English ONLY. 
+- Hard cap 150 lines, target ≤100.
+- Plan file MUST start with Dispatch Policy at the top.
+- Goal need to be clear and achievable.
+- Bite-sized steps - max 8 - not too much details if LLM can understand what to do without guessing
+- No code in plan. Done = command only.
+
+**Save plan to** `marrow/docs/plans/<slug>.md` — slug ≤4 words, no date prefix (e.g. `dashboard-rebuild.md`). 
+
 ## Morning mode
 
 ### 1. Scan (silent, auto)
@@ -16,7 +28,7 @@ Read:
 1. handover.md (already in context) — check any alert or open/plan
 2. DESIGN.md — If we are still on right track - phase structure? new tasks meet goals?
 3. DECISIONS.md — Deadlock? Any conflict among decisions? Or conflict with design?
-4. FUTURE.md — Any features fit in this phase?
+4. docs/plans/FUTURE.md — Any features fit in this phase?
 5. git status — uncommitted M - just commit at the end of session
 6. git log --oneline -10
 - No need to output before brainstorm.
@@ -40,6 +52,14 @@ Invoke `grill` skill **only if** Synthesize hit: decision deadlock, dependency c
 ### 5. Plan output
 
 ```
+
+## Dispatch Policy (read first)
+- Strictly follow agent-dispatch.md
+- You are the orchestrator — dispatch tasks to agent or wt and keep context clean. 
+- You can ask questions if not sure but no need to ask if you know the optimal answer.
+- You should not stop until the goal achieved and outcome tested.
+- You decide agent count and agent type (follow agent-dispatch.md and less Opus)
+
 ## Today
 
 Session 1 (main) — <goal> → <outcome>
@@ -52,22 +72,10 @@ Session 2 (main) — <goal> → <outcome>
 - Done: <cmd>
 - Dispatch: ...
 
-Session 3 (main) — <goal> → <outcome>
-- steps
-- Done: <cmd>
-- Dispatch: ...
-
 Session ...
 
-Constraints
-- Concurrent active sessions ≤ 3 (main + wt)
-- Daily main sessions 2-5; wt = independent SID (main opens)
+
 ```
-
-Plan rejected if any Session lacks Dispatch line, or any Done lacks verifiable command.
-End with one declarative line — main session starts now.
-
-**Save plan to** `marrow/docs/plans/<slug>.md` — slug ≤4 words, no date prefix (e.g. `dashboard-rebuild.md`). Hard cap 150 lines, target ≤100.
 
 ## Evening mode (review window)
 
@@ -87,25 +95,6 @@ Pick one HIGH/MED with machine-checkable success. Write:
 
 Show user goal text. User fires before sleep. Skip if leftover needs design judgment.
 
-## Rules
-- Outcome-first in every visible line.
-- All main session must keep context clean and dispatch agents / wt
-- Each main session decides agent count and agent type (model is bound to agent type, e.g. Explore=Haiku / code-quality-reviewer=Sonnet).
-- Bite-sized steps - max 8 - not too much details if LLM can understand what to do without guessing
-- No code in plan. Done = command only.
-- Plan file ≤150 lines (target ≤100). Slug ≤4 words, no date.
-- CN labels in (parentheses).
-- Agents/wt over inline main work when independent.
-- End plan/report on declarative — no upsell (要不要 / 需要我).
-
-## When to dispatch wt vs agent
-
-- **agent** = single-shot task, returns a report and dies
-  - Use for: code search, fact-check, file scan, code review, small patch, fetch
-  - Examples: Explore (grep/find), code-quality-reviewer, fact-checker, claude (general)
-- **wt** (worktree) = independent session with its own SID; main session opens it
-  - Use for: long-running (hours), multi-file dev work, risky/experimental, isolation when main is busy on related code
-  - Lumi never opens wt manually — main session always does
 
 ## Skill chain
 - Brainstorm: borrows from `brainstorming` skill (Phase 1 + 2 only).

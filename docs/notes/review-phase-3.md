@@ -1,4 +1,4 @@
-# Phase 3 Review ✅
+# Phase 3 Review — 2026-05-26 ✅
 
 > 原 review 2026-05-26 03:xx (HEAD=426abeb)
 > 复核 2026-05-26 20:35 (HEAD=49a6eb0, +13 commits) — 12 条问题里 8 条已修/虚假，删之；2 条真实，2 条状态不清

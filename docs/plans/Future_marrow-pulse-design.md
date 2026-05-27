@@ -1,6 +1,6 @@
 # Marrow Pulse — proactive loop design draft
 
-> 2026-05-24 brainstorm output. Phase 5+ addon. Not parallel work — current Phase 2.5d closeout + recall fix take priority.
+> 2026-05-24 brainstorm output. Phase 5+ addon. 
 > Absorbs brainstorm-future.md section 5 (active_device_routing) as routing sub-layer.
 
 ## Core premise

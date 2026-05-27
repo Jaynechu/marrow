@@ -1,4 +1,4 @@
-# Phase 2 review — 2026-05-21
+# Phase 2 review — 2026-05-21 ✅
 
 > /rr phase 2 run. Step 0 fact-checker baseline + Step 1 blind + Step 2a traceability + Step 2b code-quality, all reports cross-checked.
 

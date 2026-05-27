@@ -144,3 +144,18 @@ Delta only. Never restate DESIGN / SCHEMA.
 
 [2026-05-27] session_archive_skip_manual done | mm- writes manual_skip/skip row → sessionend_async bypasses LLM+diary+handover + writes skip:manual audit; mm+ (no arg = current sid, mm+ <sid> = named) fires sessionend rerun via reset:mm_plus audit; SessionStart resume detection (_has_prior_lifecycle_start) writes skip_cleared so resumed sids run normally; latest manual_skip row wins (ORDER BY id DESC); sessionend_async _already_done honors reset:* as force-rerun; new mw sessionend rerun <sid> CLI; ≤3-turn auto-skip + stale-skip recovery unchanged; 5 tests | verify: pytest tests/test_session_archive_skip.py -q → 5 passed; pytest -q → 668 passed + 1 skipped (zero regression); commit bf72f1a
 
+
+[2026-05-26 sid:07d1a56e]
+- Dashboard ghost-revert bug fully resolved: root cause was incomplete pytest fixture isolation — `db_env` in `test_sessionend_async.py` patched `db_path`/`DATA_DIR` but not `dashboard_path`/`sub_pages_path`, so tests wrote fixture data (`id=1 "unrelated task"`, affect `"测试"`) directly to prod `~/Desktop/NY/dashboard.md`
+- Fix: autouse session-scoped fixture in `tests/conftest.py:26-55` now patches all three paths to tmp vault for every test; `test_config.py` reverse fixture preserves fallback-behavior tests; 668 tests green
+- `repo.add_alert` made idempotent — same (severity, type, message, source) dedupes instead of inserting; 88 stale missing-inserter alerts cleared
+- Culprit: subagent worktree `agent-a9f0536b81ef43b1f`, commit `0ffe8c0`, ran pytest 03:48 AEST → dashboard polluted by 03:50; both orphan worktrees cleaned up
+- Commit `ca668b2` landed: test isolation lock + alert idempotency + 88-alert cleanup
+
+[2026-05-26 sid:a0ee6d77]
+- drift-sweep plan fully shipped: wt-paths / wt-drift / wt-ssarchive merged in order, 21/21 done condition + 668 full suite green, commits a5bf4ef / 907abe0 / bf72f1a / d3aa65c
+- `EXCLUDE_DIRS` split into `EXCLUDE_DIRS_SCAN` (narrow, drift ref scan) and `EXCLUDE_DIRS_TREE` (wide, dir_tree render) — no longer shared; max_depth and scan are fully independent
+- `dir_tree.md`: dirs-only depth=2, ~174 lines / 4.5KB (was 337KB); symlinked `~/Desktop/NY/db-pages/dir_tree.md → ~/.config/marrow/dir_tree.md`
+- `paths.toml` + `marrow/paths.py`: 10-key central loader, env override, fallback defaults; `config.py` updated to use it
+- push done: 4fb6d45..5f17c3c (12 commits) + d3aa65c to origin/main
+- test vault isolation (conftest autouse fixture, `ca668b2`) still in effect — 668 tests clean

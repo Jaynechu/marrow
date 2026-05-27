@@ -22,10 +22,9 @@
 - DECISIONS.md - 有争议讨论出来的技术性/细节
     - every line confidence-tagged (verified/reasoned/assumed).
 - DESIGN.md — goal + structure + hard constraints + sub-pages. No still-changing decisions.
-- PROGRESS.md — historical action log, append-only. Read this + git log before claiming done. Format: `[YYYY-MM-DD] <unit> done | <delta vs DESIGN, or "as designed"> | verify: <cmd/test>`
-- FUTURE.md — unbuilt plans, by phase.
-- handover.md — previous-window handoff; act on it. Fixed-name, overwritten each session end — never delete. **If there are points you haven't touched in your session. Leave them there! Don't delete everthing**
-- docs/notes/ — hard-problem memo / research scratch.
+- docs/plans/FUTURE.md — unbuilt plans, by phase.
+- PROGRESS.md — historical action log. Auto append by sessionend hook.
+- docs — notes for hand issues and research scratch / archive / day-plan
 - CONTEXT.md — glossary maintained by grill-with-doc skill; consult on term conflict.
 
 ## References
