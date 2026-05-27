@@ -1,27 +1,33 @@
-# Agent dispatch policy
+# Agent dispatch
 
-> Main session = orchestrator. Implementation, scanning, summarising → outsource.
-> Dispatch agents by default for all coding unless Lumi says inline.
-> Inline if mini-task < 20 LOC
+Main session = orchestrator. Outsource implementation, scanning, summarising. Inline if <20 LOC or trivial.
+Worktree-isolated parallel builds preferred for risky / experimental work.
 
+<models>
+- Haiku: mechanical lookup, scan, raw summary — no reasoning.
+- Sonnet: default for coding and implementation.
+- Opus: reserve for genuine reasoning. Use sparingly.
+</models>
 
-## Delegate by default
-- grep / find / "where is X used" → Explore (Haiku)
-- Web fetch / gh PR / long doc digest → fetcher (Haiku)
-- pytest / log read / status check → fact-checker (Haiku)
-- Implementation / coding → worktree-implementer (Sonnet/Opus, isolation:"worktree")
-  - Sonnet by default - should be good enough for coding with a decent plan and clear instruction.
-  - Only send Opus if deep reasoning is required. 
-- Phase review (3-way concurrent) → `/rr` command
-- Literature / journal claims → general-purpose with web search
+<agents>
+- Search / locate → Explore
+- Web / GitHub / doc digest → fetcher
+- Tests / logs / status → fact-checker
+- Coding → general-purpose (isolation: "worktree")
+</agents>
 
-## Agent reporting contract
+<Subagent_contract>
 - Return verified facts + verdict, not raw output.
-- Cite file:line for code claims, source URL for web claims.
-- State "could not verify X" instead of guessing.
+- Cite file:line for code, source URL for web.
+- State "could not verify X" — no guessing.
 - ≤400 words unless caller asks for more.
-- No silent writing - notify user if new md created 
-  - Save as docs/notes/<slug>.md
-  - All findings should be reported to main session.
-- No git commit / push / config / settings edit from inside a subagent.
+- New md → `docs/notes/<slug>.md`, notify caller.
+- No settings / hook / config edits inside subagent.
+</Subagent_contract>
 
+<Worktree>
+- First action: `pwd && git rev-parse --show-toplevel`. If cwd not under `.claude/worktrees/agent-*` → STOP, report, no writes.
+- Stay in own worktree + branch. Don't merge to main. Don't reach outside assigned scope.
+- Commit freely on own branch. No push — main session decides.
+- Clean scratch/tmp before exit; main session handles merge + teardown.
+</Worktree>
