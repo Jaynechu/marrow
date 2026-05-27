@@ -309,11 +309,26 @@ def reconcile_atlas(conn: sqlite3.Connection, md_path: Path) -> int:
             )
             changed += 1
 
-        # Delete db rows not present in md
-        db_paths = {
-            row[0] for row in conn.execute("SELECT path FROM atlas").fetchall()
-        }
-        for path in db_paths - md_paths:
+        # Delete db rows not present in md. Two protections:
+        # 1. Root rows (## ~/root/ are section markers, parser intentionally
+        #    skips them — would otherwise be deleted on every reconcile and
+        #    depth-aware sweep would lose its seeds).
+        # 2. Stub-only rows (no manual hint fields) — these are produced by
+        #    atlas_sweep_fs and not yet rendered to md. Without this guard,
+        #    sweep→reconcile→render in a single refresh would delete every
+        #    new stub before render saw it. User-modified rows (any hint
+        #    non-null) still get deleted when removed from md.
+        root_strs = {str(r) for r in roots}
+        db_rows = conn.execute(
+            "SELECT path, note, write_hint, naming_hint FROM atlas"
+        ).fetchall()
+        for row in db_rows:
+            path = row[0]
+            if path in md_paths or path in root_strs:
+                continue
+            has_manual = any(v not in (None, "") for v in (row[1], row[2], row[3]))
+            if not has_manual:
+                continue
             conn.execute("DELETE FROM atlas WHERE path=?", (path,))
             changed += 1
 

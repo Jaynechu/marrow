@@ -280,9 +280,10 @@ def _build_atlas_config(conn: sqlite3.Connection,
     Reconcile (reconcile_atlas): md heading tree → db upsert/delete.
     Inserter (build_atlas_spec): db rows → md heading tree.
     """
-    # Seed on first run (table empty)
-    if not conn.execute("SELECT 1 FROM atlas LIMIT 1").fetchone():
-        seed_atlas_from_roots(conn)
+    # Ensure root stubs (depth=1) exist every refresh — INSERT OR IGNORE,
+    # safe to re-run; reconcile DELETE skips root rows so this is the
+    # canonical place to re-establish missing roots.
+    seed_atlas_from_roots(conn)
 
     # Sweep: stub new dirs, mark stale. Runs before reconcile so the md
     # reflects newly-discovered dirs on the same refresh pass.

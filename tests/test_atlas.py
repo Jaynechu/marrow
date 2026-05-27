@@ -200,9 +200,10 @@ def test_reconcile_deletes_paths_removed_from_md(conn, tmp_path, monkeypatch):
     from marrow import drift_sweep
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
-    # Pre-insert both
-    _insert_row(conn, str(child_a.resolve()))
-    _insert_row(conn, str(child_b.resolve()))
+    # Pre-insert both with note so reconcile treats them as user-edited
+    # (stub-only rows are kept across reconcile to protect sweep-added stubs).
+    _insert_row(conn, str(child_a.resolve()), note="manual note A")
+    _insert_row(conn, str(child_b.resolve()), note="manual note B")
 
     try:
         rel = root.relative_to(Path.home())
