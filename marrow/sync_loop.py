@@ -207,9 +207,14 @@ class SyncLoop:
             # md stable after reconcile — render to reflect the absorbed edits
             target.render_fn(conn)
 
-        elif db_mtime > md_mtime + _MTIME_EPSILON_S:
-            # Step 5: db newer → render
-            # Run reconcile first (same as write_subpage contract) if available.
+        elif db_mtime > md_mtime:
+            # Step 5: db newer → render. No epsilon here — any db change
+            # must reflect in md within the next tick. The content-equality
+            # guard inside atomic_write swallows no-op renders so this
+            # cannot loop on "db_mtime tiny bit ahead but content identical".
+            # Reconcile fires first if available (same as write_subpage
+            # contract) so an md edit that happened mid-tick still flows
+            # to db before render reads it.
             if target.reconcile_fn is not None:
                 try:
                     target.reconcile_fn(conn, Path(md_path))
@@ -218,7 +223,7 @@ class SyncLoop:
                                   target.name)
             target.render_fn(conn)
 
-        # else: within epsilon — skip
+        # else: md_mtime ≥ db_mtime within md→db epsilon — skip
 
 
 # ---------------------------------------------------------------------------

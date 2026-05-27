@@ -4,6 +4,18 @@ import tempfile
 
 
 def atomic_write(path: str, data: str, *, prefix: str = ".mrw.") -> None:
+    # Content-equality guard: skip the os.replace when the on-disk bytes
+    # already match. Prevents phantom mtime bumps that otherwise trap the
+    # sync loop in a "within epsilon" deadlock (db change never reflected
+    # back into md because every prior render already pushed md_mtime
+    # within 1s of db_mtime).
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                if f.read() == data:
+                    return
+        except OSError:
+            pass  # fall through to normal write on read error
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=d, prefix=prefix)

@@ -232,6 +232,7 @@ def test_db_newer_calls_render(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_equal_mtimes_noop(tmp_path):
+    """md ≥ db within md→db epsilon → neither branch fires."""
     md = tmp_path / "t.md"
     md.write_text("x")
     md_mtime = md.stat().st_mtime
@@ -239,8 +240,10 @@ def test_equal_mtimes_noop(tmp_path):
     reconciled: list[int] = []
     rendered: list[int] = []
 
-    # db_mtime within epsilon of md_mtime
-    db_mtime = md_mtime + 0.1  # < 1s epsilon
+    # db_mtime equal-to-or-just-behind md_mtime. md→db epsilon still applies
+    # (avoids spurious reconciles on fs jitter), and db is NOT newer than md
+    # so the render branch also does not fire.
+    db_mtime = md_mtime - 0.1
 
     def recon(c, p):
         reconciled.append(1)
@@ -253,6 +256,29 @@ def test_equal_mtimes_noop(tmp_path):
     loop.stop()
     assert reconciled == []
     assert rendered == []
+
+
+def test_db_slightly_newer_renders(tmp_path):
+    """Regression: db just-a-bit-newer-than-md must trigger render in next tick.
+
+    Pre-fix the 1s db→md epsilon would swallow this and md never reflected
+    the db change (atlas depth-shrink / dashboard refresh freeze symptom).
+    """
+    md = tmp_path / "t.md"
+    md.write_text("x")
+    md_mtime = md.stat().st_mtime
+
+    rendered: list[int] = []
+    # 0.5s ahead — used to be inside epsilon, now must render.
+    db_mtime = md_mtime + 0.5
+
+    t = _target(str(md), lambda c: db_mtime,
+                render_fn=lambda c: rendered.append(1))
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
+    loop.start()
+    time.sleep(0.1)
+    loop.stop()
+    assert len(rendered) >= 1
 
 
 # ---------------------------------------------------------------------------
