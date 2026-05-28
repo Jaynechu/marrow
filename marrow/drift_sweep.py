@@ -79,16 +79,18 @@ def _claude_scope_ok(path: Path) -> bool:
 # quote old paths from past sessions as historical record; rewriting those
 # would corrupt history without fixing any real reference.
 SKIP_SCAN_EXTS = BINARY_EXTS | {
-    ".jsonl", ".log", ".lock", ".swp", ".swo", ".tmp",
+    ".jsonl", ".log", ".lock", ".swp", ".swo", ".tmp", ".map",
 }
 
 # Ref-scan exclude: drift_sweep skips these when looking for path references.
 # Keep narrow — only directories that genuinely cannot contain user-managed
-# references (build artifacts, VCS metadata, virtualenvs, prior backups).
+# references (build artifacts, VCS metadata, virtualenvs, prior backups,
+# third-party app state, worktree copies).
 EXCLUDE_DIRS_SCAN = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".DS_Store", "logs", "archives", "archive", "drift_backup",
     "drift_pending",
+    ".obsidian", ".pytest_cache", "raycast", "worktrees",
 }
 
 # Watcher pre-enqueue noise filter (path-segment match). Any event whose
@@ -97,6 +99,7 @@ EXCLUDE_DIRS_SCAN = {
 NOISE_DIRS: set[str] = {
     ".git", "__pycache__", ".venv", "venv", "node_modules",
     "drift_pending", "drift_backup", "logs", "archives", "archive",
+    ".obsidian", ".pytest_cache", "raycast", "worktrees",
 }
 
 # Atomic-write artefact patterns. Different tools use different schemes:

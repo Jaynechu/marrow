@@ -349,3 +349,11 @@ Delta only. Never restate DESIGN / SCHEMA.
 - **Toolkit dissolved**: only `scripts/raycast/` survived; rest cleaned out by 念念; directory now effectively dead
 - **zshrc alias patched**: `~/.zshrc:13` `cc-lab` → `CC-Lab`; takes effect on next terminal open or `source ~/.zshrc`
 - **vs-ny.sh updated**: `~/CC-Lab/scripts/raycast/vs-ny.sh` now opens `~/Desktop/NY/` in VS Code
+
+[2026-05-28 sid:6d2f060b]
+- **S2.5 goal all 7 predicates passed**: pytest 807 pass +1 skip; atlas schema `path/description/naming_hint/depth/updated_at` (write_hint + stale dropped); PreToolUse hook registered in `~/.claude/settings.json` for Write/Edit/Bash; `mw atlas <prefix>` CLI + `mcp__marrow__atlas_lookup` daemon tool live
+- **atlas renderer updated**: `[d=N]` → `[N]` in heading suffix; section blocks now 1 blank line apart
+- **worktree baseRef → `"head"`**: `~/.claude/settings.json` updated; future worktrees fork from local HEAD, eliminating cherry-pick conflicts caused by unpushed local commits
+- **files.md + CLAUDE.md changes reverted**: 念念 did not approve deletion; both restored to pre-S2.5 state; hook registration in settings.json kept
+- **Path literal rule shortened**: `[Path] Use paths with /, not bare filenames.` — trigger logic lives in hook code, not prompt
+- **[Path/Naming rules] hook trigger whitelist**: Write (new file) + Bash first-token ∈ `{mv, cp, rename, mmv, touch, mkdir}`; Edit/other Bash → path literal rule only, no atlas slice
