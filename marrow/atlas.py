@@ -383,16 +383,29 @@ def reconcile_atlas(conn: sqlite3.Connection, md_path: Path) -> int:
         md_paths = {r["path"] for r in md_rows}
 
         for r in md_rows:
+            new_desc = r.get("description")
+            new_naming = r.get("naming_hint")
+            new_depth = r.get("depth", 0)
+            existing = conn.execute(
+                "SELECT description, naming_hint, depth FROM atlas WHERE path=?",
+                (r["path"],),
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    "INSERT INTO atlas (path, description, naming_hint, depth, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (r["path"], new_desc, new_naming, new_depth, now),
+                )
+                changed += 1
+                continue
+            if (existing["description"] == new_desc
+                    and existing["naming_hint"] == new_naming
+                    and existing["depth"] == new_depth):
+                continue
             conn.execute(
-                "INSERT INTO atlas (path, description, naming_hint, depth, updated_at)"
-                " VALUES (?, ?, ?, ?, ?)"
-                " ON CONFLICT(path) DO UPDATE SET"
-                "  description=excluded.description,"
-                "  naming_hint=excluded.naming_hint,"
-                "  depth=excluded.depth,"
-                "  updated_at=excluded.updated_at",
-                (r["path"], r.get("description"), r.get("naming_hint"),
-                 r.get("depth", 0), now),
+                "UPDATE atlas SET description=?, naming_hint=?, depth=?, updated_at=?"
+                " WHERE path=?",
+                (new_desc, new_naming, new_depth, now, r["path"]),
             )
             changed += 1
 
