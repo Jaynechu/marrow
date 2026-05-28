@@ -207,7 +207,7 @@ def _render_atlas_row(r: dict, roots: list[Path]) -> str:
 
     if layer <= 1:
         return "\n".join([
-            f"##### [{name}](file://{encoded}) [d={depth}]",
+            f"##### [{name}](file://{encoded}) [{depth}]",
             marker,
             f"- Description: {description}",
             f"- Naming: {naming}",
@@ -215,7 +215,7 @@ def _render_atlas_row(r: dict, roots: list[Path]) -> str:
     ind = "  " * (layer - 1)
     body = "  " * (layer - 1) + "  "
     return "\n".join([
-        f"{ind}- [{name}](file://{encoded}) [d={depth}]",
+        f"{ind}- [{name}](file://{encoded}) [{depth}]",
         f"{body}{marker}",
         f"{body}- Description: {description}",
         f"{body}- Naming: {naming}",
@@ -228,7 +228,7 @@ def _section_header(root_path: str, row: dict | None = None) -> str:
     name = p.name + "/"
     encoded = urllib.parse.quote(str(p), safe="/")
     depth = (row.get("depth") or 0) if row else 0
-    header = f"## [{name}](file://{encoded}) [d={depth}]"
+    header = f"## [{name}](file://{encoded}) [{depth}]"
     if row is None:
         return header
     marker = f"<!-- id:{root_path} -->"
@@ -251,7 +251,7 @@ _BULLET_RE = re.compile(
     r"^\s*-\s+(description|naming)\s*:\s*(.*)$",
     re.IGNORECASE,
 )
-_DEPTH_RE = re.compile(r"\[d=(\d+)\]", re.IGNORECASE)
+_DEPTH_RE = re.compile(r"\s\[(\d+)\]\s*$")
 
 
 def _parse_atlas_md(md_text: str, roots: list[Path]) -> list[dict]:

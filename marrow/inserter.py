@@ -228,7 +228,8 @@ def _bootstrap(spec: InserterSpec, rows: list[dict]) -> str:
                     out.append("")
                 cur_sub = sub
             out.append(spec.render_row(r))
-        out.append("")
+        if sections.get(label, []):
+            out.append("")
     out.append(spec.m1())
     out.append("")
     return "\n".join(out)

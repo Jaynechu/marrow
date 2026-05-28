@@ -57,7 +57,7 @@ def _insert_row(conn, path, description=None, naming_hint=None, depth=0):
 def _marker_md(path: str, description="", naming="", depth=0) -> str:
     """Build a single marker-format atlas block for one path."""
     return (
-        f"##### [{Path(path).name}/](file://{path}) [d={depth}]\n"
+        f"##### [{Path(path).name}/](file://{path}) [{depth}]\n"
         f"<!-- id:{path} -->\n"
         f"- Description: {description}\n"
         f"- Naming: {naming}\n"
@@ -233,7 +233,7 @@ def test_render_row_bullets(tmp_path):
     rendered = _render_atlas_row(r, [root.resolve()])
     assert "- Description: My desc" in rendered
     assert "- Naming: snake_case" in rendered
-    assert "[d=2]" in rendered
+    assert "[2]" in rendered
     assert "mydir/" in rendered
     assert f"<!-- id:{str(child.resolve())} -->" in rendered
 
@@ -254,7 +254,7 @@ def test_render_row_empty_fields_show_placeholders(tmp_path):
     rendered = _render_atlas_row(r, [root.resolve()])
     assert "- Description: " in rendered
     assert "- Naming: " in rendered
-    assert "[d=0]" in rendered
+    assert "[0]" in rendered
 
 
 def test_render_row_no_stale(tmp_path):
@@ -280,7 +280,7 @@ def test_render_section_header():
     root = str(home / "CC-Lab")
     header = _section_header(root)
     assert header.startswith("## [CC-Lab/](file://")
-    assert header.endswith("/CC-Lab) [d=0]")
+    assert header.endswith("/CC-Lab) [0]")
 
 
 def test_render_row_name_is_open_link(tmp_path):
@@ -328,7 +328,7 @@ def test_build_atlas_spec_bootstrap_writes_sections(conn, tmp_path, monkeypatch)
     assert f"##### [mydir/](file://{child.resolve()})" in md
     assert f"<!-- id:{str(child.resolve())} -->" in md
     assert "- Description: hello" in md
-    assert "[d=0]" in md
+    assert "[0]" in md
 
 
 def test_build_atlas_spec_fetch_skips_root_rows(conn, tmp_path, monkeypatch):
