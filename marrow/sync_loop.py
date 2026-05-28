@@ -114,14 +114,14 @@ class SyncTarget:
         name: str,
         md_path: str,
         db_mtime_fn: Callable[[sqlite3.Connection], float | None],
-        reconcile_fn: Callable[[sqlite3.Connection, Path], object] | None,
         render_fn: Callable[[sqlite3.Connection], None],
+        has_md_to_db: bool = True,
     ) -> None:
         self.name = name
         self.md_path = md_path
         self.db_mtime_fn = db_mtime_fn
-        self.reconcile_fn = reconcile_fn
         self.render_fn = render_fn
+        self.has_md_to_db = has_md_to_db
 
 
 # ---------------------------------------------------------------------------
@@ -191,36 +191,26 @@ class SyncLoop:
         log.debug("sync_loop %s md=%.3f db=%.3f", target.name, md_mtime, db_mtime)
 
         if md_mtime > db_mtime + _MTIME_EPSILON_S:
-            # Step 4: md newer → reconcile
-            if target.reconcile_fn is None:
+            # Step 4: md newer → render (write_subpage owns reconcile internally).
+            # has_md_to_db=False signals this target has no md→db direction; skip.
+            if not target.has_md_to_db:
                 return
-            target.reconcile_fn(conn, Path(md_path))
-            # Race防御: re-check md mtime after reconcile
+            target.render_fn(conn)
+            # Race防御: re-check md mtime after render
             try:
                 md_mtime_after = Path(md_path).stat().st_mtime
             except FileNotFoundError:
                 return
             if md_mtime_after > md_mtime + 0.01:
-                log.debug("sync_loop %s mid-reconcile race detected; skip render",
+                log.debug("sync_loop %s md edited during render; next tick absorbs it",
                           target.name)
-                return
-            # md stable after reconcile — render to reflect the absorbed edits
-            target.render_fn(conn)
 
         elif db_mtime > md_mtime:
             # Step 5: db newer → render. No epsilon here — any db change
             # must reflect in md within the next tick. The content-equality
             # guard inside atomic_write swallows no-op renders so this
             # cannot loop on "db_mtime tiny bit ahead but content identical".
-            # Reconcile fires first if available (same as write_subpage
-            # contract) so an md edit that happened mid-tick still flows
-            # to db before render reads it.
-            if target.reconcile_fn is not None:
-                try:
-                    target.reconcile_fn(conn, Path(md_path))
-                except Exception:  # noqa: BLE001
-                    log.exception("sync_loop reconcile before render failed: %s",
-                                  target.name)
+            # write_subpage's internal reconcile handles any md edit mid-tick.
             target.render_fn(conn)
 
         # else: md_mtime ≥ db_mtime within md→db epsilon — skip
@@ -317,21 +307,12 @@ def build_targets(folder: str,
                 write_subpage(c_cfg, c)
             return _fn
 
-        recon = cfg.reconcile  # may be None
-
-        def _make_reconcile_fn(r):
-            if r is None:
-                return None
-            def _fn(c: sqlite3.Connection, p: Path) -> object:
-                return r(c, p)
-            return _fn
-
         targets.append(SyncTarget(
             name=f"subpage:{key}",
             md_path=md_path,
             db_mtime_fn=_make_db_mtime_fn(key),
-            reconcile_fn=_make_reconcile_fn(recon),
             render_fn=_make_render_fn(cfg),
+            has_md_to_db=cfg.reconcile is not None,
         ))
 
     # Dashboard target
@@ -347,8 +328,8 @@ def build_targets(folder: str,
         name="dashboard",
         md_path=dashboard_path,
         db_mtime_fn=_dash_db_mtime,
-        reconcile_fn=None,  # dashboard reconcile is embedded inside write_dashboard
         render_fn=_dash_render,
+        has_md_to_db=False,  # dashboard is db→md only
     ))
 
     return targets

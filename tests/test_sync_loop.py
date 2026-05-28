@@ -36,16 +36,16 @@ def _conn() -> sqlite3.Connection:
 def _target(
     md_path: str,
     db_mtime_fn: Callable,
-    reconcile_fn=None,
     render_fn=None,
+    has_md_to_db: bool = True,
     name: str = "test",
 ) -> SyncTarget:
     return SyncTarget(
         name=name,
         md_path=md_path,
         db_mtime_fn=db_mtime_fn,
-        reconcile_fn=reconcile_fn,
         render_fn=render_fn or (lambda c: None),
+        has_md_to_db=has_md_to_db,
     )
 
 
@@ -164,32 +164,28 @@ def test_sync_loop_shutdown_stops_cleanly(tmp_path):
 # md newer → reconcile called, render NOT called independently
 # ---------------------------------------------------------------------------
 
-def test_md_newer_calls_reconcile_only(tmp_path):
+def test_md_newer_calls_render(tmp_path):
+    """md newer → render_fn called (write_subpage owns reconcile internally)."""
     md = tmp_path / "subpage.md"
     md.write_text("# hello")
     md_mtime = md.stat().st_mtime
     db_mtime = md_mtime - 10.0  # md is newer
 
-    reconciled: list[int] = []
     rendered: list[int] = []
-
-    def recon(c, p):
-        reconciled.append(1)
 
     def render(c):
         rendered.append(1)
 
-    t = _target(str(md), lambda c: db_mtime, reconcile_fn=recon, render_fn=render)
+    t = _target(str(md), lambda c: db_mtime, render_fn=render)
     loop = SyncLoop(_conn, [t], tick_s=100.0)  # only boot tick
     loop.start()
     time.sleep(0.1)
     loop.stop()
-    # Reconcile called; render also called (after reconcile md is stable → render)
-    assert reconciled, "reconcile should be called when md newer"
+    assert rendered, "render_fn should be called when md newer (single reconcile via write_subpage)"
 
 
-def test_md_newer_no_reconcile_fn_skips(tmp_path):
-    """Subpage with no reconcile callback: md→db direction is skipped entirely."""
+def test_md_newer_no_md_to_db_skips(tmp_path):
+    """Target with has_md_to_db=False: md→db direction is skipped entirely."""
     md = tmp_path / "t.md"
     md.write_text("x")
     md_mtime = md.stat().st_mtime
@@ -198,12 +194,12 @@ def test_md_newer_no_reconcile_fn_skips(tmp_path):
     rendered: list[int] = []
 
     t = _target(str(md), lambda c: db_mtime,
-                reconcile_fn=None, render_fn=lambda c: rendered.append(1))
+                has_md_to_db=False, render_fn=lambda c: rendered.append(1))
     loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()
-    # No reconcile → process returns early; render also not called
+    # has_md_to_db=False → process returns early; render not called
     assert rendered == []
 
 
@@ -237,7 +233,6 @@ def test_equal_mtimes_noop(tmp_path):
     md.write_text("x")
     md_mtime = md.stat().st_mtime
 
-    reconciled: list[int] = []
     rendered: list[int] = []
 
     # db_mtime equal-to-or-just-behind md_mtime. md→db epsilon still applies
@@ -245,16 +240,12 @@ def test_equal_mtimes_noop(tmp_path):
     # so the render branch also does not fire.
     db_mtime = md_mtime - 0.1
 
-    def recon(c, p):
-        reconciled.append(1)
-
     t = _target(str(md), lambda c: db_mtime,
-                reconcile_fn=recon, render_fn=lambda c: rendered.append(1))
+                render_fn=lambda c: rendered.append(1))
     loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.1)
     loop.stop()
-    assert reconciled == []
     assert rendered == []
 
 
@@ -285,32 +276,31 @@ def test_db_slightly_newer_renders(tmp_path):
 # Race防御: mid-reconcile md write → render skipped
 # ---------------------------------------------------------------------------
 
-def test_race_defense_mid_reconcile_md_write(tmp_path):
-    """If md mtime advances during reconcile, render is skipped this tick."""
+def test_race_defense_mid_render_md_write(tmp_path):
+    """If md mtime advances during render, a debug log fires (next tick absorbs it)."""
+    import os
     md = tmp_path / "race.md"
     md.write_text("initial")
     md_mtime_initial = md.stat().st_mtime
-    db_mtime = md_mtime_initial - 10.0  # md is newer → reconcile path
+    db_mtime = md_mtime_initial - 10.0  # md is newer → render path
 
     rendered: list[int] = []
 
-    def recon(c, p):
-        # Simulate user writing to md during reconcile
+    def render_with_side_write(c):
+        # Simulate external md edit arriving during render
         time.sleep(0.02)
-        md.write_text("mid-reconcile edit")
-        # Touch to ensure mtime advances
+        md.write_text("mid-render edit")
         now = time.time() + 1.0
-        import os
         os.utime(str(md), (now, now))
+        rendered.append(1)
 
-    t = _target(str(md), lambda c: db_mtime,
-                reconcile_fn=recon, render_fn=lambda c: rendered.append(1))
+    t = _target(str(md), lambda c: db_mtime, render_fn=render_with_side_write)
     loop = SyncLoop(_conn, [t], tick_s=100.0)
     loop.start()
     time.sleep(0.2)
     loop.stop()
-    # Render must be skipped because md advanced during reconcile
-    assert rendered == [], "render must be skipped when md advanced mid-reconcile"
+    # render_fn was still called; the race defense only logs, does not skip
+    assert rendered, "render_fn must be called; race defense logs and defers to next tick"
 
 
 # ---------------------------------------------------------------------------

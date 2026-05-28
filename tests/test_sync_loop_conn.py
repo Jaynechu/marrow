@@ -23,8 +23,8 @@ def test_sync_loop_conn_factory_start_stop(tmp_path):
         name="smoke",
         md_path=str(md),
         db_mtime_fn=lambda c: None,
-        reconcile_fn=None,
         render_fn=lambda c: None,
+        has_md_to_db=False,
     )
     loop = SyncLoop(_factory(tmp_path), [t], tick_s=10.0)
     loop.start()
