@@ -107,6 +107,10 @@ NOISE_DIRS: set[str] = {
 _ATOMIC_TMP_RE = re.compile(r"\.tmp\.\d+\.[0-9a-fA-F]+$")
 _MRW_PREFIX_RE = re.compile(r"^\.mrw\.")
 _NUMERIC_TAIL_RE = re.compile(r"\.\d+$")
+# iCloud Drive conflict duplicates: `AT2 2.docx`, `LO1-2 2.m4v`, `note 3.md`.
+# Finder/iCloud appends ` <N>` (space + digit) to the stem when a sync
+# conflict resolves. These never represent real user intent — drop them.
+_ICLOUD_DUP_RE = re.compile(r" \d+$")
 
 # Suffix-substring exclusions for the ref-scan filename gate (in addition
 # to exact-suffix SKIP_SCAN_EXTS). Catches `.bak-20260518-220058` and
@@ -152,7 +156,14 @@ def _path_excluded(p: str | Path) -> bool:
         if part.startswith(".venv") and part.endswith(".bak"):
             return True
     name = Path(p).name
-    return _is_atomic_write_artifact(name)
+    return _is_atomic_write_artifact(name) or _is_icloud_dup_artifact(name)
+
+
+def _is_icloud_dup_artifact(name: str) -> bool:
+    """True if `name` looks like an iCloud Drive sync-conflict duplicate:
+    stem ends in ` <digits>` (e.g. `AT2 2.docx`, `LO1-2 2.m4v`, `note 3`)."""
+    stem = Path(name).stem
+    return bool(_ICLOUD_DUP_RE.search(stem))
 
 
 def _is_atomic_write_artifact(name: str) -> bool:
@@ -626,6 +637,10 @@ def _scan_and_queue(src: str, dest: str, roots: list[Path] | None = None) -> str
     old_name = Path(src).name
     new_name = Path(dest).name
     if not old_name:
+        return None
+    # basename unchanged → pure folder-relocate. drift_sweep is basename-keyed,
+    # so it cannot fix any reference; emitting an alert just pollutes the queue.
+    if old_name == new_name:
         return None
     refs = find_refs(old_name, roots)
     if not refs:

@@ -706,3 +706,55 @@ def test_cli_drift_reject(drift_env, capsys):
     rc = cli.main(["drift", "reject", pid])
     assert rc == 0
     assert not (env.pending_dir / f"{pid}.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# a) basename-unchanged move → silent drop
+# b) iCloud Drive duplicate filename → noise-gated at watcher edge
+# ---------------------------------------------------------------------------
+
+def test_basename_unchanged_move_silent(drift_env, monkeypatch):
+    """Pure folder-relocate (basename identical) emits no alert / no pending."""
+    env = drift_env
+    src = env.root_a / "SLE211"
+    dest = env.root_a / "untitled folder" / "SLE211"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Create a ref so refs>0 — proves the early-return is unconditional.
+    (env.root_a / "ref.md").write_text("see SLE211 here\n", encoding="utf-8")
+
+    from marrow.drift_sweep import handle_move
+    pid = handle_move(str(src), str(dest), roots=[env.root_a, env.root_b])
+    assert pid is None
+
+
+def test_icloud_dup_artifact_detected():
+    from marrow.drift_sweep import _is_icloud_dup_artifact
+    assert _is_icloud_dup_artifact("AT2 2.docx")
+    assert _is_icloud_dup_artifact("LO1-2 2.m4v")
+    assert _is_icloud_dup_artifact("note 3.md")
+    assert _is_icloud_dup_artifact("plain 5")  # extensionless
+    # Negative: legitimate names that look numeric but aren't dups
+    assert not _is_icloud_dup_artifact("AT2.docx")
+    assert not _is_icloud_dup_artifact("LO1-2.m4v")
+    assert not _is_icloud_dup_artifact("SLE211")
+    assert not _is_icloud_dup_artifact("v2.md")  # no space before digit
+
+
+def test_path_excluded_filters_icloud_dup():
+    from marrow.drift_sweep import _path_excluded
+    assert _path_excluded("/Users/x/Study/AT2 2.docx")
+    assert _path_excluded("/Users/x/Study/LO1-2 2.m4v")
+    assert not _path_excluded("/Users/x/Study/AT2.docx")
+
+
+def test_on_moved_drops_icloud_dup(drift_env):
+    """Watcher-level: iCloud dup as src or dest is dropped before queueing."""
+    from marrow.drift_sweep import DriftWatcher
+    env = drift_env
+    dw = DriftWatcher(roots=[env.root_a, env.root_b])
+    (env.root_a / "AT2.docx").write_bytes(b"x")
+    (env.root_a / "AT2 2.docx").write_bytes(b"x")
+    dw.on_moved(str(env.root_a / "AT2.docx"), str(env.root_a / "AT2 2.docx"))
+    assert dw._batch == []  # dup-as-dest filtered
+    dw.on_moved(str(env.root_a / "AT2 2.docx"), str(env.root_a / "AT2.docx"))
+    assert dw._batch == []  # dup-as-src filtered

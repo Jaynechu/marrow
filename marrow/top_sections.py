@@ -91,7 +91,7 @@ def render_alerts(conn: sqlite3.Connection) -> str:
         "ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warn' THEN 1 "
         "ELSE 2 END, created_at ASC"
     ).fetchall()
-    lines = ["## Alerts (active)"]
+    lines = ["## Alerts"]
     lines += [f"- {r[0]}: {r[1]}" for r in rows] if rows else ["_none_"]
     return "\n".join(lines)
 

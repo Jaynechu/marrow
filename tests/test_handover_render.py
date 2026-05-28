@@ -376,7 +376,7 @@ def test_handover_write_full_atomic_and_ready_stamp(env):
     # Top section markers stripped
     assert "<!-- marrow:top:start -->" not in content
     assert "<!-- marrow:top:end -->" not in content
-    assert "## Alerts (active)" not in content
+    assert "## Alerts" not in content
     # 4 state-axis sections present
     assert "## Done" in content
     assert "## Open" in content
@@ -456,7 +456,7 @@ def test_dashboard_top_now_uses_4_sections(env):
     block = dashboard.render_top(conn)
     conn.close()
 
-    assert "## Alerts (active)" in block
+    assert "## Alerts" in block
     assert "## Tasks" in block
     assert "## Milestone candidate" in block
     assert "## Affect" in block
@@ -474,7 +474,7 @@ def test_dashboard_top_markers_present(env):
     content = Path(dash).read_text(encoding="utf-8")
     assert dashboard.M0 in content
     assert dashboard.M1 in content
-    assert "## Alerts (active)" in content
+    assert "## Alerts" in content
 
 
 # ── Unit: hook wiring ─────────────────────────────────────────────────────────
