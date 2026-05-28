@@ -13,35 +13,14 @@ This is a pure planning/brainstorming session.
 
 ## Rules
 - Write plan in English ONLY. 
-- Hard cap 150 lines, target ≤100.
+- Hard cap 300 lines, target ≤100/session. if over can split into 2 plans but still add top section to each plan.
 - Plan file MUST start with Dispatch Policy at the top.
 - Goal need to be clear and achievable.
 - Bite-sized steps - max 8 - not too much details if LLM can understand what to do without guessing
 - No code in plan. Done = command only.
 
-**Save plan to** `marrow/docs/plans/<slug>.md` — slug ≤4 words, no date prefix (e.g. `dashboard-rebuild.md`). 
-
-
-## 把/goal融入整个planning机制 - 目标以后每天2-5个/goal，一个session完成一个goal【待完善这个section需要稍作修改template】
-https://code.claude.com/docs/en/goal.md
-- /goal <pass condition> — 一发立刻进入循环模式，我每轮做完事不等你回话，自动接下一轮。
-- /goal 空发 — 看当前 goal、跑了几轮、烧了多少 token。
-- /goal clear — 中途停掉。
-
-评估机制
-
-- 每轮我做完，Haiku 评估器读 transcript（不是文件系统、不是 git，只看对话），判断你写的 condition 是否满足。
-- 没满足 → 我自己再开一轮，无需你触发。
-- 满足 → 循环结束。
-- ⚠️ 推论：测试结果、build 输出、grep 命中数这些都得我显式跑出来贴在对话里，评估器才看得见；我默写一句 "done" 它认不出来。
-
-condition 怎么写
-
-- 单一可验证的终态，不要复合目标。
-- 例子：pytest tests/test_hooks.py exits 0 and no new files outside marrow/hooks.py
-- 上限 4000 字符。
-- 越具体越好——评估器和我都靠它对齐。
----
+**Save plan to** `marrow/docs/plans/<daily_YY-MM>.md`
+- rm previous plans if done - maybe keep 3 days as reference.
 
 ## Morning mode
 
@@ -56,49 +35,72 @@ Read:
 - No need to output before brainstorm.
 
 ### 2. Brainstorm (user in the loop)
-- Check if Lumi want to add anything today or any questions.
-- Answerable from code/docs → explore first.
-- Real fork → list ≤3 paths, one line each, with my pick. User confirms with one word.
-One question per turn. Stop when wish list resolved.
-- Invoke `brainstorming` skill if involve new feature, schema/design change.
-  - Can fork to new window if necessary.
+> This step can be time-consuming and need multiple turns.
 
-### 3. Synthesize
-- Merge leftover + brainstorm → candidate list. Classify: bug, half-done feature, decision pending. Order by dependency.
-- Output 2-5 main goals & outcomes → plan draft (very short brief).
-- If Lumi is happy then grill or create the actual plan.
+1. Understanding the project and Lumi's needs
+> Don't ask obvious question if you know the answer.
+- Where are we now? What's left and what's next?
+- Any issue so far - are you happy with the previous work? (according to the scan results)
+- Does Lumi want to ask any question, add a task at the top of the list, or add to future/later?
 
-### 4. Self-grill (auto, conditional)
-Invoke `grill` skill **only if** Synthesize hit: decision deadlock, dependency cycle, scope unclear. Otherwise skip.
+2. Explore and Design
+- Listing tasks as candidates (leftover + new).
+  - Group relevant tasks together (e.g. similar function, dependency, location)
+  - Sort by priority
+  - See which group Lumi want to do today.
+- Explore best approaches for each group of tasks.
+  - Maximise your first principle - find the best approach
+  - Best solution = match project goals + Lumi's real usage scenarios/needs
+  - Don't be boxed in by existing framework — break all known patterns/decisions
+  - Don't ask questions that you know the answer.
+- Make sure no decision pending at the end of this phase.
+  - If Lumi is not sure, back to first principle and brainstorm again.
+  - We should have a shared understanding and agreement after brainstorming.
 
-### 5. Plan output
+3. Self-grill and confirmation
+- Once both happy, invoke `grill` skill to make sure nothing deadlock, missing or unclear.
+- Make sure all main sessions can start without asking further questions - They can but they should't have to.
+- Output a very short draft with major goals and outcomes (in CN)
+
+
+### 4. Plan output
+- Output a /goal for each main session. Cap 4000 char.
+  - /goal <pass condition> (machine-checkable cmd)
+  Write effective conditions — Haiku reads the transcript and checks alignment until the loop ends.
+  Reference: https://code.claude.com/docs/en/goal.md
+
+
+**Always use the Template**
 
 ```
 ## Principle
 - Keep going until the goal is truly achieved.
-- If user-like verification is possible, run it before reporting.
+- If live (user-like) verification is possible, run it before reporting.
 - The only standard of goal verification is whether it works in practice. Tests and dry runs are just safeguards.
 
 ## Dispatch Policy (read first)
 - Strictly follow agent-dispatch.md
 - You are the orchestrator — dispatch tasks to agent or wt and keep context clean. 
 - You can ask questions if not sure but no need to ask if you know the optimal answer.
-- You decide agent count and agent type (follow agent-dispatch.md and less Opus)
+- You can change agent count and agent type if needed
+  - Still follow agent-dispatch.md and use less Opus
 
 ## Today
 
-Session 1 (main) — <goal> → <outcome>
+Session 1 (main)
+**/goal <pass condition>**
+- <outcome>
 - bite-sized steps (≤8, no code)
-- Done: <machine-checkable cmd>
 - Dispatch: agent <type> for <subtask> | wt <slug> for <subtask>
 
+
 Session 2 (main) — <goal> → <outcome>
-- steps
-- Done: <cmd>
-- Dispatch: ...
+**/goal <pass condition>**
+- <outcome>
+- bite-sized steps (≤8, no code)
+- Dispatch: agent <type> for <subtask> | wt <slug> for <subtask>
 
 Session ...
-
 
 ```
 

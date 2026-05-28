@@ -15,6 +15,11 @@
 - For Chinese input use `(中文写括号里面就行)` to bypass CJK guard.
 </principle>
 
+<reload-long-runners>
+- daemon / recall / storage / entity_recall edit → restart cc.
+- watcher-loaded (md_index / top_sections / reconcile / watcher / dashboard / repo / storage) edit → `launchctl kickstart -k gui/501/com.marrow.watcher`.
+</reload-long-runners>
+
 ## When to read what
 > You should proactively update these files when relevant. Check before you write handover.
 > grep in notes when I mention note

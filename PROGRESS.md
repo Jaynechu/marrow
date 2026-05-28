@@ -173,3 +173,109 @@ Delta only. Never restate DESIGN / SCHEMA.
 - Phase 3 session 1 all done (4 commits): `_has_mm_plus_reset` latest-non-start semantics; `build_study_index_spec` wired to study index; pit retired from SUBPAGE_BUILDERS; study/projects children `read_only=True`; watcher detail-page denylist; pit 23 rows exported to `pit.md` (manual inbox, refresh-safe); alerts #114 #115 #53 resolved; 674→690 tests green
 - mm+/mm- three-branch arg parsing shipped (`b2627fd`): empty→current sid+spawn; UUID→explicit sid+spawn; natural language→`additionalContext` injection to main session; mm- named-sid support added; both branches live-verified
 - Verification discipline locked in session: pytest green = "no regression", not "goal done"; done requires live observable artifact (events row count, audit ok row, dashboard mtime, file diff)
+
+[2026-05-27 sid:3de818c6]
+- Atlas subpage design finalized: 6-field schema (path/note/write/naming/depth/stale), `##`→`######` heading tree render, depth-aware sweep (render only, drift_sweep stays full-tree), reconcile hash-guard race defense, `stale=1` on missing dir (not auto-delete)
+- `.claude` whitelist locked: CLAUDE.md / rules / commands / skills / agents / output-styles / hooks / keybindings.json / settings.json; blacklist: projects/ image-cache/ statsig/ shell-snapshots/ *.jsonl
+- Sync_loop design: 5s tick bidirectional (md_mtime > db_mtime → reconcile, db_mtime > md_mtime → render); covers all subpages + dashboard; hash-guard兜底 race; `_reconcile_boot` already exists
+- DriftWatcher attach decision: exists at `drift_sweep.py:493`, needs wiring into `watcher.py` main observer — 50 LOC est.
+- S2a/S2b/S2c dispatch brief created with live-verify probes and /goal block; today.md condensed to 8 lines
+- cc-lab structure decided: `~/cc-lab/external/` for OSS forks, shared `.claude` via symlink, workspace root = `~/cc-lab/`; pending 念念 confirm before mv
+- Cheatsheet redesigned as independent subpage parallel to atlas (not merged); prior "upper=dir_tree / lower=cheatsheet" layout abandoned
+- Verification discipline: pytest green ≠ done; /goal evaluator requires raw shell output in transcript for live probes
+
+[2026-05-27 sid:57392adb]
+- S2a/b/c shipped and merged: drift_sweep `.claude` whitelist + DriftWatcher in watcher; sync_loop 5s md↔db tick; atlas subpage (schema v12, parser/render/spec, depth-aware sweep, 30 tests); 750 passed live
+- Main-session atlas fixes committed (`b2d36c9`): reconcile DELETE skips root rows + stub-only rows; `_build_atlas_config` re-seeds roots every refresh via INSERT OR IGNORE
+- Live verify complete: DriftWatcher 30s batch alert confirmed; md→db within 7s; db→md dashboard mtime +10s; race defence (last write wins); atlas 6 sections ≥5; mkdir stub / rmdir stale / note round-trip
+- Doc updates pushed `1ee2843`: DECISIONS Phase-3 S2 block, DESIGN atlas line, FUTURE prunes, `~/.claude/rules/files.md` atlas pre-write line
+- Recall hook (`8409e8d`): injected context block now labelled as background-only with do-not-answer guard
+- Root cause of dashboard ~1 min slow refresh: atlas inserter throws transaction nesting errors every 5s tick (alerts 118–122), corrupts shared conn, drags all other subpages until next clean reconcile cycle
+- Sweep full fs walk (ignoring atlas row depth) confirmed already shipped — not on fix list
+- Discussed: recall hook marker can be trimmed to 1 line to save ~50 tokens/turn; `.claude/rules/agent-dispatch.md` needs worktree self-check rule (pwd + branch guard before any commit) — discussed but not yet committed
+
+[2026-05-27 sid:cbe330f7]
+- **5-bug bundle** fixed: sqlite per-thread conn (3 threads were sharing `self.conn`), atlas marker emit, atlas parser marker-based, dir-mv atlas rekey, `cmd_refresh` uses `init_db` — commit `306cb56`
+- **md_index `_ID_RE`** extended to allow `/` and spaces in path markers (was silently dropping `Mobile Documents`, `GPA & Medical Schools` etc) — commit `18dcb92`
+- **Atlas render format locked**: `## [ShortName/](file://...)` root section → `##### [dir/](link)` first level → indented `-` list for deeper levels; folder name is the link, no separate `[open]` — commits `3fd0844`, `24b8535`, `4d8adfe`
+- **depth retract**: shrinking depth removes stub-only rows from db + md within ~15s; rows with user-written note/write/naming preserved — commit `4d8adfe`
+- **tombstone bypass** (`respect_tombstones=False` on atlas inserter) so db-as-SoT can always resurrect deep stubs watcher previously marked deleted — commit `cd9ec6a`
+- **reconcile → immediate sweep**: depth edit triggers sweep in same tick, no longer waits 60s AtlasSweepLoop cycle — commit `24b8535`
+- **Python SIGBUS root cause ID'd**: `grp.cpython-314-darwin.so` FS pagein EINVAL (macOS 26 + Python 3.14 early GA env bug); warmup cannot fix OS-level page eviction; incident `393B9588-DB23-41B4-8A8F-1774A742988A`; launchd keepalive auto-restarts, no data loss
+- atlas.md at `~/Desktop/NY/db-pages/atlas.md` is real on-disk markdown; db is SoT; bidirectional sync confirmed working
+
+[2026-05-27 sid:206272fc]
+- **Root section adds fields**: each atlas root `## header` now renders marker + `note/write/naming/depth` inline — commit `9247de9`
+- **`.config` root expanded**: `AUTHORIZED_ROOTS` `.config/marrow` → `.config`; `CONFIG_BLACKLIST = {"wechat-claude-bridge"}` added; rg + python fallback both prune blacklist — commit `9247de9`
+- **Retract fix (depth collapse)**: all atlas rows evaluated as retract candidates (not just depth>0 seeds); root depth=1→0 now removes stub-only children — commit `6c8208b`
+- **Epsilon deadlock broken**: `_atomic.atomic_write` skips file IO when content unchanged; `sync_loop` 1s epsilon removed → dashboard + atlas 5s refresh now works — commit `2967a86`
+- **`protected=md_paths` guard stripped**: retract now only preserves `has_manual` rows; stub-only rows in md_paths are retractable — commit `84f2ba3`
+- **12 commits pushed** to remote: `8409e8d..06fdaae` (includes prior session's 7 unpushed + 4 new + 1 reorder HO note)
+- **Python SIGBUS** root cause confirmed: macOS 26 + Python 3.14 dylib page eviction; launchd auto-restarts, no data loss
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play completed**: 念念 confirmed free provider-switching (自由插拔) finished this session
+- **WeChat recall confirmed**: bridge.py does have recall hook auto-inject; not a bare chain as previously assumed — 念念 verified live
+- **atlas verified working**: 屿忱 confirmed atlas 修通 post-fix series (commits `9247de9 6c8208b 2967a86 84f2ba3`)
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable (prior session)
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: 念念 confirmed 自由插拔 finished; Claude/other providers hot-swappable
+- **WeChat recall confirmed**: bridge.py has recall hook auto-inject; not bare chain — verified live
+- **atlas verified working**: post-fix commits `9247de9 6c8208b 2967a86 84f2ba3` stable
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: 念念 confirmed 自由插拔 finished; Claude/other providers hot-swappable
+- **WeChat recall confirmed**: bridge.py has recall hook auto-inject; verified live again this session
+- **atlas verified working**: post-fix commits `9247de9 6c8208b 2967a86 84f2ba3` stable
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: 念念 confirmed again this session — 自由插拔 finished, Claude/other providers hot-swappable
+- **WeChat recall confirmed**: bridge.py recall hook auto-inject verified live again this session
+- **atlas verified working**: post-fix commits `9247de9 6c8208b 2967a86 84f2ba3` stable
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: 念念 confirmed done this session — 自由插拔 finished, Claude/other providers hot-swappable
+- **WeChat recall confirmed**: bridge.py recall hook auto-inject verified live this session (念念 tested live in WeChat)
+- **atlas verified working**: post-fix commits `9247de9 6c8208b 2967a86 84f2ba3` stable
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: 念念 confirmed done ("反正做好了，自由插拔") — Claude/other providers hot-swappable
+- **WeChat recall confirmed**: bridge.py recall hook auto-inject verified live (念念 tested live in WeChat)
+- **atlas verified working**: post-fix commits `9247de9 6c8208b 2967a86 84f2ba3` stable
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: confirmed done ("反正做好了，自由插拔") — Claude/other providers hot-swappable
+- **WeChat recall confirmed**: bridge.py recall hook auto-inject verified live
+- **atlas verified working**: post-fix commits `9247de9 6c8208b 2967a86 84f2ba3` stable
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable
+- **User cache tier clarified**: 念念 is on 1-hour cache TTL (not 5-min); corrected this session
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: confirmed ("反正做好了，自由插拔") — Claude/other providers hot-swappable
+- **WeChat recall confirmed**: bridge.py recall hook auto-inject verified live
+- **atlas verified working**: post-fix commits `9247de9 6c8208b 2967a86 84f2ba3` stable
+- **Epsilon deadlock + retract fix + `.config` root expand**: shipped and stable
+- **User cache tier**: 念念 is on 1-hour TTL (confirmed again this session)
+
+[2026-05-27 sid:6d50697d]
+- **Provider plug-and-play complete**: hot-swap confirmed live ("反正做好了，自由插拔")
+- **WeChat recall confirmed**: bridge.py auto-inject hook verified working in-session
+- **atlas stable**: commits `9247de9 6c8208b 2967a86 84f2ba3` holding
+- **User cache tier**: 念念 on 1-hour TTL (confirmed again)
+
+[2026-05-27 sid:37158cb3]
+- **agent-dispatch.md rewritten**: ghost agent `worktree-implementer` removed; model selection consolidated into dedicated `<models>` block (haiku/sonnet/opus tiers); worktree contract clarified — agent commits own work, no push/merge/out-of-scope; commit `a052a59`
+- **workflow.md grammar fixed**: `dru-run→dry-run`, `it's→its`, verb agreement patched; density maintained at 89 lines
+- **Decision A locked**: use `general-purpose` + `isolation: "worktree"` param rather than creating a new `worktree-implementer.md` agent — no new maintenance cost
+
+[2026-05-27 sid:0398d1d3]
+- **recall.py simplified**: 1237 → 1171 (-66 LOC); 5 findings executed (3× affect_live de-dup, `_affect_bonus` drop, scored partition, datetime/json hoist, rcfg default de-dup); 4 refactor commits local on main, **not pushed**
+- **Two agent false positives cleared**: `_blob_to_vec` + 5 `embed_*` wrappers kept (tests directly monkeypatch them); `affect`/`affect_live` write confirmed correct (`affect_live` is a view of base `affect` table)
+- **pytest baseline**: worktree + main both 762 pass / 1 skip — recall refactor clean
+- **Provider plug-and-play + WeChat recall bridge + atlas commits** holding from prior sessions
