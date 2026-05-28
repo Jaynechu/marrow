@@ -325,3 +325,27 @@ Delta only. Never restate DESIGN / SCHEMA.
 - **ny-memm full cleanup (S3 / 05-28 day plan)**: 5 plists bootout + rm, 8 scripts mv → `~/CC-Lab/archive/ny-memm/scripts/`, 5 hook files rm, `~/.config/ny` rm, `"legacy ny-memm"` line excised from `files.md`, 8 `~/Library/Logs/ny-*.log` cleared; all 7 goal predicates passed
 - **wt-drift-redesign merged**: commits `247e345` + `68d61ab` on main; 798 pass / 1 skip; worktree cleaned
 - **Drift alert redesign live**: per-op format `drift applied/review: X → Y in N files`; basename-unchanged silent drop; iCloud `* 2.<ext>` dup filter
+
+[2026-05-28 sid:dbbc6bb2]
+- **Atlas PreToolUse hook design locked**: trigger = Write new file + Bash mv/cp/rename (not Edit/overwrite); inject = 1 fallback line ("ls 同层 mimic") + root row + parent row + any non-empty mid-chain rows ≈ 100-200 token
+- **Atlas schema decisions locked**: `note`+`write_hint` → `description`; `naming` stays; `stale` column dropped entirely (fs not found → DELETE, drift `on_moved` rekeys so stale has no protective value); `depth` moves inline to heading suffix `[d=N]`; down to 2 bullets per entry
+- **Naming enum convention**: empty = `mimic` (hook injects "ls 同层 pattern"); `parent` = explicit inherit; free text = custom rule string; only counter-intuitive conventions need writing
+- **Depth is additive union**: each `depth>0` row is an independent walk seed; child seed extends parent reach, no override conflict; "each layer expands one level" = set every layer to d=1, naturally supported already
+- **files.md retire decided**: all placement/naming rules migrate into atlas `description`/`naming` fields by root; no global hard rules needed (大小写 per-root in description)
+- **Session 2.5 plan written** into `docs/plans/05-28.md`; blocked on S2 (atlas 4 bug + CC-Lab rename) completing first
+
+[2026-05-28 sid:f87f8cfa]
+- **buddy MCP -32000 root cause fixed**: `~/.claude.json` had stale `cc-lab/claude-buddy` path; corrected to `CC-Lab/external/claude-buddy` (args + cwd); takes effect on next cc session restart
+- **cc-lab → CC-Lab/external sweep complete**: settings.json (8 paths), roster.json (6), prompt-guard.py (2), prompt-lint.py (2), subpages_render.py (1), .claude.json (MCP + 5 project keys); committed `3e20fb9` + `6a14ced`
+- **WAL → DELETE mode committed**: `marrow/storage.py:248` + `watcher.py:304`; eliminates iCloud/APFS mmap race; committed `4db3425`; watcher PID 36980 confirmed running
+- **Atlas PreToolUse hook design + schema decisions locked**: trigger = Write new file + Bash mv/cp/rename; inject root+parent+mid-chain rows ~100-200 token; schema: `description`+`naming`; `stale` dropped; `depth` inline heading suffix `[d=N]`; 2 bullets per entry
+- **files.md retire decided**: placement/naming rules migrate into atlas `description`/`naming` fields; no global hard rules
+- **S2.5 plan written**: `docs/plans/05-28.md`; 8 tasks; dispatch wt-atlas-hook + main
+
+[2026-05-28 sid:67b75edd]
+- **handover.md symlink live**: `~/CC-Lab/marrow/handover.md → ~/.config/marrow/handover.md`; added to `.gitignore`
+- **Dead ny-* hooks purged**: both SessionStart (`ny-session-start.sh`) and SessionEnd (`ny-session-end.sh`) entries removed from `~/.claude/settings.json`; no more red-text on cc launch
+- **ny/memm remnants cleared**: `cc-jsonl-to-md.py`, `cc-prune.py`, `cc-sessions.py`, `__pycache__/` deleted; `ny` dispatcher archived → `~/CC-Lab/archive/ny-memm/scripts/`
+- **Toolkit dissolved**: only `scripts/raycast/` survived; rest cleaned out by 念念; directory now effectively dead
+- **zshrc alias patched**: `~/.zshrc:13` `cc-lab` → `CC-Lab`; takes effect on next terminal open or `source ~/.zshrc`
+- **vs-ny.sh updated**: `~/CC-Lab/scripts/raycast/vs-ny.sh` now opens `~/Desktop/NY/` in VS Code

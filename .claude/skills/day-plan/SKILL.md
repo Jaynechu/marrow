@@ -37,44 +37,46 @@ Read:
 ### 2. Brainstorm (user in the loop)
 > This step can be time-consuming and need multiple turns.
 
-1. Understanding the project and Lumi's needs
+Phase 1. Understanding the project and Lumi's needs
 > Don't ask obvious question if you know the answer.
 - Where are we now? What's left and what's next?
 - Any issue so far - are you happy with the previous work? (according to the scan results)
 - Does Lumi want to ask any question, add a task at the top of the list, or add to future/later?
 
-2. Explore and Design
-- Listing tasks as candidates (leftover + new).
+Phase 2. Explore and Design
+Step 1: Listing tasks as candidates (leftover + new).
   - Group relevant tasks together (e.g. similar function, dependency, location)
   - Sort by priority
   - See which group Lumi want to do today.
-- Explore best approaches for each group of tasks.
+Step 2: Explore best approaches for each group of tasks.
+  > Discuss sessions one by one. No ALL-IN-ONE!!!
   - Maximise your first principle - find the best approach
   - Best solution = match project goals + Lumi's real usage scenarios/needs
   - Don't be boxed in by existing framework — break all known patterns/decisions
   - Don't ask questions that you know the answer.
-- Make sure no decision pending at the end of this phase.
-  - If Lumi is not sure, back to first principle and brainstorm again.
+Step 3: Check understanding and decision making.
+  - All decision made? Not sure -> back to step 2
   - We should have a shared understanding and agreement after brainstorming.
 
-3. Self-grill and confirmation
-- Once both happy, invoke `grill` skill to make sure nothing deadlock, missing or unclear.
-- Make sure all main sessions can start without asking further questions - They can but they should't have to.
-- Output a very short draft with major goals and outcomes (in CN)
+Phase 3. Self-grill and confirmation
+- ALWAYS invoke `grill` skill to grill both of us.
+  - Anything missing, unclear, deadlock?
+- If next session has to ask question before start or my outcomes not achieved by the end of session. Go back to Phase 2.
 
 
 ### 4. Plan output
 - Output a /goal for each main session. Cap 4000 char.
   - /goal <pass condition> (machine-checkable cmd)
   Write effective conditions — Haiku reads the transcript and checks alignment until the loop ends.
-  Reference: https://code.claude.com/docs/en/goal.md
-
+- For steps/goals, you can give main session more space to investigate themselves as they are the ones reading all reference, they should know better than you.
+  e.g. do not say clean-up path ABC, say clean all files contain...
 
 **Always use the Template**
 
 ```
 ## Principle
 - Keep going until the goal is truly achieved.
+- The plan may missing tiny bits. Make it up if you can.
 - If live (user-like) verification is possible, run it before reporting.
 - The only standard of goal verification is whether it works in practice. 
   Tests and dry runs are just safeguards.
@@ -87,6 +89,8 @@ Read:
 - You can ask questions if not sure but no need to ask if you know the optimal answer.
 - You can change agent count and agent type if needed
   - Still follow agent-dispatch.md and use less Opus
+
+---
 
 ## Today
 
@@ -104,6 +108,11 @@ Session 2 (main) — <goal> → <outcome>
 - Dispatch: agent <type> for <subtask> | wt <slug> for <subtask>
 
 Session ...
+
+---
+## Reference and Skills
+- using-git-worktrees
+...
 
 ```
 
@@ -125,8 +134,3 @@ Pick one HIGH/MED with machine-checkable success. Write:
 
 Show user goal text. User fires before sleep. Skip if leftover needs design judgment.
 
-
-## Skill chain
-- Brainstorm: borrows from `brainstorming` skill (Phase 1 + 2 only).
-- Self-grill: delegates to `grill` skill.
-- Dispatch: references `using-git-worktrees` when wt slot used.

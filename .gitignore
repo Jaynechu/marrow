@@ -26,6 +26,9 @@ logs/
 backup/
 *.bak
 
+# Symlink to ~/.config/marrow/handover.md (personal)
+handover.md
+
 # Pre-rewrite originals: local migration reference only, carry personal-info fragments
 archive/
 
