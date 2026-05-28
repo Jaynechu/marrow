@@ -449,7 +449,13 @@ def build_atlas_spec(folder: str) -> InserterSpec:
         # Always emit a section per canonical root — root header now carries
         # the depth field, so it must render even when the user collapsed
         # the subtree (depth=0, no child rows in this fetch).
-        canonical = [str(r) for r in roots]
+        # Bug 3: order follows ATLAS_ROOT_ORDER (decoupled from
+        # AUTHORIZED_ROOTS iteration), so atlas.md headers stay stable
+        # regardless of drift_sweep reshuffles.
+        canonical = [
+            str(r.expanduser().resolve())
+            for r in _atlas_mod.ATLAS_ROOT_ORDER
+        ]
         out = list(canonical)
         for lab in labels:
             if lab not in out:

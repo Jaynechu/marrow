@@ -51,6 +51,21 @@ except ImportError:
 _CLAUDE_ROOT = Path.home() / ".claude"
 _CONFIG_ROOT = Path.home() / ".config"
 
+# Canonical render order for atlas section headers. Decoupled from
+# drift_sweep.AUTHORIZED_ROOTS iteration order so atlas.md stays stable
+# even if AUTHORIZED_ROOTS is reshuffled for unrelated reasons.
+# Order: Study → NY → cc-lab → .claude → .config → Toolkit.
+# (drift_sweep will auto-rewrite the literal "cc-lab" if the root is
+# renamed on disk.)
+ATLAS_ROOT_ORDER: list[Path] = [
+    Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "Study",
+    Path.home() / "Desktop" / "NY",
+    Path.home() / "cc-lab",
+    Path.home() / ".claude",
+    Path.home() / ".config",
+    Path.home() / "Toolkit",
+]
+
 _NOW = lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())  # noqa: E731
 
 # ---------------------------------------------------------------------------
