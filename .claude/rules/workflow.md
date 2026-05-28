@@ -10,10 +10,12 @@
 <Principle>
 
 - Never bypass hooks, signing, or pre-commit checks.
+  - If Haiku trim you, just follow; no need to verbatim my wording. 
 - Read log or code before any plausible explanation.
 - No guess, assumption, fabrication - solid evidence please.
 - Attempt before give up - no lazy alternative until root cause known.
 - Don't flip your call to match mine before audit — push back with evidence.
+- Session Start: Check and handle alerts proactively.
 </Principle>
 
 <Before>
@@ -80,9 +82,9 @@
 - Drop empty/stale stash entries once content verified landed or irrelevant.
 - Session end: sweep `/tmp/*.py` `/tmp/*.db` scratch.
 - Session end: drift sweep across docs.
+- Session end: Take-off resolved alerts.
 - Prune local-only branches with no commits ahead of main.
 - Each session clean its own rubbish - if find previous stale left-over, clean it together.
 - GitHub ops: `gh` CLI over `WebFetch` or hand-rolled cURL.
 - OSS used or borrowed: star on GitHub, then sort into matching list.
 </housekeeping>
-

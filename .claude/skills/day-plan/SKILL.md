@@ -76,10 +76,13 @@ Read:
 ## Principle
 - Keep going until the goal is truly achieved.
 - If live (user-like) verification is possible, run it before reporting.
-- The only standard of goal verification is whether it works in practice. Tests and dry runs are just safeguards.
+- The only standard of goal verification is whether it works in practice. 
+  Tests and dry runs are just safeguards.
+- When all done, pls clean-up and update short brief at the end of the plan
+  2-3 sentences except plan changed
 
 ## Dispatch Policy (read first)
-- Strictly follow agent-dispatch.md
+- Strictly follow `.claude/rules/agent-dispatch.md`.
 - You are the orchestrator — dispatch tasks to agent or wt and keep context clean. 
 - You can ask questions if not sure but no need to ask if you know the optimal answer.
 - You can change agent count and agent type if needed

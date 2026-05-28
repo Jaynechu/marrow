@@ -379,7 +379,7 @@ def render_cheatsheet(conn: sqlite3.Connection) -> str:
     key = "cheatsheet"
     home = Path.home()
     cc_dir = home / ".claude"
-    marrow_dir = home / "cc-lab" / "marrow"
+    marrow_dir = home / "CC-Lab" / "marrow"
     config_dir = _paths.marrow_db.parent
     ny_dir = _paths.ny_root
 

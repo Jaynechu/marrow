@@ -18,7 +18,7 @@
 - **drift_sweep** — Auto-update refs on file rename/move/delete. Bundles dir_tree refresh as side-output (cc grep aid). Three layers, sliced: **L1** ripgrep over authorized roots + `mw drift <old> <new>` CLI + git post-mv hook (primary, deterministic, ships first); **L2** central `paths.toml` key-indirection (subsumes `paths_registry_early`); **L3** cheap local model free-text fallback (启动 only when L1+L2 漏掉真实 case). **效果**: 你 mv/rename 一个文件，所有引用自动跟着改；cc 也拿到最新 dir-tree grep。
 - **placement_rules_toml** — Machine-readable `~/.config/marrow/placement_rules.toml`: content-type → canonical home + naming pattern (extracted from `~/.claude/rules/files.md` prose). cc reads on Write of new file. Pairs with drift_sweep registry. No PreToolUse hard-block (Lumi vetoed). **效果**: cc 写新文件前先查表，不再靠散文规则脑补。
 - **cheatsheet_index** *(hold — wait until tool stack settles)* — Single dashboard cheatsheet. Not fully decided, draft direction only:
-  - **Source**: auto-scan + hand-edit preserved. Scan covers but is not limited to — `~/Toolkit/scripts`, `~/Library/LaunchAgents/*.plist`, `~/.claude/{skills,commands,agents,output-styles}/**`, `.mcp.json` (global + project), `~/.zshrc` alias, `brew list`, self-installed CLIs.
+  - **Source**: auto-scan + hand-edit preserved. Scan covers but is not limited to — `~/Toolkit/scripts`, `~/Library/LaunchAgents/*.plist`, `~/.claude/{skills,commands,agents,output-styles}/**`, `.mcp.json` (global + project), `~/.zshrc` alias, `brew list`, self-installed CLIs (e.g. mw atlas <prefix>).
   - **Layout**: cheatsheet body (auto-scan + hand-edit, reverse md→db ingest). Dir map now lives in standalone `atlas` subpage (depth-aware heading tree); cheatsheet stays single-section.
   - **Recall lane**: own table + bge-m3 vec, separate from events fusion. User prompt keyword hit → force_include (仿 entity_force_include). Use case: 问 (怎么 restore) → 自动喂 `/rewind` 那行，不用手翻 help page.
   - **效果**: 工具一眼可查 + 不知道的 shortcut LLM 主动推；装删不会失同步。
@@ -86,4 +86,8 @@
 - **Valence_arousal_tagging** — timeline ## Us entries V/A tagged. **效果**: us 类 event 也带情绪标签。
 - **lifestyle_and_preference_relocation** — Move block to history.md Preferences or keep in reference.md. **效果**: reference.md 块分类，无紧迫性。
 
-
+## References
+> [P0luz / Ombre-Brain](https://github.com/P0luz/Ombre-Brain)
+- [WenXiaoWendy / cyberboss](https://github.com/WenXiaoWendy/cyberboss)
+- current weclaude see ny/code/weclaude or repo (in my star folder)
+- [Qizhan7 / claude-imprint](https://github.com/Qizhan7/claude-imprint) — borrow: RRF + vector/FTS5/recency retrieval fusion recipe

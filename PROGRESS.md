@@ -300,3 +300,28 @@ Delta only. Never restate DESIGN / SCHEMA.
 - **Atlas section order decided**: Study → NY → CC-Lab → .claude → .config → Toolkit
 - **NY folder stays permanent base**: atlas.md + dashboard.md remain at `~/Desktop/NY/db-pages/` (not migrated)
 - **Project layout decided**: own projects in `~/CC-Lab/`; external/forked repos → `~/CC-Lab/external/`; cc-lab → CC-Lab rename to go with S2
+
+[2026-05-28 sid:187a6ff8]
+- **Atlas bugs 1-4 fixed**: worktree `wt-atlas-bugs` → 4 commits cherry-picked to main; 771 pass, 1 skip, pytest exit 0
+- **cc-lab → CC-Lab rename complete**: 8 LaunchAgents, settings.json, .mcp.json, drift_sweep AUTHORIZED_ROOTS, atlas ATLAS_ROOT_ORDER, tests all repathed; grep `/cc-lab/` live refs = 0 (only archive/log remain)
+- **Watcher running under CC-Lab**: pid 48679, drift_watcher watching `/Users/Gabrielle/CC-Lab`
+- **ATLAS_ROOT_ORDER NY↔Study swapped**: NY now first in atlas.md; `a970211` committed
+- **hooks tests aligned**: 2 old hooks fails fixed to match committed `_inject_silent_ack`; no test failures
+- **All pending drift ops cleared**: 14 pending rejected, 16 alerts resolved; clean slate at alert max id 137
+- **Drift alert chain confirmed end-to-end**: CLI `mv` path verified (#131 hand-call, #132/#133 watcher batch); but Finder rename still unconfirmed (see Open)
+- **drift_sweep redesign agent dispatched** to worktree `agent-drift-redesign` / branch `wt-drift-redesign` with full design brief (A–F); still running
+
+[2026-05-28 sid:c247fc7d]
+- **wt-drift-redesign merged**: commits `247e345` + `68d61ab` cherry-picked to main; 798 pass / 1 skip; worktree `agent-drift-redesign` cleaned
+- **CLI `mw drift` subparser fixed**: `scan|apply|reject` subcommands work; old positional/nargs collision gone
+- **a) basename-unchanged silent drop**: move where src basename == dest basename → no alert (drift_sweep can't act on it anyway)
+- **b) iCloud dup filter**: files matching `* 2.<ext>` pattern silently dropped; 8 pollution alerts (#141-157 range) cleared
+- **Live verify confirmed**: `SLE370 → SLE377` auto-applied in 3 files (#140 alert); alert text is human-readable with file list
+- **Dashboard `(active)` label removed** from top_sections.py
+- **Alert text redesign live**: per-op format `drift applied: X → Y in N files (...)` / `drift review: X → Y · N safe · M unsafe · mw drift apply PID`
+- **SLE211 basename-unchanged move** correctly silent-dropped (untitled folder move)
+
+[2026-05-28 sid:96f5d395]
+- **ny-memm full cleanup (S3 / 05-28 day plan)**: 5 plists bootout + rm, 8 scripts mv → `~/CC-Lab/archive/ny-memm/scripts/`, 5 hook files rm, `~/.config/ny` rm, `"legacy ny-memm"` line excised from `files.md`, 8 `~/Library/Logs/ny-*.log` cleared; all 7 goal predicates passed
+- **wt-drift-redesign merged**: commits `247e345` + `68d61ab` on main; 798 pass / 1 skip; worktree cleaned
+- **Drift alert redesign live**: per-op format `drift applied/review: X → Y in N files`; basename-unchanged silent drop; iCloud `* 2.<ext>` dup filter
