@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from . import config, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach
 
@@ -526,10 +527,159 @@ def user_prompt_submit() -> int:
     return 0
 
 
+_PLACEMENT_BASH_OPS = {"mv", "cp", "rename", "mmv", "touch", "mkdir"}
+
+
+def pretool_use() -> int:
+    """PreToolUse hook: emit placement guidance for Write/Bash file ops.
+
+    Write or Bash (mv/cp/rename/mmv/touch/mkdir) -> placement mode.
+    Edit or other -> literal mode (just path reminder).
+    Fail-soft: any error -> silent exit 0.
+    """
+    try:
+        inp = _read_input()
+        tool = inp.get("tool_name", "")
+        ti = inp.get("tool_input", {})
+
+        _literal = "[Path] Use paths with /, not bare filenames."
+
+        # Determine mode
+        is_placement = False
+        target_path_str: str | None = None
+
+        if tool == "Write":
+            is_placement = True
+            target_path_str = ti.get("file_path", "")
+        elif tool == "Bash":
+            import shlex
+            cmd = ti.get("command", "")
+            try:
+                tokens = shlex.split(cmd)
+            except ValueError:
+                tokens = cmd.split()
+            tokens_no_flags = [t for t in tokens if t and not t.startswith("-")]
+            if tokens_no_flags and tokens_no_flags[0] in _PLACEMENT_BASH_OPS:
+                is_placement = True
+                op = tokens_no_flags[0]
+                args_only = tokens_no_flags[1:]
+                if op in {"mv", "cp"} and len(args_only) >= 2:
+                    target_path_str = args_only[-1]
+                elif args_only:
+                    target_path_str = args_only[-1]
+
+        if not is_placement:
+            print(_literal)
+            return 0
+
+        # Resolve target path
+        if not target_path_str:
+            print(_literal)
+            return 0
+
+        target = Path(target_path_str).expanduser()
+        if not target.is_absolute():
+            target = Path.cwd() / target
+        target = target.resolve()
+
+        # Check against AUTHORIZED_ROOTS
+        from . import atlas as _atlas_mod
+        from . import drift_sweep
+        from . import storage, config
+        roots = [r.expanduser().resolve() for r in drift_sweep.AUTHORIZED_ROOTS]
+
+        root = _atlas_mod._root_of(str(target), roots)
+        if root is None:
+            return 0
+
+        # Build ancestor chain: root -> parent of target (inclusive)
+        # Ancestors from root down to target's parent
+        chain: list[Path] = []
+        try:
+            rel = target.relative_to(root)
+            parts = rel.parts
+            # root itself
+            chain.append(root)
+            # intermediate dirs
+            for i in range(1, len(parts)):
+                chain.append(root / Path(*parts[:i]))
+        except ValueError:
+            chain = [root]
+
+        # Fetch atlas rows for chain
+        conn = storage.connect(config.db_path())
+        try:
+            chain_rows: dict[str, dict] = {}
+            for p in chain:
+                rows = conn.execute(
+                    "SELECT path, description, naming_hint, depth FROM atlas WHERE path=?",
+                    (str(p),),
+                ).fetchall()
+                for r in rows:
+                    chain_rows[r["path"]] = dict(r)
+
+            _home = Path.home()
+
+            def _tilde(p: str) -> str:
+                try:
+                    return "~/" + str(Path(p).relative_to(_home))
+                except ValueError:
+                    return p
+
+            lines: list[str] = []
+            lines.append("[Path/Naming rules]")
+            lines.append("- Do not dump files in ~/")
+            lines.append("- Unsure = stop + clarify")
+            lines.append("- Atlas Naming/Description empty -> mimic sibling rows")
+            lines.append("- rename/move -> sweep all refs")
+            lines.append("")
+            lines.append(f"[Atlas slice for {_tilde(str(target))}]")
+
+            root_str = str(root)
+            root_row = chain_rows.get(root_str, {})
+            lines.append(_tilde(root_str))
+            lines.append(f"- Description: {root_row.get('description') or ''}")
+            lines.append(f"- Naming: {_atlas_mod.resolve_naming(conn, root_str, roots)}")
+
+            # Mid-chain (between root and parent, exclusive)
+            mid_chain = chain[1:-1] if len(chain) > 2 else []
+            for mp in mid_chain:
+                ms = str(mp)
+                mr = chain_rows.get(ms)
+                if mr and (mr.get("description") or mr.get("naming_hint")):
+                    lines.append("")
+                    lines.append(_tilde(ms))
+                    lines.append(f"- Description: {mr.get('description') or ''}")
+                    lines.append(f"- Naming: {_atlas_mod.resolve_naming(conn, ms, roots)}")
+
+            # Parent block (always emit, even if same as root)
+            if len(chain) > 1:
+                parent = chain[-1]
+                parent_str = str(parent)
+                parent_row = chain_rows.get(parent_str, {})
+                lines.append("")
+                lines.append(_tilde(parent_str))
+                lines.append(f"- Description: {parent_row.get('description') or ''}")
+                lines.append(f"- Naming: {_atlas_mod.resolve_naming(conn, parent_str, roots)}")
+
+            print("\n".join(lines))
+        finally:
+            conn.close()
+
+    except Exception as e:  # noqa: BLE001
+        try:
+            repo.add_alert("info", "atlas_hook", str(e), source="hooks.py",
+                           db=config.db_path())
+        except Exception:
+            pass
+    return 0
+
+
 _EVENTS = {
     "session_start": session_start,
     "session_end": session_end,
     "user_prompt_submit": user_prompt_submit,
+    "pretool_use": pretool_use,
 }
 
 

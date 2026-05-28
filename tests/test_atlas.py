@@ -18,8 +18,10 @@ from marrow.atlas import (
     _render_atlas_row,
     _root_shorthand,
     atlas_sweep_fs,
+    lookup_by_prefix,
     reconcile_atlas,
     rekey_paths,
+    resolve_naming,
     seed_atlas_from_roots,
 )
 from marrow.inserter import write_subpage_inserter
@@ -42,26 +44,23 @@ def _now():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _insert_row(conn, path, note=None, write_hint=None, naming_hint=None,
-                depth=0, stale=0):
+def _insert_row(conn, path, description=None, naming_hint=None, depth=0):
     conn.execute(
         "INSERT OR REPLACE INTO atlas"
-        " (path, note, write_hint, naming_hint, depth, stale, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (path, note, write_hint, naming_hint, depth, stale, _now()),
+        " (path, description, naming_hint, depth, updated_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (path, description, naming_hint, depth, _now()),
     )
     conn.commit()
 
 
-def _marker_md(path: str, note="", write="", naming="", depth=0) -> str:
+def _marker_md(path: str, description="", naming="", depth=0) -> str:
     """Build a single marker-format atlas block for one path."""
     return (
-        f"##### [{Path(path).name}/](file://{path})\n"
+        f"##### [{Path(path).name}/](file://{path}) [d={depth}]\n"
         f"<!-- id:{path} -->\n"
-        f"- note: {note}\n"
-        f"- write: {write}\n"
-        f"- naming: {naming}\n"
-        f"- depth: {depth}\n"
+        f"- Description: {description}\n"
+        f"- Naming: {naming}\n"
     )
 
 
@@ -78,8 +77,10 @@ def test_migration_creates_atlas_table(conn):
 
 def test_atlas_schema_columns(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(atlas)")}
-    assert cols == {"path", "note", "write_hint", "naming_hint",
-                    "depth", "stale", "updated_at"}
+    assert cols == {"path", "description", "naming_hint", "depth", "updated_at"}
+    assert "note" not in cols
+    assert "write_hint" not in cols
+    assert "stale" not in cols
 
 
 def test_atlas_path_is_primary_key(conn):
@@ -92,13 +93,12 @@ def test_atlas_depth_default_0(conn):
         "INSERT INTO atlas (path, updated_at) VALUES ('/tmp/x', ?)", (_now(),)
     )
     conn.commit()
-    row = conn.execute("SELECT depth, stale FROM atlas WHERE path='/tmp/x'").fetchone()
+    row = conn.execute("SELECT depth FROM atlas WHERE path='/tmp/x'").fetchone()
     assert row["depth"] == 0
-    assert row["stale"] == 0
 
 
-def test_schema_version_12(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
+def test_schema_version_13(conn):
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
 
 
 # ---------------------------------------------------------------------------
@@ -124,19 +124,19 @@ def test_build_atlas_spec_fetch_empty(conn, tmp_path):
 
 
 def test_build_atlas_spec_fetch_returns_rows(conn, tmp_path):
-    _insert_row(conn, "/tmp/a", note="test dir")
+    _insert_row(conn, "/tmp/a", description="test dir")
     spec = subpage_specs.build_atlas_spec(str(tmp_path))
     rows = spec.fetch(conn)
     assert len(rows) == 1
     assert rows[0]["path"] == "/tmp/a"
-    assert rows[0]["note"] == "test dir"
+    assert rows[0]["description"] == "test dir"
 
 
 # ---------------------------------------------------------------------------
-# 3. reconcile_atlas parses marker list → db
+# 3. reconcile_atlas parses marker list -> db
 # ---------------------------------------------------------------------------
 
-def test_reconcile_parses_note_write_naming_depth(conn, tmp_path, monkeypatch):
+def test_reconcile_parses_description_naming_depth(conn, tmp_path, monkeypatch):
     root = tmp_path / "fakeroots"
     root.mkdir()
     child = root / "mydir"
@@ -147,19 +147,18 @@ def test_reconcile_parses_note_write_naming_depth(conn, tmp_path, monkeypatch):
 
     md_file = tmp_path / "atlas.md"
     child_path = str(child.resolve())
-    md_file.write_text(_marker_md(child_path, note="Test note", write="docs/",
+    md_file.write_text(_marker_md(child_path, description="Test desc",
                                   naming="snake_case", depth=2))
 
     n = reconcile_atlas(conn, md_file)
     assert n > 0
 
     row = conn.execute(
-        "SELECT note, write_hint, naming_hint, depth FROM atlas WHERE path=?",
+        "SELECT description, naming_hint, depth FROM atlas WHERE path=?",
         (child_path,),
     ).fetchone()
     assert row is not None
-    assert row["note"] == "Test note"
-    assert row["write_hint"] == "docs/"
+    assert row["description"] == "Test desc"
     assert row["naming_hint"] == "snake_case"
     assert row["depth"] == 2
 
@@ -175,11 +174,9 @@ def test_reconcile_deletes_paths_removed_from_md(conn, tmp_path, monkeypatch):
     from marrow import drift_sweep
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
-    # Pre-insert both with note so reconcile treats them as user-edited
-    _insert_row(conn, str(child_a.resolve()), note="manual note A")
-    _insert_row(conn, str(child_b.resolve()), note="manual note B")
+    _insert_row(conn, str(child_a.resolve()), description="manual A")
+    _insert_row(conn, str(child_b.resolve()), description="manual B")
 
-    # md only has dirA
     md_file = tmp_path / "atlas.md"
     md_file.write_text(_marker_md(str(child_a.resolve()), depth=0))
     reconcile_atlas(conn, md_file)
@@ -197,7 +194,7 @@ def test_render_heading_level_first_child():
     root = Path("/tmp/root")
     child = root / "mydir"
     level = _heading_level(str(child), str(root))
-    assert level == 3  # first-level = h3
+    assert level == 3
 
 
 def test_render_heading_level_second():
@@ -229,19 +226,15 @@ def test_render_row_bullets(tmp_path):
 
     r = {
         "path": str(child.resolve()),
-        "note": "My note",
-        "write_hint": "docs/",
+        "description": "My desc",
         "naming_hint": "snake_case",
         "depth": 2,
-        "stale": 0,
     }
     rendered = _render_atlas_row(r, [root.resolve()])
-    assert "- note: My note" in rendered
-    assert "- write: docs/" in rendered
-    assert "- naming: snake_case" in rendered
-    assert "- depth: 2" in rendered
+    assert "- Description: My desc" in rendered
+    assert "- Naming: snake_case" in rendered
+    assert "[d=2]" in rendered
     assert "mydir/" in rendered
-    # new: inline id marker
     assert f"<!-- id:{str(child.resolve())} -->" in rendered
 
 
@@ -254,21 +247,18 @@ def test_render_row_empty_fields_show_placeholders(tmp_path):
 
     r = {
         "path": str(child.resolve()),
-        "note": None,
-        "write_hint": None,
+        "description": None,
         "naming_hint": None,
         "depth": 0,
-        "stale": 0,
     }
     rendered = _render_atlas_row(r, [root.resolve()])
-    # All four lines always emitted even when values are empty
-    assert "- note: " in rendered
-    assert "- write: " in rendered
-    assert "- naming: " in rendered
-    assert "- depth: 0" in rendered
+    assert "- Description: " in rendered
+    assert "- Naming: " in rendered
+    assert "[d=0]" in rendered
 
 
-def test_render_row_stale_suffix(tmp_path):
+def test_render_row_no_stale(tmp_path):
+    """No stale suffix in new schema."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "gone"
@@ -276,14 +266,12 @@ def test_render_row_stale_suffix(tmp_path):
 
     r = {
         "path": str(child.resolve()),
-        "note": None,
-        "write_hint": None,
+        "description": None,
         "naming_hint": None,
         "depth": 0,
-        "stale": 1,
     }
     rendered = _render_atlas_row(r, [root.resolve()])
-    assert "(stale)" in rendered
+    assert "(stale)" not in rendered
 
 
 def test_render_section_header():
@@ -291,33 +279,29 @@ def test_render_section_header():
     home = Path.home()
     root = str(home / "CC-Lab")
     header = _section_header(root)
-    # Short basename label + clickable open link
     assert header.startswith("## [CC-Lab/](file://")
-    assert header.endswith("/CC-Lab)")
+    assert header.endswith("/CC-Lab) [d=0]")
 
 
 def test_render_row_name_is_open_link(tmp_path):
-    """Dir name itself must be the file:// link (no separate 'open' tag)."""
+    """Dir name itself must be the file:// link."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "mydir"
     child.mkdir()
-    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
-         "naming_hint": None, "depth": 0, "stale": 0}
+    r = {"path": str(child.resolve()), "description": None, "naming_hint": None, "depth": 0}
     rendered = _render_atlas_row(r, [root.resolve()])
     assert f"[mydir/](file://{child.resolve()})" in rendered
     assert "[open](" not in rendered
 
 
 def test_render_row_emits_h5_heading(tmp_path):
-    """_render_atlas_row must emit an H5 heading so the dir shows in outline
-    without visually competing with the H2 section header."""
+    """_render_atlas_row must emit an H5 heading."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "mydir"
     child.mkdir()
-    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
-         "naming_hint": None, "depth": 0, "stale": 0}
+    r = {"path": str(child.resolve()), "description": None, "naming_hint": None, "depth": 0}
     rendered = _render_atlas_row(r, [root.resolve()])
     first_line = rendered.splitlines()[0]
     assert first_line.startswith("##### ")
@@ -333,20 +317,18 @@ def test_build_atlas_spec_bootstrap_writes_sections(conn, tmp_path, monkeypatch)
     from marrow import drift_sweep
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
-    _insert_row(conn, str(child.resolve()), note="hello", depth=0)
+    _insert_row(conn, str(child.resolve()), description="hello", depth=0)
 
     spec = subpage_specs.build_atlas_spec(str(tmp_path))
     store = MdIndex(conn)
     write_subpage_inserter(spec, conn, store)
 
     md = Path(spec.path).read_text(encoding="utf-8")
-    # Section header now emits basename + open link instead of long shorthand
     assert f"## [{root.name}/](file://{root.resolve()})" in md
-    # H5-heading layout: dir name is an open link, marker on next line
     assert f"##### [mydir/](file://{child.resolve()})" in md
     assert f"<!-- id:{str(child.resolve())} -->" in md
-    assert "- note: hello" in md
-    assert "- depth: 0" in md
+    assert "- Description: hello" in md
+    assert "[d=0]" in md
 
 
 def test_build_atlas_spec_fetch_skips_root_rows(conn, tmp_path, monkeypatch):
@@ -359,9 +341,8 @@ def test_build_atlas_spec_fetch_skips_root_rows(conn, tmp_path, monkeypatch):
     from marrow import drift_sweep
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
-    # Insert both root and child
     _insert_row(conn, str(root.resolve()), depth=1)
-    _insert_row(conn, str(child.resolve()), note="child note")
+    _insert_row(conn, str(child.resolve()), description="child note")
 
     spec = subpage_specs.build_atlas_spec(str(tmp_path))
     rows = spec.fetch(conn)
@@ -382,7 +363,6 @@ def test_sweep_depth0_no_stub(conn, tmp_path):
     (child / "subA").mkdir()
     (child / "subB").mkdir()
 
-    # Insert with depth=0 — sweep should NOT stub children
     _insert_row(conn, str(child.resolve()), depth=0)
 
     atlas_sweep_fs(conn)
@@ -405,7 +385,6 @@ def test_sweep_depth1_stubs_first_level_only(conn, tmp_path, monkeypatch):
     sub1.mkdir()
     sub2 = child / "level1_b"
     sub2.mkdir()
-    # deeper level — should NOT be stubbed at depth=1
     (sub1 / "level2").mkdir()
 
     from marrow import drift_sweep
@@ -449,13 +428,13 @@ def test_sweep_depth2_stubs_two_levels(conn, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 8. Vanished dir → stale=1, render shows (stale)
+# 8. Vanished dir -> deleted (no stale flag)
 # ---------------------------------------------------------------------------
 
-def test_sweep_marks_vanished_dir_stale(conn, tmp_path, monkeypatch):
+def test_sweep_deletes_vanished_dir(conn, tmp_path, monkeypatch):
     root = tmp_path / "root"
     root.mkdir()
-    seed = root / "seed_for_stale"
+    seed = root / "seed_for_del"
     seed.mkdir()
     child = seed / "soon_gone"
     child.mkdir()
@@ -468,71 +447,54 @@ def test_sweep_marks_vanished_dir_stale(conn, tmp_path, monkeypatch):
 
     # Now remove child
     child.rmdir()
-    atlas_sweep_fs(conn)  # should mark stale
+    atlas_sweep_fs(conn)  # should delete the stub row
 
     row = conn.execute(
-        "SELECT stale FROM atlas WHERE path=?",
+        "SELECT path FROM atlas WHERE path=?",
         (str(child.resolve()),),
     ).fetchone()
-    assert row is not None
-    assert row["stale"] == 1
+    assert row is None
 
 
-def test_render_stale_row_shows_stale_suffix(tmp_path):
+def test_sweep_deletes_only_stub_rows_not_manual(conn, tmp_path, monkeypatch):
+    """Manual rows (non-empty description) are preserved even if dir vanishes."""
     root = tmp_path / "root"
     root.mkdir()
-    child = root / "gone"
-    child.mkdir()
-
-    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
-         "naming_hint": None, "depth": 0, "stale": 1}
-    rendered = _render_atlas_row(r, [root.resolve()])
-    assert "(stale)" in rendered
-
-
-# ---------------------------------------------------------------------------
-# 9. Stale row returning → stale cleared
-# ---------------------------------------------------------------------------
-
-def test_sweep_clears_stale_when_dir_returns(conn, tmp_path, monkeypatch):
-    root = tmp_path / "root"
-    root.mkdir()
-    seed = root / "seed_return"
+    seed = root / "seed_manual"
     seed.mkdir()
-    child = seed / "comes_back"
+    child = seed / "manual_child"
     child.mkdir()
 
     from marrow import drift_sweep
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
     _insert_row(conn, str(seed.resolve()), depth=1)
-    atlas_sweep_fs(conn)  # stubs child
+    atlas_sweep_fs(conn)
 
-    # Mark it stale manually
+    # Set manual description on the child
+    conn.execute(
+        "UPDATE atlas SET description='keep me' WHERE path=?",
+        (str(child.resolve()),),
+    )
+    conn.commit()
+
     child.rmdir()
     atlas_sweep_fs(conn)
-    row = conn.execute(
-        "SELECT stale FROM atlas WHERE path=?",
-        (str(child.resolve()),),
-    ).fetchone()
-    assert row["stale"] == 1
 
-    # Restore the dir
-    child.mkdir()
-    atlas_sweep_fs(conn)
     row = conn.execute(
-        "SELECT stale FROM atlas WHERE path=?",
+        "SELECT description FROM atlas WHERE path=?",
         (str(child.resolve()),),
     ).fetchone()
-    assert row["stale"] == 0
+    assert row is not None
+    assert row["description"] == "keep me"
 
 
 # ---------------------------------------------------------------------------
-# 10. reconcile preserves manual fields across path change
+# 9. reconcile preserves manual fields across path change
 # ---------------------------------------------------------------------------
 
 def test_reconcile_preserves_fields_on_path_rekey(conn, tmp_path, monkeypatch):
-    """Simulated rename: old path has note; new md has new path + same note."""
+    """Simulated rename: old path has description; new md has new path + same."""
     root = tmp_path / "root"
     root.mkdir()
     old_dir = root / "old_name"
@@ -543,28 +505,24 @@ def test_reconcile_preserves_fields_on_path_rekey(conn, tmp_path, monkeypatch):
     from marrow import drift_sweep
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
-    # Pre-load old path with manual fields
-    _insert_row(conn, str(old_dir.resolve()), note="precious note",
-                write_hint="docs/", depth=1)
+    _insert_row(conn, str(old_dir.resolve()), description="precious note",
+                naming_hint="kebab-case", depth=1)
 
-    # md now has new path + same note (simulate user updated md after rename)
     new_path = str(new_dir.resolve())
     md_file = tmp_path / "atlas.md"
-    md_file.write_text(_marker_md(new_path, note="precious note",
-                                  write="docs/", depth=1))
+    md_file.write_text(_marker_md(new_path, description="precious note",
+                                  naming="kebab-case", depth=1))
     reconcile_atlas(conn, md_file)
 
-    # New path is in db with preserved fields
     row = conn.execute(
-        "SELECT note, write_hint, depth FROM atlas WHERE path=?",
+        "SELECT description, naming_hint, depth FROM atlas WHERE path=?",
         (new_path,),
     ).fetchone()
     assert row is not None
-    assert row["note"] == "precious note"
-    assert row["write_hint"] == "docs/"
+    assert row["description"] == "precious note"
+    assert row["naming_hint"] == "kebab-case"
     assert row["depth"] == 1
 
-    # Old path is gone
     old_row = conn.execute(
         "SELECT path FROM atlas WHERE path=?",
         (str(old_dir.resolve()),),
@@ -573,7 +531,7 @@ def test_reconcile_preserves_fields_on_path_rekey(conn, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 11. EXCLUDE_DIRS_TREE honored
+# 10. EXCLUDE_DIRS_TREE honored
 # ---------------------------------------------------------------------------
 
 def test_sweep_excludes_excluded_dirs(conn, tmp_path, monkeypatch):
@@ -585,7 +543,6 @@ def test_sweep_excludes_excluded_dirs(conn, tmp_path, monkeypatch):
     seed = root / "seed_excl"
     seed.mkdir()
 
-    # Create one excluded and one normal dir
     excluded_name = next(iter(EXCLUDE_DIRS_TREE))
     (seed / excluded_name).mkdir()
     (seed / "normal_dir").mkdir()
@@ -601,7 +558,7 @@ def test_sweep_excludes_excluded_dirs(conn, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 12. ~/.claude whitelist honored
+# 11. ~/.claude whitelist honored
 # ---------------------------------------------------------------------------
 
 def test_sweep_claude_whitelist_honored(conn, tmp_path, monkeypatch):
@@ -616,7 +573,6 @@ def test_sweep_claude_whitelist_honored(conn, tmp_path, monkeypatch):
     not_allowed = fake_claude / "some_private_dir"
     not_allowed.mkdir()
 
-    # Monkeypatch CLAUDE_WHITELIST and _CLAUDE_ROOT
     monkeypatch.setattr(_atlas_module, "CLAUDE_WHITELIST", frozenset({"rules"}))
     monkeypatch.setattr(_atlas_module, "_CLAUDE_ROOT", fake_claude.resolve())
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [fake_claude])
@@ -630,7 +586,7 @@ def test_sweep_claude_whitelist_honored(conn, tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 13. atlas in subpages._REGISTRY
+# 12. atlas in subpages._REGISTRY
 # ---------------------------------------------------------------------------
 
 def test_atlas_registered_in_subpages():
@@ -641,7 +597,7 @@ def test_atlas_registered_in_subpages():
 
 
 # ---------------------------------------------------------------------------
-# 14. build_atlas_spec key and path
+# 13. build_atlas_spec key and path
 # ---------------------------------------------------------------------------
 
 def test_atlas_spec_key_and_path(tmp_path):
@@ -651,92 +607,84 @@ def test_atlas_spec_key_and_path(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 15. _parse_atlas_md round-trip
+# 14. _parse_atlas_md round-trip
 # ---------------------------------------------------------------------------
 
 def test_parse_atlas_md_round_trip(tmp_path):
-    """render → parse gives back the same row dict."""
+    """render -> parse gives back the same row dict."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "mydir"
     child.mkdir()
-    from marrow import drift_sweep
-    from unittest.mock import patch
     roots = [root.resolve()]
 
     r = {
         "path": str(child.resolve()),
-        "note": "round trip note",
-        "write_hint": "src/",
+        "description": "round trip desc",
         "naming_hint": "kebab-case",
         "depth": 3,
-        "stale": 0,
     }
     rendered = _render_atlas_row(r, roots)
     parsed = _parse_atlas_md(rendered, roots)
     assert len(parsed) == 1
     p = parsed[0]
     assert p["path"] == r["path"]
-    assert p["note"] == r["note"]
-    assert p["write_hint"] == r["write_hint"]
+    assert p["description"] == r["description"]
     assert p["naming_hint"] == r["naming_hint"]
     assert p["depth"] == r["depth"]
 
 
 def test_parse_atlas_md_empty_fields(tmp_path):
-    """Empty field placeholders parse back as None (note/write/naming) or 0 (depth)."""
+    """Empty field placeholders parse back as None."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "emptydir"
     child.mkdir()
     roots = [root.resolve()]
 
-    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
-         "naming_hint": None, "depth": 0, "stale": 0}
+    r = {"path": str(child.resolve()), "description": None, "naming_hint": None, "depth": 0}
     rendered = _render_atlas_row(r, roots)
     parsed = _parse_atlas_md(rendered, roots)
     assert len(parsed) == 1
     p = parsed[0]
-    assert p["note"] is None
-    assert p["write_hint"] is None
+    assert p["description"] is None
     assert p["naming_hint"] is None
     assert p["depth"] == 0
 
 
 def test_parse_atlas_md_depth_field(tmp_path):
-    """Parser must handle - depth: N and not revert to 0."""
+    """Parser must handle [d=N] and not revert to 0."""
     root = tmp_path / "root"
     root.mkdir()
     child = root / "depthdir"
     child.mkdir()
     roots = [root.resolve()]
 
-    r = {"path": str(child.resolve()), "note": None, "write_hint": None,
-         "naming_hint": None, "depth": 5, "stale": 0}
+    r = {"path": str(child.resolve()), "description": None, "naming_hint": None, "depth": 5}
     rendered = _render_atlas_row(r, roots)
     parsed = _parse_atlas_md(rendered, roots)
     assert parsed[0]["depth"] == 5
 
 
 # ---------------------------------------------------------------------------
-# 16. rekey_paths
+# 15. rekey_paths
 # ---------------------------------------------------------------------------
 
-def test_rekey_paths_migrates_note(conn, tmp_path):
+def test_rekey_paths_migrates_description(conn, tmp_path):
     """rekey_paths moves src row to dest, preserving all fields."""
     src = str(tmp_path / "old")
     dest = str(tmp_path / "new")
-    _insert_row(conn, src, note="keep me", write_hint="x/", depth=2)
+    _insert_row(conn, src, description="keep me", naming_hint="x/", depth=2)
 
     n = rekey_paths(conn, [(src, dest)])
     assert n == 1
 
     dest_row = conn.execute(
-        "SELECT note, write_hint, depth FROM atlas WHERE path=?", (dest,)
+        "SELECT description, naming_hint, depth FROM atlas WHERE path=?", (dest,)
     ).fetchone()
     assert dest_row is not None
-    assert dest_row["note"] == "keep me"
-    assert dest_row["write_hint"] == "x/"
+    assert dest_row["description"] == "keep me"
+    assert dest_row["naming_hint"] == "x/"
     assert dest_row["depth"] == 2
 
     src_row = conn.execute(
@@ -749,17 +697,17 @@ def test_rekey_paths_conflict_drops_src(conn, tmp_path):
     """If dest already exists in atlas, src is removed; dest is untouched."""
     src = str(tmp_path / "old")
     dest = str(tmp_path / "new")
-    _insert_row(conn, src, note="src note")
-    _insert_row(conn, dest, note="dest note")
+    _insert_row(conn, src, description="src note")
+    _insert_row(conn, dest, description="dest note")
 
     n = rekey_paths(conn, [(src, dest)])
-    assert n == 0  # dest pre-existed → src deleted, no UPDATE
+    assert n == 0
 
     src_row = conn.execute("SELECT path FROM atlas WHERE path=?", (src,)).fetchone()
     assert src_row is None
 
-    dest_row = conn.execute("SELECT note FROM atlas WHERE path=?", (dest,)).fetchone()
-    assert dest_row["note"] == "dest note"  # dest untouched
+    dest_row = conn.execute("SELECT description FROM atlas WHERE path=?", (dest,)).fetchone()
+    assert dest_row["description"] == "dest note"
 
 
 def test_rekey_paths_src_absent_is_noop(conn, tmp_path):
@@ -830,7 +778,7 @@ def test_sweep_retract_spares_manual_descendant_of_collapsed_root(
 
     _insert_row(conn, str(root.resolve()), depth=0)
     _insert_row(conn, str(a.resolve()), depth=0)  # stub-only — retract
-    _insert_row(conn, str(b.resolve()), depth=0, note="precious")  # spared
+    _insert_row(conn, str(b.resolve()), depth=0, description="precious")  # spared
 
     atlas_sweep_fs(conn)
     paths = {r[0] for r in conn.execute("SELECT path FROM atlas").fetchall()}
@@ -857,7 +805,7 @@ def test_sweep_purges_rows_outside_authorized_roots(conn, tmp_path, monkeypatch)
 
     _insert_row(conn, str(root.resolve()), depth=1)
     _insert_row(conn, str(inside.resolve()), depth=0)
-    _insert_row(conn, str(outside.resolve()), depth=0, note="orphan")
+    _insert_row(conn, str(outside.resolve()), depth=0, description="orphan")
 
     atlas_sweep_fs(conn)
     paths = {r[0] for r in conn.execute("SELECT path FROM atlas").fetchall()}
@@ -878,7 +826,7 @@ def test_reconcile_refuses_rows_outside_authorized_roots(
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
 
     md_file = tmp_path / "atlas.md"
-    md_file.write_text(_marker_md(str(outside.resolve()), note="bad", depth=0))
+    md_file.write_text(_marker_md(str(outside.resolve()), description="bad", depth=0))
     reconcile_atlas(conn, md_file)
 
     row = conn.execute(
@@ -892,7 +840,7 @@ def test_reconcile_refuses_rows_outside_authorized_roots(
 # ---------------------------------------------------------------------------
 
 def test_atlas_root_order_constant_defined():
-    """ATLAS_ROOT_ORDER must exist and contain the 6 canonical roots in order."""
+    """ATLAS_ROOT_ORDER must exist with 5 canonical roots in order."""
     from marrow.atlas import ATLAS_ROOT_ORDER
     expected = [
         Path.home() / "Desktop" / "NY",
@@ -901,7 +849,6 @@ def test_atlas_root_order_constant_defined():
         Path.home() / "CC-Lab",
         Path.home() / ".claude",
         Path.home() / ".config",
-        Path.home() / "Toolkit",
     ]
     assert list(ATLAS_ROOT_ORDER) == expected
 
@@ -912,16 +859,13 @@ def test_section_order_uses_atlas_root_order(tmp_path, monkeypatch):
     from marrow import atlas as atlas_mod
     from marrow import drift_sweep
 
-    # Build fake roots matching ATLAS_ROOT_ORDER under tmp so we can assert.
     fake_roots = [tmp_path / name for name in
-                  ("NY", "Study", "CC-Lab", ".claude", ".config", "Toolkit")]
+                  ("NY", "Study", "CC-Lab", ".claude", ".config")]
     for r in fake_roots:
         r.mkdir()
 
-    # Patch ATLAS_ROOT_ORDER and AUTHORIZED_ROOTS — iteration order
-    # intentionally scrambled to prove section_order ignores it.
-    scrambled = [fake_roots[3], fake_roots[0], fake_roots[5],
-                 fake_roots[2], fake_roots[1], fake_roots[4]]
+    scrambled = [fake_roots[3], fake_roots[0], fake_roots[4],
+                 fake_roots[2], fake_roots[1]]
     monkeypatch.setattr(atlas_mod, "ATLAS_ROOT_ORDER", fake_roots)
     monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", scrambled)
 
@@ -1042,3 +986,262 @@ def test_drift_handler_dir_rename_skips_excluded_dirs(tmp_path, monkeypatch):
 
     with dw._lock:
         assert dw._batch == []
+# 16. test_migrate_v13 — v12 -> v13 data migration
+# ---------------------------------------------------------------------------
+
+def test_migrate_v13(tmp_path):
+    """Create v12 atlas with note+write_hint+stale rows, run migration, assert new schema."""
+    import sqlite3
+    db_path = str(tmp_path / "v12.db")
+
+    # Create a db at exactly v12 state (skip v13 migration)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE atlas (
+            path TEXT PRIMARY KEY,
+            note TEXT,
+            write_hint TEXT,
+            naming_hint TEXT,
+            depth INTEGER NOT NULL DEFAULT 0,
+            stale INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX idx_atlas_stale ON atlas(stale)")
+    conn.execute("PRAGMA user_version=12")
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # Row with both note and write_hint
+    conn.execute("INSERT INTO atlas VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 ("/tmp/both", "My note", "docs/", "snake_case", 1, 0, now))
+    # Row with only note
+    conn.execute("INSERT INTO atlas VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 ("/tmp/note_only", "Just note", None, None, 0, 0, now))
+    # Row with only write_hint
+    conn.execute("INSERT INTO atlas VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 ("/tmp/write_only", None, "scripts/", "kebab", 0, 1, now))
+    # Row with neither
+    conn.execute("INSERT INTO atlas VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 ("/tmp/empty", None, None, None, 0, 0, now))
+    conn.commit()
+    conn.close()
+
+    # Now run the full init which should apply v13
+    from marrow import storage as _storage
+    import sqlite_vec
+    conn2 = sqlite3.connect(db_path)
+    conn2.row_factory = sqlite3.Row
+    conn2.enable_load_extension(True)
+    sqlite_vec.load(conn2)
+    conn2.enable_load_extension(False)
+    conn2.execute("PRAGMA journal_mode=WAL")
+    with conn2:
+        _storage._migrate_to_v13(conn2)
+        conn2.execute("PRAGMA user_version=13")
+
+    # Verify schema
+    cols = {r["name"] for r in conn2.execute("PRAGMA table_info(atlas)")}
+    assert "description" in cols
+    assert "note" not in cols
+    assert "write_hint" not in cols
+    assert "stale" not in cols
+
+    # Verify data preservation
+    row_both = conn2.execute("SELECT description, naming_hint FROM atlas WHERE path='/tmp/both'").fetchone()
+    assert row_both["description"] == "My note | docs/"
+    assert row_both["naming_hint"] == "snake_case"
+
+    row_note = conn2.execute("SELECT description FROM atlas WHERE path='/tmp/note_only'").fetchone()
+    assert row_note["description"] == "Just note"
+
+    row_write = conn2.execute("SELECT description FROM atlas WHERE path='/tmp/write_only'").fetchone()
+    assert row_write["description"] == "scripts/"
+
+    row_empty = conn2.execute("SELECT description FROM atlas WHERE path='/tmp/empty'").fetchone()
+    assert row_empty["description"] is None
+
+    conn2.close()
+
+
+# ---------------------------------------------------------------------------
+# 17. lookup_by_prefix
+# ---------------------------------------------------------------------------
+
+def test_lookup_by_prefix(conn, tmp_path):
+    """lookup_by_prefix returns exact match and descendants."""
+    prefix = str(tmp_path / "root")
+    child = str(tmp_path / "root" / "child")
+    grandchild = str(tmp_path / "root" / "child" / "grand")
+    other = str(tmp_path / "other")
+
+    _insert_row(conn, prefix, description="root desc", depth=2)
+    _insert_row(conn, child, description="child desc", depth=1)
+    _insert_row(conn, grandchild, description="grand desc", depth=0)
+    _insert_row(conn, other, description="other")
+
+    results = lookup_by_prefix(conn, prefix)
+    paths = [r["path"] for r in results]
+    assert prefix in paths
+    assert child in paths
+    assert grandchild in paths
+    assert other not in paths
+
+
+def test_lookup_by_prefix_miss(conn, tmp_path):
+    """lookup_by_prefix returns empty for non-matching prefix."""
+    _insert_row(conn, str(tmp_path / "a"), description="A")
+    results = lookup_by_prefix(conn, str(tmp_path / "b"))
+    assert results == []
+
+
+def test_lookup_by_prefix_exact(conn, tmp_path):
+    """Exact match returns the single row."""
+    p = str(tmp_path / "exact")
+    _insert_row(conn, p, description="exact only")
+    results = lookup_by_prefix(conn, p)
+    assert len(results) == 1
+    assert results[0]["path"] == p
+
+
+# ---------------------------------------------------------------------------
+# 18. resolve_naming — P-walk
+# ---------------------------------------------------------------------------
+
+def test_resolve_naming_verbatim(conn, tmp_path):
+    p = str(tmp_path / "root")
+    _insert_row(conn, p, naming_hint="Lec=N.n")
+    from marrow import drift_sweep
+    roots = [tmp_path.resolve()]
+    result = resolve_naming(conn, p, roots)
+    assert result == "Lec=N.n"
+
+
+def test_resolve_naming_empty(conn, tmp_path):
+    p = str(tmp_path / "root")
+    _insert_row(conn, p)
+    from marrow import drift_sweep
+    roots = [tmp_path.resolve()]
+    result = resolve_naming(conn, p, roots)
+    assert "empty" in result.lower() or "sibling" in result.lower() or "pattern" in result.lower()
+
+
+def test_resolve_naming_p_walk(conn, tmp_path):
+    """Root has 'Lec=N.n', mid has 'P', deepest has 'P' -> all resolve to 'Lec=N.n'."""
+    root = tmp_path / "root"
+    mid = root / "mid"
+    deep = mid / "deep"
+
+    root_s = str(root.resolve())
+    mid_s = str(mid.resolve())
+    deep_s = str(deep.resolve())
+
+    _insert_row(conn, root_s, naming_hint="Lec=N.n")
+    _insert_row(conn, mid_s, naming_hint="P")
+    _insert_row(conn, deep_s, naming_hint="P")
+
+    from marrow import drift_sweep
+    roots = [root.parent.resolve()]
+
+    assert resolve_naming(conn, root_s, roots) == "Lec=N.n"
+    assert resolve_naming(conn, mid_s, roots) == "Lec=N.n"
+    assert resolve_naming(conn, deep_s, roots) == "Lec=N.n"
+
+
+# ---------------------------------------------------------------------------
+# 19. pretool_use hook tests
+# ---------------------------------------------------------------------------
+
+def test_pretool_use_placement(tmp_path, monkeypatch, capsys):
+    """Write JSON for a file under CC-Lab -> emit [Path/Naming rules] + Atlas slice."""
+    import json
+    from marrow import hooks, drift_sweep, storage as _storage
+
+    db_path = str(tmp_path / "h.db")
+    conn = _storage.init_db(db_path)
+
+    # Insert atlas row for the target dir
+    root = tmp_path / "CC-Lab" / "marrow"
+    rules = root / ".claude" / "rules"
+    root.mkdir(parents=True)
+    rules.mkdir(parents=True)
+
+    _insert_row(conn, str(root.resolve()), description="marrow project", naming_hint="snake_case")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [tmp_path / "CC-Lab"])
+    monkeypatch.setattr("marrow.config.db_path", lambda: db_path)
+
+    target = str(rules / "scratch_test.md")
+    inp = json.dumps({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": target},
+    })
+
+    import io, sys
+    old_stdin = sys.stdin
+    sys.stdin = io.TextIOWrapper(io.BytesIO(inp.encode()), encoding="utf-8")
+    try:
+        hooks.pretool_use()
+    finally:
+        sys.stdin = old_stdin
+
+    captured = capsys.readouterr()
+    assert "[Path/Naming rules]" in captured.out
+    assert "Description:" in captured.out
+    # Hook outputs resolved paths (or tilde-abbreviated if under ~)
+    assert str((tmp_path / "CC-Lab").resolve()) in captured.out
+
+
+def test_pretool_use_literal(tmp_path, monkeypatch, capsys):
+    """Edit JSON -> emit only literal path reminder."""
+    import json
+    from marrow import hooks, drift_sweep
+
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [tmp_path])
+
+    inp = json.dumps({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(tmp_path / "PROGRESS.md")},
+    })
+
+    import io, sys
+    old_stdin = sys.stdin
+    sys.stdin = io.TextIOWrapper(io.BytesIO(inp.encode()), encoding="utf-8")
+    try:
+        hooks.pretool_use()
+    finally:
+        sys.stdin = old_stdin
+
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "[Path] Use paths with /, not bare filenames."
+    assert "[Path/Naming rules]" not in captured.out
+
+
+def test_pretool_use_outside_root(tmp_path, monkeypatch, capsys):
+    """Write to /tmp/x.md (outside AUTHORIZED_ROOTS) -> empty stdout."""
+    import json
+    from marrow import hooks, drift_sweep
+
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [tmp_path / "restricted"])
+
+    inp = json.dumps({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": "/tmp/x.md"},
+    })
+
+    import io, sys
+    old_stdin = sys.stdin
+    sys.stdin = io.TextIOWrapper(io.BytesIO(inp.encode()), encoding="utf-8")
+    try:
+        hooks.pretool_use()
+    finally:
+        sys.stdin = old_stdin
+
+    captured = capsys.readouterr()
+    assert captured.out == ""

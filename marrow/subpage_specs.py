@@ -421,7 +421,7 @@ def build_atlas_spec(folder: str) -> InserterSpec:
     def fetch(conn: sqlite3.Connection) -> list[dict]:
         try:
             rows = conn.execute(
-                "SELECT path, note, write_hint, naming_hint, depth, stale"
+                "SELECT path, description, naming_hint, depth"
                 " FROM atlas ORDER BY path"
             ).fetchall()
         except sqlite3.Error:

@@ -32,6 +32,17 @@ def recall(query: str, limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
+def atlas_lookup(prefix: str) -> list[dict]:
+    """Look up atlas rows by path prefix. Returns description/naming for matched dirs."""
+    conn = storage.connect(_DB)
+    try:
+        from . import atlas
+        return atlas.lookup_by_prefix(conn, prefix)
+    finally:
+        conn.close()
+
+
+@mcp.tool()
 def embed_pending(batch: int = 50) -> dict:
     """Embed unvectorized events (write-time backfill). Returns count written."""
     conn = storage.connect(_DB)

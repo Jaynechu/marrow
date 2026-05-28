@@ -224,6 +224,19 @@ def cmd_export_pit(args) -> int:
     return 0
 
 
+def cmd_atlas(args) -> int:
+    """mw atlas <prefix> — query atlas rows by path prefix."""
+    from . import atlas as _atlas_mod
+    with _conn(args.db) as conn:
+        rows = _atlas_mod.lookup_by_prefix(conn, args.prefix)
+    if not rows:
+        return 1
+    for r in rows:
+        print(f"{r['path']}  description={r.get('description') or ''}  "
+              f"naming={r.get('naming_hint') or ''}  d={r.get('depth', 0)}")
+    return 0
+
+
 def cmd_drift_scan(args) -> int:
     """mw drift scan <old> <new> — manual one-shot trigger."""
     from .drift_sweep import handle_move
@@ -502,6 +515,11 @@ def build_parser() -> argparse.ArgumentParser:
                     metavar="PATH",
                     help="output path (default: db-pages/projects/pit.md)")
     ep.set_defaults(fn=cmd_export_pit)
+
+    at = sub.add_parser("atlas", parents=[common],
+                        help="query atlas rows by path prefix")
+    at.add_argument("prefix")
+    at.set_defaults(fn=cmd_atlas)
 
     dr = sub.add_parser("drift", parents=[common],
                         help="drift_sweep: queue or apply file-move ref updates")

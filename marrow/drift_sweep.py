@@ -33,7 +33,6 @@ AUTHORIZED_ROOTS: list[Path] = [
     Path.home() / "CC-Lab",
     Path.home() / ".config",
     Path.home() / ".claude",
-    Path.home() / "Toolkit",
     Path.home() / "Desktop" / "NY",
     Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "Study",
 ]

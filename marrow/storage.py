@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -341,6 +341,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v10(conn)
         _migrate_to_v11(conn)
         _migrate_to_v12(conn)
+        _migrate_to_v13(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -589,3 +590,41 @@ def _migrate_to_v12(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_atlas_stale ON atlas(stale)"
     )
+
+
+def _migrate_to_v13(conn: sqlite3.Connection) -> None:
+    """v13: atlas schema slim — drop note/write_hint/stale; add description.
+
+    SQLite cannot drop columns natively; use table-recreate pattern.
+    note + write_hint merged into description. stale replaced by DELETE.
+    Idempotent via PRAGMA user_version guard.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 13:
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(atlas)").fetchall()}
+    if "write_hint" not in cols and "note" not in cols:
+        return
+    conn.executescript("""
+        CREATE TABLE atlas_new (
+            path TEXT PRIMARY KEY,
+            description TEXT,
+            naming_hint TEXT,
+            depth INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO atlas_new(path, description, naming_hint, depth, updated_at)
+        SELECT path,
+               CASE
+                 WHEN write_hint IS NOT NULL AND write_hint != '' AND note IS NOT NULL AND note != ''
+                   THEN note || ' | ' || write_hint
+                 WHEN write_hint IS NOT NULL AND write_hint != ''
+                   THEN write_hint
+                 ELSE note
+               END,
+               naming_hint, depth, updated_at
+        FROM atlas;
+        DROP INDEX IF EXISTS idx_atlas_stale;
+        DROP TABLE atlas;
+        ALTER TABLE atlas_new RENAME TO atlas;
+    """)
