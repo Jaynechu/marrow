@@ -20,6 +20,10 @@ from typing import Callable
 
 _SYNC_TICK_S = float(os.environ.get("MARROW_SYNC_TICK_S", "5.0"))
 _MTIME_EPSILON_S = 1.0  # jitter guard
+# If md was touched within this window, skip render this tick — protects
+# user keystrokes from inserter force_sort_consistency bootstrap rewriting
+# the file under the cursor (atlas.md "modified externally" toast).
+USER_ACTIVE_WINDOW_S = 3.0
 
 log = logging.getLogger("marrow.watcher")
 
@@ -190,10 +194,20 @@ class SyncLoop:
 
         log.debug("sync_loop %s md=%.3f db=%.3f", target.name, md_mtime, db_mtime)
 
+        now = time.time()
+        user_active = (now - md_mtime) < USER_ACTIVE_WINDOW_S
+
         if md_mtime > db_mtime + _MTIME_EPSILON_S:
             # Step 4: md newer → render (write_subpage owns reconcile internally).
             # has_md_to_db=False signals this target has no md→db direction; skip.
             if not target.has_md_to_db:
+                return
+            # User-active guard: skip if md touched within USER_ACTIVE_WINDOW_S.
+            # Prevents inserter force_sort_consistency bootstrap from
+            # rewriting the file under the user's cursor.
+            if user_active:
+                log.debug("sync_loop %s skip md→db: md touched %.2fs ago (user typing)",
+                          target.name, now - md_mtime)
                 return
             target.render_fn(conn)
             # Race防御: re-check md mtime after render
@@ -211,6 +225,12 @@ class SyncLoop:
             # guard inside atomic_write swallows no-op renders so this
             # cannot loop on "db_mtime tiny bit ahead but content identical".
             # write_subpage's internal reconcile handles any md edit mid-tick.
+            # Same user-active guard: db→md render also goes through inserter
+            # which can bootstrap-rewrite on sort drift.
+            if user_active:
+                log.debug("sync_loop %s skip db→md: md touched %.2fs ago (user typing)",
+                          target.name, now - md_mtime)
+                return
             target.render_fn(conn)
 
         # else: md_mtime ≥ db_mtime within md→db epsilon — skip

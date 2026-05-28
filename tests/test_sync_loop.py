@@ -6,6 +6,7 @@ can drive the loop deterministically without real subpage machinery.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 import time
@@ -17,10 +18,18 @@ import pytest
 from marrow.sync_loop import (
     SyncLoop,
     SyncTarget,
+    USER_ACTIVE_WINDOW_S,
     _MTIME_EPSILON_S,
     last_db_mtime_dashboard,
     last_db_mtime_subpage,
 )
+
+
+def _backdate(p: Path, seconds: float = 10.0) -> float:
+    """Push md mtime back so it falls outside the user-active window."""
+    past = time.time() - seconds
+    os.utime(str(p), (past, past))
+    return p.stat().st_mtime
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +137,7 @@ def test_sync_loop_tick_fires(tmp_path):
     """Loop calls _process on each iteration (db newer → render path)."""
     md = tmp_path / "t.md"
     md.write_text("# test")
-    md_mtime = md.stat().st_mtime
+    md_mtime = _backdate(md)
 
     calls: list[str] = []
     db_mtime_base = md_mtime + 10.0  # db is newer → render path
@@ -168,7 +177,7 @@ def test_md_newer_calls_render(tmp_path):
     """md newer → render_fn called (write_subpage owns reconcile internally)."""
     md = tmp_path / "subpage.md"
     md.write_text("# hello")
-    md_mtime = md.stat().st_mtime
+    md_mtime = _backdate(md)
     db_mtime = md_mtime - 10.0  # md is newer
 
     rendered: list[int] = []
@@ -188,7 +197,7 @@ def test_md_newer_no_md_to_db_skips(tmp_path):
     """Target with has_md_to_db=False: md→db direction is skipped entirely."""
     md = tmp_path / "t.md"
     md.write_text("x")
-    md_mtime = md.stat().st_mtime
+    md_mtime = _backdate(md)
     db_mtime = md_mtime - 10.0
 
     rendered: list[int] = []
@@ -210,7 +219,7 @@ def test_md_newer_no_md_to_db_skips(tmp_path):
 def test_db_newer_calls_render(tmp_path):
     md = tmp_path / "t.md"
     md.write_text("x")
-    md_mtime = md.stat().st_mtime
+    md_mtime = _backdate(md)
     db_mtime = md_mtime + 10.0  # db is newer
 
     rendered: list[int] = []
@@ -257,7 +266,7 @@ def test_db_slightly_newer_renders(tmp_path):
     """
     md = tmp_path / "t.md"
     md.write_text("x")
-    md_mtime = md.stat().st_mtime
+    md_mtime = _backdate(md)
 
     rendered: list[int] = []
     # 0.5s ahead — used to be inside epsilon, now must render.
@@ -278,10 +287,9 @@ def test_db_slightly_newer_renders(tmp_path):
 
 def test_race_defense_mid_render_md_write(tmp_path):
     """If md mtime advances during render, a debug log fires (next tick absorbs it)."""
-    import os
     md = tmp_path / "race.md"
     md.write_text("initial")
-    md_mtime_initial = md.stat().st_mtime
+    md_mtime_initial = _backdate(md)
     db_mtime = md_mtime_initial - 10.0  # md is newer → render path
 
     rendered: list[int] = []
@@ -312,6 +320,8 @@ def test_multiple_targets_independent(tmp_path):
     md2 = tmp_path / "b.md"
     md1.write_text("a")
     md2.write_text("b")
+    _backdate(md1)
+    _backdate(md2)
     now = time.time()
 
     calls: dict[str, list] = {"a_render": [], "b_render": []}
@@ -352,6 +362,86 @@ def test_missing_md_skipped(tmp_path):
 # ---------------------------------------------------------------------------
 # db_mtime None → skip
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# User-active guard: skip render when md touched within USER_ACTIVE_WINDOW_S
+# Protects atlas.md (and any subpage) from inserter bootstrap rewriting
+# the file while the user is typing in Obsidian.
+# ---------------------------------------------------------------------------
+
+def test_user_active_md_to_db_skipped(tmp_path):
+    """md_mtime ~ now → md→db render SKIPPED (user actively typing)."""
+    md = tmp_path / "atlas.md"
+    md.write_text("# atlas")
+    md_mtime = md.stat().st_mtime  # fresh — within active window
+    db_mtime = md_mtime - 10.0  # md is newer → would normally render
+
+    rendered: list[int] = []
+    t = _target(str(md), lambda c: db_mtime,
+                render_fn=lambda c: rendered.append(1))
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
+    loop.start()
+    time.sleep(0.1)
+    loop.stop()
+    assert rendered == [], (
+        "render_fn must NOT be called when md touched within "
+        f"USER_ACTIVE_WINDOW_S ({USER_ACTIVE_WINDOW_S}s)"
+    )
+
+
+def test_user_active_db_to_md_skipped(tmp_path):
+    """md_mtime ~ now → db→md render SKIPPED (user actively typing)."""
+    md = tmp_path / "atlas.md"
+    md.write_text("# atlas")
+    md_mtime = md.stat().st_mtime  # fresh — within active window
+    db_mtime = md_mtime + 10.0  # db is newer → would normally render
+
+    rendered: list[int] = []
+    t = _target(str(md), lambda c: db_mtime,
+                render_fn=lambda c: rendered.append(1))
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
+    loop.start()
+    time.sleep(0.1)
+    loop.stop()
+    assert rendered == [], (
+        "render_fn must NOT be called when md touched within "
+        f"USER_ACTIVE_WINDOW_S ({USER_ACTIVE_WINDOW_S}s)"
+    )
+
+
+def test_user_idle_md_to_db_renders(tmp_path):
+    """md_mtime = now-5s → md→db render PROCEEDS (user idle, outside window)."""
+    md = tmp_path / "atlas.md"
+    md.write_text("# atlas")
+    md_mtime = _backdate(md, seconds=5.0)
+    db_mtime = md_mtime - 10.0  # md newer
+
+    rendered: list[int] = []
+    t = _target(str(md), lambda c: db_mtime,
+                render_fn=lambda c: rendered.append(1))
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
+    loop.start()
+    time.sleep(0.1)
+    loop.stop()
+    assert rendered, "render_fn must be called when md is older than user-active window"
+
+
+def test_user_idle_db_to_md_renders(tmp_path):
+    """md_mtime = now-5s → db→md render PROCEEDS (user idle, outside window)."""
+    md = tmp_path / "atlas.md"
+    md.write_text("# atlas")
+    md_mtime = _backdate(md, seconds=5.0)
+    db_mtime = md_mtime + 10.0  # db newer
+
+    rendered: list[int] = []
+    t = _target(str(md), lambda c: db_mtime,
+                render_fn=lambda c: rendered.append(1))
+    loop = SyncLoop(_conn, [t], tick_s=100.0)
+    loop.start()
+    time.sleep(0.1)
+    loop.stop()
+    assert rendered, "render_fn must be called when md is older than user-active window"
+
 
 def test_db_mtime_none_skipped(tmp_path):
     md = tmp_path / "t.md"
