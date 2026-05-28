@@ -24,7 +24,7 @@ import sqlite3
 import sqlite_vec
 
 from . import config, storage
-from .drift_sweep import AUTHORIZED_ROOTS, DriftWatcher
+from .drift_sweep import AUTHORIZED_ROOTS, EXCLUDE_DIRS_SCAN, DriftWatcher
 from .md_index import MdIndex
 from .sync_loop import AtlasSweepLoop, SyncLoop, build_targets
 
@@ -202,6 +202,21 @@ class _DriftHandler(FileSystemEventHandler):
             except Exception:
                 self._log.exception("atlas rekey on dir mv failed: %s → %s",
                                     event.src_path, event.dest_path)
+            # Bug 4: dir rename also feeds drift_sweep so refs to the old
+            # basename (in python / configs / md) get queued + alert fires.
+            # Skip renames whose basename is in EXCLUDE_DIRS_SCAN
+            # (.git, __pycache__, node_modules, ...) — those never carry
+            # path references worth scanning.
+            src_name = os.path.basename(event.src_path.rstrip(os.sep))
+            if src_name in EXCLUDE_DIRS_SCAN:
+                return
+            try:
+                self._drift.on_moved(event.src_path, event.dest_path)
+            except Exception:
+                self._log.exception(
+                    "drift on_moved (dir) failed: %s → %s",
+                    event.src_path, event.dest_path,
+                )
             return
         try:
             self._drift.on_moved(event.src_path, event.dest_path)

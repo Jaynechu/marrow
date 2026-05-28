@@ -123,12 +123,19 @@ def test_drift_handler_on_moved_queues(drift_watcher_env, monkeypatch):
     log.exception.assert_not_called()
 
 
-def test_drift_handler_on_moved_skips_directory(drift_watcher_env):
-    """on_moved with is_directory=True is silently ignored."""
+def test_drift_handler_on_moved_dir_queues_drift_scan(drift_watcher_env,
+                                                      monkeypatch):
+    """on_moved with is_directory=True triggers atlas rekey AND queues
+    drift_sweep ref-scan so refs to the old basename get flagged."""
     env = drift_watcher_env
     dw = ds.DriftWatcher(roots=[env.root_a])
     log = MagicMock()
     handler = _DriftHandler(dw, log)
+
+    monkeypatch.setattr("marrow.atlas.rekey_paths", lambda conn, ops: len(ops))
+    monkeypatch.setattr(
+        "marrow.storage.connect", lambda: MagicMock(close=lambda: None)
+    )
 
     class FakeEvent:
         is_directory = True
@@ -137,7 +144,8 @@ def test_drift_handler_on_moved_skips_directory(drift_watcher_env):
 
     handler.on_moved(FakeEvent())
     with dw._lock:
-        assert dw._batch == []
+        batch = list(dw._batch)
+    assert batch == [(FakeEvent.src_path, FakeEvent.dest_path)]
 
 
 def test_drift_handler_on_moved_skips_binary(drift_watcher_env):
