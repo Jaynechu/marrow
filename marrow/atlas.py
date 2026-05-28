@@ -519,6 +519,11 @@ def atlas_sweep_fs(conn: sqlite3.Connection) -> dict[str, int]:
         # whole point. Otherwise reconcile→sweep would never collapse,
         # since stale stub blocks re-insert themselves each tick before
         # the sweep can act.
+        # Bug 1: AUTHORIZED_ROOT ancestor with depth=0 forces retract of
+        # all stub-only descendants, even if some intermediate (non-root)
+        # seed with depth>0 would otherwise mark them covered. A collapsed
+        # root means "clean up everything under me regardless of stale
+        # intermediate seeds".
         counts["retracted"] = 0
         root_strs = {str(r) for r in roots}
         all_rows_full = conn.execute(
@@ -529,11 +534,30 @@ def atlas_sweep_fs(conn: sqlite3.Connection) -> dict[str, int]:
         seed_pool = [(p, d) for p, d in all_paths_depth.items() if d > 0]
         atlas_paths_sorted = sorted(all_paths_depth, key=len, reverse=True)
         for p_str, p_depth in all_paths_depth.items():
-            if p_str in root_strs or p_depth > 0:
+            if p_str in root_strs:
                 continue
             note, write_hint, naming_hint = manual_fields.get(
                 p_str, (None, None, None))
-            if any(v not in (None, "") for v in (note, write_hint, naming_hint)):
+            has_manual = any(v not in (None, "")
+                             for v in (note, write_hint, naming_hint))
+            if has_manual:
+                continue
+            # Bug 1 fix: if ANY AUTHORIZED_ROOT ancestor sits in atlas with
+            # depth=0, force retract — overrides intermediate-seed coverage
+            # AND retracts stub-only rows that still carry a stale depth>0.
+            # Collapsing a root means "clean everything under me unless the
+            # user pinned manual fields".
+            collapsed_root_ancestor = any(
+                rs != p_str
+                and p_str.startswith(rs + os.sep)
+                and all_paths_depth.get(rs) == 0
+                for rs in root_strs
+            )
+            if collapsed_root_ancestor:
+                conn.execute("DELETE FROM atlas WHERE path=?", (p_str,))
+                counts["retracted"] += 1
+                continue
+            if p_depth > 0:
                 continue
             covered = False
             for sp, sd in seed_pool:

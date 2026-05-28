@@ -749,3 +749,279 @@ def test_rekey_paths_src_absent_is_noop(conn, tmp_path):
     """Missing src row is silently skipped."""
     n = rekey_paths(conn, [(str(tmp_path / "ghost"), str(tmp_path / "dest"))])
     assert n == 0
+
+
+# ---------------------------------------------------------------------------
+# 17. Bug 1 — retract walks ancestor chain (collapsed root retracts stubs)
+# ---------------------------------------------------------------------------
+
+def test_sweep_retracts_under_collapsed_root_ancestor(conn, tmp_path, monkeypatch):
+    """When an AUTHORIZED_ROOT itself has depth=0, ALL stub-only descendants
+    in the atlas (regardless of intermediate depth) must retract.
+
+    Bug scenario: Study root flipped depth 2→0 to collapse. An intermediate
+    sub-dir kept depth=1 from a prior pass (no manual hint fields, just a
+    stale seed). Its children look "covered" by that intermediate seed and
+    survive retract, even though the canonical root is collapsed.
+
+    Fix: walk ancestor chain; any AUTHORIZED_ROOT ancestor with depth=0
+    forces retract of stub-only descendants regardless of intermediate seeds.
+    """
+    root = tmp_path / "study_root"
+    root.mkdir()
+    a = root / "lvl1"
+    a.mkdir()
+    b = a / "lvl2"
+    b.mkdir()
+    c = b / "lvl3"
+    c.mkdir()
+
+    from marrow import drift_sweep
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
+
+    # Root is collapsed (depth=0). lvl1 still has depth=1 from a prior pass
+    # — a stale seed left in db with no manual fields.
+    _insert_row(conn, str(root.resolve()), depth=0)
+    _insert_row(conn, str(a.resolve()), depth=1)  # stale seed, stub-only
+    _insert_row(conn, str(b.resolve()), depth=0)  # covered by a (depth=1)
+    _insert_row(conn, str(c.resolve()), depth=0)  # NOT covered (too deep)
+
+    atlas_sweep_fs(conn)
+
+    paths = {r[0] for r in conn.execute("SELECT path FROM atlas").fetchall()}
+    # Root itself stays (AUTHORIZED_ROOTS always spared)
+    assert str(root.resolve()) in paths
+    # All stub-only descendants retract because the root ancestor is depth=0
+    assert str(a.resolve()) not in paths
+    assert str(b.resolve()) not in paths
+    assert str(c.resolve()) not in paths
+
+
+def test_sweep_retract_spares_manual_descendant_of_collapsed_root(
+        conn, tmp_path, monkeypatch):
+    """Stub-only retract under collapsed root must NOT touch rows with
+    manual fields (note / write_hint / naming_hint)."""
+    root = tmp_path / "study_root2"
+    root.mkdir()
+    a = root / "lvl1"
+    a.mkdir()
+    b = a / "lvl2"
+    b.mkdir()
+
+    from marrow import drift_sweep
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
+
+    _insert_row(conn, str(root.resolve()), depth=0)
+    _insert_row(conn, str(a.resolve()), depth=0)  # stub-only — retract
+    _insert_row(conn, str(b.resolve()), depth=0, note="precious")  # spared
+
+    atlas_sweep_fs(conn)
+    paths = {r[0] for r in conn.execute("SELECT path FROM atlas").fetchall()}
+    assert str(a.resolve()) not in paths
+    assert str(b.resolve()) in paths
+
+
+# ---------------------------------------------------------------------------
+# 18. Bug 2 — atlas rows outside AUTHORIZED_ROOTS are purged / refused
+# ---------------------------------------------------------------------------
+
+def test_sweep_purges_rows_outside_authorized_roots(conn, tmp_path, monkeypatch):
+    """Rows whose path is not under any AUTHORIZED_ROOT must be deleted
+    by atlas_sweep_fs (one-time / ongoing cleanup)."""
+    root = tmp_path / "ar_root"
+    root.mkdir()
+    inside = root / "child"
+    inside.mkdir()
+    outside = tmp_path / "stray" / "dir"
+    outside.mkdir(parents=True)
+
+    from marrow import drift_sweep
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
+
+    _insert_row(conn, str(root.resolve()), depth=1)
+    _insert_row(conn, str(inside.resolve()), depth=0)
+    _insert_row(conn, str(outside.resolve()), depth=0, note="orphan")
+
+    atlas_sweep_fs(conn)
+    paths = {r[0] for r in conn.execute("SELECT path FROM atlas").fetchall()}
+    assert str(inside.resolve()) in paths
+    assert str(outside.resolve()) not in paths
+
+
+def test_reconcile_refuses_rows_outside_authorized_roots(
+        conn, tmp_path, monkeypatch):
+    """reconcile_atlas must not insert rows whose path is not under any
+    AUTHORIZED_ROOT — even when md contains a marker for them."""
+    root = tmp_path / "ar_root2"
+    root.mkdir()
+    outside = tmp_path / "outside_root" / "dir"
+    outside.mkdir(parents=True)
+
+    from marrow import drift_sweep
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", [root])
+
+    md_file = tmp_path / "atlas.md"
+    md_file.write_text(_marker_md(str(outside.resolve()), note="bad", depth=0))
+    reconcile_atlas(conn, md_file)
+
+    row = conn.execute(
+        "SELECT path FROM atlas WHERE path=?", (str(outside.resolve()),)
+    ).fetchone()
+    assert row is None
+
+
+# ---------------------------------------------------------------------------
+# 19. Bug 3 — ATLAS_ROOT_ORDER constant + section_order canonical sequence
+# ---------------------------------------------------------------------------
+
+def test_atlas_root_order_constant_defined():
+    """ATLAS_ROOT_ORDER must exist and contain the 6 canonical roots in order."""
+    from marrow.atlas import ATLAS_ROOT_ORDER
+    expected = [
+        Path.home() / "Library" / "Mobile Documents" /
+        "com~apple~CloudDocs" / "Study",
+        Path.home() / "Desktop" / "NY",
+        Path.home() / "cc-lab",
+        Path.home() / ".claude",
+        Path.home() / ".config",
+        Path.home() / "Toolkit",
+    ]
+    assert list(ATLAS_ROOT_ORDER) == expected
+
+
+def test_section_order_uses_atlas_root_order(tmp_path, monkeypatch):
+    """build_atlas_spec.section_order must emit roots in ATLAS_ROOT_ORDER
+    regardless of AUTHORIZED_ROOTS iteration order."""
+    from marrow import atlas as atlas_mod
+    from marrow import drift_sweep
+
+    # Build fake roots matching ATLAS_ROOT_ORDER under tmp so we can assert.
+    fake_roots = [tmp_path / name for name in
+                  ("Study", "NY", "cc-lab", ".claude", ".config", "Toolkit")]
+    for r in fake_roots:
+        r.mkdir()
+
+    # Patch ATLAS_ROOT_ORDER and AUTHORIZED_ROOTS — iteration order
+    # intentionally scrambled to prove section_order ignores it.
+    scrambled = [fake_roots[3], fake_roots[0], fake_roots[5],
+                 fake_roots[2], fake_roots[1], fake_roots[4]]
+    monkeypatch.setattr(atlas_mod, "ATLAS_ROOT_ORDER", fake_roots)
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", scrambled)
+
+    spec = subpage_specs.build_atlas_spec(str(tmp_path))
+    ordered = spec.section_order([])
+
+    expected = [str(r.resolve()) for r in fake_roots]
+    assert ordered == expected
+
+
+def test_section_order_appends_extras_at_end(tmp_path, monkeypatch):
+    """Labels not in ATLAS_ROOT_ORDER stick at the end, preserving canonical
+    order at the front."""
+    from marrow import atlas as atlas_mod
+    from marrow import drift_sweep
+
+    fake_roots = [tmp_path / "A", tmp_path / "B"]
+    for r in fake_roots:
+        r.mkdir()
+    monkeypatch.setattr(atlas_mod, "ATLAS_ROOT_ORDER", fake_roots)
+    monkeypatch.setattr(drift_sweep, "AUTHORIZED_ROOTS", fake_roots)
+
+    spec = subpage_specs.build_atlas_spec(str(tmp_path))
+    extra = str((tmp_path / "Z").resolve())
+    ordered = spec.section_order([extra])
+    assert ordered[-1] == extra
+    assert ordered[:2] == [str(r.resolve()) for r in fake_roots]
+
+
+# ---------------------------------------------------------------------------
+# 20. Bug 4 — _DriftHandler dir on_moved triggers drift ref-scan
+# ---------------------------------------------------------------------------
+
+def test_drift_handler_dir_rename_queues_drift_scan(tmp_path, monkeypatch):
+    """When a watched directory is renamed, _DriftHandler must:
+      1. rekey atlas rows (existing behaviour), AND
+      2. queue the rename in DriftWatcher batch so ref-scan runs.
+    EXCLUDE_DIRS_SCAN basename rename (e.g. .git) must NOT trigger drift.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from marrow import drift_sweep as ds
+    from marrow.watcher import _DriftHandler
+
+    # Redirect drift paths to tmp_path so any pending write is contained.
+    pending_dir = tmp_path / "pending"
+    backup_dir = tmp_path / "backup"
+    pending_dir.mkdir()
+    backup_dir.mkdir()
+    monkeypatch.setattr(ds, "paths", SimpleNamespace(
+        drift_pending_dir=pending_dir,
+        drift_backup_dir=backup_dir,
+        dir_tree_md=tmp_path / "dir_tree.md",
+    ))
+    monkeypatch.setattr(ds, "AUTHORIZED_ROOTS", [tmp_path])
+
+    dw = ds.DriftWatcher(roots=[tmp_path], batch_window=10.0)  # long window
+    handler = _DriftHandler(dw, MagicMock())
+
+    # Patch out atlas rekey + storage so the handler doesn't need a real db.
+    rekeyed: list[tuple] = []
+    monkeypatch.setattr(
+        "marrow.atlas.rekey_paths",
+        lambda conn, ops: rekeyed.extend(ops) or len(ops),
+    )
+    monkeypatch.setattr(
+        "marrow.storage.connect", lambda: MagicMock(close=lambda: None)
+    )
+
+    class DirEvent:
+        is_directory = True
+        src_path = str(tmp_path / "old_dir")
+        dest_path = str(tmp_path / "new_dir")
+
+    handler.on_moved(DirEvent())
+
+    # 1. atlas rekey called
+    assert rekeyed == [(DirEvent.src_path, DirEvent.dest_path)]
+    # 2. drift batch picked up the rename
+    with dw._lock:
+        batch = list(dw._batch)
+    assert batch == [(DirEvent.src_path, DirEvent.dest_path)]
+
+
+def test_drift_handler_dir_rename_skips_excluded_dirs(tmp_path, monkeypatch):
+    """Renames inside .git / __pycache__ etc. must NOT queue drift scan."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from marrow import drift_sweep as ds
+    from marrow.watcher import _DriftHandler
+
+    pending_dir = tmp_path / "pending"
+    backup_dir = tmp_path / "backup"
+    pending_dir.mkdir()
+    backup_dir.mkdir()
+    monkeypatch.setattr(ds, "paths", SimpleNamespace(
+        drift_pending_dir=pending_dir,
+        drift_backup_dir=backup_dir,
+        dir_tree_md=tmp_path / "dir_tree.md",
+    ))
+    monkeypatch.setattr(ds, "AUTHORIZED_ROOTS", [tmp_path])
+
+    dw = ds.DriftWatcher(roots=[tmp_path], batch_window=10.0)
+    handler = _DriftHandler(dw, MagicMock())
+
+    monkeypatch.setattr("marrow.atlas.rekey_paths", lambda conn, ops: 0)
+    monkeypatch.setattr(
+        "marrow.storage.connect", lambda: MagicMock(close=lambda: None)
+    )
+
+    class GitEvent:
+        is_directory = True
+        # basename .git is in EXCLUDE_DIRS_SCAN
+        src_path = str(tmp_path / "proj" / ".git")
+        dest_path = str(tmp_path / "proj" / ".git2")
+
+    handler.on_moved(GitEvent())
+
+    with dw._lock:
+        assert dw._batch == []
