@@ -24,9 +24,9 @@ the AI's continuation memory.
   `{id, status:"done"}`; code flips `WHERE id=?`. Kills the verbatim-title miss.
   New adds (no id) keep going through the existing cosine dedup.
 - **STATE prompt = one judgement, two segments.** Judge "what happened today" once,
-  then split: SEGMENT A → task (coarse milestone, json), SEGMENT B → DOING diff
-  (fine continuation). Never decide completion twice. The ~/Desktop draft is the spec;
-  keep 念念's examples verbatim.
+  then split: SEGMENT A → task (everyday grain, by category — only Project is
+  phase-capped, json), SEGMENT B → DOING diff (fine continuation). Never decide
+  completion twice. The ~/Desktop draft is the spec; keep 念念's examples verbatim.
 - **DOING = open+plan merged**, one bullet per thread:
   `[scope] title / current state / next step / reference`. Diff verbs
   CLOSE/UPDATE/KEEP/ADD against the current Doing ids.
