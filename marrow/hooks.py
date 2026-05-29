@@ -195,6 +195,10 @@ def _handoff_text(conn) -> str:
             lines.append(f"- #{a['id']} [{a['severity']}] {a['message']}")
     else:
         lines.append("- none")
+    # Note reminder: `## Lumi's Note` in handover.md is the new window's to-do.
+    lines += ["",
+              "> Read `## Lumi's Note` in the handover — it's your to-do for"
+              " this window. Don't ignore it."]
     return "\n".join(lines)
 
 
@@ -315,9 +319,13 @@ def session_end() -> int:
 
             if not skip_spawn:
                 log = config.DATA_DIR / "logs" / f"sessionend_async_{sid}.log"
+                # cwd lets sessionend_async locate the repo for git_log evidence.
+                # Absent (study / ny chat) → "" → _load_git_log returns "".
+                cwd = inp.get("cwd") or ""
                 try:
                     popen_detach(
-                        [sys.executable, "-m", "marrow.sessionend_async", "--sid", sid],
+                        [sys.executable, "-m", "marrow.sessionend_async",
+                         "--sid", sid, "--cwd", cwd],
                         log_path=log,
                     )
                 except Exception as e:  # noqa: BLE001
