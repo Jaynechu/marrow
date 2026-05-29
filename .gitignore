@@ -41,3 +41,6 @@ archive/
 
 .claude/worktrees/
 .worktrees/
+
+# Runtime locks
+*.lock

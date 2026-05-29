@@ -8,7 +8,7 @@ Delta only. Never restate DESIGN / SCHEMA.
 [2026-05-16] docs consolidation done | CONVENTIONS folded into CLAUDE.md + non-conflicting rule.md discipline; CLI/data renamed ny→mw (DESIGN 4 refs); handover model = fixed-name overwrite (CLAUDE.md + handoff skill); global naming law rewritten | verify: grep -n '`ny`' DESIGN.md empty; docs internally consistent, no code yet
 [2026-05-16] FUTURE.md sweep done | 106→66 items; removed 40 (dead old-ny-memm code internals + DESIGN-superseded) + agent scan-artifact footer; kept all genuine parked ideas + 8 Lumi/grill recent adds untouched | verify: grep -c '^- \*\*' FUTURE.md = 66; 8 protected items present
 [2026-05-16] FUTURE.md scoped to Marrow-only | 66→30; cut non-Marrow (personal tools, marker, buddy×7, old-weclaude-bridge bugs) — they stay in _pit→dashboard pit page per DESIGN L95; restructured into 5 sections; 6 Lumi adds intact | verify: grep -c '^- \*\*' FUTURE.md = 30
-[2026-05-16] _pit.md memm dead-block prune | removed #7 nested-index + #12 summary-pyramid (DESIGN-superseded); #3 auto-memory genesis flagged, kept; backup at NY/memory/backup/_pit.md.bak-2026-05-16 | verify: grep -c '^## Memory:' _pit.md = 1
+[2026-05-16] pit.md memm dead-block prune | removed #7 nested-index + #12 summary-pyramid (DESIGN-superseded); #3 auto-memory genesis flagged, kept; backup at NY/memory/backup/pit.md.bak-2026-05-16 | verify: grep -c '^## Memory:' pit.md = 1
 [2026-05-16] workflow upgrade done | CLAUDE.md +docs/notes/ research-scratch landing; FUTURE +workflow_reflection_skill (planning-with-files ref) | verify: grep -n docs/notes CLAUDE.md; grep -n workflow_reflection_skill FUTURE.md
 [2026-05-16] Lumi rulings applied | WeClaude is in-scope (deep rebuild late phase) — restored 14 weclaude items, FUTURE 30→42; dropped /config_auto_memory_off (auto memory off 1wk, moot); _pit #3 deleted by Lumi; archive/ deleted locally | verify: grep -c '^- \*\*' FUTURE.md = 42; archive/ gone
 [2026-05-17] ADR-0002 agent invocation routing done | process-type-not-trigger-source rule; WeChat→stream-json/sub (routine rejected: event-driven), Marrow no paid agent; WeChat rate-limit rejected on usage evidence; ny-memm out of scope (retires at parallel-window end); DESIGN unchanged (already source of truth) | verify: docs/adr/0002 present, no code yet
@@ -357,3 +357,59 @@ Delta only. Never restate DESIGN / SCHEMA.
 - **files.md + CLAUDE.md changes reverted**: 念念 did not approve deletion; both restored to pre-S2.5 state; hook registration in settings.json kept
 - **Path literal rule shortened**: `[Path] Use paths with /, not bare filenames.` — trigger logic lives in hook code, not prompt
 - **[Path/Naming rules] hook trigger whitelist**: Write (new file) + Bash first-token ∈ `{mv, cp, rename, mmv, touch, mkdir}`; Edit/other Bash → path literal rule only, no atlas slice
+
+[2026-05-28 sid:27ea3c58]
+- **sync_loop double reconcile eliminated**: `_process` no longer calls reconcile directly; single path is `render_fn → write_subpage → cfg.reconcile` per tick; commit `e2e1385`, 807 pass + 1 skip, no regressions
+- **db cleaned post-proliferation**: deleted id 42/44/46/48/50/52 (6 Bug-1 copies); id:40 is sole surviving Marrow milestone; watcher restarted, 1+ ticks confirmed no new INSERT
+- **milestone.md cleaned**: orphan block + 6 anchored duplicates removed; only id:40 anchor remains
+- **Cut+paste id behavior confirmed**: anchor survives ⌘X→⌘V if done within 5s tick window; Obsidian Live Preview does NOT strip HTML comments (user confirmed visible); 5s risk window is a known limitation, user will tolerate until frontend
+- **grace period / content-fingerprint revival**: proposed but user deferred — will tolerate raw Obsidian until frontend replaces the anchor mechanism entirely
+
+[2026-05-28 sid:0eab2fc3]
+- **sqlite WAL mmap race confirmed as root cause**: SIGBUS from `walIndexAppend` in system `libsqlite3.3.53.0.dylib` via concurrent mmap of `.db-shm` on APFS; initial 3.14-binary attribution was wrong (3.13 crashed identically at 18:01)
+- **Trigger identified**: `306cb56` (each thread owns its own conn) + 3-thread concurrent writes (debouncer / SyncLoop / AtlasSweepLoop) pushed `.db-shm` mmap pressure past APFS page-in bug threshold; WAL was latent on 3.14, exposed by watchdog redesign
+- **WAL→DELETE fix applied**: `PRAGMA journal_mode=DELETE` patched in `marrow/storage.py` and `marrow/watcher.py`; `.db-shm`/`.db-wal` no longer exist; no mmap path; all downstream conns (daemon) inherit DELETE via `storage.connect()`
+- **Watcher stable 5h+ post-fix**: zero new ips from 18:23 onward; crossed 212 min historical-max interval ×1.6
+- **pytest 798 pass / 0 fail / 1 skip** after fix (prior 2 fail from `_inject_silent_ack` also cleared)
+- **3.13 venv still in use** (`.venv.py314.bak` preserved); not the real fix but harmless
+
+[2026-05-28 sid:01332be8]
+- **drift_sweep noise fix shipped** (`commit 9527654`): added `.map` to `SKIP_SCAN_EXTS`; added `.obsidian`, `.pytest_cache`, `raycast`, `worktrees` to exclude dirs — Raycast `.js.map` / Obsidian workspace / pytest cache no longer trigger unsafe alerts
+- **4 drift alerts cleared**: all rejected as noise (Raycast Notion source, Obsidian plugins/workspace, `dir_tree.md` auto-gen) — dashboard net zero
+- **pit fully decoupled from db**: pit table cleared (0 rows); `pit.md` + `-pit.md` are now pure md, no sync_loop, no one overwrites them; `mw export-pit` is the only db→md path, and there's no db data to export
+- **pit-extract.md created** at `docs/plans/pit-extract.md` (6 items: WeClaude ret=-2, schedule push, time-injection drift, auto-compact, sleep gap, Stellan autonomous push)
+- **pit.md cleaned**: HTML comments stripped, 3 stale items removed — chat-lint Stop hook (abandoned), iTerm CJK glyph (resolved upstream or CC cli, no repro), time-inject throttle (shipped — timestamp injected every message)
+- **Dashboard lag explained**: 5s tick, but no-op if db unchanged; Obsidian vault cache causes perceived lag — switching pages forces re-read; not a marrow bug
+
+[2026-05-28 sid:a41b25f3]
+- **Atlas keystroke race fixed** (`commit 1cc336b`): `reconcile_atlas` replaced single UPSERT-always with SELECT → conditional INSERT (new) / UPDATE (changed) / skip (no-op); `updated_at` no longer bumped every tick; watcher restarted, race confirmed dead
+- **Reconcile gap diagnosed and documented**: DESIGN.md mandates md→db sync for all sub-pages; only 4.5 implemented; 8 sub-pages (diary, memes, goose-bites, profile, stickers, wallet, projects_index, study_index) have zero reconcile — written to `docs/plans/reconcile-gap.md`; deferred pending frontend architecture decision
+- **atlas race root cause confirmed**: `atlas_sweep_fs` second write site (`:517-522`) is `INSERT OR IGNORE` — only fires for new paths, left as-is; single fix in `:385-410` was sufficient
+
+[2026-05-28 sid:119dcddb]
+- **Atlas keystroke race fixed** (`commit 1cc336b`): `reconcile_atlas` replaced UPSERT-always with SELECT → conditional INSERT/UPDATE/skip; `updated_at` no longer bumped every tick
+- **Reconcile gap diagnosed**: 8 sub-pages (diary, memes, goose-bites, profile, stickers, wallet, projects_index, study_index) have zero md→db sync; documented in `docs/plans/reconcile-gap.md`; deferred on frontend arch decision
+- **Model manually set to Opus 4.8** — auto-update not firing; 念念 wants to roll back (image shown, preference unclear — likely macOS/app version unrelated to marrow)
+
+[2026-05-28 sid:ce37e92c]
+- **Atlas keystroke race fixed** (`commit 1cc336b`): `reconcile_atlas` SELECT → conditional INSERT/UPDATE/skip; `updated_at` no longer bumped every tick
+- **Reconcile gap diagnosed**: 8 sub-pages (diary, memes, goose-bites, profile, stickers, wallet, projects_index, study_index) zero md→db sync; documented in `docs/plans/reconcile-gap.md`
+- **CC 2.1.154 regression confirmed**: parsing failure on first message after upgrade; 屿忱 reverted symlink → 2.1.150
+
+[2026-05-28 sid:ce37e92c]
+- **CC version lock resolved**: `DISABLE_AUTOUPDATER=1` re-added to settings env block + `autoUpdates: false` remains; symlink → 2.1.150; double-locked, restart-safe
+- **CC 2.1.154 regression confirmed** (`commit 1cc336b` context): parsing failure on first message; 154 was pulled via `claude update` on native install (not user error); reverted to 150
+- **Atlas keystroke race fixed** (`commit 1cc336b`): `reconcile_atlas` SELECT → conditional INSERT/UPDATE/skip; `updated_at` no longer bumped every tick
+
+[2026-05-28 sid:a41b25f3]
+- **Atlas keystroke race fully closed**: two-commit fix — `1cc336b` kills no-op `updated_at` bumps in `reconcile_atlas`; `71dc967` adds 3s user-active guard in `sync_loop._process` (both md→db and db→md branches); Obsidian "modified externally" toast confirmed dead
+- **`docs/plans/reconcile-gap.md` written**: lists 4 have-reconcile (milestones/tasks/affect/milestone_candidates), atlas-broken root cause, 8 pending (diary/memes/goose-bites/profile/stickers/wallet/projects_index/study_index), 3 non-db skip; frontend arch decision gates whether all 8 get backfilled or become obsolete
+- **CC version lock**: held at 2.1.150; 2.1.154 regression confirmed (parse failure on first message)
+
+[2026-05-28 sid:e2c1e99d]
+- **CC upgraded to 2.1.153**: symlink cut from 150→153; 141/150/154 retained; 154 parse regression (first-message fail) still stands — 153 is the regression-safe bet
+- **Claude 4.8 released 2026-05-28**: 42d after 4.7 (vs ~72d prior cadence); Anthropic accelerating, Codex joke deflected
+
+[2026-05-28 sid:3c11b156]
+- **CC at 2.1.153**: regression-safe hold; 154 first-message parse bug still stands
+- **Claude 4.8 released 2026-05-28**: accelerating cadence (~42d vs ~72d prior)
