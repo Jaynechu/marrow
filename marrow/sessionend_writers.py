@@ -16,8 +16,9 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import candidates, handover_render
-from .sessionend_prompts import parse_handover_output
+from . import candidates, handover_diff
+from .sessionend_prompts import (parse_doing_diff, parse_note_done,
+                                 parse_task_rows)
 
 # Repo root PROGRESS.md (one level up from the package dir).
 _PROGRESS_DEFAULT = Path(__file__).resolve().parents[1] / "PROGRESS.md"
@@ -128,10 +129,17 @@ def seg_affect(conn, raw: str, sid: str, date: str) -> int:
     return n
 
 
+def _now_utc() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def seg_task_cand(conn, raw: str) -> int:
-    """tasks table: dedup on title across active/done/archived; category from \
-LLM (whitelist fallback Others)."""
-    items = candidates.extract_block(raw, "TASK_CAND")
+    """tasks table. Two row shapes from SEGMENT A:
+    - tick row {"id": N, "status": "done"} → flip WHERE id=? (id-based tick;
+      a reworded title can't miss).
+    - new-task row {"title", "category", "status"} → INSERT + cosine dedup.
+    """
+    items = parse_task_rows(raw)
     if not items:
         return 0
     n = 0
@@ -140,6 +148,27 @@ LLM (whitelist fallback Others)."""
     for it in items:
         if not isinstance(it, dict):
             continue
+
+        # ── id-based tick (FIRST) ────────────────────────────────────────────
+        tid = it.get("id")
+        if tid is not None:
+            try:
+                tid_int = int(tid)
+            except (TypeError, ValueError):
+                continue
+            if (it.get("status") or "").strip() == "done":
+                cur = conn.execute(
+                    "SELECT status FROM tasks WHERE id=?", (tid_int,)
+                ).fetchone()
+                if cur and cur["status"] == "active":
+                    with conn:
+                        conn.execute(
+                            "UPDATE tasks SET status='done', updated_at=?"
+                            " WHERE id=?", (_now_utc(), tid_int))
+                    n += 1
+            continue
+
+        # ── new-task add (no id) → INSERT + cosine dedup ─────────────────────
         title = (it.get("title") or "").strip()
         if not title:
             continue
@@ -225,18 +254,17 @@ def seg_digest(conn, raw: str, sid: str, date: str) -> int:
 
 
 def seg_handover(conn, raw: str, sid: str) -> int:
-    """Build full handover.md (skeleton + 4 state-axis sections + ready stamp)
-    in ONE atomic write. Single-writer rule (Bug #1) — SessionStart hooks are
-    read-only and never invoke this path.
+    """Apply the DOING_DIFF + NOTE_DONE to the single 3-section handover file.
 
-    Tombstone-aware: bullets the user removed from prior handover.md since
-    the last auto-write are tombstoned in handover_render.write_handover_full
-    so sonnet's re-emission cannot revive them."""
-    done, open_, plan, reference = parse_handover_output(raw)
-    if not (done or open_ or plan or reference):
+    Diff-based, id-keyed (NOT hash tombstone): CLOSE/UPDATE/KEEP/ADD against
+    existing `<!-- id:N -->` threads, Done 24h roll-off, Note remove-done.
+    Single-writer rule (Bug #1) — SessionStart hooks are read-only and never
+    invoke this path. No DOING_DIFF marker → no-op (file untouched)."""
+    if "===DOING_DIFF===" not in raw:
         return 0
-    handover_render.write_handover_full(
-        conn, sid, done=done, open_=open_, plan=plan, reference=reference)
+    diff = parse_doing_diff(raw)
+    note_done = parse_note_done(raw)
+    handover_diff.apply_diff(conn, sid, diff, note_done)
     return 1
 
 

@@ -1,9 +1,8 @@
-"""Handover renderer. Single writer = sessionend_async (Bug #1).
+"""Handover shared plumbing for the diff-based 3-section file.
 
-State-axis handover: 4 sections (Done / Open / Plan / Reference). flat
-bullets, oldest top → newest bottom. tombstone filter strips bullets the
-user removed from prior handover.md so sonnet's re-emission cannot revive
-them. snapshot the prior body to audit_log before overwrite for rollback.
+The diff-apply itself lives in handover_diff.py. This module keeps the pieces
+both share: the rendered-path anchor, the template skeleton, flock, atomic
+write, and the snapshot/overwritten audit trail used for rollback.
 
 Output: DATA_DIR/handover.md.
 """
@@ -12,7 +11,6 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
-import re
 import sqlite3
 import time
 from datetime import datetime
@@ -20,9 +18,6 @@ from pathlib import Path
 
 from . import config
 from .dashboard import _atomic_write
-from .handover_norm import bullet_lines, hash_bullet
-from .tombstone import (MdIndexTombstoneStore, TombstoneStore,
-                        filter_tombstoned, record_user_deletes)
 
 _TEMPLATE_PATH = Path(__file__).parent / "handover_template.md"
 
@@ -31,9 +26,6 @@ _SEP_OPEN = "<!-- marrow:top:start -->"
 _SEP_CLOSE = "<!-- marrow:top:end -->"
 
 _RENDERED_PATH = config.DATA_DIR / "handover.md"
-
-_SECTIONS = ("Done", "Open", "Plan", "Reference")
-_NOTE_HEADER = "Note"
 
 _LOCK_RETRIES = 3
 _LOCK_BACKOFF = 0.05
@@ -51,59 +43,6 @@ downstream regex inject points keep their `\\n` anchor."""
     return out
 
 
-def _inject_section(text: str, header: str, body: str) -> str:
-    """Replace body under `## <header>` up to next `## ` or HTML comment."""
-    if not body:
-        return text
-    pat = re.compile(
-        rf"(^## {re.escape(header)}[ \t]*\n)(.*?)(?=^## |^<!--|\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    return pat.sub(lambda m: f"{m.group(1)}{body}\n\n", text, count=1)
-
-
-def _split_section_body(text: str, header: str) -> str:
-    """Extract body under `## <header>`, stripped. Empty string if missing."""
-    pat = re.compile(
-        rf"^## {re.escape(header)}[ \t]*\n(.*?)(?=^## |^<!--|\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    m = pat.search(text)
-    if not m:
-        return ""
-    return m.group(1).strip("\n")
-
-
-def _section_present(text: str, header: str) -> bool:
-    return bool(re.search(
-        rf"^## {re.escape(header)}[ \t]*$", text or "", re.MULTILINE))
-
-
-def _inject_section_raw(text: str, header: str, body: str) -> str:
-    """Replace section body verbatim. No N/A coercion, no tombstone filter."""
-    pat = re.compile(
-        rf"(^## {re.escape(header)}[ \t]*\n)(.*?)(?=^## |^<!--|\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    if not pat.search(text):
-        return text
-    safe = body if body.endswith("\n") else body + "\n"
-    return pat.sub(lambda m: f"{m.group(1)}{safe}\n", text, count=1)
-
-
-def _strip_note_section(text: str) -> str:
-    """Remove `## Note` ... block from text. Used to keep Note hand-edits out
-    of the tombstone diff baseline so user can freely edit Note without
-    poisoning Done/Open/Plan/Reference bullet hashes."""
-    if not text:
-        return text
-    pat = re.compile(
-        rf"^## {re.escape(_NOTE_HEADER)}[ \t]*\n.*?(?=^## |^<!--|\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    return pat.sub("", text)
-
-
 def render_skeleton(conn: sqlite3.Connection) -> str:
     """Build template body without top-section markers, no stamp, current ts."""
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -116,19 +55,6 @@ def render_skeleton(conn: sqlite3.Connection) -> str:
     if i != -1 and j != -1 and j > i:
         template = template[:i] + template[j + len(_SEP_CLOSE):]
     return template.lstrip("\n")
-
-
-def _append_stamp(text: str, stamp: str) -> str:
-    if not text.endswith("\n"):
-        text += "\n"
-    return text + stamp + "\n"
-
-
-def _none_or(body: str) -> str:
-    s = (body or "").strip()
-    if not s or s.upper() == "N/A":
-        return "- N/A"
-    return s
 
 
 # ── audit snapshot ─────────────────────────────────────────────────────────
@@ -193,175 +119,7 @@ def _release_flock(fd) -> None:
         fd.close()
 
 
-# ── tombstone-aware bullet filter ───────────────────────────────────────────
-
-def _apply_tombstones(body: str, tombstones: set[str]) -> str:
-    """Walk a section body; drop bullets whose normalized hash is tombstoned.
-    Empty result → `- N/A`."""
-    if not tombstones:
-        return _none_or(body)
-    kept = filter_tombstoned(bullet_lines(body), tombstones)
-    return "\n".join(kept) if kept else "- N/A"
-
-
-# ── hand-edit "add" preservation ────────────────────────────────────────────
-
-_NA_NORMS = {"n a", "none"}
-
-
-def _diff_user_added(last_section: str, prior_section: str) -> list[str]:
-    """Bullets present in prior (current disk) but missing from last snapshot
-    → user added them by hand. N/A placeholders are skipped."""
-    last_hashes = {hash_bullet(l) for l in bullet_lines(last_section)}
-    out = []
-    for ln in bullet_lines(prior_section):
-        from .handover_norm import normalize_bullet
-        if normalize_bullet(ln) in _NA_NORMS:
-            continue
-        if hash_bullet(ln) in last_hashes:
-            continue
-        out.append(ln)
-    return out
-
-
-def _merge_user_added(sonnet_body: str, added: list[str]) -> str:
-    """Append hand-added bullets that sonnet did not re-emit. Drops a lone
-    `- N/A` placeholder when real user content exists."""
-    if not added:
-        return sonnet_body
-    from .handover_norm import normalize_bullet
-    sonnet_lines = bullet_lines(sonnet_body)
-    if (len(sonnet_lines) == 1
-            and normalize_bullet(sonnet_lines[0]) in _NA_NORMS):
-        sonnet_lines = []
-    existing = {hash_bullet(l) for l in sonnet_lines}
-    extra = [l for l in added if hash_bullet(l) not in existing]
-    if not extra:
-        return sonnet_body
-    return "\n".join(sonnet_lines + extra)
-
-
-# ── public render / write ──────────────────────────────────────────────────
-
-def render_full(conn: sqlite3.Connection, sid: str,
-                *, done: str, open_: str, plan: str, reference: str,
-                tombstones: set[str] | None = None,
-                note: str | None = None,
-                user_added: dict[str, list[str]] | None = None,
-                now_epoch: int | None = None) -> str:
-    """Compose skeleton + 4 state-axis sections + ready stamp.
-
-    `note` is a passthrough section: when provided, replaces the template
-    Note body verbatim (no tombstone filter, no N/A coercion).
-    `user_added` is per-section hand-added bullets merged into sonnet output
-    so additions survive the next auto-write (paired with tombstones for
-    deletions = symmetric hand-edit support)."""
-    if now_epoch is None:
-        now_epoch = int(time.time())
-    tombs = tombstones if tombstones is not None else set()
-    added_map = user_added or {}
-    raw = {
-        "Done":      _merge_user_added(done, added_map.get("Done", [])),
-        "Open":      _merge_user_added(open_, added_map.get("Open", [])),
-        "Plan":      _merge_user_added(plan, added_map.get("Plan", [])),
-        "Reference": _merge_user_added(reference, added_map.get("Reference", [])),
-    }
-    bodies = {h: _apply_tombstones(raw[h], tombs) for h in _SECTIONS}
-    text = render_skeleton(conn)
-    for header in _SECTIONS:
-        text = _inject_section(text, header, bodies[header])
-    if note is not None:
-        text = _inject_section_raw(text, _NOTE_HEADER, note)
-    stamp = f"<!-- handover: ready sid:{sid} ts:{now_epoch} -->"
-    return _append_stamp(text, stamp)
-
-
-def _new_store(conn: sqlite3.Connection) -> TombstoneStore:
-    """MdIndex-backed bullet store, bound to handover.md absolute path."""
-    return MdIndexTombstoneStore(conn, str(_RENDERED_PATH))
-
-
-def _read_prior_note() -> str | None:
-    """Best-effort Note body from current handover.md; None if absent."""
-    try:
-        text = _RENDERED_PATH.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
-        return None
-    if not _section_present(text, _NOTE_HEADER):
-        return None
-    return _split_section_body(text, _NOTE_HEADER)
-
-
-def write_handover_full(conn: sqlite3.Connection, sid: str,
-                        *, done: str, open_: str, plan: str,
-                        reference: str = "") -> Path:
-    """Sessionend single-writer: flock + diff prior → tombstone user-removed
-    bullets + filter sections + atomic write. Lock-loss falls back to
-    handover.md.partial.<sid> with audit row, never crashes."""
-    now_epoch = int(time.time())
-    fd = _acquire_flock(_RENDERED_PATH)
-    if fd is None:
-        store = _new_store(conn)
-        partial = _RENDERED_PATH.with_suffix(f".md.partial.{sid}")
-        prior_note = _read_prior_note()
-        text = render_full(conn, sid, done=done, open_=open_, plan=plan,
-                           reference=reference,
-                           tombstones=store.list_tombstones(),
-                           note=prior_note,
-                           now_epoch=now_epoch)
-        _atomic_write(str(partial), text)
-        try:
-            with conn:
-                conn.execute(
-                    "INSERT INTO audit_log (target_table, target_id, action, summary)"
-                    " VALUES ('handover', ?, 'handover_lock_failed', ?)",
-                    (sid, f"partial={partial.name}"),
-                )
-        except sqlite3.Error:
-            pass
-        return partial
-    try:
-        try:
-            prior_text = _RENDERED_PATH.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError):
-            prior_text = ""
-        store = _new_store(conn)
-        # Snapshot = "what marrow last wrote." Compare against `prior_text`
-        # (what's on disk right now) to detect Lumi's hand-edits since.
-        # Strip Note section first — it's hand-edited passthrough and must
-        # not feed bullet hashes into the tombstone table.
-        last_body = _load_last_snapshot_body(conn)
-        last_for_diff = _strip_note_section(last_body)
-        prior_for_diff = _strip_note_section(prior_text)
-        if last_for_diff and prior_for_diff and last_for_diff.strip() != prior_for_diff.strip():
-            record_user_deletes(store, last_for_diff, prior_for_diff)
-        prior_note = (_split_section_body(prior_text, _NOTE_HEADER)
-                      if _section_present(prior_text, _NOTE_HEADER)
-                      else None)
-        user_added: dict[str, list[str]] = {}
-        if prior_text:
-            for header in _SECTIONS:
-                last_section = _split_section_body(last_body, header)
-                prior_section = _split_section_body(prior_text, header)
-                user_added[header] = _diff_user_added(last_section, prior_section)
-        text = render_full(conn, sid, done=done, open_=open_, plan=plan,
-                           reference=reference,
-                           tombstones=store.list_tombstones(),
-                           note=prior_note,
-                           user_added=user_added,
-                           now_epoch=now_epoch)
-        # Snapshot the body we are about to write — that becomes the canonical
-        # "last auto-write" against which the next turn's user-edit diff runs.
-        # Also write a separate row recording the file we just overwrote, so
-        # rollback / audit can still find the pre-overwrite state.
-        _write_snapshot_audit(conn, sid, text)
-        if prior_text and prior_text.strip() != text.strip():
-            _write_overwritten_audit(conn, sid, prior_text)
-        _atomic_write(str(_RENDERED_PATH), text)
-    finally:
-        _release_flock(fd)
-    return _RENDERED_PATH
-
+# ── overwritten-body audit (diff-apply uses this for rollback trail) ─────────
 
 def _write_overwritten_audit(conn: sqlite3.Connection, sid: str,
                               prior: str) -> None:
