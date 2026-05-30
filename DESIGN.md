@@ -88,21 +88,14 @@ Dashboard top renders a `## Content` section below Affect, listing the above wit
 - Pending: per-event tier/timeout/retry table, filled per event at build.
 
 ## Hard constraints
-- LLM via `claude` CLI subprocess (OAuth). No cloud embedding.
+- LLM via `claude` CLI subprocess (OAuth). No paid API.
 - Three tiers: cheap/local for tagging-routing (bulk), mid for narrative, top for user-facing only.
 - Atomic write every rendered md (temp + replace). Every scheduled job: try/except + alert row on fail.
 - Data under `~/.config/marrow/`, code under `~/CC-Lab/marrow/`. Hook scripts ≤100 lines.
 - Stub policy: each phase builds only what it uses. Placeholder tables OK (commented); stub classes banned.
 - Prompt/subagent template change: notify Lumi to confirm wording.
 
-## Safety nets (do not cut)
+## Safety nets
 > Baseline: Lumi never manually clears markers, never triggers catchup, never retries. No silent fail. Token bounded. Originals recoverable.
 - Required nets: backup · retry · catchup · failure-alert · concurrent-write lock · atomic write · idempotency · timeout brake · edit safety · drift sweep · claude.md render guard · affect heartbeat · affect neutral fallback · affect catchup.
 - Shipped mechanism → PROGRESS. Pending mechanism (drift sweep · claude.md render guard · retry thresholds · catchup scan window · edit-safety anchor format) → FUTURE.
-
-## Phase plan
-- Phase 1 shipped — memory core: SQLite + FTS + vec, daemon (MCP recall), 4 hooks Phase-1 subset, dashboard top, migrate.py, `mw` CLI, 4 launchd jobs (daily-routine / catchup / db-backup / aging), jsonl retention → cc `cleanupPeriodDays`.
-- Phase 2 in progress — emotion (affect) + recall fusion + entity co-emit + sub-page render fills out.
-- Phase 2.5 in-flight reset — SessionEnd async LLM pipeline · diary demote to read-only 07:00 roll-up (was 04:00) · threads → tasks · candidates 0-audit · pinned no-decay · 6AM day boundary · all-sonnet tier.
-- Phase 3 (in-flight, locked 2026-05-25) — md-as-SoT reversal · md_index hash table + watchdog daemon + per-block inserter for handover/dashboard/subpage/projects · Handover prompt split (state + narrative) + sessionend silent-death root-cause fix in wt-handover · Waves: wt-handover ∥ wt-md-a → wt-md-b ∥ wt-md-cd → wt-md-e → wt-md-f
-- Pending (scope/order TBD): writer authority · cross-channel parity (WeChat deep rebuild) · addons + OSS (stellan_wallet first). Detail → FUTURE.

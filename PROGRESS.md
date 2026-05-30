@@ -413,3 +413,59 @@ Delta only. Never restate DESIGN / SCHEMA.
 [2026-05-28 sid:3c11b156]
 - **CC at 2.1.153**: regression-safe hold; 154 first-message parse bug still stands
 - **Claude 4.8 released 2026-05-28**: accelerating cadence (~42d vs ~72d prior)
+
+[2026-05-29 sid:2de3eb2f]
+- **Commits pushed** `a052a59..3d03e70` (24 commits): fix(migrate) pit src path, S2.5 Done, reconcile-gap plan, response rules trim, `*.lock` → `.gitignore`, atlas-backfill-draft deleted
+- **Finder rename / inode bug**: confirmed already fixed — SLE370→SLE377 live-verified, pytest 798 pass; prior handover烂账, dropped
+- **sessionend timestamp diagnosis**: db stores timestamp, SELECT pulls it, but `events_text` build strips it at `:169`; one-line fix identified for `@HH:MM` in HO Done lines (message time, not event time)
+- **[N] semantics gap confirmed**: `sessionend_prompts.py:108` says "tag if unsure" — not "95% done awaiting confirmation"; mismatch with 念念's intent causes done items to persist
+
+[2026-05-29 sid:60721962]
+- **Root cause diagnosed**: no "implementation current state" layer exists — Claude always guesses code structure from drifted docs, causing all three pain points (wrong area, wrong assumptions, misaligned plans)
+- **Five-file architecture locked**: DESIGN (goal+outcome+board structure only) / MAP (code mechanisms, not config) / HO (todo+handover) / FUTURE (phases+ideas) / DECISION (facts-only conclusions, reasons→note)
+- **DESIGN**: phases to be removed and moved to FUTURE; design stays ≤ goal/outcome/board
+- **DECISION**: facts only — no "why" unless tagged note; "selected bge-m3" not "why not ollama"
+- **MAP schema fixed** (6 mandatory sections, agent fills blanks, no subjective "key" judgment): `What` / `Why N layers` / `Flow` (ASCII data flow) / `Catchup/Sync` (file:line) / `Lifecycle` (insert/embed/retire mechanisms) / `Anchors` (file:line list) — English tags/table headers, Chinese descriptions
+- **MAP format**: tree toplevel + one section per subsystem; 6 subsystems: Memory / Affect / Hooks / md-SoT / Render / Infra
+- **workflow彩虹 = harmless**: keyword detection only, no silent execution; Option+W broken in iTerm without Meta key set; disableWorkflows option exists but not recommended
+- All prior OPEN items (reconcile gap, atlas backfill, HO redesign, sessionend fixes) — untouched this session, carry forward
+
+[2026-05-29 sid:f53bfa23]
+- **HO redesign architecture fully locked**: 3 scope files (`project/study/ny.md`) under `~/.config/marrow/handover/`; symlinks in CC-Lab root, Study dir, Desktop/NY
+- **Sections per file**: `## Doing` (open+plan merged, each bullet `· → next step`) / `## Closed today` (auto-clear after 1 day) / `## Note` (sonnet never touches, verbatim passthrough)
+- **Diff not rewrite**: sonnet emits `CLOSE/UPDATE/KEEP/ADD` against stable hidden IDs (`<!-- h:p1 -->`); eliminates `[N]` litter at source
+- **`[N]` redefined** = "95% done, awaiting 念念 confirmation" (was "unsure whether to keep" — the bug)
+- **Scope routing**: cwd prefix → CC-Lab=project, Study=study, else=ny; zero manual selection
+- **Life/ny scope** captures "unclosed topics/decisions" (chosen outfit not settled = open; outfit bought = closed), not just tasks
+- **git log** = sonnet CLOSE *evidence* for project scope only; study/ny use transcript
+- **progress.md retired**: sessionend stops appending; file stays as frozen archive
+- **flock**: blocking wait (replaces non-blocking 3×50ms) → same-scope concurrent closes serialize, both diffs land, `.partial` data-loss path killed
+- **User hand-edit preserved**: tombstone for deletes, user_added for new lines, both ported from current `handover_render.py` logic
+- **Artifacts**: `~/Desktop/handover-template.md` + `~/Desktop/handover-prompt-draft.md` (念念 editing); implementation plan at `docs/plans/ho-redesign.md`
+- MAP.md workflow / DESIGN trim / DECISION slim / reconcile gap / atlas backfill — all untouched, carry forward
+
+[2026-05-29 sid:60721962]
+- **MAP.md format fully locked**: ASCII overview (memory center, hooks top, dashboard bottom, addon mount) + per-component What/Why/How/Where (4-W; tags EN, descriptions CN) + two cross-cutting sections (aging / catchup); `docs/plans/map-build.md` written and self-contained for next session
+- **DRIFT.md scope added**: each workflow agent does dual output — MAP fill + spec-vs-code gap audit → `DRIFT.md` lists not-built / half-built / differs-from-decision gaps for prioritization
+- **DECISION role re-locked**: facts-only (conclusion only: "selected bge-m3"), no "why" rationale — reasons go to `note` entry if essential; MAP takes over structural SoT role
+- **DESIGN role re-locked**: goal + outcome + board composition only; phases → FUTURE.md
+- **Component order locked** (product-logic): Ingest → Store/Compute → aging/catchup (cross-sections) → Surface → Infra → Addon
+- **HO redesign architecture** (from prior) still fully locked; artifacts on Desktop; plan at `docs/plans/ho-redesign.md`
+
+[2026-05-29 sid:6f4129b1]
+- **HO redesign design fully locked** (this session): one all-in-one file, scope = `[Marrow]/[Study]/[Daily]` label tag (not a filter/router), @import injection (no 10k char limit), no migration (existing HO is empty → new write)
+- **Task tick changed to id-based**: sonnet outputs `{"id":N,"status":"done"}`; code does `WHERE id=?` — title rewrites can't cause missed ticks; cosine dedup stays for new-add only
+- **Note section rule locked**: sessionend only moves completed items out; sessionstart injects "don't ignore Lumi's Note"; `[N]` concept deleted
+- **Milestone gate removed**: only Project is phase-gated (large phase, max 2/day, no debug/py/config steps); Daily/Appointment/Study/Assignment all record normal granularity
+- **AskUserQuestion banned** via `permissions.deny` in `~/.claude` settings (committed locally, takes effect on new window)
+- **Template + prompt draft finalized**: `~/Desktop/handover-template.md` + `~/Desktop/handover-prompt-draft.md` — self-contained for next window to implement without this session's context
+- `docs/plans/ho-redesign.md` updated and committed (`0987c04`) — one file / @import / no migrate / by-category task grain locked
+
+[2026-05-29 sid:8435fb3c]
+- **HO redesign design locked** (prior): one all-in-one file, scope label tag, @import injection, no migration, id-based tick, Note remove-done, AskUserQuestion banned
+- **cwd verified**: `cwd` is standard field on all hook inputs (alongside `session_id`/`transcript_path`) — `git log --cwd` line is solid, fallback to empty if non-repo
+- **git_log approach locked**: `popen` passes `--cwd` arg; `_load_git_log(cwd, since_ts)` runs `git -C <cwd> log --since=<ts>`; non-repo returns empty (not a crash)
+- **Note deletion approach locked**: sonnet identifies completed lines with evidence (commit or explicit dialogue), code removes only those lines; no other edits; no-evidence → keep
+- **Symlink decision locked**: 3 targets (NY / Study / CC-Lab/marrow) → all point to `~/.config/marrow/handover.md`; conflicting files manually cleared by 念念 this session
+- **M1–M4 built and green** in worktree `worktree-agent-a681e2b5dea9f13c1` (5 commits, 811→823 passed): STATE v2 prompt, id-based task tick, `handover_diff.py` (CLOSE/UPDATE/KEEP/ADD + unmentioned-id survival + 24h roll-off), `--cwd` in popen, Note reminder at sessionstart
+- **Key implementation decisions**: UPDATE heads use `#<id>`; `handover_diff` has its own section splitter (avoids mis-splitting `<!-- id:N -->` lines); lock-loss path skips snapshot audit only
