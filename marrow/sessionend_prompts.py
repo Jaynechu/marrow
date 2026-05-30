@@ -227,7 +227,9 @@ arguments / dinner with friends
   Finer label (2-char CN): specific emotion word like \
 麻木/担心/绝望/委屈/窃喜/心碎/欣慰/雀跃.
 - description: Short event anchor phrase, ≤15 CN chars. Describe the \
-trigger / event. Examples: 猪一样的队友 / 通过 GAMSAT 模考 / 和xx吃漂亮饭.
+trigger / event from USER's perspective — what happened to/around the \
+user, not the assistant's own feelings. \
+Examples: 猪一样的队友 / 通过 GAMSAT 模考 / 和xx吃漂亮饭.
 - entities: list of {{kind, name}} dicts (kind ∈ person/pref/place). \
 May be empty.
 
