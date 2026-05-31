@@ -105,6 +105,23 @@
   - 同时把那行原文整理成 `##### [today] xxx` 格式 atomic_write 回 md，下次 parse 走 strict 路径
 - 注意: 跟 BUG-1 修法 B 同源 — 都走 line splice + atomic_write。两个 feature 共享一套 line-mutation helper
 
+### 6. MAP auto-update scanner (Agent Notes 模式，不动正文)
+- 目的: 代码改了之后 MAP 自动跟上，但不让 agent 直接污染正文
+- 节奏:
+  - 开发期 **每晚 02:30** 跑一次（错开 backup 03:00）· deploy/mw-map-scan.plist
+  - 稳定后切 **weekly Sun 02:30**（跟 aging Sun 12:00 错开半天）
+- 两层结构 (省钱):
+  - Layer A · drift detector (cheap, no LLM): grep/ast validate MAP 里所有 `file:line` 锚点 — 函数/类是否还在、行号偏移 ≤ ±50。失效就触发 Layer B
+  - Layer B · content validator (LLM, on-trigger only): sonnet 读 module + MAP 节，比对描述是否还准确。drift detector 报警时才启
+- 输出位置: **MAP.md 底部 `## Agent Notes` 段** (MAP-v2 已留位)，绝不动正文
+  - 每条格式: `- [2026-MM-DD] §x.y · <issue> · <建议改法>`
+  - 你审完手动 merge 进正文，merge 后删 note
+- 长度护栏 (防止 Agent Notes 自己膨胀):
+  - 段内 ≤50 条
+  - 单条 >30 天未处理自动 trim (alert 你「N 条 stale notes，要么处理要么 ignore 加标记」)
+  - alert "MAP drift detected: N anchors" 进 §8 alert listing
+- Acceptance: 改 reconcile.py 加一个函数 → 次晚 scanner 跑 → MAP §Agent Notes 出现「§x.y 缺新函数 foo」一行 → 正文不变
+
 ### 5. Memes aging — `DELETE` 改 `demote dormant`
 - 现状: `retire_memes` (marrow/aging.py:48) `pinned=0 AND last_seen > 90d` 硬删
 - DECISIONS:46 写的是降级 dormant (recall 排除，FTS 命中复活)
