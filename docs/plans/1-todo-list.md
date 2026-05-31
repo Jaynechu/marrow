@@ -105,22 +105,29 @@
   - 同时把那行原文整理成 `##### [today] xxx` 格式 atomic_write 回 md，下次 parse 走 strict 路径
 - 注意: 跟 BUG-1 修法 B 同源 — 都走 line splice + atomic_write。两个 feature 共享一套 line-mutation helper
 
-### 6. MAP auto-update scanner (Agent Notes 模式，不动正文)
-- 目的: 代码改了之后 MAP 自动跟上，但不让 agent 直接污染正文
-- 节奏:
-  - 开发期 **每晚 02:30** 跑一次（错开 backup 03:00）· deploy/mw-map-scan.plist
-  - 稳定后切 **weekly Sun 02:30**（跟 aging Sun 12:00 错开半天）
-- 两层结构 (省钱):
-  - Layer A · drift detector (cheap, no LLM): grep/ast validate MAP 里所有 `file:line` 锚点 — 函数/类是否还在、行号偏移 ≤ ±50。失效就触发 Layer B
-  - Layer B · content validator (LLM, on-trigger only): sonnet 读 module + MAP 节，比对描述是否还准确。drift detector 报警时才启
-- 输出位置: **MAP.md 底部 `## Agent Notes` 段** (MAP-v2 已留位)，绝不动正文
-  - 每条格式: `- [2026-MM-DD] §x.y · <issue> · <建议改法>`
+### 6. MAP auto-update — skill 手动 + weekly drift-only alert
+- 关键: cron 让 agent 半夜写文没人审是隐患。改成「手动主力 + 自动兜底只 alert 不写文」
+- **主力: `/marrow:map-check` skill** (手动触发):
+  - `/marrow:map-check` 全扫
+  - `/marrow:map-check §5.3` 只扫某节
+  - `/marrow:map-check --since HEAD~10` 只扫最近 N commit 触发的节 (grep diff 找改动文件 → grep MAP 找引用 → 验那几节)
+  - 你 commit 一波后想审就跑，不想就不跑
+- **兜底: weekly Sun 02:30 drift detector only** (cron, no LLM):
+  - grep/ast 扫 MAP 里所有 `file:line` 锚点：函数/类是否还在、行号偏移 ≤ ±50
+  - 失效就 `add_alert('warn', 'map_drift', 'N anchors failed: §5.3 reconcile.py:162 + §7.2 watcher.py:88')`
+  - **不写 Agent Notes、不调 LLM**，零成本
+  - 你看到 alert 再决定要不要跑 `/marrow:map-check` 处理
+- skill 调用 agent 时强制要 evidence (防瞎说):
+  - 每条 finding 必须带: 原节文字 + 判断 drift 的 file:line + 它读的代码 line range (≤±30) + 建议改法
+  - 缺 evidence reject
+- 输出位置: skill 跑完写 **MAP.md 底部 `## Agent Notes` 段** (MAP-v2 已留位)，绝不动正文
+  - 每条格式: `- [YYYY-MM-DD] §x.y · <issue> · evidence: <file:line> · <建议>`
   - 你审完手动 merge 进正文，merge 后删 note
-- 长度护栏 (防止 Agent Notes 自己膨胀):
-  - 段内 ≤50 条
-  - 单条 >30 天未处理自动 trim (alert 你「N 条 stale notes，要么处理要么 ignore 加标记」)
-  - alert "MAP drift detected: N anchors" 进 §8 alert listing
-- Acceptance: 改 reconcile.py 加一个函数 → 次晚 scanner 跑 → MAP §Agent Notes 出现「§x.y 缺新函数 foo」一行 → 正文不变
+- 长度护栏 (防 Agent Notes 自己膨胀):
+  - 段内 ≤50 条 (skill 跑时若超就 reject 最旧的)
+  - 单条 >30 天未处理 → alert "N stale map notes"
+- Acceptance:
+  - 改 reconcile.py 函数 + commit → 周日 cron 跑 drift → 锚点失效 → alert "map_drift" → 你看到 alert 跑 `/marrow:map-check --since HEAD~3` → MAP §Agent Notes 出现一条带 evidence 的 finding → 正文不变
 
 ### 5. Memes aging — `DELETE` 改 `demote dormant`
 - 现状: `retire_memes` (marrow/aging.py:48) `pinned=0 AND last_seen > 90d` 硬删
