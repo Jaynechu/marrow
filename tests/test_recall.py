@@ -160,29 +160,29 @@ def test_recency_score_bad_timestamp():
 # ── decay floor ───────────────────────────────────────────────────────────────
 
 def test_decay_floor_permanent_source_override():
-    assert rm._decay_floor(3, "override", 200) == 0.5
+    assert rm._decay_floor(2, "override", 200) == 0.5
 
 
 def test_decay_floor_permanent_high_imp():
-    assert rm._decay_floor(8, None, 200) == 0.5
-    assert rm._decay_floor(10, None, 5) == 0.5
+    assert rm._decay_floor(5, None, 200) == 0.5
+    assert rm._decay_floor(5, None, 5) == 0.5
 
 
 def test_decay_floor_mid_importance():
-    assert rm._decay_floor(4, None, 100) == 0.18
-    assert rm._decay_floor(7, None, 10) == 0.18
+    assert rm._decay_floor(3, None, 100) == 0.18
+    assert rm._decay_floor(4, None, 10) == 0.18
 
 
 def test_decay_floor_low():
-    assert rm._decay_floor(3, None, 5) == 0.0
+    assert rm._decay_floor(2, None, 5) == 0.0
     assert rm._decay_floor(0, None, 10) == 0.0
 
 
 # ── dormant check ─────────────────────────────────────────────────────────────
 
 def test_dormant_old_low_importance():
+    assert rm._is_dormant(1, 91) is True
     assert rm._is_dormant(2, 91) is True
-    assert rm._is_dormant(3, 91) is True
 
 
 def test_dormant_not_old_enough():
@@ -190,7 +190,7 @@ def test_dormant_not_old_enough():
 
 
 def test_dormant_not_low_importance():
-    assert rm._is_dormant(4, 200) is False
+    assert rm._is_dormant(3, 200) is False
 
 
 def test_dormant_none_importance():
@@ -284,7 +284,7 @@ def test_recall_fusion_floor_applied(db):
 # ── dormant revival ───────────────────────────────────────────────────────────
 
 def test_recall_fusion_dormant_excluded_without_fts(db):
-    """Event with imp<=3 and age>90d is excluded when not an FTS hit."""
+    """Event with imp<=2 and age>90d is excluded when not an FTS hit."""
     import datetime as dt
     old_ts = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=100))
     ts_str = old_ts.strftime("%Y-%m-%dT%H:%M:%SZ")

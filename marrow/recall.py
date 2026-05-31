@@ -431,20 +431,20 @@ def _recency_score(timestamp_iso: str) -> float:
 
 
 def _decay_floor(importance: int | None, source: str | None, age_days: float) -> float:
-    """DECISIONS Phase 2 decay FLOOR tiers (read-time)."""
+    """DECISIONS Phase 2 decay FLOOR tiers (read-time). Scale: 1-5."""
     imp = importance or 0
-    if source == "override" or imp >= 8:
+    if source == "override" or imp == 5:
         return 0.5   # Permanent
-    if 4 <= imp <= 7:
+    if 3 <= imp <= 4:
         return 0.18
-    # imp <= 3 & age > 90d -> dormant (excluded upstream, floor irrelevant)
+    # imp <= 2 & age > 90d -> dormant (excluded upstream, floor irrelevant)
     return 0.0
 
 
 def _is_dormant(importance: int | None, age_days: float) -> bool:
-    """Demote-sink: excluded from recall candidate pool."""
+    """Demote-sink: excluded from recall candidate pool. Scale: 1-5."""
     imp = importance or 0
-    return imp <= 3 and age_days > 90
+    return imp <= 2 and age_days > 90
 
 
 # ── cross-table vec lane lookups ──────────────────────────────────────────────
@@ -709,7 +709,7 @@ def recall_fusion(
 ) -> list[dict]:
     """Single weighted scalar fusion: vec + bm25 + recency + affect.
 
-    Excludes dormant rows (imp<=3, age>90d, no FTS keyword revive).
+    Excludes dormant rows (imp<=2, age>90d, no FTS keyword revive).
     Applies FLOOR tiers to final score.
     FTS keyword hit on dormant row clears dormant flag before scoring.
     Returns rows sorted by score desc, truncated by budget_chars.
@@ -938,7 +938,7 @@ def recall_fusion(
                 conn.execute(
                     "UPDATE affect SET superseded_by=NULL "
                     "WHERE event_id=? AND superseded_by IS NULL "
-                    "AND importance<=3",
+                    "AND importance<=2",
                     (eid,),
                 )
                 # Re-read importance after revive (same row, cleared)
