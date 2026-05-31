@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import time
+from datetime import datetime
 from pathlib import Path
 
 from . import handover_render as _hr
@@ -281,6 +282,10 @@ def _read_or_seed(conn: sqlite3.Connection, path: Path) -> str:
 
 
 def _stamp(text: str, sid: str, now_epoch: int) -> str:
+    now_str = datetime.fromtimestamp(now_epoch).strftime("%Y-%m-%d %H:%M")
+    text = re.sub(
+        r"^# Handover — \d{4}-\d{2}-\d{2} \d{2}:\d{2}[ \t]*$",
+        f"# Handover — {now_str}", text, count=1, flags=re.MULTILINE)
     text = re.sub(r"\n?<!--\s*handover: ready[^>]*-->\s*$", "\n", text)
     if not text.endswith("\n"):
         text += "\n"

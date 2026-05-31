@@ -19,16 +19,13 @@
 </reload-long-runners>
 
 ## When to read what
-> You should proactively update these files when relevant. Check before you write handover.
-> grep in notes when I mention note
+> You should proactively update these files when relevant.
+> Always go back to design and MAP when planning. Never guess how it works.
 
-- MAP.md - What/why/how of each section. key facts of implementation.
-- DESIGN.md — goal + structure + hard constraints + sub-pages. No still-changing decisions.
+- MAP.md - key facts of current implementation. Mechanism of all features.
+- DESIGN.md — goals and outcomes.
 - DECISIONS.md - 有争议讨论出来的技术性/细节
     - every line confidence-tagged (verified/reasoned/assumed).
-
-- docs/plans/FUTURE.md — unbuilt plans, by phase.
-- PROGRESS.md — historical action log. Auto append by sessionend hook.
-- docs — notes for hand issues and research scratch / archive / day-plan
-- CONTEXT.md — glossary maintained by grill-with-doc skill; consult on term conflict.
+- FUTURE.md (docs/plans) — unbuilt plans, by phase.
+- docs — archives/ notes for hand issues and research scratch / plans (daily plan)
 

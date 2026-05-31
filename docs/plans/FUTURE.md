@@ -27,7 +27,7 @@
 - **md_index_schema_evolution** — `user_version` + ordered patches via `migrate.py` startup auto-migrate, fail-loud on mismatch. **效果**: 开源前再做，加字段不用手敲 ALTER。
 
 ## Phase 4 (weclaude rebuild + cross-channel)
-
+- 怎么在微信就给cc发送原生/命令？（weclaude是不支持
 - **provider_adapter_layer** — `marrow/adapters/{cc,codex,...}.py` abstraction: transcript parser / session path resolver / hook entry / handover injector. ~500 LOC. Blocker for Codex + open-source. **效果**: cc 之外的 provider（Codex/Claude/local）能接上。
 - **provider_swap_path** — 6/15 stream-json path + Codex/local small model swap plan. Subsumes migration_path_codex_local + Codex_alternative_swap + WeClaude_6_15_migration. **效果**: 6/15 后不被 Anthropic 绑死。
 - **weclaude_runtime_rebuild** — Multi-message send + 铁锅 + `/stop` interrupt + `/rewind` jsonl truncate + `/resume` synthetic summary + auto-compact + multi-msg merge window (5s pain) + stellan media send + group chat + upstream revival fallback. cyberboss-vs-rewrite TBD. Subsumes 8 sub-items. **效果**: weclaude 跟 cc cli 全面对等。
@@ -39,7 +39,7 @@
 - **mac_notification_center_reader** — Read macOS notification db as cross-app proactive signal source. Companion to marrow_pulse. **效果**: marrow 知道你手机响了啥。
 
 ## Phase 5 (addons + OSS)
-
+前端：- **candidate HTML action buttons** — pin/drop/edit buttons designed but not built; entity + memes + milestone candidates currently flow through reconcile only.
 - **wallet_mcp_extraction** — Standalone wallet MCP server (own repo, `~/.config/wallet/wallet.db`); marrow connects via .mcp.json. First addon contract sample. **效果**: wallet 做成可独立部署 addon。
 - **stellan_wallet** — Opt-in addon: monthly allowance auto-credit + spend auto-debit. transactions table only, balance = SUM. **效果**: 屿忱的零花钱账本。
 - **lumi_accounting_addon** — 取代 MOZE 记账。**效果**: 自己记账。

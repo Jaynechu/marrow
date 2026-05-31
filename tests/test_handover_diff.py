@@ -5,6 +5,7 @@ directly; a few drive the flock/atomic path via apply_diff.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -248,6 +249,29 @@ def test_apply_diff_round_trip_close_then_rolloff(tmp_path, monkeypatch):
     doing, _ = handover_diff.parse_doing(
         handover_diff._section_body(body, "Doing"))
     assert doing == {}
+    conn.close()
+
+
+# ── title timestamp refresh ──────────────────────────────────────────────────
+
+def test_apply_diff_refreshes_title_timestamp(tmp_path, monkeypatch):
+    """Title `# Handover — YYYY-MM-DD HH:MM` must reflect each write's now_epoch,
+    not the stale value carried over from prior_text."""
+    db = str(tmp_path / "t.db")
+    conn = storage.init_db(db)
+    h = tmp_path / "handover.md"
+    monkeypatch.setattr(handover_render, "_RENDERED_PATH", h)
+    # Seed file with a deliberately stale title.
+    h.write_text(
+        "# Handover — 2020-01-01 00:00\n\n## Done\n- N/A\n\n## Doing\n- N/A\n\n"
+        "## Lumi's Note\n", encoding="utf-8")
+    handover_diff.apply_diff(
+        conn, "s1", {"close": [], "keep": [], "update": [], "add": []}, [])
+    body = h.read_text(encoding="utf-8")
+    assert "# Handover — 2020-01-01 00:00" not in body
+    # First line matches current-time format, not the stale stamp.
+    first = body.splitlines()[0]
+    assert re.match(r"^# Handover — \d{4}-\d{2}-\d{2} \d{2}:\d{2}$", first)
     conn.close()
 
 

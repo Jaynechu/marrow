@@ -27,8 +27,8 @@ This is a pure planning/brainstorming session.
 ### 1. Scan (silent, auto)
 Read: 
 1. handover.md (already in context) — check any alert or open/plan
-2. DESIGN.md — If we are still on right track - phase structure? new tasks meet goals?
-3. DECISIONS.md — Deadlock? Any conflict among decisions? Or conflict with design?
+2. DESIGN.md — If we are still on right track? new tasks meet goals?
+3. MAP.md - Do you understand the mechanism and the current status of this project?
 4. docs/plans/FUTURE.md — Any features fit in this phase?
 5. git status — uncommitted M - just commit at the end of session
 6. git log --oneline -10
