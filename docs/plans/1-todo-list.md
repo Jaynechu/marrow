@@ -105,29 +105,24 @@
   - 同时把那行原文整理成 `##### [today] xxx` 格式 atomic_write 回 md，下次 parse 走 strict 路径
 - 注意: 跟 BUG-1 修法 B 同源 — 都走 line splice + atomic_write。两个 feature 共享一套 line-mutation helper
 
-### 6. MAP auto-update — skill 手动 + weekly drift-only alert
-- 关键: cron 让 agent 半夜写文没人审是隐患。改成「手动主力 + 自动兜底只 alert 不写文」
-- **主力: `/marrow:map-check` skill** (手动触发):
-  - `/marrow:map-check` 全扫
-  - `/marrow:map-check §5.3` 只扫某节
-  - `/marrow:map-check --since HEAD~10` 只扫最近 N commit 触发的节 (grep diff 找改动文件 → grep MAP 找引用 → 验那几节)
-  - 你 commit 一波后想审就跑，不想就不跑
-- **兜底: weekly Sun 02:30 drift detector only** (cron, no LLM):
-  - grep/ast 扫 MAP 里所有 `file:line` 锚点：函数/类是否还在、行号偏移 ≤ ±50
-  - 失效就 `add_alert('warn', 'map_drift', 'N anchors failed: §5.3 reconcile.py:162 + §7.2 watcher.py:88')`
-  - **不写 Agent Notes、不调 LLM**，零成本
-  - 你看到 alert 再决定要不要跑 `/marrow:map-check` 处理
-- skill 调用 agent 时强制要 evidence (防瞎说):
-  - 每条 finding 必须带: 原节文字 + 判断 drift 的 file:line + 它读的代码 line range (≤±30) + 建议改法
-  - 缺 evidence reject
-- 输出位置: skill 跑完写 **MAP.md 底部 `## Agent Notes` 段** (MAP-v2 已留位)，绝不动正文
-  - 每条格式: `- [YYYY-MM-DD] §x.y · <issue> · evidence: <file:line> · <建议>`
-  - 你审完手动 merge 进正文，merge 后删 note
-- 长度护栏 (防 Agent Notes 自己膨胀):
-  - 段内 ≤50 条 (skill 跑时若超就 reject 最旧的)
-  - 单条 >30 天未处理 → alert "N stale map notes"
+### 6. MAP drift check — `/marrow:map-check` skill only
+- 真正怕的: structure/mechanism 改了 (函数还在但逻辑/阈值/tick 频率变了)。anchor 失效是小事
+- 这种 drift **只有 sonnet 读 diff + 读 py + 比 MAP 才能判**，grep/ast 抓不到 → cron + drift detector 价值低、删掉
+- **唯一入口: `/marrow:map-check` skill** (手动触发):
+  - `/marrow:map-check` 全 diff (last check → HEAD)
+  - `/marrow:map-check --since HEAD~10` 指定 commit range
+  - `/marrow:map-check §5.3` 锁定某节
+- skill 执行: main session spawn sonnet agent，输入 = `git diff <range> -- marrow/` + 整张 MAP
+- agent 任务: 读 diff 影响的 py 模块 + MAP 相关节，判断描述是否还对
+  - 含 anchor 失效 (rename/move) + mechanism drift (阈值/逻辑/频率改了)
+- agent 输出 staging file: `docs/plans/map-drift-pending.md`，**不动 MAP**
+  - 每条 finding: `## §x.y · <issue 一句>` + MAP 原节引用 + diff hunk + 建议改法
+  - 缺 evidence (没 diff hunk 没原节) 的 finding 直接 reject
+- 你审完 → 改 MAP → 清 staging。staging 跟其他 todo 同目录，看 todo 时顺手扫到
+- alert: 一行汇总 `add_alert('warn', 'map_drift', 'N findings, see docs/plans/map-drift-pending.md')` — 不刷屏
+- 长度护栏: staging 单文件 ≤ 200 行 (超就 skill 报 "drift 太多，先 merge 一波再跑")
 - Acceptance:
-  - 改 reconcile.py 函数 + commit → 周日 cron 跑 drift → 锚点失效 → alert "map_drift" → 你看到 alert 跑 `/marrow:map-check --since HEAD~3` → MAP §Agent Notes 出现一条带 evidence 的 finding → 正文不变
+  - 改 reconcile.py dedup 阈值从 cosine 改 exact + commit → 跑 `/marrow:map-check --since HEAD~1` → staging 出现一条 "§5.3 dedup 描述过时: was cosine, now exact match" + diff hunk + 建议改法 → MAP 正文不变 → 你 review 后改 MAP § 5.3 → 清 staging
 
 ### 5. Memes aging — `DELETE` 改 `demote dormant`
 - 现状: `retire_memes` (marrow/aging.py:48) `pinned=0 AND last_seen > 90d` 硬删
