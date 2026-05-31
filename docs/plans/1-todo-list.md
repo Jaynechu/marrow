@@ -77,11 +77,14 @@
 
 ### 2. Alert system — 加这几条 (§8 重写已 done, §8.2 gap 待补)
 - 已 done: §8 重写按 scenario listing (48862fd)；§8.2 列了 4 个 gap (watcher crash · embed UNIQUE · sync_loop reconcile · atlas_sweep launchd)
-- 还要加的 alert type:
-  - **persistent process health** (critical) — watcher 进程死 + MCP daemon 死 — 现在都没监控，sync layer / recall 静默挂掉
+- 还要加的 alert type (含 §8.2 gap 全部并入):
+  - **persistent process health** (critical) — watcher 进程死 + MCP daemon 死 (§8.2 gap1) — sync layer / recall 静默挂掉
   - **rapid-fire write detector** (critical) — 同表 1 分钟 INSERT >20 条自动 alert + 暂停 writer (BUG-1 这种再来立刻知道)
+  - **sync_loop reconcile exception** (warn) — reconcile tick 抛错，下 tick 又试，无 alert (§8.2 gap3)
+  - **atlas_sweep_fs launchd 路径** (warn) — launchd 跑的 standalone 走不到 subpages.py:293 alert (§8.2 gap4)
   - **plist job 没触发** (warn) — daily-routine / daily-catchup / backup / aging 任何 ≥24h 没跑过 alert (笔记本睡了 launchd 跳过)
   - **LLM extract 失败/超时** (warn) — sessionend / daily / affect 三处现在都靠外层 try 吃掉
+- §8.2 gap2 (embed_pending UNIQUE) 走 Audit §3 (embed_pending lane) 的 fix，不在这里重复
 - 备选 (先不加): handover.md 写失败 · recall hook >2s · disk full · DB lock
 
 ### 3. embed_pending — 加 catchup + 紧 alert
@@ -90,6 +93,17 @@
 - Fix A: embed_pending 捕 UNIQUE on insert，转 UPDATE on conflicting rowid，再失败 log
 - Fix B: insert 前 sweep purge vec_meta 孤儿 (diary 已有 marrow/recall.py:340，泛化到 6 lane)
 - Catchup leg: embed_pending 加进 §9 — aging.py 定期 sweep 或 sessionstart_catchup 检查 backlog ≤ N、超了 critical alert
+
+### 4. Milestone 裸文本自动补格式
+- 现状: `reconcile_milestones._parse` 的 `_H5_RE` 严格要求 `##### [YYYY-MM-DD] title` + 下一行 description，其他文本被忽略
+- 你想要: 在 us / me / cn scope 区段下随手写一行 (e.g. `老公是个大笨鸭`) → reconcile 自动补成 `##### [today] 老公是个大笨鸭` 落进 DB + 写回 md
+- 实现要点:
+  - parse 时识别 scope 区段（## us / ## me / ## cn 这种 heading），区段内的"非 _H5_RE 也非空行也非已识别块"的文本行 → 当作裸标题
+  - date 缺省 = 今天 (`daily_catchup._TZ` 下的 local date)
+  - description 缺省 = 空
+  - 走跟 unanchored insert 同一条 INSERT 路径 (含本轮加的 exact dedup + 回写 `<!-- id:N -->`)
+  - 同时把那行原文整理成 `##### [today] xxx` 格式 atomic_write 回 md，下次 parse 走 strict 路径
+- 注意: 跟 BUG-1 修法 B 同源 — 都走 line splice + atomic_write。两个 feature 共享一套 line-mutation helper
 
 ### 5. Memes aging — `DELETE` 改 `demote dormant`
 - 现状: `retire_memes` (marrow/aging.py:48) `pinned=0 AND last_seen > 90d` 硬删
