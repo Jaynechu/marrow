@@ -332,13 +332,47 @@ Total: 7 plists; watcher is the only persistent process, the other 6 are schedul
 
 ## 8. Alerts
 
-### alerts
-- Any writer calls `repo.add_alert(severity, type, message, source)`. Insert is idempotent: duplicate (severity, type, message, source) on an unresolved row returns the existing id.
-- Severity: `info` / `warn` / `critical` (rendered in priority order).
-- Surface: dashboard `## Alerts` via `top_sections.render_alerts`; SessionStart injects open alerts into the handoff payload.
-- Resolve: `mw resolve <id>` manual; aging auto-resolves `milestone_added` alerts > 7d.
-- Writers: backup · daily · dashboard · drift_sweep · hooks · reconcile · sessionend_async · sessionstart_catchup · subpages. (Listing-style call-site catalog is a TODO — see §14.)
-- **Where**: marrow/storage.py:106 · marrow/repo.py:68 · marrow/repo.py:39 · marrow/top_sections.py:88 · marrow/aging.py:99
+- Stored in `alerts` table via `repo.add_alert(severity, type, message, source)`; idempotent on (severity, type, message, source) unresolved row. Severity: info / warn / critical.
+- Surface: dashboard `## Alerts` (top_sections.render_alerts) + SessionStart handoff payload. Resolve: `mw resolve <id>` manual; aging auto-resolves `milestone_added` > 7d.
+- **Where**: marrow/storage.py:106 · marrow/repo.py:68 · marrow/top_sections.py:88 · marrow/aging.py:99
+
+### 8.1 Call-site listing
+
+- marrow/backup.py:127 · critical · backup_local · local VACUUM INTO failed
+- marrow/backup.py:140 · warn · backup_offsite · iCloud leg copy failed
+- marrow/daily.py:167 · warn · daily_routine · candidate extract block parse failure
+- marrow/daily.py:228 · critical · daily_routine · diary write failed
+- marrow/daily.py:258 · warn · daily_routine · per-day partial failure
+- marrow/daily.py:301 · warn · subpages_render · daily subpage render failure
+- marrow/daily.py:313 · warn · goose_bites · goose pick failed
+- marrow/daily.py:322 · critical · daily_routine · run aborted
+- marrow/dashboard.py:150 · warn · reconcile_candidate · milestone candidate reconcile raised
+- marrow/dashboard.py:158 · warn · reconcile_task · task reconcile raised
+- marrow/dashboard.py:166 · warn · reconcile_affect · affect reconcile raised
+- marrow/drift_sweep.py:452 · info/warn/critical · drift_* · move/rename apply paths (via _emit_alert)
+- marrow/hooks.py:211 · warn · catchup_spawn · sessionstart_catchup popen failed
+- marrow/hooks.py:333 · warn · sessionend_spawn · sessionend_async popen failed
+- marrow/hooks.py:679 · info · atlas_hook · PreToolUse atlas guidance failure
+- marrow/hooks.py:704 · warn · hook_main · top-level hook crash
+- marrow/reconcile.py:794 · warn · unanchored_task · task in md with no DB id
+- marrow/sessionend_async.py:233 · critical/warn · catchup_retry · catchup re-spawn outcome
+- marrow/sessionend_async.py:486 · warn · dashboard_write · sessionend-tail render failed
+- marrow/sessionend_async.py:496 · warn · embed_pending · embed lane raised (alert #169)
+- marrow/sessionstart_catchup.py:273 · critical · silent_death · session vanished mid-flight
+- marrow/sessionstart_catchup.py:330 · warn · catchup_spawn · respawn popen failed
+- marrow/subpages.py:118 · warn · db_pages · subpage render raised
+- marrow/subpages.py:129 · warn · db_pages · sync_file_observe raised
+- marrow/subpages.py:136 · warn · db_pages · reconcile route raised
+- marrow/subpages.py:293 · warn · atlas_sweep · atlas_sweep_fs failure via subpage path
+- marrow/subpages.py:378 · warn · db_pages · inserter write failure
+- marrow/subpages.py:388 · warn · db_pages · md_index update failure
+
+### 8.2 Known gaps
+
+- watcher crash · no alert · watchdog.Observer dying silently kills the sync layer
+- embed_pending UNIQUE · DB-level UNIQUE collisions bypass the try/except, alert #169 hides root cause
+- sync_loop reconcile exception · raised tick re-tries forever, no alert surfaces
+- atlas_sweep_fs standalone · launchd path skips the subpages.py:293 alert wrap
 
 ---
 
