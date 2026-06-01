@@ -300,8 +300,8 @@ def test_render_affect_week_variance_label(env):
     assert "高峰" in week_section or "低谷" in week_section
 
 
-def test_render_affect_pending_unresolved_and_resolved(env):
-    """Pending: open row → '- [ ] <desc>'; resolved row → '- [x] <desc>'."""
+def test_render_affect_pending_only_unresolved_shows(env):
+    """Pending: open row → '- [ ] <desc>'; resolved row hidden entirely."""
     db, _, _, _ = env
     conn = _conn(db)
     today = datetime.now(timezone.utc).date().isoformat()
@@ -310,7 +310,7 @@ def test_render_affect_pending_unresolved_and_resolved(env):
     _insert_affect(conn, today, 1, 0.3, 0.8, importance=3,
                    label="焦虑", description="演讲前夜",
                    unresolved=1, resolved_at=None)
-    # Previously unresolved but resolved within the week.
+    # Resolved row — must not appear in Pending anymore.
     resolved_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     _insert_affect(conn, yesterday, 1, 0.2, 0.7, importance=4,
                    label="争执", description="吵架",
@@ -319,7 +319,7 @@ def test_render_affect_pending_unresolved_and_resolved(env):
     conn.close()
     pending_section = out.split("### Pending")[1]
     assert "- [ ] 演讲前夜" in pending_section
-    assert "- [x] 吵架" in pending_section
+    assert "吵架" not in pending_section
     assert "- (none)" not in pending_section
 
 
@@ -333,6 +333,98 @@ def test_render_affect_pending_empty_when_no_unresolved(env):
     out = top_sections.render_affect(conn)
     conn.close()
     assert "### Pending" not in out
+
+
+def test_reconcile_affect_tick_marks_resolved(env, tmp_path):
+    """User flips '- [ ]' to '- [x]' in md → row goes unresolved=0,
+    resolved_at set; next render hides it from Pending."""
+    from marrow import reconcile
+    db, _, _, _ = env
+    conn = _conn(db)
+    today = datetime.now(timezone.utc).date().isoformat()
+    _insert_affect(conn, today, 1, 0.3, 0.8, importance=3,
+                   label="焦虑", description="演讲前夜",
+                   unresolved=1, resolved_at=None)
+    aid = conn.execute("SELECT id FROM affect").fetchone()[0]
+    # Compose a minimal dashboard md with the row ticked.
+    dash = tmp_path / "dash.md"
+    dash.write_text(
+        "## Affect\n\n### Today\n_none_\n\n### This Week\n_none_\n\n"
+        f"### Pending\n- [x] 演讲前夜 <!-- id:affect.{aid} -->\n",
+        encoding="utf-8",
+    )
+    reconcile.reconcile_affect(conn, dash)
+    row = conn.execute(
+        "SELECT unresolved, resolved_at FROM affect WHERE id=?", (aid,)
+    ).fetchone()
+    assert row[0] == 0, "ticked row must drop unresolved flag"
+    assert row[1], "ticked row must stamp resolved_at"
+    out = top_sections.render_affect(conn)
+    conn.close()
+    pending_section = out.split("### Pending")[1] if "### Pending" in out else ""
+    assert "演讲前夜" not in pending_section
+
+
+def test_reconcile_affect_delete_line_marks_resolved(env, tmp_path):
+    """User deletes the Pending row from md → row marked resolved (mtime
+    gates against false positives on freshly-written affect rows)."""
+    from marrow import reconcile
+    db, _, _, _ = env
+    conn = _conn(db)
+    today = datetime.now(timezone.utc).date().isoformat()
+    # Use an old created_at so md mtime > created_at.
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    _insert_affect(conn, today, 1, 0.3, 0.8, importance=3,
+                   label="焦虑", description="演讲前夜",
+                   unresolved=1, resolved_at=None, created_at=old_ts)
+    aid = conn.execute("SELECT id FROM affect").fetchone()[0]
+    # md present but Pending section empty (row removed).
+    dash = tmp_path / "dash.md"
+    dash.write_text(
+        "## Affect\n\n### Today\n_none_\n\n### This Week\n_none_\n\n"
+        "### Pending\n",
+        encoding="utf-8",
+    )
+    reconcile.reconcile_affect(conn, dash)
+    row = conn.execute(
+        "SELECT unresolved, resolved_at FROM affect WHERE id=?", (aid,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == 0
+    assert row[1]
+
+
+def test_reconcile_affect_does_not_resolve_newer_than_md(env, tmp_path):
+    """Affect row created AFTER md mtime must NOT be auto-resolved
+    (covers the sessionend-writes-then-reconcile race)."""
+    from marrow import reconcile
+    db, _, _, _ = env
+    conn = _conn(db)
+    today = datetime.now(timezone.utc).date().isoformat()
+    # md exists first, empty Pending.
+    dash = tmp_path / "dash.md"
+    dash.write_text(
+        "## Affect\n\n### Today\n_none_\n\n### This Week\n_none_\n\n"
+        "### Pending\n",
+        encoding="utf-8",
+    )
+    # Force md mtime to be a minute ago.
+    import os as _os
+    old = (datetime.now(timezone.utc) - timedelta(minutes=1)).timestamp()
+    _os.utime(dash, (old, old))
+    # Insert affect AFTER md mtime.
+    _insert_affect(conn, today, 1, 0.3, 0.8, importance=3,
+                   label="焦虑", description="刚写入",
+                   unresolved=1, resolved_at=None)
+    aid = conn.execute("SELECT id FROM affect").fetchone()[0]
+    reconcile.reconcile_affect(conn, dash)
+    row = conn.execute(
+        "SELECT unresolved, resolved_at FROM affect WHERE id=?", (aid,)
+    ).fetchone()
+    conn.close()
+    assert row[0] == 1, "fresh row newer than md must stay unresolved"
+    assert row[1] is None
 
 
 def test_render_affect_empty_tables(env):

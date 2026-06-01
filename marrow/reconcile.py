@@ -908,7 +908,7 @@ _AFFECT_EP_SEG_RE = re.compile(
     r"^ep[hl]\d+\s+(?P<label>.+?)\s*\|\s*(?P<desc>.+?)\s*$"
 )
 _AFFECT_PENDING_RE = re.compile(
-    r"^\s*-\s+\[[ x]\]\s+(?P<text>.+?)\s*$"
+    r"^\s*-\s+\[(?P<box>[ xX])\]\s+(?P<text>.+?)\s*$"
 )
 # Trailing ` [<token>]` suffix on Today/24h/7d lines (e.g. ` [1m ago]`, ` [24h]`).
 _AFFECT_AGO_SUFFIX_RE = re.compile(r"\s+\[[^\]]+\]\s*$")
@@ -1037,18 +1037,20 @@ def _parse_affect_segments(line: str, ids: list[int]
 
 def _parse_affect_pending_line(line: str, db_label: str | None,
                                 db_desc: str | None
-                                ) -> tuple[str | None, str | None]:
-    """Recover (label, description) for a Pending row `- [ ] <text> <anchor>`."""
+                                ) -> tuple[str | None, str | None, bool]:
+    """Recover (label, description, resolved) for a Pending row.
+    resolved=True when checkbox is `[x]`."""
     body = _AFFECT_ID_RE.sub("", line).rstrip()
     m = _AFFECT_PENDING_RE.match(body)
     if not m:
-        return None, None
+        return None, None, False
+    resolved = m.group("box").lower() == "x"
     text = _sanitize_affect_text(m.group("text").strip()) or ""
     if db_desc and text == db_desc:
-        return None, db_desc  # unchanged
+        return None, db_desc, resolved
     if db_label and text == db_label and not db_desc:
-        return db_label, None
-    return None, text
+        return db_label, None, resolved
+    return None, text, resolved
 
 
 def reconcile_affect(conn: sqlite3.Connection,
@@ -1120,28 +1122,63 @@ def reconcile_affect(conn: sqlite3.Connection,
         except Exception as e:  # noqa: BLE001 — never crash refresh
             rpt.conflicts.append(f"affect line malformed: {e}")
 
-    all_ids = set(ep_segs) | set(pending_lines)
-    if not all_ids:
-        return rpt
+    # md mtime gates the "deleted-from-md → resolved" path so newly-written
+    # affect rows (created after the current md snapshot) are not mistaken
+    # for user deletions.
+    md_mtime_iso: str | None = None
+    try:
+        md_mtime_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(dashboard_path.stat().st_mtime)
+        )
+    except OSError:
+        pass
 
-    placeholders = ",".join("?" for _ in all_ids)
+    all_ids = set(ep_segs) | set(pending_lines)
+
     db_rows: dict[int, dict] = {}
-    for row in conn.execute(
-        f"SELECT id, label, description FROM affect "
-        f"WHERE id IN ({placeholders})",
-        list(all_ids),
-    ).fetchall():
-        db_rows[row["id"]] = dict(row)
+    if all_ids:
+        placeholders = ",".join("?" for _ in all_ids)
+        for row in conn.execute(
+            f"SELECT id, label, description FROM affect "
+            f"WHERE id IN ({placeholders})",
+            list(all_ids),
+        ).fetchall():
+            db_rows[row["id"]] = dict(row)
 
     parsed: dict[int, tuple[str | None, str | None]] = dict(ep_segs)
+    pending_resolved: set[int] = set()
     for aid, line in pending_lines.items():
         row = db_rows.get(aid)
         if row is None:
             parsed[aid] = (None, None)
             continue
-        parsed[aid] = _parse_affect_pending_line(
+        new_label, new_desc, resolved = _parse_affect_pending_line(
             line, row.get("label"), row.get("description")
         )
+        parsed[aid] = (new_label, new_desc)
+        if resolved:
+            pending_resolved.add(aid)
+
+    # Deleted-from-md: rows that were eligible to render (unresolved=1,
+    # superseded_by NULL, in 7d window) and predate the md snapshot but
+    # are absent from pending_lines → user removed them.
+    deleted_resolved: set[int] = set()
+    if md_mtime_iso is not None:
+        week_cut = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(dashboard_path.stat().st_mtime - 7 * 86400),
+        )
+        for row in conn.execute(
+            "SELECT id FROM affect WHERE superseded_by IS NULL "
+            "AND unresolved=1 AND resolved_at IS NULL "
+            "AND created_at>=? AND created_at<=?",
+            (week_cut, md_mtime_iso),
+        ).fetchall():
+            if row["id"] not in pending_lines:
+                deleted_resolved.add(row["id"])
+
+    if not all_ids and not deleted_resolved:
+        return rpt
 
     with conn:
         for aid, (new_label, new_desc) in parsed.items():
@@ -1156,17 +1193,33 @@ def reconcile_affect(conn: sqlite3.Connection,
                 updates.append(("label", new_label))
             if new_desc is not None and new_desc != (db_desc or ""):
                 updates.append(("description", new_desc))
-            if not updates:
+            if updates:
+                set_clause = ", ".join(f"{c}=?" for c, _ in updates)
+                params = [v for _, v in updates] + [aid]
+                conn.execute(
+                    f"UPDATE affect SET {set_clause} WHERE id=?", params
+                )
+                _affect_audit(
+                    conn, aid, "retext",
+                    "md-reconcile: " + ", ".join(
+                        f"{c}={(v or '')[:40]}" for c, v in updates
+                    ),
+                )
+                rpt.updated += 1
+            elif aid not in pending_resolved:
                 rpt.unchanged += 1
-                continue
-            set_clause = ", ".join(f"{c}=?" for c, _ in updates)
-            params = [v for _, v in updates] + [aid]
-            conn.execute(f"UPDATE affect SET {set_clause} WHERE id=?", params)
+
+        now_iso = _now()
+        for aid in pending_resolved | deleted_resolved:
+            conn.execute(
+                "UPDATE affect SET unresolved=0, "
+                "resolved_at=COALESCE(resolved_at, ?) WHERE id=? "
+                "AND unresolved=1",
+                (now_iso, aid),
+            )
+            action = "tick" if aid in pending_resolved else "delete"
             _affect_audit(
-                conn, aid, "retext",
-                f"md-reconcile: " + ", ".join(
-                    f"{c}={(v or '')[:40]}" for c, v in updates
-                ),
+                conn, aid, "resolved", f"md-reconcile: {action}"
             )
             rpt.updated += 1
     return rpt

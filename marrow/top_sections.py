@@ -361,7 +361,8 @@ def render_affect(conn: sqlite3.Connection) -> str:
 
     pending_rows = conn.execute(
         "SELECT id, description, label, resolved_at FROM affect "
-        "WHERE superseded_by IS NULL AND unresolved=1 AND created_at>=? "
+        "WHERE superseded_by IS NULL AND unresolved=1 "
+        "AND resolved_at IS NULL AND created_at>=? "
         "ORDER BY created_at, id", (week_cut,),
     ).fetchall()
     # Pending sub-section hides entirely when empty (no heading, no body).

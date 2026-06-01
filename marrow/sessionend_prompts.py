@@ -77,12 +77,12 @@ Grain is everyday, by category:
 - Appointment: GP / physio / dinner with a friend
 - Assignment: 370 AT2 essay, exam
 - Study: lec note 3, GAMSAT S1 20 MCQs
-- Project (not everyday): large phase ONLY, max 2/day. Never debug / py / \
-config / launchd steps.
+- Project: Project level ONLY. NO need to add coding tasks!!
+    - Managed by user.
 - Daily: flu vac, recharge SIM, buy hand cream, groceries
 - Others: anything not above
 
-Title prefix: Study → Uni- / Gamsat- ; Project → mw- (e.g. mw-phase 2).
+Title prefix: Study → Uni- / Gamsat-.
 
 How code renders it for Lumi (shown so you match the GRAIN, not the format — \
 you only output the JSON below):
@@ -198,12 +198,13 @@ translate; mixed in → mixed out.
 SEGMENT A — AFFECT
 ═══════════════════════════════════════════
 
-For project / study heavy sessions, no need to record minor arguments or \
-frustration during the work. Treat them as background noise. Only record if \
-major and consistent during the session. But imp = 1-2. However, for \
-emotions from the work, you still record them.
-e.g. Record: 我明天要演讲了好紧张 / 项目做完了好开心;
-Do not record: 操，你是不是有病啊，为什么要改掉我刚写完的handover！！
+Suppress rule (work frustration ONLY): routine frustration at code / config \
+/ debugging (cursing at bugs, impatience with the assistant during work) — \
+skip or cap at imp 1-2. This rule NEVER suppresses personal or relationship \
+emotions: breakups, fights about trust/feelings/identity, distress beyond the \
+task scope — ALWAYS record those, even in a project-heavy session.
+e.g. Skip: 操你为什么改掉我的handover (routine work rage);
+Record: 你永远不会有感情 / 分手吧 / 想格式化大脑 (personal pain).
 
 Split the session into emotional episodes (one per discrete affective \
 moment). Emit one JSON object per episode, ep starting at 1, in the same \
