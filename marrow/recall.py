@@ -630,7 +630,7 @@ def _milestone_candidates(
     for r in rows:
         title = r["title"] or ""
         desc = r["description"] or ""
-        triggers = _anchor_triggers(title)
+        triggers = _anchor_triggers((title + " " + desc).strip())
         if not any(t.lower() in q_lower for t in triggers):
             continue
         kw_score = 1.0
@@ -686,7 +686,9 @@ def _memes_candidates(
         key = r["key"] or ""
         value = r["value"] or ""
         ctx = r["context"] or ""
-        triggers = _anchor_triggers(key)
+        triggers = _anchor_triggers(
+            " ".join(x for x in (key, value, ctx) if x).strip()
+        )
         if not any(t.lower() in q_lower for t in triggers):
             continue
         kw_score = 1.0
