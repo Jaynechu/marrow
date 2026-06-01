@@ -29,3 +29,8 @@
 - FUTURE.md (docs/plans) — unbuilt plans, by phase.
 - docs — archives/ notes for hand issues and research scratch / plans (daily plan)
 
+## References
+> [P0luz / Ombre-Brain](https://github.com/P0luz/Ombre-Brain)
+- [WenXiaoWendy / cyberboss](https://github.com/WenXiaoWendy/cyberboss)
+- current weclaude see ny/code/weclaude or repo (in my star folder)
+- [Qizhan7 / claude-imprint](https://github.com/Qizhan7/claude-imprint) — borrow: RRF + vector/FTS5/recency retrieval fusion recipe

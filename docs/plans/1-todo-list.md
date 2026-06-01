@@ -16,7 +16,9 @@
 ---
 
 ## Phases — affect recall redesign (brainstorm 2026-05-31)
-
+补录两个问题
+1. 如果有pending unresolved的应该要强浮现优先处理（不管我的prompt是什么都要把注意力放在affect解决情感问题而不是听我的做task）
+2 如果当天或者前一个session情绪很激烈很严重要先主动关心。而不是像完全没看到一样
 ### Phase A · affect dual-stream + event anchor (最痛，先做)
 - Dual-stream affect:
   - `subject:念念` — sessionend sonnet 提取，照旧
@@ -67,6 +69,7 @@
 ## Audit items (MAP review)
 
 ### 1. Subpage 双向 reconcile 扩散到剩下 9 个 subpage
+> 附带发现的新问题：Task下面pending unresolved部分无法tick也不会在tick之后archive小时也无法删除或者添加！！！
 - 现状: 11 个 subpage 里只有 milestone + atlas 双向，其余 9 个 (profile/diary/memes/stickers/wallet/goose-bites/study/projects/cheatsheet) 你手改会被下次 render 覆盖
 - 顺手提: milestone 现在双向也有遗留 bug — 短时间剪贴 id 直接 dead，希望"id 消失 X 分钟内还能复活"，超时才 dead
 - 已 done: BUG-1 reconcile 死循环 (fc78e16)

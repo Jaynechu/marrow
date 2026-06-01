@@ -124,7 +124,7 @@
 
 ## 3. Read path (what gets injected, when)
 
-- **SessionStart injects**: affect heartbeat warning (gap day in last 7d with events but no affect), open tasks + open alerts from repo.handoff(), affect backdrop (top_sections mood band), Note reminder pointing to ## Lumi's Note.
+- **SessionStart injects**: affect heartbeat warning (gap day in last 7d with events but no affect), open tasks + open alerts from repo.handoff(), affect backdrop (top_sections mood band).
 - **UserPromptSubmit injects**: top-K recall fusion hits (vec + bm25 + recency + affect) as additionalContext labelled "Recall (auto) — passive context, do not answer"; also handles mm-/mm+ control prefixes.
 - **entity force-include**: Bypasses FTS5 via reverse-substring match (name.lower() in query.lower()) so 2-char CN names that fall below the trigram tokenizer's 3-char floor (e.g. 南南) are still surfaced; for names ≥3 chars FTS5 is tried first, LIKE-scan as fallback.
 - **Where**: marrow/hooks.py:205 · marrow/hooks.py:482 · marrow/entity_recall.py:73 · marrow/recall.py:1027
@@ -309,7 +309,7 @@ Both 2 and 3 call `write_dashboard` which runs reconcile (idempotent) then atomi
 
 - **3-section model**: `## Done` (CLOSEd threads rolling off after 24h, each stamped with `<!-- done:EPOCH -->`); `## Doing` (open threads keyed by `<!-- id:N -->` — code-managed, hand-edit reconciled); `## Lumi's Note` (freeform, Lumi-owned — code only removes lines she clearly completed, never adds or rewrites).
 - **diff-apply engine**: SessionEnd's STATE call emits a ===DOING_DIFF=== block with four verbs: CLOSE (move thread to Done, stamp epoch), UPDATE (rewrite thread body, keep id), KEEP (no-op), ADD (assign fresh id). apply_diff reads the current file under flock, reconciles hand-edits vs last snapshot (ids vanished → tombstoned, never revived; new no-id blocks → fresh id), applies the diff, rolls off Done entries older than 24h (_DONE_MAX_AGE = 86400), and removes Note lines whose hash_bullet matches a NOTE_DONE entry. Write is atomic temp-replace, fallback to .partial.<sid> on lock-loss.
-- **single-writer rule**: seg_handover in sessionend_writers.py is the sole writer, only called from sessionend_async. session_start() in hooks.py reads `## Lumi's Note` as context but never calls apply_diff or touches the file — read-only by design so a concurrent or resumed session cannot clobber an open thread.
+- **single-writer rule**: seg_handover in sessionend_writers.py is the sole writer, only called from sessionend_async.
 - **dual identity**: handover.md is a standalone subsystem — NOT in the subpage registry. It has its own render path (handover_render.py, handover_diff.py) separate from the subpage inserter/reconcile cycle. The watcher watches it for md_index updates only. Peer of dashboard.md, not a db-page.
 - **normalisation**: handover_norm.py provides bullet normalisation + sha1 hash used by Note-line tombstone matching so re-rendered Notes match Lumi's hand-edits character-for-character · marrow/handover_norm.py:1
 - **mm-/mm+ control plane**: UserPromptSubmit accepts `mm-` (manual skip current session) and `mm+` (force sessionend rerun) prefixes that bypass the spawn gate · marrow/hooks.py:416

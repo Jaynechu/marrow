@@ -29,6 +29,7 @@ Read:
 1. handover.md (already in context) — check any alert or open/plan
 2. DESIGN.md — If we are still on right track? new tasks meet goals?
 3. MAP.md - Do you understand the mechanism and the current status of this project?
+    - No need to read whole MAP, grep what you need but no guess!
 4. docs/plans/FUTURE.md — Any features fit in this phase?
 5. git status — uncommitted M - just commit at the end of session
 6. git log --oneline -10

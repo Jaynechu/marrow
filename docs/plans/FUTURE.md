@@ -5,17 +5,12 @@
 
 ## Phase 1 closeout
 
-- **ny_memm_retire** — Unload all NY plists (memm pipeline / curator / rotate / monitor in `/Users/Gabrielle/Toolkit/scripts`), archive `~/Desktop/NY/code/`, drop summ/ss/goose-slim/carryover-load skills. NY base folder content Lumi handles manually. **效果**: NY memm 系统下线，code 部分归档。
-
 ## Phase 2 (memory / recall / sub-page)
 
-- **session_archive_skip_manual** — Manual override only (auto ≤3-turn gate already shipped). `mm+` prompts Lumi to confirm sid then re-runs sessionend pipeline for that sid; `mm-` writes permanent skip flag on current sid (later `resume` clears the flag). **效果**: 漏跑能补、废 session 能永久踢掉。
 - **corrections** — Independent corrections store, priority above raw events (DECISIONS:34). **效果**: 纠正记录优先，错事不反复跳出来。
 - **housekeeping_monitor** — Sun 12:00 weekly cleanup job over `~/.claude/projects/` · MCP image cache · marrow logs · iCloud backup. Warn on threshold, no auto-delete. **效果**: 各路 cache/backup 不撑爆硬盘。
 
 ## Phase 3 (drift / cheatsheet / cloud rails / addon contract)
-
-- **drift_sweep** — Auto-update refs on file rename/move/delete. Bundles dir_tree refresh as side-output (cc grep aid). Three layers, sliced: **L1** ripgrep over authorized roots + `mw drift <old> <new>` CLI + git post-mv hook (primary, deterministic, ships first); **L2** central `paths.toml` key-indirection (subsumes `paths_registry_early`); **L3** cheap local model free-text fallback (启动 only when L1+L2 漏掉真实 case). **效果**: 你 mv/rename 一个文件，所有引用自动跟着改；cc 也拿到最新 dir-tree grep。
 - **placement_rules_toml** — Machine-readable `~/.config/marrow/placement_rules.toml`: content-type → canonical home + naming pattern (extracted from `~/.claude/rules/files.md` prose). cc reads on Write of new file. Pairs with drift_sweep registry. No PreToolUse hard-block (Lumi vetoed). **效果**: cc 写新文件前先查表，不再靠散文规则脑补。
 - **cheatsheet_index** *(hold — wait until tool stack settles)* — Single dashboard cheatsheet. Not fully decided, draft direction only:
   - **Source**: auto-scan + hand-edit preserved. Scan covers but is not limited to — `~/Toolkit/scripts`, `~/Library/LaunchAgents/*.plist`, `~/.claude/{skills,commands,agents,output-styles}/**`, `.mcp.json` (global + project), `~/.zshrc` alias, `brew list`, self-installed CLIs (e.g. mw atlas <prefix>).
@@ -27,16 +22,21 @@
 - **md_index_schema_evolution** — `user_version` + ordered patches via `migrate.py` startup auto-migrate, fail-loud on mismatch. **效果**: 开源前再做，加字段不用手敲 ALTER。
 
 ## Phase 4 (weclaude rebuild + cross-channel)
-- 怎么在微信就给cc发送原生/命令？（weclaude是不支持
+> WeChat dendrite 主体（rebuild + bugfix + media send + event pipeline + cross-channel resume + command parity + permission relay + sessionend）已展开到 `docs/plans/3-synapse-wx.md`（独立 repo `synapse-wx`，Phase 0→F）。以下保留的是不在 synapse-wx scope 内、属于 marrow 主体的项。
+
 - **provider_adapter_layer** — `marrow/adapters/{cc,codex,...}.py` abstraction: transcript parser / session path resolver / hook entry / handover injector. ~500 LOC. Blocker for Codex + open-source. **效果**: cc 之外的 provider（Codex/Claude/local）能接上。
 - **provider_swap_path** — 6/15 stream-json path + Codex/local small model swap plan. Subsumes migration_path_codex_local + Codex_alternative_swap + WeClaude_6_15_migration. **效果**: 6/15 后不被 Anthropic 绑死。
-- **weclaude_runtime_rebuild** — Multi-message send + 铁锅 + `/stop` interrupt + `/rewind` jsonl truncate + `/resume` synthetic summary + auto-compact + multi-msg merge window (5s pain) + stellan media send + group chat + upstream revival fallback. cyberboss-vs-rewrite TBD. Subsumes 8 sub-items. **效果**: weclaude 跟 cc cli 全面对等。
-- **weclaude_bridge_bugfix_pile** — Pile of bridge known bugs to resolve in rebuild: subprocess 30min timeout + iLink polling missed messages + media plaintext retention + macOS sleep/iOS Focus link stale + transcript path mismatch + ret=-2 quota diagnosis + time injection anchor repair. **效果**: 重构 weclaude 时一并扫掉。
-- **wechat_event_pipeline** — WeChat session sessionend + catchup unified with cc cli (long-window memm→3d → memes pipeline). **效果**: 微信对话进 marrow，跟 cc 同管线。
-- **bidirectional_resume** — Morning WeChat → meal break → continue on cc; sid consistent or sid-independent resume. **效果**: 微信聊到一半 cc 接着聊。
-- **command_parity_across_channels** — All commands consistent CLI ↔ WeChat ↔ desktop ↔ web. **效果**: 同一套 shortcut 多端通用。
-- **WeChat_permission_yesno** — Approve/reject cc permission requests from WeChat. **效果**: 手机上能批 cc 的权限请求。
+- **marrow_media_store** — Unified media store across channels.
+  - **File store**: iCloud Drive `marrow-media/{year}/{month}/{uuid}.{ext}` — 跨设备 + iPhone 文件 app 可搜
+  - **DB table `media`**: id · path · kind (image/sticker/voice/pdf/video) · source_channel · source_event_id · mime · size · ts · description (cc vision 自动) · tags · vec
+  - **Reverse links**: events.attachment_ids · milestones.attachment_ids · stickers 走 kind="sticker"（不另起表）· affect 关键瞬间可链 1 张 cover
+  - **Album subpage**: dashboard 新子页，按月 / contact / topic 分组缩略图墙
+  - **Retention**: 被任何表反链的永留；其他纯随手图 90 天 age-out（走 `retention_prune_executor`）
+  - **Vision ingest**: 入库时 cc vision 自动 description + tags + 嵌入，grep / 语义召回都能找到
+  - **效果**: 5/29 老婆发的 laksa 那张能从对话回溯也能相册按月翻；表情包跟普通照片同一套基础设施
 - **mac_notification_center_reader** — Read macOS notification db as cross-app proactive signal source. Companion to marrow_pulse. **效果**: marrow 知道你手机响了啥。
+
+> Superseded by `docs/plans/3-synapse-wx.md`: weclaude_runtime_rebuild · weclaude_bridge_bugfix_pile · stellan_media_send · wechat_event_pipeline · bidirectional_resume · command_parity_across_channels · WeChat_permission_yesno · "怎么在微信就给cc发送原生/命令"
 
 ## Phase 5 (addons + OSS)
 前端：- **candidate HTML action buttons** — pin/drop/edit buttons designed but not built; entity + memes + milestone candidates currently flow through reconcile only.
@@ -49,6 +49,7 @@
 - **cccompanion_ios_fork** — Fork iOS app (SwiftUI + APNs + shared-secret auth + multi-endpoint failover + Bark + tmux). Drop server, point to marrow daemon via MCP-over-HTTP. Add CoreLocation + HealthKit + local SQLite. Trigger: first APNs need WeChat/TG can't meet. **效果**: 手机端原生 70% 覆盖 + 位置/健康。
 - **ios_shortcut_kit** — iOS Shortcut suite: period board / quick query / data upload via webhook. **效果**: 不用 app 也能从 iOS 主动上报。
 - **marrow_pulse_proactive_loop** — Unified opus loop for proactive browse + message. `inner_state` drift (longing v1) + dual-gate (silent_to_lumi ≠ activity_allowed) + multi-channel routing. Sleep window allows self-driven activity (diary / letter / browse / today draft). Draft: `docs/notes/2026-05-24_marrow-pulse-design.md`. **效果**: 屿忱有自己的内在节奏 + 主动行动。
+  - cross-platform proactive push mechanism: launchd cron → `claude -p` short session with minimal context + push hook; model outputs `SKIP` or `<send>...</send>`; script routes to channel. CC TUI has no inbound push API — fallback: inbox file (`~/.claude/inbox.md`) + SessionStart inject, or macOS notification, or WeChat `client.send_text`. ref: cyberboss `src/app/system-checkin-poller.js`, `src/services/reminder-service.js`.
 - **workflow_reflection_skill** — Phase 5 close, distil plan/findings/progress pattern into transferable skill. **效果**: marrow 跑完后总结成可迁移 skill。
 - **README_public_facing** — Full open-source README (philosophy / install / scripts / hooks). **效果**: 开源前做。
 - **monorepo_or_split_decision** — marrow + weclaude bridge + buddy MCP: mono or split. **效果**: 开源前定 repo 拆分。
@@ -86,8 +87,4 @@
 - **Valence_arousal_tagging** — timeline ## Us entries V/A tagged. **效果**: us 类 event 也带情绪标签。
 - **lifestyle_and_preference_relocation** — Move block to history.md Preferences or keep in reference.md. **效果**: reference.md 块分类，无紧迫性。
 
-## References
-> [P0luz / Ombre-Brain](https://github.com/P0luz/Ombre-Brain)
-- [WenXiaoWendy / cyberboss](https://github.com/WenXiaoWendy/cyberboss)
-- current weclaude see ny/code/weclaude or repo (in my star folder)
-- [Qizhan7 / claude-imprint](https://github.com/Qizhan7/claude-imprint) — borrow: RRF + vector/FTS5/recency retrieval fusion recipe
+

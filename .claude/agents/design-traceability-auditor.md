@@ -1,6 +1,6 @@
 ---
 name: design-traceability-auditor
-description: Trace each DESIGN.md item for the phase to evidence — DONE / DEFERRED / MISSING / DRIFT. Uses fact-checker baseline + DECISIONS + FUTURE.
+description: Trace each DESIGN.md item for the phase to evidence — DONE / DEFERRED / MISSING / DRIFT. Uses fact-checker baseline + DECISIONS.
 tools: Read, Glob, Grep, Bash
 model: sonnet
 ---
@@ -10,7 +10,7 @@ Input: phase name, fact-checker baseline (in prompt or file).
 
 Do:
 - Read DESIGN.md for the phase's sub-section
-- Read DECISIONS.md and FUTURE.md (override / deferred sources)
+- Read MAP.md
 - For each DESIGN line item, classify:
   - DONE — evidence in baseline + code (cite file:line + commit)
   - DEFERRED-by-plan — FUTURE.md L<line> documents it
