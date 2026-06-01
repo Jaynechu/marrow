@@ -415,3 +415,85 @@ def test_main_audit_includes_tombs_count(db, monkeypatch, tmp_path):
         assert n == 0
     finally:
         fresh.close()
+
+
+# ── prune_projects_worktrees ──────────────────────────────────────────────────
+
+def _make_slugs(root: Path, names: list[str]) -> None:
+    """Create fake cc projects slug dirs (some empty, some with a jsonl)."""
+    root.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        d = root / n
+        d.mkdir()
+        # half get a fake jsonl to prove purge is content-blind
+        if "-with-jsonl" in n:
+            (d / "session.jsonl").write_text("{}\n")
+
+
+def test_prune_worktrees_removes_only_worktree_slugs(tmp_path):
+    root = tmp_path / "projects"
+    _make_slugs(root, [
+        "-Users-x-CC-Lab-marrow",                                # real, keep
+        "-Users-x-Desktop-NY",                                   # real, keep
+        "-Users-x-cc-lab-marrow--claude-worktrees-agent-aaa",    # purge
+        "-Users-x-cc-lab-marrow--claude-worktrees-phase1-review-with-jsonl",  # purge content-blind
+    ])
+    n = aging.prune_projects_worktrees(root)
+    assert n == 2
+    remaining = sorted(p.name for p in root.iterdir())
+    assert remaining == [
+        "-Users-x-CC-Lab-marrow",
+        "-Users-x-Desktop-NY",
+    ]
+
+
+def test_prune_worktrees_missing_dir_noop(tmp_path):
+    assert aging.prune_projects_worktrees(tmp_path / "nope") == 0
+
+
+def test_prune_worktrees_no_matches_noop(tmp_path):
+    root = tmp_path / "projects"
+    _make_slugs(root, ["-Users-x-CC-Lab-marrow", "-Users-x-Desktop-NY"])
+    assert aging.prune_projects_worktrees(root) == 0
+    assert len(list(root.iterdir())) == 2
+
+
+def test_prune_worktrees_ignores_regular_files(tmp_path):
+    root = tmp_path / "projects"
+    root.mkdir()
+    (root / "stray-worktrees-file").write_text("x")  # not a dir → ignored
+    assert aging.prune_projects_worktrees(root) == 0
+    assert (root / "stray-worktrees-file").exists()
+
+
+def test_main_audit_includes_wtshells_count(db, monkeypatch, tmp_path):
+    """main() must include `wtshells=N` in audit_log summary."""
+    projects = tmp_path / "projects"
+    _make_slugs(projects, [
+        "-Users-x-CC-Lab-marrow",
+        "-Users-x-cc-lab-marrow--claude-worktrees-agent-aaa",
+    ])
+    p = db.execute("PRAGMA database_list").fetchone()["file"]
+    db.close()
+    _route_init_db(monkeypatch, p)
+    monkeypatch.setattr(aging, "_GOOSE_DIR", tmp_path / "fake_goose")
+    # Default projects_dir routes through home; monkeypatch the call instead
+    # of mocking Path.home so other parts of aging stay untouched.
+    real = aging.prune_projects_worktrees
+    monkeypatch.setattr(
+        aging, "prune_projects_worktrees",
+        lambda projects_dir=None: real(projects_dir or projects),
+    )
+    aging.main()
+    fresh = sqlite3.connect(p)
+    fresh.row_factory = sqlite3.Row
+    try:
+        row = fresh.execute(
+            "SELECT summary FROM audit_log "
+            "WHERE target_table='aging' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert "wtshells=1" in row["summary"]
+    finally:
+        fresh.close()
+    # Real purge happened on the test dir.
+    assert not (projects / "-Users-x-cc-lab-marrow--claude-worktrees-agent-aaa").exists()

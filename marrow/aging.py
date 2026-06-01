@@ -19,11 +19,16 @@ Passes (single txn):
 5. prune_md_index_tombstones — DELETE md_index rows whose tombstone_at is
    older than 30 days. Stops the table accumulating dead rows from blocks
    the user permanently removed.
+6. prune_projects_worktrees — delete every ~/.claude/projects/<slug>
+   directory whose name contains "worktrees". cc auto-cleans jsonl 30d+
+   but leaves the slug shells; worktree sessions are task-isolated and
+   not part of the user's continuous memory, so the whole shell goes.
 """
 from __future__ import annotations
 
 import glob
 import re
+import shutil
 import sqlite3
 import os
 import sys
@@ -175,8 +180,37 @@ def prune_md_index_tombstones(conn: sqlite3.Connection) -> int:
     return cur.rowcount or 0
 
 
+def prune_projects_worktrees(projects_dir: Path | None = None) -> int:
+    """Delete every ~/.claude/projects/<slug>/ whose name contains "worktrees".
+
+    cc spawns one slug per cwd; worktree sessions (task-isolated runs in
+    non-primary git worktrees) leave behind shell directories after their
+    jsonls age out via cc's native 30d cleanup. These shells are never
+    revisited — purge unconditionally regardless of remaining content.
+
+    Returns the number of slug directories removed.
+    """
+    if projects_dir is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        return 0
+    d = projects_dir or (Path.home() / ".claude" / "projects")
+    if not d.is_dir():
+        return 0
+    purged = 0
+    for child in sorted(d.iterdir()):
+        if not child.is_dir():
+            continue
+        if "worktrees" not in child.name:
+            continue
+        try:
+            shutil.rmtree(child)
+            purged += 1
+        except OSError:
+            continue
+    return purged
+
+
 def main() -> None:
-    """Single entrypoint: run all five passes, log summary."""
+    """Single entrypoint: run all six passes, log summary."""
     conn = storage.init_db()
     try:
         with conn:
@@ -185,16 +219,19 @@ def main() -> None:
             confirmed = confirm_milestone_alerts(conn)
             pruned = prune_goose_quotes()
             tombs = prune_md_index_tombstones(conn)
+            wtshells = prune_projects_worktrees()
             conn.execute(
                 "INSERT INTO audit_log "
                 "(target_table, target_id, action, summary) "
                 "VALUES ('aging', NULL, 'weekly', ?)",
                 (f"retired={retired} archived={archived} "
-                 f"confirmed={confirmed} pruned={pruned} tombs={tombs}",),
+                 f"confirmed={confirmed} pruned={pruned} "
+                 f"tombs={tombs} wtshells={wtshells}",),
             )
         sys.stderr.write(
             f"[aging] retired={retired} archived={archived} "
-            f"confirmed={confirmed} pruned={pruned} tombs={tombs}\n"
+            f"confirmed={confirmed} pruned={pruned} "
+            f"tombs={tombs} wtshells={wtshells}\n"
         )
     finally:
         conn.close()
