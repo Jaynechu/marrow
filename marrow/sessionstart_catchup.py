@@ -151,6 +151,29 @@ def _ts_to_epoch(ts: str) -> float:
         return 0.0
 
 
+def _bridge_owns_active(conn, sid: str) -> bool:
+    """True iff sid's latest manual_skip row is 'bridge_owns' AND no newer
+    sessionend_extract row has appeared. The bridge writes the marker on
+    SessionEnd; once it manually fires sessionend_async and that run writes
+    an ok/fail/partial row (newer audit_log id), the marker is superseded
+    and the regular 7-state table takes over (state 5 retry, etc.)."""
+    row = conn.execute(
+        "SELECT id, summary FROM audit_log"
+        " WHERE action='manual_skip' AND target_id=?"
+        " ORDER BY id DESC LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if not row or row["summary"] != "bridge_owns":
+        return False
+    newer = conn.execute(
+        "SELECT 1 FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=? AND id > ?"
+        " LIMIT 1",
+        (sid, row["id"]),
+    ).fetchone()
+    return newer is None
+
+
 def _classify(conn, sid: str, live_ppids: set[int]) -> Literal["spawn", "skip"]:
     """7-state decision table. Returns 'spawn' or 'skip'.
 
@@ -160,6 +183,10 @@ def _classify(conn, sid: str, live_ppids: set[int]) -> Literal["spawn", "skip"]:
     # Next step: weclaude bridge writes lifecycle:start/end markers into marrow.db
     # on rotate_session / idle_fire_loop. See Task 5 in wt-lifecycle plan.
     """
+    # Precondition: bridge owns sessionend timing for this sid.
+    if _bridge_owns_active(conn, sid):
+        return "skip"
+
     now = time.time()
 
     # Fetch start marker rows for this sid.

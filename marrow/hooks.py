@@ -88,6 +88,7 @@ def _rotate_recall_log() -> None:
 _MANUAL_SKIP_ACTION = "manual_skip"
 _STATUS_SKIP = "skip"
 _STATUS_SKIP_CLEARED = "skip_cleared"
+_STATUS_SKIP_BRIDGE_OWNS = "bridge_owns"
 
 
 def _write_manual_skip_flag(conn: sqlite3.Connection, sid: str, status: str) -> None:
@@ -434,6 +435,17 @@ def session_end() -> int:
                 pass
             # Drop per-session recall dedup state — next window starts clean.
             _wipe_recall_seen(sid)
+
+            # Bridge gate: when synapse-wx wraps cc, it owns sessionend timing
+            # (fires on 6h idle, not on every /model swap). Archive runs, marker
+            # written, popen suppressed. Catchup honors the bridge_owns marker
+            # until a later fail row (manual fire that failed) supersedes it.
+            if os.environ.get("MARROW_BRIDGE") == "1":
+                try:
+                    _write_manual_skip_flag(conn, sid, _STATUS_SKIP_BRIDGE_OWNS)
+                except Exception:  # noqa: BLE001
+                    pass
+                return 0
 
             # Idempotent gate: skip popen if events haven't grown since last ok.
             skip_spawn = False
