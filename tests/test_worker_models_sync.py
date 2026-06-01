@@ -1,5 +1,5 @@
-"""ADR-0004 sync guard: every model pinned in the pipeline must prefix-match
-some config [transcript].worker_models entry.
+"""Worker-models sync guard: every model pinned in the pipeline must
+prefix-match some config [transcript].worker_models entry.
 
 If diary moves to opus, or prompt-lint's MODEL is renamed, the headless
 signal silently breaks (a worker run gets archived as a real session, or
@@ -42,7 +42,7 @@ def test_pipeline_pinned_models_subset_of_worker_models():
         model = tiers[tier]
         assert _matches(model, workers), (
             f"config tiers.{tier}={model} not covered by "
-            f"worker_models={workers}; ADR-0004 signal would break")
+            f"worker_models={workers}; headless signal would break")
 
 
 def test_prompt_lint_model_subset_of_worker_models():
@@ -52,4 +52,4 @@ def test_prompt_lint_model_subset_of_worker_models():
     model = ast.literal_eval(m.group(1).strip())
     assert _matches(model, transcript.worker_models()), (
         f"prompt-lint MODEL={model} not covered by worker_models; "
-        f"ADR-0004 signal would break")
+        f"headless signal would break")

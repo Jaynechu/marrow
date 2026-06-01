@@ -125,8 +125,8 @@ bottom = ["study", "projects", "cheatsheet"]
 hidden = []
 
 [transcript]
-# ADR-0004 single source of truth for the headless-spawn signal. A jsonl
-# whose assistant models are all (prefix-match) in this set is a spawned
+# Single source of truth for the headless-spawn signal. A jsonl whose
+# assistant models are all (prefix-match) in this set is a spawned
 # `claude` worker call (prompt-lint haiku, diary haiku/sonnet), not an
 # archivable session. MUST stay synced with the models pinned in
 # marrow/llm.py tiers, marrow/diary.py, ~/.claude/hooks/prompt-lint.py

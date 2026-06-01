@@ -11,8 +11,9 @@ import re
 
 from . import config
 
-# ADR-0004 fallback if config.toml omits [transcript].worker_models (e.g. a
-# live config predating this key). Mirrors config.default.toml.
+# Fallback if config.toml omits [transcript].worker_models (e.g. a live
+# config predating this key). Mirrors config.default.toml. Used by the
+# headless-detection signal in is_headless() below.
 _DEFAULT_WORKER_MODELS = ["claude-haiku-4-5", "claude-sonnet-4-6"]
 
 # Empty-model backstop: a spawn that exited before any assistant flush has
@@ -62,8 +63,9 @@ def _raw_content_str(content) -> str:
 
 
 def is_headless(jsonl_path: str) -> bool:
-    """ADR-0004: True iff assistant model-set ⊆ worker_models, or (empty
-    set) the first user/queue-op content head is a known spawn prompt."""
+    """True iff assistant model-set ⊆ worker_models (prefix-match), or
+    (empty set) the first user/queue-op content head is a known spawn
+    prompt. Conservative: no match -> not headless (keep)."""
     workers = worker_models()
     models: set[str] = set()
     first_head = ""

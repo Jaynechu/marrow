@@ -4,7 +4,7 @@ Contract: a CC .jsonl session log -> event rows ready for repo.archive_events.
 Keep human dialogue (user + assistant text) verbatim; drop tool/thinking/
 system/attachment/meta/sidechain noise. Deterministic, no LLM.
 
-is_headless (ADR-0004): True iff the set of assistant .message.model
+is_headless: True iff the set of assistant .message.model
 (type=="assistant", excluding "<synthetic>") is non-empty AND every model
 prefix-matches some config [transcript].worker_models entry. Empty model
 set -> backstop on first user/queue-operation content head vs known spawn
@@ -103,7 +103,7 @@ def test_skips_malformed_lines(tmp_path):
     assert [r["content"] for r in transcript.clean(str(p))] == ["ok"]
 
 
-# ── is_headless(): ADR-0004 assistant-model-set predicate ────────────────────
+# ── is_headless(): assistant-model-set predicate ────────────────────────────
 
 def test_all_haiku_assistant_is_headless(tmp_path):
     jl = _w(tmp_path / "h.jsonl", [
