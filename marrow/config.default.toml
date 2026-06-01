@@ -69,9 +69,14 @@ w_milestones_vec = 0.60
 w_diary_vec = 0.55
 w_tasks_vec = 0.55
 min_score = 0.35
-# Passive-recall hard limit (2026-06-01: 15 → 10). Anchor tables tend to
-# eat half the slots; 10 keeps the injected block under ~3KB.
-limit = 10
+# Passive-recall hard limit (2026-06-01: 15 → 10 → 6). dedup'd anchor tables
+# skip slots without backfill, so 6 is the upper bound, not the floor.
+limit = 6
+# Final injected-block char cap (hook backstop). Tables ship full content;
+# event main+context combined capped at event_max_chars per hit (hook side).
+budget_chars = 800
+# Per-event content budget at hook side: main snippet + ↑prev + ↓next combined.
+event_max_chars = 150
 # Event hits ship with N adjacent same-session turns (prev_N + next_N) so a
 # stale answer carries its correction. 0 = disabled.
 event_context_window = 1

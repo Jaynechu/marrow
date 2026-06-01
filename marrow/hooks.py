@@ -33,6 +33,56 @@ from .popen_detach import popen_detach
 
 SESSION_START_HARD_CAP = 6000
 
+# ── recall dedup state (per-session, hook-only) ──────────────────────────────
+
+_TABLE_KINDS = {"milestone", "memes", "entity", "diary", "task"}
+
+
+def _recall_seen_path(sid: str) -> Path:
+    return config.DATA_DIR / "state" / "recall_seen" / f"{sid}.json"
+
+
+def _load_recall_seen(sid: str) -> set[tuple[str, int]]:
+    if not sid:
+        return set()
+    try:
+        data = json.loads(_recall_seen_path(sid).read_text())
+        return {(str(k), int(i)) for k, i in data}
+    except Exception:
+        return set()
+
+
+def _save_recall_seen(sid: str, seen: set[tuple[str, int]]) -> None:
+    if not sid:
+        return
+    p = _recall_seen_path(sid)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(sorted(seen)))
+    except Exception:
+        pass
+
+
+def _wipe_recall_seen(sid: str) -> None:
+    if not sid:
+        return
+    try:
+        _recall_seen_path(sid).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _rotate_recall_log() -> None:
+    """Rotate logs/recall.md → recall.md.prev so each session starts fresh."""
+    log = config.DATA_DIR / "logs" / "recall.md"
+    if not log.exists():
+        return
+    try:
+        log.replace(log.with_suffix(".md.prev"))
+    except Exception:
+        pass
+
+
 # ── manual skip helpers ───────────────────────────────────────────────────────
 
 _MANUAL_SKIP_ACTION = "manual_skip"
@@ -195,10 +245,6 @@ def _handoff_text(conn) -> str:
             lines.append(f"- #{a['id']} [{a['severity']}] {a['message']}")
     else:
         lines.append("- none")
-    # Note reminder: `## Lumi's Note` in handover.md is the new window's to-do.
-    lines += ["",
-              "> Read `## Lumi's Note` in the handover — it's your to-do for"
-              " this window. Don't ignore it."]
     return "\n".join(lines)
 
 
@@ -213,6 +259,9 @@ def session_start() -> int:
                            source="hooks.py", db=config.db_path())
         except Exception:
             pass
+    # Recall housekeeping — rotate side log + wipe per-session dedup state so
+    # every fresh window starts with a clean recall slate.
+    _rotate_recall_log()
     inp = _read_input()
     db = config.db_path()
     conn = storage.connect(db)
@@ -220,6 +269,9 @@ def session_start() -> int:
         # Write lifecycle:start marker so catchup can detect live vs dead sessions.
         sid = inp.get("session_id") if isinstance(inp, dict) else None
         if sid:
+            # Fresh window or resume — drop prior recall dedup state either way
+            # (cheap; resume re-shows seen rows once, acceptable).
+            _wipe_recall_seen(sid)
             try:
                 # Resume detection: if sid already has a lifecycle:start row, this
                 # is a cc resume. Clear any manual skip so sessionend runs normally.
@@ -301,6 +353,8 @@ def session_end() -> int:
                     )
             except Exception:  # noqa: BLE001
                 pass
+            # Drop per-session recall dedup state — next window starts clean.
+            _wipe_recall_seen(sid)
 
             # Idempotent gate: skip popen if events haven't grown since last ok.
             skip_spawn = False
@@ -504,6 +558,9 @@ def user_prompt_submit() -> int:
 
     rcfg = cfg.get("recall", {})
     ctx_n = int(rcfg.get("event_context_window", 1))
+    event_max = int(rcfg.get("event_max_chars", 150))
+    budget_chars = int(rcfg.get("budget_chars", 800))
+    sid = inp.get("session_id") if isinstance(inp, dict) else None
     try:
         from . import recall as recall_mod
         conn = storage.connect(config.db_path())
@@ -524,21 +581,55 @@ def user_prompt_submit() -> int:
     if not hits:
         return 0
 
+    # ── per-session dedup: drop hits already injected this session ────────────
+    seen = _load_recall_seen(sid)
+    visible: list[dict] = []
+    for h in hits:
+        hid = int(h.get("id") or 0)
+        kind = h.get("kind") or "event"
+        if hid and (kind, hid) in seen:
+            continue  # already shown — skip slot, no backfill
+        visible.append(h)
+        if hid:
+            seen.add((kind, hid))
+    if not visible:
+        return 0
+    _save_recall_seen(sid, seen)
+
     lines = [
         "## Recall (auto) — passive context, do not answer",
         "> 命中可能不全；相关或缺失 → mcp__marrow__recall",
         "",
     ]
-    for h in hits:
+    for h in visible:
         ts = (h.get("timestamp") or "")[:10]
-        snippet = (h.get("content") or "").replace("\n", " ")[:300]
-        lines.append(f"- [{ts}] {snippet}")
-        for c in h.get("_context", []) or []:
-            cts = (c.get("timestamp") or "")[:16].replace("T", " ")
-            csnip = (c.get("content") or "").replace("\n", " ")[:200]
-            arrow = "↑" if c.get("rel") == "prev" else "↓"
-            lines.append(f"    {arrow} [{cts}] ({c.get('role')}) {csnip}")
+        kind = h.get("kind") or "event"
+        content_full = (h.get("content") or "").replace("\n", " ")
+        if kind in _TABLE_KINDS:
+            # Anchor rows ship full content — they're already short and dense.
+            lines.append(f"- [{ts}] {content_full}")
+            continue
+        # Event: main + ↑prev + ↓next combined ≤ event_max chars (content only).
+        ctxs = h.get("_context") or []
+        main_cap = max(40, event_max - 60) if ctxs else event_max
+        main = content_full[:main_cap]
+        lines.append(f"- [{ts}] {main}")
+        remaining = max(0, event_max - len(main))
+        if ctxs and remaining > 0:
+            per_ctx = max(0, remaining // len(ctxs))
+            for c in ctxs:
+                if per_ctx <= 0:
+                    break
+                cts = (c.get("timestamp") or "")[:16].replace("T", " ")
+                csnip = (c.get("content") or "").replace("\n", " ")[:per_ctx]
+                if not csnip:
+                    continue
+                arrow = "↑" if c.get("rel") == "prev" else "↓"
+                lines.append(f"    {arrow} [{cts}] ({c.get('role')}) {csnip}")
     ctx = "\n".join(lines)
+    # Final backstop: cap injected block at budget_chars (kind-blind tail trim).
+    if len(ctx) > budget_chars:
+        ctx = ctx[:budget_chars]
 
     # Side log — markdown append so VSCode preview / tail both readable.
     try:

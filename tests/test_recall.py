@@ -229,9 +229,11 @@ def test_recall_fusion_budget_truncation(db):
     assert total <= 4000
 
 
-def test_recall_per_item_budget_cap(db):
-    """One long hit must not starve the others — each hit capped to budget//limit."""
-    # 1 long hit + 9 short hits; all FTS-match "marrow".
+def test_recall_passthrough_no_per_item_cap(db):
+    """Fusion is content-passthrough — hook owns per-kind shaping (2026-06-01).
+
+    With budget_chars=None, full content survives; long hits keep their bytes.
+    """
     _make_event(db, "marrow " + "x" * 3000, session_id="s0",
                 timestamp="2026-05-19T01:00:00Z")
     for i in range(1, 10):
@@ -239,15 +241,11 @@ def test_recall_per_item_budget_cap(db):
                     timestamp=f"2026-05-19T01:{i:02d}:00Z")
     with patch.object(rm, "_ensure_embedder", return_value=None):
         results = rm.recall_fusion(
-            db, "marrow", limit=10, budget_chars=3500, min_score=0.0,
+            db, "marrow", limit=10, budget_chars=None, min_score=0.0,
         )
     assert len(results) == 10
-    cap = 3500 // 10
-    slack = 8
-    for r in results:
-        assert len(r["content"]) <= cap + slack, (
-            f"hit length {len(r['content'])} exceeds per-item cap {cap}"
-        )
+    long_hits = [r for r in results if len(r["content"]) > 3000]
+    assert long_hits, "long row content must survive passthrough"
 
 
 # ── recall_fusion — vec path ──────────────────────────────────────────────────

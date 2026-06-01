@@ -117,10 +117,14 @@ def bug0_db(tmp_path):
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 def test_lxy_surfaces_at_least_10_events(bug0_db):
-    """Test 1: 12 (李小云) events → recall returns >=10 of them."""
+    """Test 1: 12 (李小云) events → recall returns >=10 of them.
+
+    Explicit limit=15 — bug0 predates the 2026-06-01 default cut (10→6),
+    but the regression it guards is CJK FTS recall, not the cap value.
+    """
     conn, lxy_ids, _, _, _ = bug0_db
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_with_config(conn, "李小云")
+        results = rm.recall_with_config(conn, "李小云", limit=15)
     lxy_hits = [
         r for r in results
         if "李小云" in (r.get("content") or "")

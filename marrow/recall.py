@@ -722,7 +722,7 @@ def recall_fusion(
     conn: sqlite3.Connection,
     query: str,
     limit: int = 10,
-    budget_chars: int = 4000,
+    budget_chars: int | None = None,
     *,
     w_vec: float = 0.55,
     w_bm25: float = 0.30,
@@ -1147,23 +1147,17 @@ def recall_fusion(
         key=lambda x: x[0], reverse=True,
     )
 
-    # ── budget truncation ─────────────────────────────────────────────────────
-    # Per-item cap = budget_chars // limit so one long hit can't starve the
-    # rest. Global budget still enforced as a backstop.
-    per_item_cap = max(1, budget_chars // max(1, limit))
+    # ── row passthrough ───────────────────────────────────────────────────────
+    # No per-item content cap — caller (hook / MCP) owns final shaping.
+    # `budget_chars` (when set) is a defensive cumulative backstop only.
     out: list[dict] = []
     used = 0
     for _, row in picks[:limit]:
         content = row["content"] or ""
-        if len(content) > per_item_cap:
-            content = content[:per_item_cap]
-        if used + len(content) > budget_chars:
-            content = content[: max(0, budget_chars - used)]
-        row = {**row, "content": content}
-        out.append(row)
-        used += len(content)
-        if used >= budget_chars:
+        if budget_chars is not None and used + len(content) > budget_chars:
             break
+        out.append({**row, "content": content})
+        used += len(content)
 
     return out
 
@@ -1189,13 +1183,12 @@ def recall_with_config(
         "w_memes_vec", "w_entities_vec", "w_milestones_vec",
         "w_diary_vec", "w_tasks_vec", "min_score",
     }
+    # budget_chars is hook-side post-shaping (per-kind rules). Fusion stays
+    # passthrough — callers that want a hard char cap pass it explicitly.
     return recall_fusion(
         conn, query,
-        limit=int(limit if limit is not None else rcfg.get("limit", 10)),
-        budget_chars=int(
-            budget_chars if budget_chars is not None
-            else rcfg.get("budget_chars", 4000)
-        ),
+        limit=int(limit if limit is not None else rcfg.get("limit", 6)),
+        budget_chars=budget_chars,
         **{k: float(rcfg[k]) for k in _weight_keys if k in rcfg},
     )
 
