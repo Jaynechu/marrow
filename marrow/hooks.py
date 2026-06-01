@@ -632,8 +632,9 @@ def user_prompt_submit() -> int:
         ctx = ctx[:budget_chars]
 
     # Side log — markdown append so VSCode preview / tail both readable.
+    # Mirror what actually got injected: dedup-filtered `visible`, not raw hits.
     try:
-        _append_recall_log(prompt_text, hits)
+        _append_recall_log(prompt_text, visible)
     except Exception:
         pass
 

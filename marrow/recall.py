@@ -1137,11 +1137,30 @@ def recall_fusion(
     diary_picks = by_kind.get("diary", [])[:diary_cap]
     tasks_picks = by_kind.get("task", [])[:tasks_cap]
     reserved = len(ms_picks) + len(memes_picks) + len(diary_picks) + len(tasks_picks)
-    ev_picks = [
+    # Event adjacency dedup: hook auto-attaches ±1 same-session context per
+    # event hit, so neighbouring event ids (diff ≤ 1, same session) would
+    # show up twice — once as a hit, once as context on the higher-scored
+    # neighbour. Keep the highest-scored of each adjacent run.
+    ev_candidates = [
         item for k, items in by_kind.items()
         if k not in ("milestone", "memes", "diary", "task")
         for item in items
-    ][: max(0, limit - reserved)]
+    ]
+    ev_candidates.sort(key=lambda x: x[0], reverse=True)
+    ev_picks: list = []
+    chosen_event_ids: dict[str, list[int]] = {}
+    cap = max(0, limit - reserved)
+    for s, r in ev_candidates:
+        sid = r.get("session_id")
+        rid = r.get("id")
+        if sid and rid and r.get("kind") in (None, "event"):
+            ids = chosen_event_ids.setdefault(sid, [])
+            if any(abs(int(rid) - x) <= 1 for x in ids):
+                continue
+            ids.append(int(rid))
+        ev_picks.append((s, r))
+        if len(ev_picks) >= cap:
+            break
     picks = sorted(
         ms_picks + memes_picks + diary_picks + tasks_picks + ev_picks,
         key=lambda x: x[0], reverse=True,
