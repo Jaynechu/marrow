@@ -108,6 +108,34 @@ def _text(content) -> str:
     return _BUDDY.sub("", s).strip()
 
 
+def _active_chain_uuids(records: list[dict]) -> set[str]:
+    """Reconstruct the post-rewind active conversation by walking parentUuid.
+
+    CC `/rewind` does NOT set isSidechain on rewound turns; it just writes a
+    new branch whose first turn's parentUuid points back above the rewind
+    point. The active conversation is therefore the chain ending at the LAST
+    record in file order with a uuid. Walk parentUuid backward from there
+    to collect all uuids on that chain. Records whose uuid is not in this
+    set were rewound out and must be dropped.
+    """
+    by_uuid: dict[str, dict] = {}
+    tail: str | None = None
+    for r in records:
+        u = r.get("uuid")
+        if not u:
+            continue
+        by_uuid[u] = r
+        tail = u  # last uuid in file order
+    if tail is None:
+        return set()
+    chain: set[str] = set()
+    cur: str | None = tail
+    while cur and cur in by_uuid and cur not in chain:
+        chain.add(cur)
+        cur = by_uuid[cur].get("parentUuid")
+    return chain
+
+
 def clean(jsonl_path: str) -> list[dict]:
     rows: list[dict] = []
     if is_headless(jsonl_path):
@@ -117,6 +145,7 @@ def clean(jsonl_path: str) -> list[dict]:
     except FileNotFoundError:
         return rows  # unflushed/headless transcript: nothing to clean, not an error
     with fh as f:
+        records: list[dict] = []
         for line in f:
             line = line.strip()
             if not line:
@@ -125,19 +154,31 @@ def clean(jsonl_path: str) -> list[dict]:
                 o = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if o.get("type") not in ("user", "assistant"):
-                continue
-            if o.get("isMeta") or o.get("isSidechain"):
-                continue
-            msg = o.get("message") or {}
-            text = _text(msg.get("content"))
-            if not text:
-                continue
-            rows.append({
-                "session_id": o.get("sessionId") or o.get("session_id") or "",
-                "timestamp": o.get("timestamp", ""),
-                "role": msg.get("role") or o.get("type"),
-                "content": text,
-                "channel": "cli",
-            })
+            records.append(o)
+    # First pass: build active-chain uuid set so rewound turns drop out.
+    # CC `/rewind` leaves isSidechain=False on rewound turns, so the
+    # type/isSidechain filter alone would silently digest them as if they
+    # had happened. Walk parentUuid from the file's last uuid backward.
+    active = _active_chain_uuids(records)
+    for o in records:
+        if o.get("type") not in ("user", "assistant"):
+            continue
+        if o.get("isMeta") or o.get("isSidechain"):
+            continue
+        u = o.get("uuid")
+        # Only enforce chain membership when the record has a uuid; records
+        # without one (legacy / summary-style lines) keep the prior behavior.
+        if u and u not in active:
+            continue
+        msg = o.get("message") or {}
+        text = _text(msg.get("content"))
+        if not text:
+            continue
+        rows.append({
+            "session_id": o.get("sessionId") or o.get("session_id") or "",
+            "timestamp": o.get("timestamp", ""),
+            "role": msg.get("role") or o.get("type"),
+            "content": text,
+            "channel": "cli",
+        })
     return rows

@@ -212,6 +212,94 @@ def test_garbage_file_is_not_headless(tmp_path):
     assert transcript.is_headless(str(p)) is False
 
 
+# ── /rewind: reconstruct active chain via parentUuid ─────────────────────────
+#
+# CC `/rewind` does NOT set isSidechain on rewound turns — it writes a new
+# branch whose first turn's parentUuid points back above the rewind point.
+# transcript.clean() must walk parentUuid from the file's last uuid back to
+# root and keep only that active chain; rewound turns must drop out.
+
+def _u(uuid, parent, content, role="user"):
+    """user/assistant turn with uuid+parentUuid wiring."""
+    t = "user" if role == "user" else "assistant"
+    msg = ({"role": "user", "content": content} if role == "user"
+           else {"role": "assistant", "model": "claude-opus-4-7",
+                 "content": [{"type": "text", "text": content}]})
+    return {"type": t, "sessionId": "s1", "timestamp": "t",
+            "uuid": uuid, "parentUuid": parent, "isSidechain": False,
+            "message": msg}
+
+
+def test_no_rewind_keeps_every_turn(tmp_path):
+    # baseline: linear chain u1 -> a1 -> u2 -> a2, output identical to before
+    jl = _w(tmp_path / "n.jsonl", [
+        _u("u1", None, "hi"),
+        _u("a1", "u1", "hello", role="assistant"),
+        _u("u2", "a1", "more?"),
+        _u("a2", "u2", "sure", role="assistant"),
+    ])
+    assert [r["content"] for r in transcript.clean(jl)] == [
+        "hi", "hello", "more?", "sure"]
+
+
+def test_single_rewind_drops_rewound_branch(tmp_path):
+    # chain u1 -> a1 -> u2 -> a2; then user /rewind to a1 and types u3 -> a3.
+    # u3.parentUuid jumps back to a1 (skipping u2/a2). u2 and a2 must drop.
+    jl = _w(tmp_path / "r.jsonl", [
+        _u("u1", None, "hi"),
+        _u("a1", "u1", "hello", role="assistant"),
+        _u("u2", "a1", "REWOUND-Q"),
+        _u("a2", "u2", "REWOUND-A", role="assistant"),
+        _u("u3", "a1", "kept-q"),
+        _u("a3", "u3", "kept-a", role="assistant"),
+    ])
+    contents = [r["content"] for r in transcript.clean(jl)]
+    assert contents == ["hi", "hello", "kept-q", "kept-a"]
+    assert "REWOUND-Q" not in contents and "REWOUND-A" not in contents
+
+
+def test_nested_rewind_keeps_only_final_chain(tmp_path):
+    # u1 -> a1 -> u2 -> a2 (first branch, rewound)
+    # then rewind to a1: u3 -> a3 (second branch, also rewound)
+    # then rewind to u1: u4 -> a4 (final live chain).
+    # Only u1, u4, a4 survive (a1 is the parent of both rewound branches and
+    # of u4 — wait: u4 rewinds to u1, so a1 is dropped too).
+    jl = _w(tmp_path / "nr.jsonl", [
+        _u("u1", None, "root-q"),
+        _u("a1", "u1", "DROP-a1", role="assistant"),
+        _u("u2", "a1", "DROP-u2"),
+        _u("a2", "u2", "DROP-a2", role="assistant"),
+        _u("u3", "a1", "DROP-u3"),
+        _u("a3", "u3", "DROP-a3", role="assistant"),
+        _u("u4", "u1", "final-q"),
+        _u("a4", "u4", "final-a", role="assistant"),
+    ])
+    contents = [r["content"] for r in transcript.clean(jl)]
+    assert contents == ["root-q", "final-q", "final-a"]
+    assert not any(c.startswith("DROP") for c in contents)
+
+
+def test_tail_with_null_parent_yields_single_turn(tmp_path):
+    # only the root user turn exists; chain = {u1}
+    jl = _w(tmp_path / "s1.jsonl", [_u("u1", None, "alone")])
+    assert [r["content"] for r in transcript.clean(jl)] == ["alone"]
+
+
+def test_record_without_uuid_is_not_chain_filtered(tmp_path):
+    # a legacy user line without uuid (no parentUuid wiring at all) sits
+    # alongside a normal chain. The unwired line must NOT be dropped by the
+    # chain filter — only the type / isSidechain / isMeta filters apply.
+    jl = _w(tmp_path / "nu.jsonl", [
+        {"type": "user", "sessionId": "s1", "timestamp": "t",
+         "message": {"role": "user", "content": "legacy-no-uuid"}},
+        _u("u1", None, "wired-q"),
+        _u("a1", "u1", "wired-a", role="assistant"),
+    ])
+    contents = [r["content"] for r in transcript.clean(jl)]
+    assert "legacy-no-uuid" in contents
+    assert contents == ["legacy-no-uuid", "wired-q", "wired-a"]
+
+
 def test_sdk_cli_real_session_kept(tmp_path):
     # entrypoint sdk-cli is NOT a headless marker; opus model -> keep
     jl = _w(tmp_path / "c.jsonl", [
