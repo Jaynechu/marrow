@@ -309,6 +309,7 @@ def test_embed_diary_unknown_date_noop(db):
     ).fetchone()[0] == 0
 
 
+@pytest.mark.skip(reason="diary/task lanes disabled in passive recall 2026-06-01; surface via mcp__marrow__recall(kind=) instead")
 def test_diary_vec_lane_surfaces_via_monkeypatch(db, monkeypatch):
     rid = _make_diary(db, "2026-05-22", "long-form prose about a feeling")
     qvec = _fake_vec(22)
@@ -350,6 +351,7 @@ def test_diary_vec_lane_gated_by_floor(db, monkeypatch):
     assert not any(r.get("kind") == "diary" for r in results)
 
 
+@pytest.mark.skip(reason="diary lane disabled in passive recall 2026-06-01")
 def test_diary_slot_reserved_when_limit_gt_5(db, monkeypatch):
     """With limit>5 and no strong FTS, at least one diary slot is reserved
     even when events would otherwise saturate the limit via vec-only scores."""
@@ -471,6 +473,7 @@ def test_embed_pending_skips_archived_tasks(db):
     assert rowids == {live_tid, done_tid}
 
 
+@pytest.mark.skip(reason="task lane disabled in passive recall 2026-06-01; tasks already surfaced via SessionStart Open Tasks block")
 def test_tasks_vec_lane_surfaces_via_monkeypatch(db, monkeypatch):
     tid = _make_task(db, "GAMSAT chemistry", category="study",
                      next_step="finish 30 MCQs")
@@ -517,6 +520,7 @@ def test_tasks_vec_lane_gated_by_floor(db, monkeypatch):
     assert not any(r.get("kind") == "task" for r in results)
 
 
+@pytest.mark.skip(reason="task lane disabled in passive recall 2026-06-01")
 def test_tasks_slot_reserved_when_limit_gt_5(db, monkeypatch):
     """With limit>5 and no strong FTS, at least one task slot is reserved
     even when events would otherwise saturate the limit via vec-only scores."""

@@ -144,3 +144,47 @@
 - todo #2 alert §8 重写 + scenario regroup — `1024541` `48862fd` (新 alert type 见 §2)
 - MAP §7 daily-catchup 描述修正 — pending (在本 todo 之外、是 doc 修)
 - BUG-3 折入 Phase A · BUG-4 折入 Phase C
+
+## Done (2026-06-01 · recall efficiency pass)
+- Anchor-lane tokenizer fix — reverse-substring on key/title (仿 entity_force_include)，不再走 `_query_tokens` 单字稀释 — `a28280c` + MAP §4.4
+- Anchor vec weights +0.05 (memes/entities/milestones → 0.60) — 小幅占优 event
+- diary / task lanes disabled in passive recall (cap=0) — diary 移至主动 recall，task 已在 SessionStart Open Tasks
+- recall limit 15 → 10 (config.default.toml)
+- Event ±1 same-session adjacent context — fusion 出 event hit 后 hook 拉前后 turn 渲染，应对错答案碎片化
+- `~/.config/marrow/logs/recall.md` markdown log — 每轮 prompt + hits 摘要 append，tail/preview 均可读
+- Phase C 第一条 (event ±1 上下文) 提前到本轮做掉，剩余 (独立 Mood 块) 仍在 Phase C
+
+---
+
+## Recall — remaining backlog (post 2026-06-01 pass)
+
+### R1 · min_score gate for milestone/memes
+- 想加但跟现有 anti-dilution 测试冲突。等 anchor-lane reverse-substring 跑 1 周看实际 score 分布，再决定 gate=0.40 还是更低
+- 改 1 行 + update test expectations
+- Risk: 砍误命中代价大 (milestone 很少新增)，要看 log 真分布
+
+### R2 · events 表 superseded_by + recall 跳过旧错答案
+- 现状: events 平等，FTS/vec 不知道哪 turn 已被纠正 → 错答案可能比正答案排前
+- 短期止血: event ±1 上下文 (R1 已做)，让模型自己看上下文判
+- 中期: events 加 `superseded_by` 列；sessionend writer 跑"语义矛盾检测"，新 turn 矛盾旧 turn 时标 superseded
+- 配 events_live view (mirror affect_live / entities_live)
+- recall 默认读 live view，FTS 命中旧 turn 仍可触发 revive (跟 dormant 路径同源)
+
+### R3 · entity auto-update via sessionend writer
+- 架构已有 (`entities.superseded_by`)，但 sessionend writer 现在见到 name 在 entities_live 直接 skip
+- 想要: 见 name 时 LLM 比 fact diff，矛盾 → 写新 row (旧 row superseded_by 新 row.id)
+- 测例: 李小云搬 Doncaster · 洋姐 PCA → case manager
+- 改 `marrow/sessionend_writers.py` entity extract 段
+- 合并到 affect-recall redesign Phase A
+
+### R4 · diary / pit 主动 recall + 主动 followup
+- diary 不进 passive lane (已做)
+- 加 MCP tool `recall(query, kind="diary"|"pit"|...)` 或独立 `mcp__marrow__diary_recall` / `pit_recall`
+- pit 见关键词 (填坑/想做X/那个想法/idea) → 我主动调
+- 自动记录走 sessionend writer，主动 followup 走我 prompt 行为
+- 等 pit subpage 做完一起搞
+
+### R5 · log monitor — dashboard 顶上加 last-recall 块 (可选)
+- markdown log 已落地，能 `tail -F ~/.config/marrow/logs/recall.md`
+- 若要 dashboard 显示: read 最新 N 行 append 进 dashboard top section
+- 优先级低，看 log 用得顺不顺再说

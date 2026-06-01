@@ -494,6 +494,53 @@ def test_recall_with_config_reads_rcfg(db, monkeypatch):
     assert "milestone" in kinds
 
 
+# ── event context window ─────────────────────────────────────────────────────
+
+def test_fetch_event_context_returns_prev_and_next(db):
+    eids = [
+        _make_event(db, f"turn {i}", session_id="ctx",
+                    timestamp=f"2026-05-19T10:0{i}:00Z")
+        for i in range(5)
+    ]
+    target = eids[2]
+    ctx = rm.fetch_event_context(db, "ctx", target, n=1)
+    assert [c["id"] for c in ctx] == [eids[1], eids[3]]
+    assert ctx[0]["rel"] == "prev"
+    assert ctx[1]["rel"] == "next"
+
+
+def test_fetch_event_context_respects_session_boundary(db):
+    _make_event(db, "other-session prev", session_id="other",
+                timestamp="2026-05-19T09:00:00Z")
+    target = _make_event(db, "target", session_id="here",
+                         timestamp="2026-05-19T10:00:00Z")
+    _make_event(db, "other-session next", session_id="other",
+                timestamp="2026-05-19T11:00:00Z")
+    ctx = rm.fetch_event_context(db, "here", target, n=2)
+    assert ctx == []  # no neighbours in same session
+
+
+def test_fetch_event_context_handles_edges(db):
+    eids = [
+        _make_event(db, f"e{i}", session_id="edge",
+                    timestamp=f"2026-05-19T10:0{i}:00Z")
+        for i in range(3)
+    ]
+    # First event: only next side has neighbours
+    ctx_first = rm.fetch_event_context(db, "edge", eids[0], n=2)
+    assert [c["id"] for c in ctx_first] == [eids[1], eids[2]]
+    assert all(c["rel"] == "next" for c in ctx_first)
+    # Last event: only prev side
+    ctx_last = rm.fetch_event_context(db, "edge", eids[-1], n=2)
+    assert [c["id"] for c in ctx_last] == [eids[0], eids[1]]
+    assert all(c["rel"] == "prev" for c in ctx_last)
+
+
+def test_fetch_event_context_disabled_when_n_zero(db):
+    eid = _make_event(db, "lone")
+    assert rm.fetch_event_context(db, "s1", eid, n=0) == []
+
+
 # ── daemon tools ──────────────────────────────────────────────────────────────
 
 def test_daemon_embed_pending_callable():

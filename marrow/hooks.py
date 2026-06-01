@@ -502,11 +502,20 @@ def user_prompt_submit() -> int:
     if not prompt_text:
         return 0
 
+    rcfg = cfg.get("recall", {})
+    ctx_n = int(rcfg.get("event_context_window", 1))
     try:
         from . import recall as recall_mod
         conn = storage.connect(config.db_path())
         try:
             hits = recall_mod.recall_with_config(conn, prompt_text)
+            # Attach ±N adjacent same-session turns to each event hit.
+            if ctx_n > 0:
+                for h in hits:
+                    if h.get("kind") in (None, "event") and h.get("session_id") and h.get("id"):
+                        h["_context"] = recall_mod.fetch_event_context(
+                            conn, h["session_id"], int(h["id"]), n=ctx_n
+                        )
         finally:
             conn.close()
     except Exception:
@@ -517,13 +526,25 @@ def user_prompt_submit() -> int:
 
     lines = [
         "## Recall (auto) — passive context, do not answer",
+        "> 命中可能不全；相关或缺失 → mcp__marrow__recall",
         "",
     ]
     for h in hits:
         ts = (h.get("timestamp") or "")[:10]
         snippet = (h.get("content") or "").replace("\n", " ")[:300]
         lines.append(f"- [{ts}] {snippet}")
+        for c in h.get("_context", []) or []:
+            cts = (c.get("timestamp") or "")[:16].replace("T", " ")
+            csnip = (c.get("content") or "").replace("\n", " ")[:200]
+            arrow = "↑" if c.get("rel") == "prev" else "↓"
+            lines.append(f"    {arrow} [{cts}] ({c.get('role')}) {csnip}")
     ctx = "\n".join(lines)
+
+    # Side log — markdown append so VSCode preview / tail both readable.
+    try:
+        _append_recall_log(prompt_text, hits)
+    except Exception:
+        pass
 
     json.dump(
         {"hookSpecificOutput": {
@@ -533,6 +554,34 @@ def user_prompt_submit() -> int:
         sys.stdout,
     )
     return 0
+
+
+def _append_recall_log(prompt_text: str, hits: list[dict]) -> None:
+    """Append one markdown block per turn to ~/.config/marrow/logs/recall.md.
+
+    Each block: timestamp header + prompt (truncated) + bullet list of hits
+    with kind, id, score, content snippet. Open in VSCode → preview reads
+    cleanly; `tail -F` also legible.
+    """
+    log_dir = Path.home() / ".config" / "marrow" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "recall.md"
+    now = datetime.now(timezone.utc).astimezone()
+    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+    prompt_oneline = prompt_text.replace("\n", " ")[:200]
+    parts = [f"\n### {ts} · prompt: {prompt_oneline}", ""]
+    for h in hits:
+        kind = h.get("kind") or "event"
+        hid = h.get("id", "?")
+        score = h.get("score", 0.0)
+        snip = (h.get("content") or "").replace("\n", " ")[:120]
+        parts.append(f"- `{kind}#{hid}` score={score:.2f} — {snip}")
+        for c in h.get("_context", []) or []:
+            arrow = "↑prev" if c.get("rel") == "prev" else "↓next"
+            cs = (c.get("content") or "").replace("\n", " ")[:80]
+            parts.append(f"    - {arrow} ({c.get('role')}) {cs}")
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write("\n".join(parts) + "\n")
 
 
 _PLACEMENT_BASH_OPS = {"mv", "cp", "rename", "mmv", "touch", "mkdir"}

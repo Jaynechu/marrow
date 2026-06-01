@@ -700,9 +700,9 @@ def recall_fusion(
     w_bm25: float = 0.30,
     w_recency: float = 0.15,
     w_affect: float = 0.10,
-    w_memes_vec: float = 0.55,
-    w_entities_vec: float = 0.55,
-    w_milestones_vec: float = 0.55,
+    w_memes_vec: float = 0.60,
+    w_entities_vec: float = 0.60,
+    w_milestones_vec: float = 0.60,
     w_diary_vec: float = 0.55,
     w_tasks_vec: float = 0.55,
     min_score: float = 0.35,
@@ -1095,11 +1095,12 @@ def recall_fusion(
     else:
         ms_cap = max(1, (limit + 2) // 3)
         memes_cap = 1 if limit <= 5 else 2
-        # Diary = long-form companion surface. Reserve 1 slot when limit > 5
-        # so it isn't starved by event/memes/milestone density.
-        diary_cap = 1 if limit > 5 else 0
-        # Tasks = study + project surface. Same reservation rule as diary.
-        tasks_cap = 1 if limit > 5 else 0
+        # Diary moved to active-recall (mcp__marrow__recall kind=diary) —
+        # vec floor 0.40 starves prose, was returning nothing useful.
+        diary_cap = 0
+        # Tasks already surfaced in SessionStart Open Tasks block —
+        # passive-recall duplication wastes budget.
+        tasks_cap = 0
     by_kind: dict[str, list] = {}
     for s, r in scored:
         by_kind.setdefault(r.get("kind", ""), []).append((s, r))
@@ -1162,10 +1163,57 @@ def recall_with_config(
     }
     return recall_fusion(
         conn, query,
-        limit=int(limit if limit is not None else rcfg.get("limit", 15)),
+        limit=int(limit if limit is not None else rcfg.get("limit", 10)),
         budget_chars=int(
             budget_chars if budget_chars is not None
             else rcfg.get("budget_chars", 4000)
         ),
         **{k: float(rcfg[k]) for k in _weight_keys if k in rcfg},
     )
+
+
+# ── event context window helper ──────────────────────────────────────────────
+
+def fetch_event_context(
+    conn: sqlite3.Connection,
+    session_id: str,
+    event_id: int,
+    n: int = 1,
+) -> list[dict]:
+    """Return up to 2n adjacent events from the same session.
+
+    Order: prev_n ... prev_1, next_1 ... next_n (oldest-first within each
+    side; target event itself excluded). Used by the recall hook so an event
+    snippet ships with surrounding turns — gives the model context to judge
+    whether the hit is the latest take or a since-corrected earlier one.
+    """
+    if not session_id or n <= 0 or event_id <= 0:
+        return []
+    prev = conn.execute(
+        "SELECT id, role, content, timestamp FROM events "
+        "WHERE session_id = ? AND id < ? "
+        "ORDER BY id DESC LIMIT ?",
+        (session_id, event_id, n),
+    ).fetchall()
+    nxt = conn.execute(
+        "SELECT id, role, content, timestamp FROM events "
+        "WHERE session_id = ? AND id > ? "
+        "ORDER BY id ASC LIMIT ?",
+        (session_id, event_id, n),
+    ).fetchall()
+    out: list[dict] = []
+    for r in reversed(prev):
+        out.append({
+            "id": r["id"], "role": r["role"],
+            "content": r["content"] or "",
+            "timestamp": r["timestamp"] or "",
+            "rel": "prev",
+        })
+    for r in nxt:
+        out.append({
+            "id": r["id"], "role": r["role"],
+            "content": r["content"] or "",
+            "timestamp": r["timestamp"] or "",
+            "rel": "next",
+        })
+    return out
