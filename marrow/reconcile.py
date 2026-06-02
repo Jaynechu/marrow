@@ -1162,6 +1162,10 @@ def reconcile_affect(conn: sqlite3.Connection,
     # Deleted-from-md: rows that were eligible to render (unresolved=1,
     # superseded_by NULL, in 7d window) and predate the md snapshot but
     # are absent from pending_lines → user removed them.
+    # Note: no zero-anchor guard here — affect has rendered anchors since
+    # 2026-Q1, so a real legacy-md first-render is no longer plausible,
+    # and Lumi's `delete all Pending rows → mass-resolve` IS the intended
+    # gesture (test_reconcile_affect_delete_line_marks_resolved).
     deleted_resolved: set[int] = set()
     if md_mtime_iso is not None:
         week_cut = time.strftime(

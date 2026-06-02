@@ -156,6 +156,8 @@ def test_reconcile_noop_when_no_anchors(conn, tmp_path):
     assert not rpt.conflicts
 
 
+
+
 def test_render_each_ep_carries_inline_anchor(conn, tmp_path):
     """Each bullet line carries an inline end-of-line `<!-- aff:<ids> -->`
     anchor whose id count matches the number of ep segments on the bullet,
