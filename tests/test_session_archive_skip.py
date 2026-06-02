@@ -303,3 +303,53 @@ def test_mm_minus_blocks_session_end_archive(env, monkeypatch, tmp_path):
     lifecycle = _audit_rows(db, sid, action="session_lifecycle:end")
     assert len(lifecycle) == 1
     assert lifecycle[0]["summary"] == "mm_minus_blocked"
+
+
+# ── Test 7: mm+ after mm- reverts the block (last-wins) ──────────────────────
+
+def test_mm_plus_clears_prior_mm_minus_block(env, monkeypatch, tmp_path):
+    """Last-wins: mm- then mm+ on the same sid must let session_end run the
+    normal archive path. mm+ writes skip_cleared + block cleared so neither
+    gate fires.
+    """
+    db, _ = env
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    sid = "test-mm-minus-then-plus"
+
+    # Step 1: mm-
+    _stdin(monkeypatch, {"prompt": "mm-", "session_id": sid})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert hooks._is_session_blocked(storage.connect(db), sid) is True
+
+    # Step 2: mm+ on the same sid (popen mocked, no real subprocess).
+    _stdin(monkeypatch, {"prompt": "mm+", "session_id": sid})
+    with patch("marrow.hooks.popen_detach"):
+        assert hooks.main(["user_prompt_submit"]) == 0
+
+    # Both gates now cleared (latest row wins).
+    conn = storage.connect(db)
+    try:
+        assert hooks._is_session_blocked(conn, sid) is False
+        assert hooks._is_manual_skip(conn, sid) is False
+    finally:
+        conn.close()
+
+    # Step 3: session_end now runs the normal archive path.
+    tpath = tmp_path / "fake.jsonl"
+    tpath.write_text("")
+    _stdin(monkeypatch, {
+        "session_id": sid,
+        "cwd": str(tmp_path),
+        "transcript_path": str(tpath),
+    })
+    with patch.object(hooks.transcript, "is_headless", return_value=False), \
+         patch.object(hooks, "_is_worktree_session", return_value=False), \
+         patch.object(hooks.transcript, "clean",
+                      return_value=[{"session_id": sid,
+                                     "timestamp": "2026-06-02T21:00:00Z",
+                                     "role": "user", "content": "hi"}]) as mclean, \
+         patch.object(hooks.repo, "archive_events") as march:
+        rc = hooks.session_end()
+    assert rc == 0
+    mclean.assert_called_once()
+    march.assert_called_once()  # archive ran — not blocked

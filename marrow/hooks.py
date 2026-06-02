@@ -91,6 +91,7 @@ _STATUS_SKIP_CLEARED = "skip_cleared"
 _STATUS_SKIP_BRIDGE_OWNS = "bridge_owns"
 _SESSION_BLOCK_ACTION = "session_block"
 _STATUS_BLOCK_ARCHIVE = "archive"
+_STATUS_BLOCK_CLEARED = "cleared"
 
 
 def _write_manual_skip_flag(conn: sqlite3.Connection, sid: str, status: str) -> None:
@@ -114,15 +115,17 @@ def _write_session_block_flag(conn: sqlite3.Connection, sid: str, status: str) -
 
 
 def _is_session_blocked(conn: sqlite3.Connection, sid: str) -> bool:
-    """True iff sid has a session_block=archive row — session_end must skip
-    archive_events entirely (zero rows enter events table)."""
+    """Latest session_block row wins. archive -> True, cleared/absent -> False.
+    Lets mm+ override a prior mm- by writing a cleared row."""
     row = conn.execute(
-        "SELECT 1 FROM audit_log"
-        " WHERE action=? AND target_id=? AND summary=?"
-        " LIMIT 1",
-        (_SESSION_BLOCK_ACTION, sid, _STATUS_BLOCK_ARCHIVE),
+        "SELECT summary FROM audit_log"
+        " WHERE action=? AND target_id=?"
+        " ORDER BY id DESC LIMIT 1",
+        (_SESSION_BLOCK_ACTION, sid),
     ).fetchone()
-    return row is not None
+    if not row:
+        return False
+    return row["summary"] == _STATUS_BLOCK_ARCHIVE
 
 
 def _is_manual_skip(conn: sqlite3.Connection, sid: str) -> bool:
@@ -648,6 +651,11 @@ def _handle_mm_prefix(inp: dict) -> bool:
                             " VALUES ('events', ?, 'sessionend_extract', 'reset:mm_plus')",
                             (target_sid,),
                         )
+                    # Last-wins: clear any prior mm- flags so session_end runs
+                    # archive_events normally and sessionend_async runs the LLM
+                    # pipeline. Without this, mm- would permanently win.
+                    _write_manual_skip_flag(conn, target_sid, _STATUS_SKIP_CLEARED)
+                    _write_session_block_flag(conn, target_sid, _STATUS_BLOCK_CLEARED)
                     # Active-session pre-archive: events table is empty until
                     # SessionEnd fires. Archive now so sessionend_async finds rows.
                     if target_sid == sid:
