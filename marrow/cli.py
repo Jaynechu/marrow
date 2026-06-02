@@ -227,7 +227,8 @@ def cmd_handover(args) -> int:
     from .popen_detach import popen_detach
     log = config.DATA_DIR / "logs" / f"sessionend_async_{args.sid}.log"
     popen_detach(
-        [sys.executable, "-m", "marrow.sessionend_async", "--sid", args.sid],
+        [sys.executable, "-m", "marrow.sessionend_async", "--sid", args.sid,
+         "--log-path", str(log)],
         log_path=log,
     )
     print(f"handover async fired for sid={args.sid} (log: {log})")
@@ -251,7 +252,8 @@ def cmd_sessionend(args) -> int:
             )
     log = config.DATA_DIR / "logs" / f"sessionend_async_{target_sid}.log"
     popen_detach(
-        [sys.executable, "-m", "marrow.sessionend_async", "--sid", target_sid],
+        [sys.executable, "-m", "marrow.sessionend_async", "--sid", target_sid,
+         "--log-path", str(log)],
         log_path=log,
     )
     print(f"sessionend rerun queued for sid={target_sid} (log: {log})")

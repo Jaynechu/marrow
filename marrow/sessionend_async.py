@@ -17,10 +17,12 @@ ENTITY/MILESTONE/MEMES candidate extraction lives in daily.py.
 """
 from __future__ import annotations
 
+import atexit as _atexit
 import datetime as _dt
 import re as _re
 import subprocess as _sp
 import sys
+from pathlib import Path as _Path
 from zoneinfo import ZoneInfo
 
 from . import config, handover_diff, handover_render, repo, storage
@@ -41,6 +43,21 @@ _SUMMARY_SKIP = "skip:short_session"
 _SUMMARY_START = "start"
 
 _SEGMENTS = ("affect", "task_cand", "digest", "handover")
+
+
+def _cleanup_empty_log(log_path: _Path) -> None:
+    """Unlink the spawn log if the child wrote nothing (normal success path).
+    Stderr/traceback paths leave the file intact for postmortem."""
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if log_path.exists() and log_path.stat().st_size == 0:
+            log_path.unlink()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -333,6 +350,7 @@ def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     sid: str | None = None
     cwd: str = ""
+    log_path: str = ""
     i = 0
     while i < len(args):
         if args[i] == "--sid" and i + 1 < len(args):
@@ -341,12 +359,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args[i] == "--cwd" and i + 1 < len(args):
             cwd = args[i + 1]
             i += 2
+        elif args[i] == "--log-path" and i + 1 < len(args):
+            log_path = args[i + 1]
+            i += 2
         else:
             i += 1
 
+    if log_path:
+        _atexit.register(_cleanup_empty_log, _Path(log_path))
+
     if not sid:
         print("usage: python -m marrow.sessionend_async --sid <session_id>"
-              " [--cwd <path>]", file=sys.stderr)
+              " [--cwd <path>] [--log-path <path>]", file=sys.stderr)
         return 2
 
     cfg = config.load()

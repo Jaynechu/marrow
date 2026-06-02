@@ -526,7 +526,7 @@ def session_end() -> int:
                 try:
                     popen_detach(
                         [sys.executable, "-m", "marrow.sessionend_async",
-                         "--sid", sid, "--cwd", cwd],
+                         "--sid", sid, "--cwd", cwd, "--log-path", str(log)],
                         log_path=log,
                     )
                 except Exception as e:  # noqa: BLE001
@@ -676,7 +676,7 @@ def _handle_mm_prefix(inp: dict) -> bool:
                     log = config.DATA_DIR / "logs" / f"sessionend_async_{target_sid}.log"
                     popen_detach(
                         [sys.executable, "-m", "marrow.sessionend_async",
-                         "--sid", target_sid],
+                         "--sid", target_sid, "--log-path", str(log)],
                         log_path=log,
                     )
         finally:
