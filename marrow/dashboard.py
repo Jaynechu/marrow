@@ -113,6 +113,13 @@ def _resolve_blocks(path: str, conn, fresh: list[tuple[str, str]],
             # User deleted this block — watcher tombstoned it; do not re-emit.
             continue
         cur_body = current.get(bid)
+        # Display-only blocks: DB is SoT, user never edits, never sticky.
+        # Bypass the hash-compare branch so a stored-hash drift can't hide
+        # live content (alerts sticky-empty regression — see top_sections.py).
+        if bid in top_sections.ALWAYS_OVERWRITE_BLOCK_IDS:
+            out.append(fresh_body)
+            pending.append((bid, _hash(fresh_body)))
+            continue
         # Reconciled blocks: reconcile_* already absorbed any user edit into
         # the DB, so the fresh body IS the resolved state. Always overwrite.
         if bid in top_sections.RECONCILED_BLOCK_IDS:

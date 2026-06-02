@@ -452,6 +452,14 @@ RECONCILED_BLOCK_IDS = frozenset({
     "dashboard.affect",
 })
 
+# Display-only blocks. DB is the sole source of truth; user never edits these.
+# Always overwrite regardless of stored md_index hash — protects against
+# sticky-empty bugs where a hash drift would otherwise hide live DB content
+# (e.g. alerts vanished from dashboard for 3 days when md_index lost sync).
+ALWAYS_OVERWRITE_BLOCK_IDS = frozenset({
+    "dashboard.alerts",
+})
+
 
 def _stamp_block_id(body: str, block_id: str) -> str:
     """Prepend the id marker on its own line just above the first `## `

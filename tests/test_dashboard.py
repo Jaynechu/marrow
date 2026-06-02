@@ -169,8 +169,10 @@ def test_tasks_title_edit_absorbed_into_db(db, tmp_path):
     assert not list(Path(state).glob("dashboard*.bak"))
 
 
-def test_alerts_hand_edit_preserved_when_hash_diverges(db, tmp_path):
-    # Alerts is a pure-display block — hash-skip preserves Lumi's edit.
+def test_alerts_hand_edit_does_not_survive_refresh(db, tmp_path):
+    # alerts is in ALWAYS_OVERWRITE_BLOCK_IDS — DB is SoT, user edits
+    # are NOT preserved. Trade-off: prevents the sticky-empty regression
+    # where stale md_index hash hid live alerts for 3 days.
     dash = tmp_path / "dashboard.md"
     state = tmp_path / "state"
     conn = storage.connect(db)
@@ -187,7 +189,8 @@ def test_alerts_hand_edit_preserved_when_hash_diverges(db, tmp_path):
         result = dash.read_text()
     finally:
         conn.close()
-    assert "lumi noted: investigating" in result
+    assert "lumi noted: investigating" not in result
+    assert "- warn: recall returned 0" in result
 
 
 def test_content_block_carries_id_marker(db, tmp_path):

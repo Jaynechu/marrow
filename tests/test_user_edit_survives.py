@@ -67,9 +67,14 @@ def test_dashboard_affect_edit_survives_mw_refresh(env):
         "old description must not resurface (DB absorbed Lumi's edit)"
 
 
-def test_dashboard_alerts_edit_survives_mw_refresh(tmp_path, monkeypatch):
-    """Non-RECONCILED block (alerts) — preserved via hash-skip after
-    sync_file_observe keeps the baseline frozen."""
+def test_dashboard_alerts_block_is_db_authoritative(tmp_path, monkeypatch):
+    """alerts is a display-only block (ALWAYS_OVERWRITE_BLOCK_IDS).
+
+    DB is sole SoT — user edits do NOT survive refresh. This protects
+    against the sticky-empty regression: when md_index lost sync with
+    the rendered block, hash-skip hid every live alert for 3 days
+    because cur_hash != stored took the "user edit" branch forever.
+    """
     db = str(tmp_path / "t.db")
     conn = storage.init_db(db)
     conn.execute(
@@ -92,10 +97,51 @@ def test_dashboard_alerts_edit_survives_mw_refresh(tmp_path, monkeypatch):
     )
     dash.write_text(edited, encoding="utf-8")
 
-    # Second refresh — Bug 1 path. Must NOT clobber.
+    # Second refresh — display-only block snaps back to DB content.
     assert cli.main(["refresh", "--db", db]) == 0
     final = dash.read_text(encoding="utf-8")
-    assert "lumi investigating" in final
+    assert "lumi investigating" not in final, \
+        "alerts is display-only; user edit must NOT survive refresh"
+    assert "- warn: recall returned 0" in final, \
+        "DB-driven alert content must always be re-emitted"
+
+
+def test_dashboard_alerts_recovers_from_stale_md_index_hash(tmp_path, monkeypatch):
+    """Regression: sticky-empty bug — alerts hidden for 3 days because
+    md_index stored a stale hash and _resolve_blocks took the
+    'preserve user edit' branch. ALWAYS_OVERWRITE_BLOCK_IDS bypass
+    must restore live DB content on the next refresh."""
+    db = str(tmp_path / "t.db")
+    conn = storage.init_db(db)
+    conn.execute(
+        "INSERT INTO alerts(severity,type,message) "
+        "VALUES('critical','x','live alert from DB')"
+    )
+    conn.commit()
+    conn.close()
+    dash = tmp_path / "dashboard.md"
+    monkeypatch.setattr(config, "dashboard_path", lambda: str(dash))
+    monkeypatch.setattr(config, "sub_pages_path", lambda: str(tmp_path / "x"))
+    monkeypatch.setattr(config, "sub_pages_state_path", lambda: str(tmp_path / "y"))
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+
+    assert cli.main(["refresh", "--db", db]) == 0
+
+    # Simulate the in-the-wild drift: dashboard block emptied externally
+    # while md_index still carries the previous (non-empty) hash. Pre-fix
+    # this combination locked the alerts block as 'preserve user edit'.
+    text = dash.read_text(encoding="utf-8")
+    emptied = text.replace(
+        "## Alerts\n- critical: live alert from DB",
+        "## Alerts",
+        1,
+    )
+    dash.write_text(emptied, encoding="utf-8")
+
+    assert cli.main(["refresh", "--db", db]) == 0
+    final = dash.read_text(encoding="utf-8")
+    assert "- critical: live alert from DB" in final, \
+        "alerts must recover from md_index hash drift"
 
 
 def test_dashboard_user_edit_survives_watcher_sync(env, tmp_path):
