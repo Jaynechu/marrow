@@ -795,6 +795,16 @@ def pretool_use() -> int:
 
         _literal = "[Path] Use paths with /, not bare filenames."
 
+        def _emit(text: str) -> None:
+            # PreToolUse JSON output -> additionalContext is the only stdout form
+            # cc injects into assistant context. Plain stdout only hits transcript.
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": text,
+                }
+            }))
+
         # Determine mode
         is_placement = False
         target_path_str: str | None = None
@@ -809,6 +819,13 @@ def pretool_use() -> int:
                 tokens = shlex.split(cmd)
             except ValueError:
                 tokens = cmd.split()
+            # Trim to first command segment so `mv A B && echo ok` doesn't
+            # let `ok` masquerade as the move target.
+            _SHELL_SEP = {"&&", "||", ";", "|", "&"}
+            for _i, _t in enumerate(tokens):
+                if _t in _SHELL_SEP:
+                    tokens = tokens[:_i]
+                    break
             tokens_no_flags = [t for t in tokens if t and not t.startswith("-")]
             if tokens_no_flags and tokens_no_flags[0] in _PLACEMENT_BASH_OPS:
                 is_placement = True
@@ -820,12 +837,12 @@ def pretool_use() -> int:
                     target_path_str = args_only[-1]
 
         if not is_placement:
-            print(_literal)
+            _emit(_literal)
             return 0
 
         # Resolve target path
         if not target_path_str:
-            print(_literal)
+            _emit(_literal)
             return 0
 
         target = Path(target_path_str).expanduser()
@@ -913,7 +930,7 @@ def pretool_use() -> int:
                 lines.append(f"- Description: {parent_row.get('description') or ''}")
                 lines.append(f"- Naming: {_atlas_mod.resolve_naming(conn, parent_str, roots)}")
 
-            print("\n".join(lines))
+            _emit("\n".join(lines))
         finally:
             conn.close()
 
