@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -185,6 +185,19 @@ CREATE TABLE IF NOT EXISTS tasks_vec_meta (
   embedder_id TEXT NOT NULL,
   dim INTEGER NOT NULL
 );
+-- B1 (2026-06-02): sessions table — one row per (sid, model). Bridge
+-- swap_provider upserts on every model swap; /resume <sid> reads model back
+-- so a cross-client resume preserves the selected model. channel = wx | cli |
+-- (slack…); title is optional human label set by bridge UI.
+CREATE TABLE IF NOT EXISTS sessions (
+  sid TEXT PRIMARY KEY,
+  model TEXT,
+  channel TEXT,
+  last_active TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  title TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_active
+  ON sessions(last_active DESC);
 """
 
 # superseded_by IS NULL = the current row. Recall/backdrop read the live view.
@@ -349,6 +362,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v11(conn)
         _migrate_to_v12(conn)
         _migrate_to_v13(conn)
+        _migrate_to_v14(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -597,6 +611,20 @@ def _migrate_to_v12(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_atlas_stale ON atlas(stale)"
     )
+
+
+def _migrate_to_v14(conn: sqlite3.Connection) -> None:
+    """v14: sessions table for cross-client model persistence.
+
+    CREATE TABLE IF NOT EXISTS in _TABLES handles brand-new databases; this
+    migration is a no-op on existing dbs because the table is created via
+    executescript(_TABLES) every connect (idempotent). Kept for the
+    user_version bump so SCHEMA_VERSION stays monotonic.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 14:
+        return
+    # _TABLES script already created the table. Nothing else to do.
 
 
 def _migrate_to_v13(conn: sqlite3.Connection) -> None:

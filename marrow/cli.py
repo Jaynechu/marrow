@@ -109,6 +109,45 @@ def cmd_resolve(args) -> int:
     )
 
 
+def cmd_add_session(args) -> int:
+    """B1: upsert one row in `sessions` so /resume reads the model back."""
+    sid = (args.sid or "").strip()
+    if not sid:
+        return _fail("--sid required")
+    repo.upsert_session(
+        sid,
+        args.model or None,
+        args.channel or None,
+        args.title or "",
+        db=args.db,
+    )
+    print(f"session {sid} model={args.model or '-'} channel={args.channel or '-'}")
+    return 0
+
+
+def cmd_get_session_model(args) -> int:
+    """B1: print the persisted model for sid (empty when absent)."""
+    sid = (args.sid or "").strip()
+    if not sid:
+        return _fail("--sid required")
+    row = repo.get_session(sid, db=args.db)
+    print((row or {}).get("model") or "")
+    return 0
+
+
+def cmd_list_recent_sessions(args) -> int:
+    """B6: print the N most-recent sessions, one per line."""
+    rows = repo.list_recent_sessions(limit=max(1, args.limit), db=args.db)
+    for r in rows:
+        sid = r.get("sid") or ""
+        model = r.get("model") or "-"
+        channel = r.get("channel") or "-"
+        last = r.get("last_active") or "-"
+        title = r.get("title") or ""
+        print(f"{sid}\t{model}\t{channel}\t{last}\t{title}")
+    return 0
+
+
 def cmd_add_alert(args) -> int:
     sev = args.severity
     if sev not in {"warn", "critical"}:
@@ -480,6 +519,26 @@ def build_parser() -> argparse.ArgumentParser:
     aa.add_argument("message")
     aa.add_argument("--source", default=None)
     aa.set_defaults(fn=cmd_add_alert)
+
+    # B1 sessions table — bridge writes via these CLI subprocesses.
+    asn = sub.add_parser("add-session", parents=[common],
+                         help="upsert (sid, model, channel) in sessions")
+    asn.add_argument("--sid", required=True)
+    asn.add_argument("--model", default="")
+    asn.add_argument("--channel", default="")
+    asn.add_argument("--title", default="")
+    asn.set_defaults(fn=cmd_add_session)
+
+    gsm = sub.add_parser("get-session-model", parents=[common],
+                         help="print the persisted model for sid (or empty)")
+    gsm.add_argument("--sid", required=True)
+    gsm.set_defaults(fn=cmd_get_session_model)
+
+    # B6 recent sessions — /resume picker.
+    lrs = sub.add_parser("list-recent-sessions", parents=[common],
+                         help="print N most-recent sessions, tab-sep")
+    lrs.add_argument("--limit", type=int, default=5)
+    lrs.set_defaults(fn=cmd_list_recent_sessions)
 
     dn = sub.add_parser("done", parents=[common])
     dn.add_argument("id")

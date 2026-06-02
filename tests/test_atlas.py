@@ -97,8 +97,9 @@ def test_atlas_depth_default_0(conn):
     assert row["depth"] == 0
 
 
-def test_schema_version_13(conn):
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+def test_schema_version_current(conn):
+    # Bumped to 14 with the sessions table addition (B1 synapse-wx).
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 14
 
 
 # ---------------------------------------------------------------------------

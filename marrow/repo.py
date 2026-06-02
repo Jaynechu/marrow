@@ -65,6 +65,64 @@ def handoff(conn: sqlite3.Connection) -> dict:
     return {"tasks": open_tasks(conn), "alerts": open_alerts(conn)}
 
 
+def upsert_session(sid: str, model: str | None, channel: str | None,
+                   title: str = "", *, db: str | None = None) -> None:
+    """B1: record/refresh the sessions row for `sid`. Bridge calls this on
+    every swap_provider so /resume can read the model back later.
+
+    Idempotent — INSERT OR REPLACE keyed on PK sid. last_active bumps to now
+    on every call.
+    """
+    if not sid:
+        return
+    conn = storage.connect(db)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO sessions (sid, model, channel, last_active, title) "
+                "VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?) "
+                "ON CONFLICT(sid) DO UPDATE SET "
+                "  model=excluded.model,"
+                "  channel=COALESCE(excluded.channel, sessions.channel),"
+                "  last_active=excluded.last_active,"
+                "  title=CASE WHEN excluded.title='' THEN sessions.title "
+                "             ELSE excluded.title END",
+                (sid, model, channel, title or ""),
+            )
+    finally:
+        conn.close()
+
+
+def get_session(sid: str, *, db: str | None = None) -> dict | None:
+    """B1: read back the model/channel/title for `sid`. None when absent."""
+    if not sid:
+        return None
+    conn = storage.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT sid, model, channel, last_active, title "
+            "FROM sessions WHERE sid=?",
+            (sid,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_recent_sessions(limit: int = 5, *, db: str | None = None) -> list[dict]:
+    """B6: 5 most-recent sessions for the WeChat /resume picker."""
+    conn = storage.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT sid, model, channel, last_active, title "
+            "FROM sessions ORDER BY last_active DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def add_alert(severity: str, atype: str, message: str,
               source: str | None = None, *, db: str | None = None) -> int:
     # on_alert sink for LLMClient: self-contained connection so it works
