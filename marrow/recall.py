@@ -559,6 +559,43 @@ _MILESTONE_PINNED_BOOST = 0.10
 # do not need this lift.
 _ANCHOR_BIAS = 0.10
 
+# Single-char CJK stopwords for forward-token milestone/memes match. Particles
+# and high-frequency pronouns/verbs that would otherwise match every anchor row
+# on any CN query and drown out real signal. Multi-char tokens never stop.
+_CJK_STOP = frozenset(
+    "的了是我你他她它在也就和不有这那么什吗呢啊哦嗯呀吧"
+    "上下去来跟给把到但要会都与及或且为之于以及让做对从被往"
+    "好很太多少能可以又再还只很真个又"
+)
+
+# cwd → recall bucket mapping. Same-bucket events get +CWD_SAME_BOOST; known
+# cross-bucket events take -CWD_DIFF_PENALTY (soft cut, still possible to win
+# on strong raw score). Anchors (milestones / memes / diary / tasks / entity
+# force-include) are evergreen and skip the bucket bias entirely.
+_CWD_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("/cc-lab", "project"),
+    ("/desktop/ny", "daily"),
+    ("/study", "study"),
+)
+_CWD_SAME_BOOST = 0.10
+_CWD_DIFF_PENALTY = 0.10
+
+
+def _cwd_bucket(cwd: str | None) -> str:
+    """Classify a cwd path into a recall bucket.
+
+    Empty / None / unmatched cwd → "" (neutral; no boost, no penalty).
+    Matching is substring against the lowercased path so worktrees under
+    `CC-Lab/<repo>/.claude/worktrees/...` still classify as project.
+    """
+    if not cwd:
+        return ""
+    p = cwd.lower()
+    for needle, bucket in _CWD_BUCKETS:
+        if needle in p:
+            return bucket
+    return ""
+
 
 def _query_tokens(q: str) -> list[str]:
     """Split query into CJK chars + ASCII alnum runs, lowercased, deduped."""
@@ -605,14 +642,17 @@ def _anchor_triggers(name: str) -> list[str]:
 def _milestone_candidates(
     conn: sqlite3.Connection, query: str, limit: int
 ) -> list[dict]:
-    """Reverse-substring scan over milestones; pinned + kw sort.
+    """Bidirectional keyword scan over milestones; pinned + kw sort.
 
-    Trigger = title + split components (by `/` and whitespace, len >= 2).
-    If any trigger.lower() is substring of query.lower() → kw_score = 1.0.
-    No token-fraction fallback — vec lane covers semantic matches. Pattern
-    mirrors entity_recall.entity_force_include so multi-char CN anchor names
-    don't get diluted by `_query_tokens` single-char CJK splits in long
-    queries.
+    Two match paths, strongest wins:
+      1. Reverse-substring: any anchor-trigger from milestone (title + desc,
+         split by `/` and whitespace, len >= 2) appears in query → kw=1.0.
+         Catches short identity anchors (e.g. Bendigo, 小胖).
+      2. Forward-token: query tokens (CJK chars + ASCII runs, minus stopwords)
+         scanned against the milestone's FULL text (title + description
+         joined). Catches CJK keywords buried in long description prose where
+         no whitespace splits them out — e.g. (鸭子) inside `(包养我,算是我的鸭子)`
+         hit by a query containing (鸭). kw = matched / total filtered toks.
 
     Returns rows shaped for fusion: timestamp (date as ISO), content
     (title[: description]), bm25 (kw_score), pinned.
@@ -626,14 +666,24 @@ def _milestone_candidates(
     ).fetchall()
     if not rows:
         return []
+    q_toks = _query_tokens(q_lower)
+    q_toks_f = [t for t in q_toks if not (len(t) == 1 and t in _CJK_STOP)]
     scored: list[dict] = []
     for r in rows:
         title = r["title"] or ""
         desc = r["description"] or ""
         triggers = _anchor_triggers((title + " " + desc).strip())
-        if not any(t.lower() in q_lower for t in triggers):
+        rev_hit = any(t.lower() in q_lower for t in triggers)
+        haystack = (title + " " + desc).lower()
+        if q_toks_f and haystack:
+            fwd_matched = sum(1 for t in q_toks_f if t in haystack)
+            fwd_ratio = fwd_matched / len(q_toks_f)
+        else:
+            fwd_matched = 0
+            fwd_ratio = 0.0
+        if not rev_hit and fwd_matched == 0:
             continue
-        kw_score = 1.0
+        kw_score = 1.0 if rev_hit else fwd_ratio
         date = r["date"] or ""
         ts = date if "T" in date else (date + "T00:00:00Z" if date else "")
         content = title if not desc else f"{title}: {desc}"
@@ -661,14 +711,17 @@ def _milestone_candidates(
 def _memes_candidates(
     conn: sqlite3.Connection, query: str, limit: int
 ) -> list[dict]:
-    """Reverse-substring scan over active memes rows; pinned + kw + use_count sort.
+    """Bidirectional keyword scan over active memes rows; pinned + kw + use_count sort.
 
-    Trigger = key + split components (by `/` and whitespace, len >= 2).
-    If any trigger.lower() is substring of query.lower() → kw_score = 1.0.
-    No token-fraction fallback — vec lane covers semantic matches. Pattern
-    mirrors entity_recall.entity_force_include so multi-char CN anchor keys
-    (e.g. (Openclaw / 大龙虾)) survive long queries without `_query_tokens`
-    single-char CJK dilution.
+    Two match paths, strongest wins:
+      1. Reverse-substring: any anchor-trigger from meme (key + value + context,
+         split by `/` and whitespace, len >= 2) appears in query → kw=1.0.
+         Catches short keys (e.g. (Openclaw), (大龙虾)).
+      2. Forward-token: query tokens (CJK + ASCII, minus stopwords) scanned
+         against the meme's FULL text (key+value+ctx joined). Catches CJK
+         keywords buried in value/ctx prose where no whitespace splits them
+         out — e.g. (鸭) hits a meme whose key is (鸭鸭) but whose ctx prose
+         doesn't include the exact query bigram. kw = matched / total toks.
 
     Shape parallels milestone candidates; kind="memes".
     """
@@ -681,17 +734,26 @@ def _memes_candidates(
     ).fetchall()
     if not rows:
         return []
+    q_toks = _query_tokens(q_lower)
+    q_toks_f = [t for t in q_toks if not (len(t) == 1 and t in _CJK_STOP)]
     out: list[dict] = []
     for r in rows:
         key = r["key"] or ""
         value = r["value"] or ""
         ctx = r["context"] or ""
-        triggers = _anchor_triggers(
-            " ".join(x for x in (key, value, ctx) if x).strip()
-        )
-        if not any(t.lower() in q_lower for t in triggers):
+        full = " ".join(x for x in (key, value, ctx) if x).strip()
+        triggers = _anchor_triggers(full)
+        rev_hit = any(t.lower() in q_lower for t in triggers)
+        haystack = full.lower()
+        if q_toks_f and haystack:
+            fwd_matched = sum(1 for t in q_toks_f if t in haystack)
+            fwd_ratio = fwd_matched / len(q_toks_f)
+        else:
+            fwd_matched = 0
+            fwd_ratio = 0.0
+        if not rev_hit and fwd_matched == 0:
             continue
-        kw_score = 1.0
+        kw_score = 1.0 if rev_hit else fwd_ratio
         content = f"{key}: {value}" if value else key
         if ctx:
             content = f"{content} ({ctx})"
@@ -736,6 +798,7 @@ def recall_fusion(
     w_diary_vec: float = 0.55,
     w_tasks_vec: float = 0.55,
     min_score: float = 0.35,
+    current_cwd: str | None = None,
 ) -> list[dict]:
     """Single weighted scalar fusion: vec + bm25 + recency + affect.
 
@@ -751,12 +814,16 @@ def recall_fusion(
     emb = _ensure_embedder()
     vec_available = emb is not None
 
+    # cwd bias setup: current bucket drives per-event boost/penalty later.
+    cur_bucket = _cwd_bucket(current_cwd)
+
     # ── FTS candidates ────────────────────────────────────────────────────────
     fts_q = '"' + q.replace('"', '""') + '"'
     fts_rows = conn.execute(
         "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
-        "e.compressed, rank AS fts_rank "
+        "e.compressed, s.cwd AS session_cwd, rank AS fts_rank "
         "FROM events_fts f JOIN events e ON e.id = f.rowid "
+        "LEFT JOIN sessions s ON s.sid = e.session_id "
         "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
         (fts_q, limit * 3),
     ).fetchall()
@@ -768,8 +835,9 @@ def recall_fusion(
         qblob = _vec_to_blob(qvec)
         vec_rows = conn.execute(
             "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
-            "e.compressed, v.distance "
+            "e.compressed, s.cwd AS session_cwd, v.distance "
             "FROM events_vec v JOIN events e ON e.id = v.rowid "
+            "LEFT JOIN sessions s ON s.sid = e.session_id "
             "WHERE embedding MATCH ? AND k = ? "
             "ORDER BY v.distance",
             (qblob, limit * 3),
@@ -792,6 +860,7 @@ def recall_fusion(
             "timestamp": r["timestamp"], "role": r["role"],
             "content": r["content"], "channel": r["channel"],
             "compressed": r["compressed"],
+            "session_cwd": r["session_cwd"] if "session_cwd" in r.keys() else None,
             "bm25": bm25_score,
             "vec": 0.0, "fts_hit": True,
         }
@@ -810,6 +879,7 @@ def recall_fusion(
                     "timestamp": r["timestamp"], "role": r["role"],
                     "content": r["content"], "channel": r["channel"],
                     "compressed": r["compressed"],
+                    "session_cwd": r["session_cwd"] if "session_cwd" in r.keys() else None,
                     "bm25": 0.0, "vec": vec_score, "fts_hit": False,
                 }
 
@@ -985,6 +1055,19 @@ def recall_fusion(
             + w_recency * recency
             + w_affect * affect_b
         )
+
+        # cwd-bucket bias: nudge same-context events up, cross-context down.
+        # Only fires when BOTH the current cwd and the event's session cwd
+        # classify into a known bucket — sessions without recorded cwd stay
+        # neutral so the backfill gap (1551 pre-cwd events) doesn't get
+        # silently demoted.
+        if cur_bucket:
+            ev_bucket = _cwd_bucket(c.get("session_cwd"))
+            if ev_bucket:
+                if ev_bucket == cur_bucket:
+                    raw += _CWD_SAME_BOOST
+                else:
+                    raw -= _CWD_DIFF_PENALTY
 
         # mention_count booster via affect.entities JSON column.
         if af_entities_raw:
@@ -1191,11 +1274,14 @@ def recall_with_config(
     *,
     limit: int | None = None,
     budget_chars: int | None = None,
+    current_cwd: str | None = None,
 ) -> list[dict]:
     """Run recall_fusion with weights + thresholds from [recall] config.
 
     Single shared path so hook (UserPromptSubmit) and MCP daemon return the
     same shape for the same query. Caller may override limit/budget per call.
+    `current_cwd` enables per-event same-bucket boost / cross-bucket penalty
+    (CC-Lab=project, Desktop/NY=daily, Study=study).
     """
     from . import config as _config
     rcfg = _config.load().get("recall", {})
@@ -1210,6 +1296,7 @@ def recall_with_config(
         conn, query,
         limit=int(limit if limit is not None else rcfg.get("limit", 6)),
         budget_chars=budget_chars,
+        current_cwd=current_cwd,
         **{k: float(rcfg[k]) for k in _weight_keys if k in rcfg},
     )
 

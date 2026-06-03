@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   sid TEXT PRIMARY KEY,
   model TEXT,
   channel TEXT,
+  cwd TEXT,
   last_active TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   title TEXT NOT NULL DEFAULT ''
 );
@@ -341,6 +342,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         for tbl, col, decl in (
             ("goose_bites", "source_hash", "TEXT"),
             ("milestones", "updated_at", "TEXT"),
+            ("sessions", "cwd", "TEXT"),
         ):
             try:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")

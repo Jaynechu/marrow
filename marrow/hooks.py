@@ -496,7 +496,7 @@ def session_start() -> int:
                         _cli_model_from_ppid(os.getppid())
                         if channel == "cli" else None
                     )
-                    repo.upsert_session(sid, cli_model, channel, db=db)
+                    repo.upsert_session(sid, cli_model, channel, cwd=cwd, db=db)
                 except Exception:  # noqa: BLE001 — never block session_start
                     pass
 
@@ -857,7 +857,7 @@ def user_prompt_submit() -> int:
         from . import recall as recall_mod
         conn = storage.connect(config.db_path())
         try:
-            hits = recall_mod.recall_with_config(conn, prompt_text)
+            hits = recall_mod.recall_with_config(conn, prompt_text, current_cwd=cwd)
             # Attach ±N adjacent same-session turns to each event hit.
             if ctx_n > 0:
                 for h in hits:

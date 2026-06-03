@@ -68,6 +68,7 @@ def handoff(conn: sqlite3.Connection) -> dict:
 
 def upsert_session(sid: str, model: str | None, channel: str | None,
                    title: str = "", *, last_active: str | None = None,
+                   cwd: str | None = None,
                    db: str | None = None) -> None:
     """B1: record/refresh the sessions row for `sid`. Bridge calls this on
     every swap_provider so /resume can read the model back later.
@@ -76,9 +77,12 @@ def upsert_session(sid: str, model: str | None, channel: str | None,
     on every call unless `last_active` is provided explicitly (used by the
     one-shot backfill to preserve historical jsonl mtimes).
 
-    model/channel update semantics: never blank-overwrite a previously-set
+    model/channel/cwd update semantics: never blank-overwrite a previously-set
     value. Keeps a cli backfill (channel='cli', model=None) from clobbering
-    a later bridge write (channel='wx', model='claude-...').
+    a later bridge write (channel='wx', model='claude-...'). cwd is recorded
+    by session_start hook from cc's hook input; sticky so a mid-session
+    /clear that drops into a different dir does not reclassify the recall
+    bucket retroactively.
     """
     if not sid:
         return
@@ -92,30 +96,34 @@ def upsert_session(sid: str, model: str | None, channel: str | None,
             # (cli backfill / session_start hook) keeps the prior model.
             if last_active:
                 conn.execute(
-                    "INSERT INTO sessions (sid, model, channel, last_active, title) "
-                    "VALUES (?, ?, ?, ?, ?) "
+                    "INSERT INTO sessions (sid, model, channel, cwd, last_active, title) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
                     "ON CONFLICT(sid) DO UPDATE SET "
                     "  model=COALESCE(NULLIF(excluded.model, ''), sessions.model),"
                     "  channel=CASE WHEN sessions.channel IS NULL OR sessions.channel='' "
                     "               THEN excluded.channel ELSE sessions.channel END,"
+                    "  cwd=CASE WHEN sessions.cwd IS NULL OR sessions.cwd='' "
+                    "           THEN excluded.cwd ELSE sessions.cwd END,"
                     "  last_active=CASE WHEN excluded.last_active > sessions.last_active "
                     "                  THEN excluded.last_active ELSE sessions.last_active END,"
                     "  title=CASE WHEN excluded.title='' THEN sessions.title "
                     "             ELSE excluded.title END",
-                    (sid, model, channel, last_active, title or ""),
+                    (sid, model, channel, cwd, last_active, title or ""),
                 )
             else:
                 conn.execute(
-                    "INSERT INTO sessions (sid, model, channel, last_active, title) "
-                    "VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?) "
+                    "INSERT INTO sessions (sid, model, channel, cwd, last_active, title) "
+                    "VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?) "
                     "ON CONFLICT(sid) DO UPDATE SET "
                     "  model=COALESCE(NULLIF(excluded.model, ''), sessions.model),"
                     "  channel=CASE WHEN sessions.channel IS NULL OR sessions.channel='' "
                     "               THEN excluded.channel ELSE sessions.channel END,"
+                    "  cwd=CASE WHEN sessions.cwd IS NULL OR sessions.cwd='' "
+                    "           THEN excluded.cwd ELSE sessions.cwd END,"
                     "  last_active=excluded.last_active,"
                     "  title=CASE WHEN excluded.title='' THEN sessions.title "
                     "             ELSE excluded.title END",
-                    (sid, model, channel, title or ""),
+                    (sid, model, channel, cwd, title or ""),
                 )
     finally:
         conn.close()
@@ -128,7 +136,7 @@ def get_session(sid: str, *, db: str | None = None) -> dict | None:
     conn = storage.connect(db)
     try:
         row = conn.execute(
-            "SELECT sid, model, channel, last_active, title "
+            "SELECT sid, model, channel, cwd, last_active, title "
             "FROM sessions WHERE sid=?",
             (sid,),
         ).fetchone()
