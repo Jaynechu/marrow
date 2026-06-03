@@ -109,6 +109,33 @@ def cmd_resolve(args) -> int:
     )
 
 
+def cmd_alerts_clear(args) -> int:
+    """Bulk-resolve every unresolved alert. One audit_log row per id.
+
+    The single-id `mw resolve <id>` path stays as-is for surgical use; this
+    is the "wipe the board" shortcut so a stale legacy backlog doesn't
+    require N keystrokes.
+    """
+    with _conn(args.db) as conn:
+        ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM alerts WHERE resolved=0"
+        ).fetchall()]
+        if not ids:
+            print("mw: no unresolved alerts")
+            return 0
+        with conn:
+            conn.execute(
+                "UPDATE alerts SET resolved=1, "
+                "resolved_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') "
+                "WHERE resolved=0"
+            )
+            for aid in ids:
+                _audit(conn, "alerts", str(aid), "update",
+                       "resolved via mw alerts clear")
+        print(f"cleared {len(ids)} alert(s): {','.join(str(i) for i in ids)}")
+        return 0
+
+
 def cmd_add_session(args) -> int:
     """B1: upsert one row in `sessions` so /resume reads the model back."""
     sid = (args.sid or "").strip()
@@ -650,6 +677,13 @@ def build_parser() -> argparse.ArgumentParser:
                                   help="reject (discard) a queued drift pending")
     dr_reject.add_argument("id")
     dr_reject.set_defaults(fn=cmd_drift_reject)
+
+    al = sub.add_parser("alerts", parents=[common],
+                        help="bulk operations on the alerts table")
+    al_sub = al.add_subparsers(dest="alerts_action", required=True)
+    al_clear = al_sub.add_parser("clear", parents=[common],
+                                 help="resolve every unresolved alert")
+    al_clear.set_defaults(fn=cmd_alerts_clear)
 
     return p
 
