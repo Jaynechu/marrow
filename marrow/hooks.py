@@ -201,6 +201,33 @@ def _is_worktree_session(cwd: str) -> bool:
 _PPID_MODEL_RE = _re.compile(r"--model[\s=]+['\"]?([^\s'\"]+)['\"]?")
 
 
+def _maybe_set_session_model(sid: str | None) -> None:
+    """Sticky model upsert — backfill `sessions.model` from cc's launch argv
+    when it's still empty.
+
+    Session_start already runs `_cli_model_from_ppid`, but cli sessions that
+    die before cc emits its first system/init never get the model written
+    anywhere — jsonl is empty too, so the wx /resume picker shows `?`. Doing
+    the same lookup at every `user_prompt_submit` cheaply repairs that gap
+    for any session that survives long enough to take a prompt.
+    """
+    if not sid:
+        return
+    try:
+        cur = repo.get_session(sid)
+        if cur and (cur.get("model") or "").strip():
+            return  # already set
+        channel = (cur or {}).get("channel") or os.environ.get("MARROW_CHANNEL") or "cli"
+        if channel != "cli":
+            return  # wx writes its own model via swap_provider
+        model = _cli_model_from_ppid(os.getppid())
+        if not model:
+            return
+        repo.upsert_session(sid, model, channel)
+    except Exception:  # noqa: BLE001 — never block user prompt
+        pass
+
+
 def _maybe_set_session_title(sid: str | None, prompt_text: str) -> None:
     """Two-stage session title for the wx /resume picker.
 
@@ -810,7 +837,9 @@ def user_prompt_submit() -> int:
     prompt_text = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
     sid = inp.get("session_id") if isinstance(inp, dict) else None
 
-    # Sticky title for wx /resume picker — runs regardless of recall config.
+    # Sticky title + model backfill for wx /resume picker — run regardless
+    # of recall config so short-lived cli sessions still get a model written.
+    _maybe_set_session_model(sid)
     _maybe_set_session_title(sid, prompt_text)
 
     cfg = config.load()
