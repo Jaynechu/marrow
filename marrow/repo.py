@@ -142,26 +142,42 @@ def list_recent_sessions(
     *,
     exclude_channels: Sequence[str] | None = None,
     channels: Sequence[str] | None = None,
+    require_user_events: bool = False,
     db: str | None = None,
 ) -> list[dict]:
     """B6: N most-recent sessions for the /resume picker.
 
     `channels` / `exclude_channels` are mutually exclusive; pass at most one.
+
+    `require_user_events`: when True, drop sessions with no real user prompt
+    in the events table (only slash-command / control-prefix lifetimes).
+    Used by the wx /resume picker to hide empty sessions.
     """
     if channels and exclude_channels:
         raise ValueError("channels and exclude_channels are mutually exclusive")
     sql = "SELECT sid, model, channel, last_active, title FROM sessions"
+    where: list[str] = []
     params: list = []
     if channels:
         chans = [c for c in channels if c]
         if chans:
-            sql += " WHERE channel IN (" + ",".join("?" * len(chans)) + ")"
+            where.append("channel IN (" + ",".join("?" * len(chans)) + ")")
             params.extend(chans)
     elif exclude_channels:
         chans = [c for c in exclude_channels if c]
         if chans:
-            sql += " WHERE channel NOT IN (" + ",".join("?" * len(chans)) + ")"
+            where.append("channel NOT IN (" + ",".join("?" * len(chans)) + ")")
             params.extend(chans)
+    if require_user_events:
+        # length>1 nukes single-char/empty noise; slash commands never reach
+        # events (handled cli- or bridge-side before cc), so no allowlist needed.
+        where.append(
+            "EXISTS (SELECT 1 FROM events e"
+            " WHERE e.session_id = sessions.sid"
+            " AND e.role = 'user' AND length(e.content) > 1)"
+        )
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY last_active DESC LIMIT ?"
     params.append(limit)
     conn = storage.connect(db)

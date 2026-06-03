@@ -152,6 +152,7 @@ def cmd_list_recent_sessions(args) -> int:
         limit=max(1, args.limit),
         channels=include or None,
         exclude_channels=exclude or None,
+        require_user_events=bool(getattr(args, "require_user_events", False)),
         db=args.db,
     )
     for r in rows:
@@ -563,6 +564,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="comma-separated channel allow-list (e.g. wx,tg)")
     lrs.add_argument("--exclude-channels", default="",
                      help="comma-separated channel deny-list (e.g. cli)")
+    lrs.add_argument("--require-user-events", action="store_true",
+                     help="drop sessions with no real user prompt in events")
     lrs.set_defaults(fn=cmd_list_recent_sessions)
 
     dn = sub.add_parser("done", parents=[common])

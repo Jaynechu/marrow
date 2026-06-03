@@ -176,3 +176,81 @@ def test_cli_list_recent_sessions_rejects_both(db, capsys) -> None:
         "--channels", "wx", "--exclude-channels", "cli",
     ])
     assert rc != 0
+
+
+# ── require-user-events filter (empty-session hide) ────────────────────────
+
+def _seed_user_event(db: str, sid: str, content: str) -> None:
+    conn = sqlite3.connect(db)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content)"
+                " VALUES (?, '2026-06-04T00:00:00Z', 'user', ?)",
+                (sid, content),
+            )
+    finally:
+        conn.close()
+
+
+def test_list_recent_sessions_require_user_events_drops_empty(db) -> None:
+    repo.upsert_session("sid-empty", "m", "wx", db=db)
+    repo.upsert_session("sid-real", "m", "wx", db=db)
+    _seed_user_event(db, "sid-real", "hello world")
+    out = repo.list_recent_sessions(limit=10, require_user_events=True, db=db)
+    assert [r["sid"] for r in out] == ["sid-real"]
+
+
+def test_list_recent_sessions_require_user_events_off_by_default(db) -> None:
+    repo.upsert_session("sid-empty", "m", "wx", db=db)
+    out = repo.list_recent_sessions(limit=10, db=db)
+    assert [r["sid"] for r in out] == ["sid-empty"]
+
+
+def test_list_recent_sessions_require_user_events_ignores_short(db) -> None:
+    repo.upsert_session("sid-one", "m", "wx", db=db)
+    _seed_user_event(db, "sid-one", "?")  # length 1 — filtered
+    out = repo.list_recent_sessions(limit=10, require_user_events=True, db=db)
+    assert out == []
+
+
+def test_list_recent_sessions_require_user_events_skips_assistant(db) -> None:
+    repo.upsert_session("sid-asst", "m", "wx", db=db)
+    conn = sqlite3.connect(db)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content)"
+                " VALUES ('sid-asst', '2026-06-04T00:00:00Z', 'assistant',"
+                " 'long assistant-only output')",
+            )
+    finally:
+        conn.close()
+    out = repo.list_recent_sessions(limit=10, require_user_events=True, db=db)
+    assert out == []
+
+
+def test_list_recent_sessions_require_user_events_with_channel(db) -> None:
+    repo.upsert_session("sid-wx-empty", "m", "wx", db=db)
+    repo.upsert_session("sid-wx-real", "m", "wx", db=db)
+    repo.upsert_session("sid-cli-real", "m", "cli", db=db)
+    _seed_user_event(db, "sid-wx-real", "hi there")
+    _seed_user_event(db, "sid-cli-real", "another one")
+    out = repo.list_recent_sessions(
+        limit=10, channels=["wx"], require_user_events=True, db=db,
+    )
+    assert [r["sid"] for r in out] == ["sid-wx-real"]
+
+
+def test_cli_list_recent_sessions_require_user_events(db, capsys) -> None:
+    repo.upsert_session("sid-empty", "m", "wx", db=db)
+    repo.upsert_session("sid-real", "m", "wx", db=db)
+    _seed_user_event(db, "sid-real", "hello world")
+    rc = cli.main([
+        "list-recent-sessions", "--db", db, "--limit", "10",
+        "--require-user-events",
+    ])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "sid-real\t" in out
+    assert "sid-empty\t" not in out
