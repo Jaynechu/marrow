@@ -182,18 +182,17 @@ def build_diary_spec(folder: str) -> InserterSpec:
 # ── memes ──────────────────────────────────────────────────────────────────
 
 
-_MEME_PERSONAL = ("paw", "fact")
+_MEME_TYPE_ORDER = ("fact", "paw", "meme", "news", "event", "others")
 
 
 def build_memes_spec(folder: str) -> InserterSpec:
-    """Memes — Personal (paw/fact) vs Public (meme/event/news/others)."""
+    """Memes — one section per type, fixed order: fact/paw/meme/news/event/others."""
     def fetch(conn: sqlite3.Connection) -> list[dict]:
         rows = conn.execute(
             "SELECT id, type, key, value, context FROM memes"
             " ORDER BY CASE type"
-            "   WHEN 'paw' THEN 1 WHEN 'fact' THEN 2"
-            "   WHEN 'meme' THEN 3 WHEN 'event' THEN 4"
-            "   WHEN 'news' THEN 5 ELSE 6"
+            "   WHEN 'fact' THEN 1 WHEN 'paw' THEN 2 WHEN 'meme' THEN 3"
+            "   WHEN 'news' THEN 4 WHEN 'event' THEN 5 ELSE 6"
             " END, created_at ASC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -204,6 +203,9 @@ def build_memes_spec(folder: str) -> InserterSpec:
         return (f"- [{r['type']}] **{r['key']}**{val}{ctx} "
                 + _anchor(r["id"]))
 
+    def render_section_header(t: str) -> str:
+        return f"## {t}\n\n---"
+
     return InserterSpec(
         key="memes",
         path=str(Path(folder) / "memes.md"),
@@ -211,9 +213,9 @@ def build_memes_spec(folder: str) -> InserterSpec:
         block_id_of=lambda r: str(r["id"]),
         render_row=render,
         group_by="tag",
-        section_of=lambda r: ("Personal" if r["type"] in _MEME_PERSONAL
-                              else "Public"),
-        section_order=_canonical_order(["Personal", "Public"]),
+        section_of=lambda r: r["type"],
+        section_order=_canonical_order(list(_MEME_TYPE_ORDER)),
+        render_section_header=render_section_header,
         empty_message="_No memes yet._",
     )
 

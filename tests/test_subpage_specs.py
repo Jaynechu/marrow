@@ -86,17 +86,20 @@ def test_diary_bootstrap_uses_date_block_ids(db, tmp_path):
 # ── memes ──────────────────────────────────────────────────────────────────
 
 
-def test_memes_bootstrap_personal_and_public(db, tmp_path):
+def test_memes_bootstrap_per_type_sections(db, tmp_path):
     spec = subpage_specs.build_memes_spec(str(tmp_path / "ny"))
     counts = _run(spec, db)
     text = Path(spec.path).read_text()
-    assert "## Personal" in text
-    assert "## Public" in text
+    # One section per type present in DB (paw + meme seeded in fixture).
+    assert "## paw" in text
+    assert "## meme" in text
     assert "大龙虾" in text
     assert "rickroll" in text
     assert counts["bootstrapped"] == 2
-    # Personal section appears before Public.
-    assert text.index("## Personal") < text.index("## Public")
+    # paw section order: fact(1) < paw(2) < meme(3) — paw before meme.
+    assert text.index("## paw") < text.index("## meme")
+    # Section header includes horizontal rule.
+    assert "## paw\n\n---" in text
 
 
 # ── goose ──────────────────────────────────────────────────────────────────
