@@ -182,11 +182,14 @@ def build_diary_spec(folder: str) -> InserterSpec:
 # ── memes ──────────────────────────────────────────────────────────────────
 
 
-_MEME_TYPE_ORDER = ("fact", "paw", "meme", "news", "event", "others")
+_MEME_PERSONAL = ("paw", "fact")
 
 
 def build_memes_spec(folder: str) -> InserterSpec:
-    """Memes — one section per type, fixed order: fact/paw/meme/news/event/others."""
+    """Memes — Personal (fact/paw) vs Public (meme/news/event/others).
+    Inside each section, rows group by type in fixed order; type-to-type
+    transitions render a `---` divider (no type-name header).
+    """
     def fetch(conn: sqlite3.Connection) -> list[dict]:
         rows = conn.execute(
             "SELECT id, type, key, value, context FROM memes"
@@ -203,9 +206,6 @@ def build_memes_spec(folder: str) -> InserterSpec:
         return (f"- [{r['type']}] **{r['key']}**{val}{ctx} "
                 + _anchor(r["id"]))
 
-    def render_section_header(t: str) -> str:
-        return f"## {t}\n\n---"
-
     return InserterSpec(
         key="memes",
         path=str(Path(folder) / "memes.md"),
@@ -213,9 +213,13 @@ def build_memes_spec(folder: str) -> InserterSpec:
         block_id_of=lambda r: str(r["id"]),
         render_row=render,
         group_by="tag",
-        section_of=lambda r: r["type"],
-        section_order=_canonical_order(list(_MEME_TYPE_ORDER)),
-        render_section_header=render_section_header,
+        section_of=lambda r: ("Personal" if r["type"] in _MEME_PERSONAL
+                              else "Public"),
+        section_order=_canonical_order(["Personal", "Public"]),
+        subsection_of=lambda r: r["type"],
+        render_subsection_header=lambda _t: "---",
+        subsection_separator_only=True,
+        force_sort_consistency=True,
         empty_message="_No memes yet._",
     )
 

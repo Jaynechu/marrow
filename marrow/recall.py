@@ -1217,71 +1217,26 @@ def recall_fusion(
     scored = force_pairs + scored
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # ── reserved milestone + memes slots ──────────────────────────────────────
-    # Events can outrank milestones / memes on score (recency + affect +
-    # fts_hit). Reserve slots so anchor rows aren't starved on long queries.
-    # Adaptive: when >=3 strong FTS hits exist, drop both caps so entity-dense
-    # queries don't waste budget on anchors.
-    # Strong-FTS count: real bm25 hits only. Force-include rows carry
-    # bm25=1.0 as a marker, not an FTS rank — exclude so a noisy query
-    # whose only signal is entity force-include doesn't starve memes/milestone
-    # reservation.
-    strong_fts_count = sum(
-        1 for _, r in scored
-        if r.get("kind") not in ("milestone", "memes", "diary", "task")
-        and r.get("bm25", 0.0) >= 0.5
-        and not r.get("force_include")
-    )
-    if strong_fts_count >= 3:
-        ms_cap = 1
-        memes_cap = 0
-        diary_cap = 0
-        tasks_cap = 0
-    else:
-        ms_cap = max(1, (limit + 2) // 3)
-        memes_cap = 1 if limit <= 5 else 2
-        # Diary moved to active-recall (mcp__marrow__recall kind=diary) —
-        # vec floor 0.40 starves prose, was returning nothing useful.
-        diary_cap = 0
-        # Tasks already surfaced in SessionStart Open Tasks block —
-        # passive-recall duplication wastes budget.
-        tasks_cap = 0
-    by_kind: dict[str, list] = {}
-    for s, r in scored:
-        by_kind.setdefault(r.get("kind", ""), []).append((s, r))
-    ms_picks = by_kind.get("milestone", [])[:ms_cap]
-    memes_picks = by_kind.get("memes", [])[:memes_cap]
-    diary_picks = by_kind.get("diary", [])[:diary_cap]
-    tasks_picks = by_kind.get("task", [])[:tasks_cap]
-    reserved = len(ms_picks) + len(memes_picks) + len(diary_picks) + len(tasks_picks)
-    # Event adjacency dedup: hook auto-attaches ±1 same-session context per
+    # ── pick top-N by score (no per-kind cap / reservation) ─────────────────
+    # All tables and events compete on raw score; `limit` is the only budget.
+    # Event adjacency dedup stays: hook attaches ±1 same-session context per
     # event hit, so neighbouring event ids (diff ≤ 1, same session) would
-    # show up twice — once as a hit, once as context on the higher-scored
-    # neighbour. Keep the highest-scored of each adjacent run.
-    ev_candidates = [
-        item for k, items in by_kind.items()
-        if k not in ("milestone", "memes", "diary", "task")
-        for item in items
-    ]
-    ev_candidates.sort(key=lambda x: x[0], reverse=True)
-    ev_picks: list = []
+    # surface twice. Keep the highest-scored of each adjacent run.
+    scored.sort(key=lambda x: x[0], reverse=True)
+    picks: list = []
     chosen_event_ids: dict[str, list[int]] = {}
-    cap = max(0, limit - reserved)
-    for s, r in ev_candidates:
-        sid = r.get("session_id")
-        rid = r.get("id")
-        if sid and rid and r.get("kind") in (None, "event"):
-            ids = chosen_event_ids.setdefault(sid, [])
-            if any(abs(int(rid) - x) <= 1 for x in ids):
-                continue
-            ids.append(int(rid))
-        ev_picks.append((s, r))
-        if len(ev_picks) >= cap:
+    for s, r in scored:
+        if r.get("kind") in (None, "event"):
+            sid = r.get("session_id")
+            rid = r.get("id")
+            if sid and rid:
+                ids = chosen_event_ids.setdefault(sid, [])
+                if any(abs(int(rid) - x) <= 1 for x in ids):
+                    continue
+                ids.append(int(rid))
+        picks.append((s, r))
+        if len(picks) >= limit:
             break
-    picks = sorted(
-        ms_picks + memes_picks + diary_picks + tasks_picks + ev_picks,
-        key=lambda x: x[0], reverse=True,
-    )
 
     # ── row passthrough ───────────────────────────────────────────────────────
     # No per-item content cap — caller (hook / MCP) owns final shaping.

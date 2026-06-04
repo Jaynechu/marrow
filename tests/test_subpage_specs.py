@@ -86,20 +86,47 @@ def test_diary_bootstrap_uses_date_block_ids(db, tmp_path):
 # ── memes ──────────────────────────────────────────────────────────────────
 
 
-def test_memes_bootstrap_per_type_sections(db, tmp_path):
+def test_memes_bootstrap_personal_public_sections(db, tmp_path):
     spec = subpage_specs.build_memes_spec(str(tmp_path / "ny"))
     counts = _run(spec, db)
     text = Path(spec.path).read_text()
-    # One section per type present in DB (paw + meme seeded in fixture).
-    assert "## paw" in text
-    assert "## meme" in text
+    # Two top-level sections: Personal (fact/paw) and Public (meme/news/...).
+    assert "## Personal" in text
+    assert "## Public" in text
     assert "大龙虾" in text
     assert "rickroll" in text
     assert counts["bootstrapped"] == 2
-    # paw section order: fact(1) < paw(2) < meme(3) — paw before meme.
-    assert text.index("## paw") < text.index("## meme")
-    # Section header includes horizontal rule.
-    assert "## paw\n\n---" in text
+    # Personal precedes Public.
+    assert text.index("## Personal") < text.index("## Public")
+    # No type-name subheaders (fact/paw act as dividers only).
+    assert "## paw" not in text
+    assert "## meme" not in text
+    assert "### paw" not in text
+
+
+def test_memes_bootstrap_divider_between_types(db, tmp_path):
+    """fact→paw transition inside Personal emits a `---` divider; the
+    section's first type does NOT render a header."""
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(db)
+    conn.row_factory = _sqlite3.Row
+    with conn:
+        conn.execute(
+            "INSERT INTO memes (type, key, value, use_count, last_seen,"
+            " pinned, source_hash) VALUES ('fact', 'Plan', '$100/mo', 1,"
+            " '2026-06-04T00:00:00Z', 1, 't')"
+        )
+    spec = subpage_specs.build_memes_spec(str(tmp_path / "ny"))
+    _run(spec, db)
+    text = Path(spec.path).read_text()
+    # fact row precedes paw row, separated by `---`.
+    personal_block = text[text.index("## Personal"):text.index("## Public")]
+    fact_idx = personal_block.index("Plan")
+    div_idx = personal_block.index("---")
+    paw_idx = personal_block.index("大龙虾")
+    assert fact_idx < div_idx < paw_idx
+    # No `---` before the first row of Personal (only at fact→paw transition).
+    assert personal_block.count("---") == 1
 
 
 # ── goose ──────────────────────────────────────────────────────────────────

@@ -83,6 +83,12 @@ class InserterSpec:
     # the canonical source and a row reappearing in db must always re-emit
     # to md, even if a prior delete tombstoned its block_id.
     respect_tombstones: bool = True
+    # When True, subsection_of acts as a divider — render_subsection_header
+    # is emitted ONLY at sub-to-sub transitions inside a section, never at
+    # the section's first sub. Use for memes (Personal/Public sections,
+    # type-keyed dividers between fact|paw etc.). goose-style "every month
+    # gets its own ### header" stays as default (False).
+    subsection_separator_only: bool = False
 
     def m0(self) -> str:
         return _M0.format(key=self.key)
@@ -223,7 +229,10 @@ def _bootstrap(spec: InserterSpec, rows: list[dict]) -> str:
             if sub != cur_sub:
                 if cur_sub is not None:
                     out.append("")
-                if sub:
+                emit_header = bool(sub) and not (
+                    spec.subsection_separator_only and cur_sub is None
+                )
+                if emit_header:
                     out.append(spec.render_subsection_header(sub))
                     out.append("")
                 cur_sub = sub

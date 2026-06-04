@@ -4,14 +4,24 @@
 
 ---
 
+## Now (2026-06-04 · recall fairness + alias cleanup)
+- **recall cap 删除** — `marrow/recall.py:1220-1284` 拿掉 ms_cap / memes_cap / diary_cap / tasks_cap 全部 reservation+上限逻辑；所有表 + event 一视同仁按 score top-N，`limit=5` (config.default.toml:74) 是唯一预算。event adjacency dedup 保留
+  - 触发：14:21 的 recall 漏掉 memes#2 `Cache tier: 1h subscriber` 即使 bm25=1.00 命中，因为 `memes_cap=1 if limit<=5`、score 输给 vec-命中的 memes#14
+- **Amber alias 修** — `entities.aliases[1]` `OT` → `Occupational Therapist`；`entities_vec / entities_vec_meta rowid=11` 删除，下次 embed_pending 自动重嵌
+  - 旧 `OT` 是 2 字符 ASCII，substring 误命中 `others / not / report / context / hot / foot` 等英文词；每次误命中 `bump_mention_counts` 自我强化，mc 已涨到 787
+- **遗留** — Amber `mention_count=787` 是历史 OT-substring 误命中累计。新 alias 不会再误命中，但 force-include score 仍带 `0.1*log1p(787)≈0.67` 加成，命中 (Amber / Amber 姐 / 天津) 时依旧霸榜。是否回滚到合理值 (建议 ~10-20) Lumi 决定
+
+---
+
 ## Bugs
 
-### BUG-2 · memes daily 路径绕 3 次门槛 [中等]
+### BUG-2 · memes daily 路径绕 3 次门槛 [中等] · **合并到 R6**
 - memes id 11/12/13 (weclaude headless / CC picker / handover symlink) 21:02 一口气 10s 内 3 条新增，全部 `use_count=1`、`source_hash='daily'`、`pinned=1`
 - 你以为的门槛是 7d 内 ≥3 次才成 cand
 - 实际 daily writer 路径没该门槛或 pinned 绕过
 - 排查：sessionend writer vs daily writer 是不是两条独立路径？阈值一致否？pinned=1 谁设的？应否统一走 `memes_cand → memes`？
 - 影响：低频一次性术语污染 memes 表
+- → 统一窗口规则落地后这条自动消化，并入 R6
 
 ---
 
@@ -170,12 +180,12 @@
 - 配 events_live view (mirror affect_live / entities_live)
 - recall 默认读 live view，FTS 命中旧 turn 仍可触发 revive (跟 dormant 路径同源)
 
-### R3 · entity auto-update via sessionend writer
+### R3 · entity auto-update via sessionend writer · **合并到 R7**
 - 架构已有 (`entities.superseded_by`)，但 sessionend writer 现在见到 name 在 entities_live 直接 skip
 - 想要: 见 name 时 LLM 比 fact diff，矛盾 → 写新 row (旧 row superseded_by 新 row.id)
 - 测例: 李小云搬 Doncaster · 洋姐 PCA → case manager
 - 改 `marrow/sessionend_writers.py` entity extract 段
-- 合并到 affect-recall redesign Phase A
+- → 默认改成 in-place UPDATE (R7)，superseded_by 留给"历史重要"的少数 case
 
 ### R4 · diary / pit 主动 recall + 主动 followup
 - diary 不进 passive lane (已做)
@@ -188,3 +198,33 @@
 - markdown log 已落地，能 `tail -F ~/.config/marrow/logs/recall.md`
 - 若要 dashboard 显示: read 最新 N 行 append 进 dashboard top section
 - 优先级低，看 log 用得顺不顺再说
+
+### R6 · memes 入表统一 7 天 3 次窗口 + 语义合并
+- **现状**:
+  - fact/others/prompt 各自规则，文档里也没写清"3 次门槛"实际怎么实现
+  - 去重靠 `memes.source_hash` 字面哈希 → `cache tier` / `caching 1h` / `cached` 算三条独立 fact，永远过不了门槛
+  - daily writer 路径直接绕过门槛塞 `pinned=1` (即 BUG-2)
+- **想要 (Lumi 拍板)**:
+  - 全类目统一窗口: 7 天内 3 次才入 memes。same-session 不算、same-day 不算 (一天最多 1 次计数)
+  - 入表前 embedding 邻近合并: 同 type 同语义槽位视为同一条 candidate，bumps `use_count`，不堆字面新 row
+  - 一次性术语 (`mc=1` + 7d 内只一次) 不入表，靠 recall 兜底
+  - prompt 类目 Lumi 自己处理；fact / others 走 candidates → sessionend writer
+- **路径**: `marrow/candidates.py` (聚合 + 语义合并 + 窗口判) + `marrow/sessionend_writers.py` (写入逻辑) + daily writer 一并走同闸门
+- **测例**:
+  - `cache tier` (D1) + `caching 1h` (D2) + `cached` (D3) → 同 candidate 聚合，use_count=3、D3 满足窗口 → 入 memes
+  - 同一术语一天内说 5 次 → 算 1 次
+  - same-session 内连说 3 次 → 算 0 次
+
+### R7 · entity / memes in-place UPDATE (旧 id 改字段，不堆新 row)
+- **现状**:
+  - entity sessionend writer 见 name 在 entities_live → 直接 skip，fact / aliases 永远不会更新
+  - memes 只有 INSERT，没有 UPDATE 路径 → value 演变只能堆新 row 或 daily writer 直塞 pinned
+- **想要**:
+  - **entity fact / aliases 变化** → 在原 id 上 UPDATE，**不** superseded_by 不新 row
+    - 例: Amber 不做 OT 改老师 → `fact` 由 "OT at a school" 改 "Teacher at a school"；aliases 同步去掉 "Occupational Therapist"
+  - **memes value 演变** → 同 key 同 type 见新 value → 原 id UPDATE + `last_seen` 刷新
+    - 例: 运动偏好 Pilates → 其他 → 直接改原 row `value`
+  - **历史重要的少数 case** (人格剧变 / 关系节点) → 保留 superseded_by 历史链路；默认 in-place
+- **入口**: sessionend writer 加 "patch existing" 路径，优先于 INSERT。`audit_log` 记每次 patch (before / after)
+- **R3 (entity superseded_by) 合并到本条**：默认 in-place，矛盾深 / 历史重要才 supersede
+- **配套**: dashboard / atlas 渲染 entity card 时只读 live row，audit_log 单独 timeline 入口可查历史
