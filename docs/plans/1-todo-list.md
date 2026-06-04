@@ -4,37 +4,6 @@
 
 ---
 
-## Now (2026-06-04 · recall 全表 FTS5 + 整套 anchor-trigger 路径删除)
-- **删 recall cap** — `marrow/recall.py` 拿掉 ms_cap / memes_cap / diary_cap / tasks_cap 全部 reservation+上限，所有表+event 按 score top-N (`limit=5` 是唯一预算)。event adjacency dedup 保留
-- **删 `_anchor_triggers` 整条反向 substring 路径** — `_TOKEN_RE` / `_CJK_STOP` / `_query_tokens` / `_anchor_triggers` 全部移除；`entity_force_include` 不再被 `recall_fusion` 调用 (函数还在 `entity_recall.py` 但仅供 `bump_mention_counts` 路径，下一步走 R8)
-- **加 FTS5 across all anchor tables** — `marrow/storage.py` 新加 `memes_fts / milestones_fts / entities_fts` (trigram tokenizer, mirror `events_fts`)，body = 整行字段 TRIM 拼接 (memes: key+value+context · milestones: title+desc · entities: name+fact+aliases)；INSERT/DELETE/UPDATE triggers 同步；init_db 首次 backfill；legacy delete-with-body trigger 自动 migrate
-- **新 query 拆词** — `_fts_terms` 取 ASCII alnum ≥3 chars 整段 + CJK runs 拆 sliding 3-char windows；<3 chars 全丢 (OT / in / the / 鸭子 都不再进 query)。`_fts_query` 把 terms 串成 `"<t1>" OR "<t2>" OR ...` phrase OR
-- **3 张 anchor 表 candidate 函数重写** — `_milestone_candidates / _memes_candidates / _entity_candidates` 全部走 `<table>_fts MATCH` + bm25 normalize；旧 substring trigger / forward-token 路径删干净
-- **entity scoring 进入主 fusion 池** — `raw = w_bm25*bm25 + w_entities_vec*vec + _ENTITY_CARD_BIAS(0.30) + 0.1*log1p(mention_count)`；FTS bm25 是 hard topicality gate，stray 高 mc entity (Amber 787) 不再每个 query force-include
-- **Amber alias 清干净** — `entities.aliases` 从 `["天津","OT","Amber 姐"]` 精简到 `["Amber 姐"]`，天津 / OT 留在 fact 字段由 FTS 自然搜到 (天津 / OT 是出生地与职业，不是别名)
-- **测试** — 914 passed / 5 skipped；旧 `test_query_tokens_*` / `test_milestone_*` 重写成 FTS5 行为；`test_milestone_short_cjk_query_returns_nothing` 锁死 "<3 chars 不命中" 的 noise-floor
-- **实测对照** (之前噪音 vs 现在干净):
-  - query "...cache tier...caching 1h...cached" → memes#2 出现、Amber 不再霸榜、milestone#32-36 (Age 11-13 ... 26-27 的 noise 命中) 全消失
-  - query "Amber 在干嘛 OT shift" → entity#11 Amber score=1.27 正常排第 1 (FTS bm25 命中 "amber" + 真实的 Age milestone 含 "shift")
-- **遗留**:
-  - Amber `mention_count=787` 历史虚高 — 新代码下不再涨；是否回滚到 ~10-20 Lumi 决定
-  - `bump_mention_counts` (repo.py:268, 每次 INSERT event 触发) 仍用旧 substring + alias trigger 路径，同款 OT bug 但只影响 mc 数字本身不影响 recall 排序 → R8 跟进
-  - trigram tokenizer 对纯英文 noise query (`others caching cached`) 仍会 fuzz；混杂真实 token 的现实 prompt 不再受影响
-
----
-
-## Bugs
-
-### BUG-2 · memes daily 路径绕 3 次门槛 [中等] · **合并到 R6**
-- memes id 11/12/13 (weclaude headless / CC picker / handover symlink) 21:02 一口气 10s 内 3 条新增，全部 `use_count=1`、`source_hash='daily'`、`pinned=1`
-- 你以为的门槛是 7d 内 ≥3 次才成 cand
-- 实际 daily writer 路径没该门槛或 pinned 绕过
-- 排查：sessionend writer vs daily writer 是不是两条独立路径？阈值一致否？pinned=1 谁设的？应否统一走 `memes_cand → memes`？
-- 影响：低频一次性术语污染 memes 表
-- → 统一窗口规则落地后这条自动消化，并入 R6
-
----
-
 ## Phases — affect recall redesign (brainstorm 2026-05-31)
 补录两个问题
 1. 如果有pending unresolved的应该要强浮现优先处理（不管我的prompt是什么都要把注意力放在affect解决情感问题而不是听我的做task）
@@ -158,25 +127,7 @@
 
 ---
 
-## Done (this session, 2026-05-31)
-- BUG-1 milestone rapid-fire dup loop — `fc78e16`
-- todo #4 decay_floor 1-5 重排 — `e14b703`
-- todo #2 alert §8 重写 + scenario regroup — `1024541` `48862fd` (新 alert type 见 §2)
-- MAP §7 daily-catchup 描述修正 — pending (在本 todo 之外、是 doc 修)
-- BUG-3 折入 Phase A · BUG-4 折入 Phase C
-
-## Done (2026-06-01 · recall efficiency pass)
-- Anchor-lane tokenizer fix — reverse-substring on key/title (仿 entity_force_include)，不再走 `_query_tokens` 单字稀释 — `a28280c` + MAP §4.4
-- Anchor vec weights +0.05 (memes/entities/milestones → 0.60) — 小幅占优 event
-- diary / task lanes disabled in passive recall (cap=0) — diary 移至主动 recall，task 已在 SessionStart Open Tasks
-- recall limit 15 → 10 (config.default.toml)
-- Event ±1 same-session adjacent context — fusion 出 event hit 后 hook 拉前后 turn 渲染，应对错答案碎片化
-- `~/.config/marrow/logs/recall.md` markdown log — 每轮 prompt + hits 摘要 append，tail/preview 均可读
-- Phase C 第一条 (event ±1 上下文) 提前到本轮做掉，剩余 (独立 Mood 块) 仍在 Phase C
-
----
-
-## Recall — remaining backlog (post 2026-06-01 pass)
+## Recall — remaining backlog
 
 ### R1 · min_score gate for milestone/memes
 - 想加但跟现有 anti-dilution 测试冲突。等 anchor-lane reverse-substring 跑 1 周看实际 score 分布，再决定 gate=0.40 还是更低
@@ -190,13 +141,6 @@
 - 配 events_live view (mirror affect_live / entities_live)
 - recall 默认读 live view，FTS 命中旧 turn 仍可触发 revive (跟 dormant 路径同源)
 
-### R3 · entity auto-update via sessionend writer · **合并到 R7**
-- 架构已有 (`entities.superseded_by`)，但 sessionend writer 现在见到 name 在 entities_live 直接 skip
-- 想要: 见 name 时 LLM 比 fact diff，矛盾 → 写新 row (旧 row superseded_by 新 row.id)
-- 测例: 李小云搬 Doncaster · 洋姐 PCA → case manager
-- 改 `marrow/sessionend_writers.py` entity extract 段
-- → 默认改成 in-place UPDATE (R7)，superseded_by 留给"历史重要"的少数 case
-
 ### R4 · diary / pit 主动 recall + 主动 followup
 - diary 不进 passive lane (已做)
 - 加 MCP tool `recall(query, kind="diary"|"pit"|...)` 或独立 `mcp__marrow__diary_recall` / `pit_recall`
@@ -209,42 +153,21 @@
 - 若要 dashboard 显示: read 最新 N 行 append 进 dashboard top section
 - 优先级低，看 log 用得顺不顺再说
 
-### R6 · memes 入表统一 7 天 3 次窗口 + 语义合并
-- **现状**:
-  - fact/others/prompt 各自规则，文档里也没写清"3 次门槛"实际怎么实现
-  - 去重靠 `memes.source_hash` 字面哈希 → `cache tier` / `caching 1h` / `cached` 算三条独立 fact，永远过不了门槛
-  - daily writer 路径直接绕过门槛塞 `pinned=1` (即 BUG-2)
-- **想要 (Lumi 拍板)**:
-  - 全类目统一窗口: 7 天内 3 次才入 memes。same-session 不算、same-day 不算 (一天最多 1 次计数)
-  - 入表前 embedding 邻近合并: 同 type 同语义槽位视为同一条 candidate，bumps `use_count`，不堆字面新 row
-  - 一次性术语 (`mc=1` + 7d 内只一次) 不入表，靠 recall 兜底
-  - prompt 类目 Lumi 自己处理；fact / others 走 candidates → sessionend writer
-- **路径**: `marrow/candidates.py` (聚合 + 语义合并 + 窗口判) + `marrow/sessionend_writers.py` (写入逻辑) + daily writer 一并走同闸门
-- **测例**:
-  - `cache tier` (D1) + `caching 1h` (D2) + `cached` (D3) → 同 candidate 聚合，use_count=3、D3 满足窗口 → 入 memes
-  - 同一术语一天内说 5 次 → 算 1 次
-  - same-session 内连说 3 次 → 算 0 次
+### R6 · memes 入表统一 7 天 3 次 + 语义合并
+- 全类目同窗口: 7 天 3 次入，same-session / same-day 都不算 (一天最多 1 次)
+- 入表前 embedding 邻近合并: `cache tier` / `caching 1h` / `cached` 走同 candidate，bumps `use_count`
+- 一次性术语 (`mc=1` + 7d 只一次) 不入表，recall 兜底
+- 路径: `marrow/candidates.py` + `marrow/sessionend_writers.py` + daily writer 全走同闸门
+- 旧 BUG-2 (daily writer 绕门槛塞 pinned) 一并消化
 
-### R8 · bump_mention_counts 改 FTS5 路径 (entity_force_include 整体退场)
-- **现状**: `marrow/repo.py:268` 每次 `archive_events` 调 `bump_mention_counts`，走 entity name+alias substring 反向命中 event.content；同款 OT 误命中 bug 仍在 — 当前只因新 alias `Occupational Therapist` 长度足 + 缺真实子串才没触发
-- **想要**:
-  - bump 走 entities_fts: 把 event.content 拆 `_fts_terms` → MATCH entities_fts → 命中的 entity mc +1
-  - 或反过来: entity.name + 真实 aliases (人话别名，不是事实字段) 跟 event tokens 整词比对
-- **顺手清**:
-  - `entity_recall.entity_force_include` 函数 + `test_recall_bug_entity_memes.py` 整体删 (recall 已不调用，留着只是 bump 间接借同套 substring 路径)
-  - Amber `mention_count=787` 回滚到合理基线 (估真实命中 ~10-20)
-- **优先级**: 中等 — 不影响 recall 排序，但 mc 不准污染 R7 in-place update 判断与未来 entity 加权
+### R7 · entity / memes in-place UPDATE
+- entity fact / aliases 变了在原 id 上 UPDATE (Amber 改老师 / Pilates 换运动 都走这条)
+- memes 同 key 同 type 见新 value → 原 id UPDATE + `last_seen` 刷新
+- 历史重要的少数 case (人格剧变 / 关系节点) 保留 superseded_by；默认 in-place
+- `marrow/sessionend_writers.py` 加 "patch existing" 路径优先于 INSERT；`audit_log` 留 before/after
 
-### R7 · entity / memes in-place UPDATE (旧 id 改字段，不堆新 row)
-- **现状**:
-  - entity sessionend writer 见 name 在 entities_live → 直接 skip，fact / aliases 永远不会更新
-  - memes 只有 INSERT，没有 UPDATE 路径 → value 演变只能堆新 row 或 daily writer 直塞 pinned
-- **想要**:
-  - **entity fact / aliases 变化** → 在原 id 上 UPDATE，**不** superseded_by 不新 row
-    - 例: Amber 不做 OT 改老师 → `fact` 由 "OT at a school" 改 "Teacher at a school"；aliases 同步去掉 "Occupational Therapist"
-  - **memes value 演变** → 同 key 同 type 见新 value → 原 id UPDATE + `last_seen` 刷新
-    - 例: 运动偏好 Pilates → 其他 → 直接改原 row `value`
-  - **历史重要的少数 case** (人格剧变 / 关系节点) → 保留 superseded_by 历史链路；默认 in-place
-- **入口**: sessionend writer 加 "patch existing" 路径，优先于 INSERT。`audit_log` 记每次 patch (before / after)
-- **R3 (entity superseded_by) 合并到本条**：默认 in-place，矛盾深 / 历史重要才 supersede
-- **配套**: dashboard / atlas 渲染 entity card 时只读 live row，audit_log 单独 timeline 入口可查历史
+### R8 · bump_mention_counts 上 FTS5
+- `marrow/repo.py:268` 现在 substring + alias 反向命中，跟旧 anchor-trigger 同病
+- 改走 entities_fts: event.content → `_fts_terms` → MATCH entities_fts → 命中的 entity `mc+=1`
+- 顺手删 `entity_recall.entity_force_include` + `tests/test_recall_bug_entity_memes.py`
+- 不影响 recall 排序，只影响 mc 准确度
