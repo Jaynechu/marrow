@@ -547,26 +547,27 @@ def _entities_vec_hits(conn: sqlite3.Connection, qblob: bytes, k: int) -> list[d
     )
 
 
-# ── milestone keyword scan ────────────────────────────────────────────────────
-
-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[一-鿿]")
-# Milestone pinned-row boost added to raw fusion score before min_score gate.
+# ── FTS5 query term extraction ───────────────────────────────────────────────
+# All anchor tables (memes / milestones / entities) now go through FTS5 +
+# vec, matching the full row body. No more `_anchor_triggers` reverse-substring
+# path — ASCII short triggers (OT / in / the / ed) used to hit "others" /
+# "caching" / "cached" / "tier" via raw substring. FTS5 trigram tokenizer +
+# minimum-length term gate kills that noise.
+#
+# Term rules: ASCII alnum runs and CJK runs captured whole; then
+# `_fts_terms` keeps ASCII ≥3 chars as-is and splits CJK runs into sliding
+# 3-char windows that align with the trigram tokenizer. Shorter fragments
+# are dropped — trigram MATCH silently returns 0 hits on <3-char queries.
+_FTS_TERM_RE = re.compile(r"[A-Za-z0-9]+|[一-鿿]+")
+# Milestone / memes pinned-row boost — anchor identity stays ahead on ties.
 _MILESTONE_PINNED_BOOST = 0.10
 # Anchor bias: small additive lift for milestone + memes rows so identity /
 # stake / lore anchors stay ahead of similarly-scored events on borderline
-# queries. Conservative first pass (2026-05-25 Lumi); raise / drop after
-# observing prod recall. Entity force-include cards already carry +0.5 and
-# do not need this lift.
+# queries.
 _ANCHOR_BIAS = 0.10
-
-# Single-char CJK stopwords for forward-token milestone/memes match. Particles
-# and high-frequency pronouns/verbs that would otherwise match every anchor row
-# on any CN query and drown out real signal. Multi-char tokens never stop.
-_CJK_STOP = frozenset(
-    "的了是我你他她它在也就和不有这那么什吗呢啊哦嗯呀吧"
-    "上下去来跟给把到但要会都与及或且为之于以及让做对从被往"
-    "好很太多少能可以又再还只很真个又"
-)
+# Entity card bonus: keeps the identity sheet ahead of bare event hits when
+# the entity is genuinely topical (FTS bm25 already gates topicality).
+_ENTITY_CARD_BIAS = 0.30
 
 # cwd → recall bucket mapping. Same-bucket events get +same_boost, known
 # cross-bucket events take -diff_penalty (soft cut, still possible to win
@@ -627,187 +628,183 @@ def _cwd_bucket(cwd: str | None, rules: tuple[tuple[str, str], ...] | None = Non
     return ""
 
 
-def _query_tokens(q: str) -> list[str]:
-    """Split query into CJK chars + ASCII alnum runs, lowercased, deduped."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in _TOKEN_RE.finditer(q):
-        t = m.group(0).lower()
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out
+def _fts_terms(q: str) -> list[str]:
+    """Extract FTS5 trigram-safe query terms.
 
+    - ASCII alnum runs ≥3 chars kept whole (one trigram MATCH covers it).
+    - CJK runs split into sliding 3-char windows aligned with the trigram
+      tokenizer — a long CJK prompt like (老公你知道鸭子梗么) yields windows
+      that include (鸭子梗), letting the OR query hit a row whose body
+      contains (鸭子梗) without requiring the full prompt to appear verbatim.
+    - Anything <3 chars dropped (trigram MATCH returns 0 on short queries —
+      this is the "OT" pathology gate).
 
-def _anchor_triggers(name: str) -> list[str]:
-    """Anchor-table trigger list for reverse-substring match.
-
-    Returns [name] plus split components on `/` and whitespace, trimmed and
-    filtered to len >= 2. Dedup preserves order. Used by milestone / memes
-    candidate scans — see entity_recall.entity_force_include for the
-    canonical reverse-substring pattern.
+    Lowercased, dedup preserves first occurrence order.
     """
-    name = (name or "").strip()
-    if not name:
-        return []
     seen: set[str] = set()
     out: list[str] = []
-    parts = [name]
-    for slash_part in name.split("/"):
-        for sp in slash_part.split():
-            sp = sp.strip()
-            if sp:
-                parts.append(sp)
-    for p in parts:
-        if len(p) < 2:
+    for m in _FTS_TERM_RE.finditer(q):
+        t = m.group(0).lower()
+        if len(t) < 3:
             continue
-        key = p.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(p)
+        if t.isascii():
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+        else:
+            for i in range(len(t) - 2):
+                win = t[i:i + 3]
+                if win not in seen:
+                    seen.add(win)
+                    out.append(win)
     return out
+
+
+def _fts_query(terms: list[str]) -> str:
+    """Build FTS5 MATCH expression: each term as quoted phrase, OR-joined.
+
+    Empty → empty string (caller must short-circuit). FTS5 quoting: embedded
+    double-quote escapes to "".
+    """
+    if not terms:
+        return ""
+    return " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+
+
+def _fts_lane_hits(
+    conn: sqlite3.Connection, sql: str, fts_q: str, k: int
+) -> list[sqlite3.Row]:
+    """Execute an FTS lane SQL with (fts_q, k). Returns rows or [] on error."""
+    if not fts_q:
+        return []
+    try:
+        return conn.execute(sql, (fts_q, k)).fetchall()
+    except sqlite3.Error:
+        return []
+
+
+def _bm25_normalize(ranks: list[float]) -> list[float]:
+    """Map FTS5 rank list to [0,1]: best (smallest abs) -> 1.0."""
+    abs_ranks = [abs(r) for r in ranks]
+    if not abs_ranks:
+        return []
+    min_r = min(abs_ranks)
+    return [(min_r / r) if r else 1.0 for r in abs_ranks]
 
 
 def _milestone_candidates(
     conn: sqlite3.Connection, query: str, limit: int
 ) -> list[dict]:
-    """Bidirectional keyword scan over milestones; pinned + kw sort.
-
-    Two match paths, strongest wins:
-      1. Reverse-substring: any anchor-trigger from milestone (title + desc,
-         split by `/` and whitespace, len >= 2) appears in query → kw=1.0.
-         Catches short identity anchors (e.g. Bendigo, 小胖).
-      2. Forward-token: query tokens (CJK chars + ASCII runs, minus stopwords)
-         scanned against the milestone's FULL text (title + description
-         joined). Catches CJK keywords buried in long description prose where
-         no whitespace splits them out — e.g. (鸭子) inside `(包养我,算是我的鸭子)`
-         hit by a query containing (鸭). kw = matched / total filtered toks.
-
-    Returns rows shaped for fusion: timestamp (date as ISO), content
-    (title[: description]), bm25 (kw_score), pinned.
+    """FTS5 scan over milestones_fts (title+description body). Pure forward
+    search — query terms matched against full row content. No reverse-substring.
     """
-    q_lower = query.lower().strip()
-    if not q_lower:
-        return []
-    rows = conn.execute(
-        "SELECT id, scope, date, title, description, pinned "
-        "FROM milestones"
-    ).fetchall()
+    terms = _fts_terms(query)
+    fts_q = _fts_query(terms)
+    rows = _fts_lane_hits(
+        conn,
+        "SELECT mi.id, mi.scope, mi.date, mi.title, mi.description, mi.pinned, "
+        "       rank AS fts_rank "
+        "FROM milestones_fts f JOIN milestones mi ON mi.id = f.rowid "
+        "WHERE milestones_fts MATCH ? ORDER BY rank LIMIT ?",
+        fts_q, limit * 3,
+    )
     if not rows:
         return []
-    q_toks = _query_tokens(q_lower)
-    q_toks_f = [t for t in q_toks if not (len(t) == 1 and t in _CJK_STOP)]
-    scored: list[dict] = []
-    for r in rows:
+    bm25_scores = _bm25_normalize([r["fts_rank"] for r in rows])
+    out: list[dict] = []
+    for i, r in enumerate(rows):
         title = r["title"] or ""
         desc = r["description"] or ""
-        triggers = _anchor_triggers((title + " " + desc).strip())
-        rev_hit = any(t.lower() in q_lower for t in triggers)
-        haystack = (title + " " + desc).lower()
-        if q_toks_f and haystack:
-            fwd_matched = sum(1 for t in q_toks_f if t in haystack)
-            fwd_ratio = fwd_matched / len(q_toks_f)
-        else:
-            fwd_matched = 0
-            fwd_ratio = 0.0
-        if not rev_hit and fwd_matched == 0:
-            continue
-        kw_score = 1.0 if rev_hit else fwd_ratio
         date = r["date"] or ""
         ts = date if "T" in date else (date + "T00:00:00Z" if date else "")
         content = title if not desc else f"{title}: {desc}"
-        scored.append({
-            "kind": "milestone",
-            "id": r["id"],
-            "session_id": None,
-            "timestamp": ts,
-            "role": "milestone",
-            "content": content,
-            "channel": None,
-            "compressed": 0,
-            "bm25": kw_score,
-            "vec": 0.0,
-            "fts_hit": True,
+        out.append({
+            "kind": "milestone", "id": r["id"],
+            "session_id": None, "timestamp": ts,
+            "role": "milestone", "content": content,
+            "channel": None, "compressed": 0,
+            "bm25": bm25_scores[i], "vec": 0.0, "fts_hit": True,
             "pinned": int(r["pinned"] or 0),
             "scope": r["scope"],
         })
-    scored.sort(key=lambda c: (c["pinned"], c["bm25"]), reverse=True)
-    return scored[: limit * 3]
+    return out
 
-
-# ── memes keyword scan ───────────────────────────────────────────────────────
 
 def _memes_candidates(
     conn: sqlite3.Connection, query: str, limit: int
 ) -> list[dict]:
-    """Bidirectional keyword scan over active memes rows; pinned + kw + use_count sort.
-
-    Two match paths, strongest wins:
-      1. Reverse-substring: any anchor-trigger from meme (key + value + context,
-         split by `/` and whitespace, len >= 2) appears in query → kw=1.0.
-         Catches short keys (e.g. (Openclaw), (大龙虾)).
-      2. Forward-token: query tokens (CJK + ASCII, minus stopwords) scanned
-         against the meme's FULL text (key+value+ctx joined). Catches CJK
-         keywords buried in value/ctx prose where no whitespace splits them
-         out — e.g. (鸭) hits a meme whose key is (鸭鸭) but whose ctx prose
-         doesn't include the exact query bigram. kw = matched / total toks.
-
-    Shape parallels milestone candidates; kind="memes".
-    """
-    q_lower = query.lower().strip()
-    if not q_lower:
-        return []
-    rows = conn.execute(
-        "SELECT id, type, key, value, context, pinned, use_count "
-        "FROM memes WHERE status='active'"
-    ).fetchall()
+    """FTS5 scan over memes_fts (key+value+context body). Active rows only."""
+    terms = _fts_terms(query)
+    fts_q = _fts_query(terms)
+    rows = _fts_lane_hits(
+        conn,
+        "SELECT m.id, m.type, m.key, m.value, m.context, m.pinned, m.use_count, "
+        "       rank AS fts_rank "
+        "FROM memes_fts f JOIN memes m ON m.id = f.rowid "
+        "WHERE memes_fts MATCH ? AND m.status='active' "
+        "ORDER BY rank LIMIT ?",
+        fts_q, limit * 3,
+    )
     if not rows:
         return []
-    q_toks = _query_tokens(q_lower)
-    q_toks_f = [t for t in q_toks if not (len(t) == 1 and t in _CJK_STOP)]
+    bm25_scores = _bm25_normalize([r["fts_rank"] for r in rows])
     out: list[dict] = []
-    for r in rows:
+    for i, r in enumerate(rows):
         key = r["key"] or ""
         value = r["value"] or ""
         ctx = r["context"] or ""
-        full = " ".join(x for x in (key, value, ctx) if x).strip()
-        triggers = _anchor_triggers(full)
-        rev_hit = any(t.lower() in q_lower for t in triggers)
-        haystack = full.lower()
-        if q_toks_f and haystack:
-            fwd_matched = sum(1 for t in q_toks_f if t in haystack)
-            fwd_ratio = fwd_matched / len(q_toks_f)
-        else:
-            fwd_matched = 0
-            fwd_ratio = 0.0
-        if not rev_hit and fwd_matched == 0:
-            continue
-        kw_score = 1.0 if rev_hit else fwd_ratio
         content = f"{key}: {value}" if value else key
         if ctx:
             content = f"{content} ({ctx})"
         out.append({
-            "kind": "memes",
-            "id": r["id"],
-            "session_id": None,
-            "timestamp": "",
-            "role": "memes",
-            "content": content,
-            "channel": None,
-            "compressed": 0,
-            "bm25": kw_score,
-            "vec": 0.0,
-            "fts_hit": True,
+            "kind": "memes", "id": r["id"],
+            "session_id": None, "timestamp": "",
+            "role": "memes", "content": content,
+            "channel": None, "compressed": 0,
+            "bm25": bm25_scores[i], "vec": 0.0, "fts_hit": True,
             "pinned": int(r["pinned"] or 0),
             "type": r["type"],
             "use_count": int(r["use_count"] or 0),
         })
-    out.sort(
-        key=lambda c: (c["pinned"], c["bm25"], c["use_count"]),
-        reverse=True,
+    return out
+
+
+def _entity_candidates(
+    conn: sqlite3.Connection, query: str, limit: int
+) -> list[dict]:
+    """FTS5 scan over entities_fts (name+fact+aliases body). Live rows only."""
+    terms = _fts_terms(query)
+    fts_q = _fts_query(terms)
+    rows = _fts_lane_hits(
+        conn,
+        "SELECT e.id, e.kind, e.name, e.fact, e.mention_count, e.created_at, "
+        "       rank AS fts_rank "
+        "FROM entities_fts f JOIN entities e ON e.id = f.rowid "
+        "WHERE e.superseded_by IS NULL AND entities_fts MATCH ? "
+        "ORDER BY rank LIMIT ?",
+        fts_q, limit * 3,
     )
-    return out[: limit * 2]
+    if not rows:
+        return []
+    bm25_scores = _bm25_normalize([r["fts_rank"] for r in rows])
+    out: list[dict] = []
+    for i, r in enumerate(rows):
+        fact = r["fact"] or ""
+        if not fact.strip():
+            continue
+        name = r["name"] or ""
+        ekind = r["kind"] or ""
+        content = f"{name} ({ekind}): {fact}" if ekind else f"{name}: {fact}"
+        out.append({
+            "kind": "entity", "id": r["id"],
+            "session_id": None, "timestamp": r["created_at"] or "",
+            "role": "entity", "content": content,
+            "channel": None, "compressed": 0,
+            "bm25": bm25_scores[i], "vec": 0.0, "fts_hit": True,
+            "mention_count": int(r["mention_count"] or 0),
+            "entity_kind": ekind,
+        })
+    return out
 
 
 # ── fusion retrieval ──────────────────────────────────────────────────────────
@@ -1040,8 +1037,32 @@ def recall_fusion(
             "category": category, "status": card["status"],
         })
 
-    # No early-return: even when fusion lanes are empty, entity force-include
-    # (substring/LIKE) may still surface an entity card alone — gated below.
+    # ── entities: FTS5 + vec lane merged into a single candidate pool ──────
+    # Symmetric with memes / milestone — FTS catches keyword hits against the
+    # FULL row body (name+fact+aliases), vec catches paraphrase. No more
+    # reverse-substring on alias triggers.
+    ent_by_id = {c["id"]: c for c in _entity_candidates(conn, q, limit)}
+    for card in entities_vec_cards:
+        if card["id"] in ent_by_id:
+            ent_by_id[card["id"]]["vec"] = card["vec_score"]
+        elif card["vec_score"] >= _VEC_ONLY_FLOOR:
+            fact = card["fact"]
+            if not fact:
+                continue
+            name = card["name"]
+            ekind = card["kind"] or ""
+            content = f"{name} ({ekind}): {fact}" if ekind else f"{name}: {fact}"
+            ent_by_id[card["id"]] = {
+                "kind": "entity", "id": card["id"],
+                "session_id": None,
+                "timestamp": card["created_at"],
+                "role": "entity", "content": content,
+                "channel": None, "compressed": 0,
+                "bm25": 0.0, "vec": card["vec_score"], "fts_hit": False,
+                "mention_count": int(card["mention_count"] or 0),
+                "entity_kind": ekind,
+            }
+    entity_cands = list(ent_by_id.values())
 
     # ── dormant revive + scoring ──────────────────────────────────────────────
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -1167,54 +1188,18 @@ def recall_fusion(
         raw = w_tasks_vec * tc.get("vec", 0.0)
         scored.append((raw, {**tc, "score": raw}))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # ── entity force-include (prepend before ms_cap reservation) ─────────────
-    # Two streams: substring/LIKE via entity_recall, semantic via entities_vec.
-    # Dedup by entity id; substring score wins when both fire (it carries the
-    # +0.5 card boost already). body_nonempty filter drops rows whose
-    # content is None / "" / whitespace-only — surface them in recall would
-    # waste prompt tokens and crowd out signal.
-    from .entity_recall import entity_force_include
-    force_rows = [r for r in entity_force_include(conn, q, limit)
-                  if _body_nonempty(r.get("content"))]
-    seen_entity_ids = {
-        r["id"] for r in force_rows if r.get("kind") == "entity"
-    }
-    for card in entities_vec_cards:
-        if card["id"] in seen_entity_ids:
-            continue
-        vs = card["vec_score"]
-        if vs < _VEC_ONLY_FLOOR:
-            continue
-        fact = card["fact"]
-        if not fact:
-            continue
-        name = card["name"]
-        ekind = card["kind"]
-        content = f"{name} ({ekind}): {fact}" if ekind else f"{name}: {fact}"
-        score = (
-            w_entities_vec * vs
-            + 0.5
-            + 0.1 * math.log1p(card["mention_count"])
+    # ── entity scoring (FTS + vec + identity card bias + mention boost) ─────
+    # Symmetric with milestone / memes. FTS bm25 gates topicality so a stray
+    # high-mc entity does not get force-included on every query.
+    for ec in entity_cands:
+        raw = (
+            w_bm25 * ec["bm25"]
+            + w_entities_vec * ec.get("vec", 0.0)
+            + _ENTITY_CARD_BIAS
+            + 0.1 * math.log1p(ec.get("mention_count", 0))
         )
-        force_rows.append({
-            "kind": "entity", "id": card["id"],
-            "session_id": None,
-            "timestamp": card["created_at"],
-            "role": "entity", "content": content,
-            "channel": None, "compressed": 0,
-            "bm25": 0.0, "vec": vs, "fts_hit": False,
-            "score": score, "force_include": True,
-        })
-        seen_entity_ids.add(card["id"])
+        scored.append((raw, {**ec, "score": raw}))
 
-    force_ids = {r["id"] for r in force_rows}
-    # Remove any fusion duplicates that force-include already covers.
-    scored = [(s, r) for s, r in scored if r.get("id") not in force_ids]
-    # Prepend force rows (score already set, kind already "event").
-    force_pairs = [(r["score"], r) for r in force_rows]
-    scored = force_pairs + scored
     scored.sort(key=lambda x: x[0], reverse=True)
 
     # ── pick top-N by score (no per-kind cap / reservation) ─────────────────

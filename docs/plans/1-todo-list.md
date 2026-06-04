@@ -4,12 +4,22 @@
 
 ---
 
-## Now (2026-06-04 · recall fairness + alias cleanup)
-- **recall cap 删除** — `marrow/recall.py:1220-1284` 拿掉 ms_cap / memes_cap / diary_cap / tasks_cap 全部 reservation+上限逻辑；所有表 + event 一视同仁按 score top-N，`limit=5` (config.default.toml:74) 是唯一预算。event adjacency dedup 保留
-  - 触发：14:21 的 recall 漏掉 memes#2 `Cache tier: 1h subscriber` 即使 bm25=1.00 命中，因为 `memes_cap=1 if limit<=5`、score 输给 vec-命中的 memes#14
-- **Amber alias 修** — `entities.aliases[1]` `OT` → `Occupational Therapist`；`entities_vec / entities_vec_meta rowid=11` 删除，下次 embed_pending 自动重嵌
-  - 旧 `OT` 是 2 字符 ASCII，substring 误命中 `others / not / report / context / hot / foot` 等英文词；每次误命中 `bump_mention_counts` 自我强化，mc 已涨到 787
-- **遗留** — Amber `mention_count=787` 是历史 OT-substring 误命中累计。新 alias 不会再误命中，但 force-include score 仍带 `0.1*log1p(787)≈0.67` 加成，命中 (Amber / Amber 姐 / 天津) 时依旧霸榜。是否回滚到合理值 (建议 ~10-20) Lumi 决定
+## Now (2026-06-04 · recall 全表 FTS5 + 整套 anchor-trigger 路径删除)
+- **删 recall cap** — `marrow/recall.py` 拿掉 ms_cap / memes_cap / diary_cap / tasks_cap 全部 reservation+上限，所有表+event 按 score top-N (`limit=5` 是唯一预算)。event adjacency dedup 保留
+- **删 `_anchor_triggers` 整条反向 substring 路径** — `_TOKEN_RE` / `_CJK_STOP` / `_query_tokens` / `_anchor_triggers` 全部移除；`entity_force_include` 不再被 `recall_fusion` 调用 (函数还在 `entity_recall.py` 但仅供 `bump_mention_counts` 路径，下一步走 R8)
+- **加 FTS5 across all anchor tables** — `marrow/storage.py` 新加 `memes_fts / milestones_fts / entities_fts` (trigram tokenizer, mirror `events_fts`)，body = 整行字段 TRIM 拼接 (memes: key+value+context · milestones: title+desc · entities: name+fact+aliases)；INSERT/DELETE/UPDATE triggers 同步；init_db 首次 backfill；legacy delete-with-body trigger 自动 migrate
+- **新 query 拆词** — `_fts_terms` 取 ASCII alnum ≥3 chars 整段 + CJK runs 拆 sliding 3-char windows；<3 chars 全丢 (OT / in / the / 鸭子 都不再进 query)。`_fts_query` 把 terms 串成 `"<t1>" OR "<t2>" OR ...` phrase OR
+- **3 张 anchor 表 candidate 函数重写** — `_milestone_candidates / _memes_candidates / _entity_candidates` 全部走 `<table>_fts MATCH` + bm25 normalize；旧 substring trigger / forward-token 路径删干净
+- **entity scoring 进入主 fusion 池** — `raw = w_bm25*bm25 + w_entities_vec*vec + _ENTITY_CARD_BIAS(0.30) + 0.1*log1p(mention_count)`；FTS bm25 是 hard topicality gate，stray 高 mc entity (Amber 787) 不再每个 query force-include
+- **Amber alias 清干净** — `entities.aliases` 从 `["天津","OT","Amber 姐"]` 精简到 `["Amber 姐"]`，天津 / OT 留在 fact 字段由 FTS 自然搜到 (天津 / OT 是出生地与职业，不是别名)
+- **测试** — 914 passed / 5 skipped；旧 `test_query_tokens_*` / `test_milestone_*` 重写成 FTS5 行为；`test_milestone_short_cjk_query_returns_nothing` 锁死 "<3 chars 不命中" 的 noise-floor
+- **实测对照** (之前噪音 vs 现在干净):
+  - query "...cache tier...caching 1h...cached" → memes#2 出现、Amber 不再霸榜、milestone#32-36 (Age 11-13 ... 26-27 的 noise 命中) 全消失
+  - query "Amber 在干嘛 OT shift" → entity#11 Amber score=1.27 正常排第 1 (FTS bm25 命中 "amber" + 真实的 Age milestone 含 "shift")
+- **遗留**:
+  - Amber `mention_count=787` 历史虚高 — 新代码下不再涨；是否回滚到 ~10-20 Lumi 决定
+  - `bump_mention_counts` (repo.py:268, 每次 INSERT event 触发) 仍用旧 substring + alias trigger 路径，同款 OT bug 但只影响 mc 数字本身不影响 recall 排序 → R8 跟进
+  - trigram tokenizer 对纯英文 noise query (`others caching cached`) 仍会 fuzz；混杂真实 token 的现实 prompt 不再受影响
 
 ---
 
@@ -214,6 +224,16 @@
   - `cache tier` (D1) + `caching 1h` (D2) + `cached` (D3) → 同 candidate 聚合，use_count=3、D3 满足窗口 → 入 memes
   - 同一术语一天内说 5 次 → 算 1 次
   - same-session 内连说 3 次 → 算 0 次
+
+### R8 · bump_mention_counts 改 FTS5 路径 (entity_force_include 整体退场)
+- **现状**: `marrow/repo.py:268` 每次 `archive_events` 调 `bump_mention_counts`，走 entity name+alias substring 反向命中 event.content；同款 OT 误命中 bug 仍在 — 当前只因新 alias `Occupational Therapist` 长度足 + 缺真实子串才没触发
+- **想要**:
+  - bump 走 entities_fts: 把 event.content 拆 `_fts_terms` → MATCH entities_fts → 命中的 entity mc +1
+  - 或反过来: entity.name + 真实 aliases (人话别名，不是事实字段) 跟 event tokens 整词比对
+- **顺手清**:
+  - `entity_recall.entity_force_include` 函数 + `test_recall_bug_entity_memes.py` 整体删 (recall 已不调用，留着只是 bump 间接借同套 substring 路径)
+  - Amber `mention_count=787` 回滚到合理基线 (估真实命中 ~10-20)
+- **优先级**: 中等 — 不影响 recall 排序，但 mc 不准污染 R7 in-place update 判断与未来 entity 加权
 
 ### R7 · entity / memes in-place UPDATE (旧 id 改字段，不堆新 row)
 - **现状**:

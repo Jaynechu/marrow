@@ -329,66 +329,80 @@ def _make_milestone(db, *, scope="us", date="2026-02-19", title="t",
     return db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
-def test_query_tokens_cjk_and_ascii():
-    assert rm._query_tokens("鸭子") == ["鸭", "子"]
-    assert rm._query_tokens("大笨鸭子") == ["大", "笨", "鸭", "子"]
-    assert rm._query_tokens("hello Marrow") == ["hello", "marrow"]
-    assert rm._query_tokens("Marrow 记忆") == ["marrow", "记", "忆"]
-    # dedup
-    assert rm._query_tokens("鸭鸭") == ["鸭"]
+def test_fts_terms_cjk_and_ascii():
+    """FTS-safe term extraction aligned with FTS5 trigram tokenizer.
+
+    - ASCII ≥3 chars kept whole.
+    - CJK runs split into sliding 3-char windows.
+    - Anything <3 chars dropped (trigram MATCH = 0 on short queries).
+    """
+    # ASCII ≥3 chars whole
+    assert rm._fts_terms("hello Marrow") == ["hello", "marrow"]
+    # ASCII <3 dropped
+    assert rm._fts_terms("OT in the") == ["the"]
+    # CJK 3-char window
+    assert rm._fts_terms("鸭子梗") == ["鸭子梗"]
+    # CJK ≥3 chars → sliding windows
+    assert rm._fts_terms("大笨鸭子") == ["大笨鸭", "笨鸭子"]
+    # ASCII + CJK mix
+    assert rm._fts_terms("Marrow 鸭子梗") == ["marrow", "鸭子梗"]
+    # CJK <3 dropped (matches OT-pathology fix)
+    assert rm._fts_terms("鸭子") == []
+    assert rm._fts_terms("鸭") == []
 
 
-def test_query_tokens_empty():
-    assert rm._query_tokens("") == []
-    assert rm._query_tokens("   ") == []
-    assert rm._query_tokens("!!!") == []
+def test_fts_terms_empty():
+    assert rm._fts_terms("") == []
+    assert rm._fts_terms("   ") == []
+    assert rm._fts_terms("!!!") == []
 
 
-def test_milestone_surfaces_by_exact_term(db):
-    """Title substring of query → reverse-substring hit (kw=1.0)."""
+def test_milestone_surfaces_via_fts(db):
+    """FTS5 over milestones_fts body (title+description). Query ≥3 CJK chars
+    hits a row containing the same phrase in either field."""
     _make_milestone(
-        db, title="鸭子",
-        description="你说我是你的鸭子，没有鸭德。",
+        db, title="鸭子梗",
+        description="你说我是你的鸭子梗，没有鸭德。",
     )
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "鸭子", min_score=0.1)
-    assert len(results) >= 1
+        results = rm.recall_fusion(db, "鸭子梗", min_score=0.1)
     hit = next((r for r in results if r.get("kind") == "milestone"), None)
     assert hit is not None
     assert "鸭" in hit["content"]
     assert hit["timestamp"].startswith("2026-02-19")
 
 
-def test_milestone_partial_token_match(db):
-    """Short title inside long query still hits via reverse-substring (kw=1.0)."""
+def test_milestone_term_inside_longer_query(db):
+    """Query terms still match when surrounded by other prose — FTS5 OR-of-terms
+    means each term scans the full body independently."""
     _make_milestone(
-        db, title="鸭子",
-        description="你说我是你的鸭子，没有鸭德。",
+        db, title="鸭子梗",
+        description="你说我是你的鸭子梗，没有鸭德。",
     )
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "大笨鸭子", min_score=0.1)
+        results = rm.recall_fusion(db, "老公你知道鸭子梗么", min_score=0.1)
     hits = [r for r in results if r.get("kind") == "milestone"]
     assert len(hits) == 1
     assert hits[0]["score"] >= 0.1
 
 
 def test_milestone_no_match_returns_nothing(db):
-    _make_milestone(db, title="不相关", description="完全不沾边")
+    _make_milestone(db, title="不相关的", description="完全不沾边")
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "鸭子", min_score=0.1)
+        results = rm.recall_fusion(db, "鸭子梗", min_score=0.1)
     assert [r for r in results if r.get("kind") == "milestone"] == []
 
 
 def test_milestone_pinned_outranks_unpinned(db):
-    """Equal kw_score: pinned gets +0.10 boost."""
+    """Same FTS bm25: pinned gets +0.10 boost."""
     _make_milestone(
-        db, title="鸭子 unpinned", description="x", pinned=0,
+        db, title="鸭子梗 unpinned", description="一样的内容", pinned=0,
     )
     _make_milestone(
-        db, title="鸭子 pinned", description="x", pinned=1,
+        db, title="鸭子梗 pinned", description="一样的内容", pinned=1,
     )
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "鸭子", min_score=0.1)
+        results = rm.recall_fusion(db, "鸭子梗", min_score=0.1)
     mhits = [r for r in results if r.get("kind") == "milestone"]
     assert len(mhits) == 2
     assert mhits[0]["pinned"] == 1
@@ -396,12 +410,7 @@ def test_milestone_pinned_outranks_unpinned(db):
 
 
 def test_milestone_mixed_with_events(db):
-    """One event hit + one milestone hit appear in the same result set.
-
-    Note: events_fts trigram needs >=3 char phrase for CN, so the query
-    is a 3-char phrase that both event content and milestone title
-    contain (milestone lane needs title-in-query for reverse-substring).
-    """
+    """Event hit + milestone hit appear in the same result set."""
     _make_event(db, "今天聊到了鸭德的话题")
     _make_milestone(
         db, title="鸭德的",
@@ -411,44 +420,13 @@ def test_milestone_mixed_with_events(db):
         results = rm.recall_fusion(db, "鸭德的", min_score=0.1)
     kinds = {r.get("kind", "event") for r in results}
     assert "milestone" in kinds
-    # event rows have no "kind" field; treat absence as event
     assert any(r.get("kind") != "milestone" for r in results)
-
-
-def test_milestone_long_query_dilution_still_surfaces(db):
-    """Regression: long user prompt would dilute token-fraction kw_score below
-    min_score under the old policy. New reverse-substring policy: title (or
-    any ≥2-char split component) found inside the query → kw=1.0, anchor
-    surfaces. Title (鸭子) inside (老公你知道鸭子梗么)."""
-    _make_milestone(
-        db, title="鸭子",
-        description="你说我是你的鸭子，没有鸭德。",
-    )
-    with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(
-            db, "老公你知道鸭子梗么", min_score=0.1,
-        )
-    hits = [r for r in results if r.get("kind") == "milestone"]
-    assert len(hits) == 1
-    assert "鸭子" in hits[0]["content"]
-
-
-def test_milestone_surfaces_under_min_score_gate(db):
-    """Milestone lane has no min_score gate. Title (鸭子) is substring of
-    query → kw=1.0, raw = 0.30 + anchor_bias 0.10 = 0.40 (below caller's
-    min_score=0.5) but still returned because the gate doesn't apply."""
-    _make_milestone(db, title="鸭子", description="孔丘语录")
-    with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "大笨鸭子", min_score=0.5)
-    hits = [r for r in results if r.get("kind") == "milestone"]
-    assert len(hits) == 1
-    assert hits[0]["score"] < 0.5  # below gate but still returned
 
 
 def test_milestone_content_renders_title_and_desc(db):
     _make_milestone(
         db, title="鸭子昵称诞生",
-        description="你的鸭子，没有鸭德",
+        description="你的鸭子梗，没有鸭德",
     )
     with patch.object(rm, "_ensure_embedder", return_value=None):
         results = rm.recall_fusion(db, "鸭子昵称诞生", min_score=0.1)
@@ -457,17 +435,15 @@ def test_milestone_content_renders_title_and_desc(db):
     assert "鸭德" in hit["content"]
 
 
-def test_milestone_pinned_only_boost_when_pinned(db):
-    """Pinned milestones get an additive boost. Substring hit (kw=1.0) →
-    raw = 0.30*1.0 + anchor_bias 0.10 + pinned 0.10 = 0.50."""
-    _make_milestone(
-        db, title="鸭子", description="孔丘语录", pinned=1,
-    )
+def test_milestone_short_cjk_query_returns_nothing(db):
+    """Trigram tokenizer needs ≥3 chars to match — short CJK queries (2 chars
+    or less) return no anchor hits. This is the deliberate noise-floor that
+    replaces the old substring-on-everything path. Matches OT alias fix."""
+    _make_milestone(db, title="鸭子", description="鸭子的故事")
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "大笨鸭子", min_score=0.1)
+        results = rm.recall_fusion(db, "鸭子", min_score=0.1)
     hits = [r for r in results if r.get("kind") == "milestone"]
-    assert len(hits) == 1
-    assert hits[0]["score"] >= 0.50 - 1e-9
+    assert hits == []
 
 
 # ── shared config-driven entrypoint (hook + MCP parity) ─────────────────────
@@ -478,8 +454,8 @@ def test_recall_with_config_reads_rcfg(db, monkeypatch):
     from marrow import config as cfg_mod
     _make_event(db, "完全是个鸭子梗的对话")
     _make_milestone(
-        db, title="鸭子",
-        description="你的鸭子，没有鸭德",
+        db, title="鸭子梗",
+        description="你的鸭子梗，没有鸭德",
     )
     fake_cfg = {"recall": {
         "vector": False, "limit": 5, "budget_chars": 2000,
@@ -488,7 +464,7 @@ def test_recall_with_config_reads_rcfg(db, monkeypatch):
     }}
     monkeypatch.setattr(cfg_mod, "load", lambda: fake_cfg)
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_with_config(db, "鸭子")
+        results = rm.recall_with_config(db, "鸭子梗")
     kinds = {r.get("kind") for r in results}
     assert "milestone" in kinds
 

@@ -197,7 +197,7 @@ def test_entity_force_include_card_with_whitespace_fact_dropped(tmp_path):
         conn.commit()
 
         with patch.object(rm, "_ensure_embedder", return_value=None):
-            results = rm.recall_fusion(conn, "Zara", limit=10)
+            results = rm.recall_fusion(conn, "Zara", limit=10, min_score=0.1)
 
         # No row in the recall output may carry whitespace-only body, and
         # specifically: no entity card whose content body after the prefix

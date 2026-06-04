@@ -230,6 +230,86 @@ CREATE TRIGGER IF NOT EXISTS events_au AFTER UPDATE ON events BEGIN
 END;
 """
 
+# FTS5 over the anchor tables (memes / milestones / entities). Standalone
+# (no content=); body = whole-row TRIM(col || ' ' || col || ...) so query
+# matches against the FULL row content, not just title/key. Trigram tokenizer
+# = same CJK behaviour as events_fts (≥3-char phrase for CN). Triggers keep
+# rows in sync; first-time backfill happens in init_db once the table exists.
+_FTS_EXT = """
+CREATE VIRTUAL TABLE IF NOT EXISTS memes_fts USING fts5(
+  body, tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS memes_ai AFTER INSERT ON memes BEGIN
+  INSERT INTO memes_fts(rowid, body) VALUES (new.id,
+    TRIM(COALESCE(new.key,'') || ' ' || COALESCE(new.value,'') || ' ' || COALESCE(new.context,''))
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS memes_ad AFTER DELETE ON memes BEGIN
+  DELETE FROM memes_fts WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS memes_au AFTER UPDATE ON memes BEGIN
+  DELETE FROM memes_fts WHERE rowid = old.id;
+  INSERT INTO memes_fts(rowid, body) VALUES (new.id,
+    TRIM(COALESCE(new.key,'') || ' ' || COALESCE(new.value,'') || ' ' || COALESCE(new.context,''))
+  );
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS milestones_fts USING fts5(
+  body, tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS milestones_ai AFTER INSERT ON milestones BEGIN
+  INSERT INTO milestones_fts(rowid, body) VALUES (new.id,
+    TRIM(COALESCE(new.title,'') || ' ' || COALESCE(new.description,''))
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS milestones_ad AFTER DELETE ON milestones BEGIN
+  DELETE FROM milestones_fts WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS milestones_au AFTER UPDATE ON milestones BEGIN
+  DELETE FROM milestones_fts WHERE rowid = old.id;
+  INSERT INTO milestones_fts(rowid, body) VALUES (new.id,
+    TRIM(COALESCE(new.title,'') || ' ' || COALESCE(new.description,''))
+  );
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
+  body, tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS entities_ai AFTER INSERT ON entities BEGIN
+  INSERT INTO entities_fts(rowid, body) VALUES (new.id,
+    TRIM(COALESCE(new.name,'') || ' ' || COALESCE(new.fact,'') || ' ' || COALESCE(new.aliases,''))
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS entities_ad AFTER DELETE ON entities BEGIN
+  DELETE FROM entities_fts WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS entities_au AFTER UPDATE ON entities BEGIN
+  DELETE FROM entities_fts WHERE rowid = old.id;
+  INSERT INTO entities_fts(rowid, body) VALUES (new.id,
+    TRIM(COALESCE(new.name,'') || ' ' || COALESCE(new.fact,'') || ' ' || COALESCE(new.aliases,''))
+  );
+END;
+"""
+
+
+_FTS_EXT_BACKFILL: dict[str, str] = {
+    "memes_fts": (
+        "INSERT INTO memes_fts(rowid, body) "
+        "SELECT id, TRIM(COALESCE(key,'') || ' ' || COALESCE(value,'') "
+        "             || ' ' || COALESCE(context,'')) FROM memes"
+    ),
+    "milestones_fts": (
+        "INSERT INTO milestones_fts(rowid, body) "
+        "SELECT id, TRIM(COALESCE(title,'') || ' ' || COALESCE(description,'')) "
+        "FROM milestones"
+    ),
+    "entities_fts": (
+        "INSERT INTO entities_fts(rowid, body) "
+        "SELECT id, TRIM(COALESCE(name,'') || ' ' || COALESCE(fact,'') "
+        "             || ' ' || COALESCE(aliases,'')) FROM entities"
+    ),
+}
+
 
 def _vec_table(dim: int, name: str = "events_vec") -> str:
     return (
@@ -295,6 +375,29 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         if need_fts_rebuild:
             conn.execute(
                 "INSERT INTO events_fts(events_fts) VALUES('rebuild')")
+        # Anchor-table FTS5 (memes / milestones / entities). Created here so
+        # the triggers attach before any subsequent writer fires. First-time
+        # backfill: if the fts row count = 0 but the base table is non-empty,
+        # bulk insert. Idempotent — re-run on existing populated FTS is a no-op.
+        # Migrate any pre-fix triggers that used the external-content `'delete'`
+        # command (illegal on standalone FTS5) before recreating.
+        for _tbl in ("memes", "milestones", "entities"):
+            _r = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name=?", (f"{_tbl}_ad",)
+            ).fetchone()
+            if _r and _r[0] and "VALUES('delete'" in _r[0]:
+                conn.execute(f"DROP TRIGGER IF EXISTS {_tbl}_ai")
+                conn.execute(f"DROP TRIGGER IF EXISTS {_tbl}_ad")
+                conn.execute(f"DROP TRIGGER IF EXISTS {_tbl}_au")
+        conn.executescript(_FTS_EXT)
+        for fts_name, sql in _FTS_EXT_BACKFILL.items():
+            base = fts_name.removesuffix("_fts")
+            fts_n = conn.execute(
+                f"SELECT count(*) FROM {fts_name}").fetchone()[0]
+            base_n = conn.execute(
+                f"SELECT count(*) FROM {base}").fetchone()[0]
+            if fts_n == 0 and base_n > 0:
+                conn.execute(sql)
         conn.executescript(_VIEWS)
         # Vector dim change (e.g. 384 placeholder -> 1024 bge-m3): vec0 has
         # no ALTER. Empty -> drop+rebuild (lossless). Non-empty -> leave the
