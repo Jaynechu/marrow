@@ -546,3 +546,90 @@ def test_reconcile_unchanged_is_inert(db, tmp_path):
     assert after == before
     # No backup files — unchanged md is fully inert.
     assert not list(Path(md.parent).glob("milestone.*.bak.md"))
+
+
+# ── memes reconcile ────────────────────────────────────────────────────────────
+
+
+def _seed_memes(conn) -> list[int]:
+    """Insert 3 memes rows, return their ids."""
+    ids = []
+    for i, (t, k) in enumerate([
+        ("paw", "大龙虾"), ("fact", "Plan tier"), ("meme", "rickroll")
+    ]):
+        cur = conn.execute(
+            "INSERT INTO memes(type,key,value) VALUES(?,?,?)", (t, k, f"v{i}")
+        )
+        ids.append(cur.lastrowid)
+    conn.commit()
+    return ids
+
+
+def _write_memes_md(md_path: Path, ids: list[int]) -> None:
+    """Write a minimal memes.md with anchored rows."""
+    lines = ["# Memes\n"]
+    for rid in ids:
+        lines.append(f"- row {rid} <!-- id:{rid} -->")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_reconcile_memes_noop_when_all_present(tmp_path):
+    p = str(tmp_path / "m.db")
+    conn = storage.init_db(p)
+    ids = _seed_memes(conn)
+    md = tmp_path / "memes.md"
+    _write_memes_md(md, ids)
+    rpt = reconcile.reconcile_memes(conn, md)
+    assert rpt.deleted == 0
+    remaining = conn.execute("SELECT COUNT(*) c FROM memes").fetchone()["c"]
+    assert remaining == 3
+    conn.close()
+
+
+def test_reconcile_memes_deletes_missing_anchor(tmp_path):
+    """Write 3 rows, remove one anchor from md — reconcile DELETEs that row."""
+    p = str(tmp_path / "m.db")
+    conn = storage.init_db(p)
+    ids = _seed_memes(conn)
+    md = tmp_path / "memes.md"
+    # Only include the first two ids in md — third row's anchor is gone.
+    _write_memes_md(md, ids[:2])
+    rpt = reconcile.reconcile_memes(conn, md)
+    assert rpt.deleted == 1
+    remaining_ids = {
+        r[0] for r in conn.execute("SELECT id FROM memes").fetchall()
+    }
+    assert ids[2] not in remaining_ids
+    assert ids[0] in remaining_ids and ids[1] in remaining_ids
+    # Audit log entry written.
+    audit = conn.execute(
+        "SELECT action FROM audit_log WHERE target_table='memes'"
+        " AND target_id=? LIMIT 1", (str(ids[2]),)
+    ).fetchone()
+    assert audit is not None and audit["action"] == "delete"
+    conn.close()
+
+
+def test_reconcile_memes_empty_md_guard(tmp_path):
+    """Empty md must NOT wipe the table (first-render / file-missing guard)."""
+    p = str(tmp_path / "m.db")
+    conn = storage.init_db(p)
+    ids = _seed_memes(conn)
+    md = tmp_path / "memes.md"
+    md.write_text("", encoding="utf-8")
+    rpt = reconcile.reconcile_memes(conn, md)
+    assert rpt.deleted == 0
+    remaining = conn.execute("SELECT COUNT(*) c FROM memes").fetchone()["c"]
+    assert remaining == 3
+    conn.close()
+
+
+def test_reconcile_memes_missing_file_noop(tmp_path):
+    """Missing md file is a no-op."""
+    p = str(tmp_path / "m.db")
+    conn = storage.init_db(p)
+    _seed_memes(conn)
+    md = tmp_path / "memes.md"  # does not exist
+    rpt = reconcile.reconcile_memes(conn, md)
+    assert rpt.deleted == 0
+    conn.close()

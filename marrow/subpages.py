@@ -25,7 +25,7 @@ from ._atomic import atomic_write as _atomic_write
 from .atlas import atlas_sweep_fs, reconcile_atlas, seed_atlas_from_roots
 from .inserter import InserterSpec, write_subpage_inserter
 from .md_index import MdIndex
-from .reconcile import reconcile_milestones
+from .reconcile import reconcile_milestones, reconcile_memes, reconcile_profile
 from .subpages_render import (
     render_cheatsheet,
     render_diary,
@@ -306,7 +306,8 @@ def _build_atlas_config(conn: sqlite3.Connection,
 _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = {
     "profile":    _flat_with_inserter(
         "profile", render_profile, "profile.md",
-        subpage_specs.build_profile_spec),
+        subpage_specs.build_profile_spec,
+        reconcile=reconcile_profile),
     "milestone":  _flat_with_inserter(
         "milestone", render_milestone, "milestone.md",
         subpage_specs.build_milestone_spec,
@@ -316,7 +317,8 @@ _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = 
         subpage_specs.build_diary_spec),
     "memes":      _flat_with_inserter(
         "memes", render_memes, "memes.md",
-        subpage_specs.build_memes_spec),
+        subpage_specs.build_memes_spec,
+        reconcile=reconcile_memes),
     "stickers":   _flat_with_inserter(
         "stickers", render_stickers, "stickers.md",
         subpage_specs.build_stickers_spec),

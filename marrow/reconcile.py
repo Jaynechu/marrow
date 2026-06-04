@@ -2,6 +2,8 @@
 
 Scope today:
 - milestone subpage (reconcile_milestones)
+- memes subpage (reconcile_memes) — anchor-scan delete
+- profile subpage (reconcile_profile) — anchor-scan soft-delete via superseded_by
 - dashboard `## Milestone candidate` rows with anchor buttons
   (reconcile_milestone_candidates) — ✅ pin · ❌ delete+tombstone · ✏️ edit
 - dashboard `## Tasks` block (reconcile_tasks) — tick/untick/archive
@@ -1226,6 +1228,91 @@ def reconcile_affect(conn: sqlite3.Connection,
                 conn, aid, "resolved", f"md-reconcile: {action}"
             )
             rpt.updated += 1
+    return rpt
+
+
+# ── inserter-subpage anchor-scan reconciles ───────────────────────────────────
+
+_ANCHOR_RE = re.compile(r"<!-- id:(\d+) -->")
+
+
+def _scan_anchored_ids(md_text: str) -> set[int]:
+    """Collect every numeric `<!-- id:N -->` anchor in the file."""
+    return {int(m.group(1)) for m in _ANCHOR_RE.finditer(md_text)}
+
+
+def reconcile_memes(conn: sqlite3.Connection,
+                    md_path: Path) -> ReconcileReport:
+    """Delete memes DB rows whose anchors are absent from memes.md.
+
+    Inserter writes `<!-- id:N -->` for every row. If Lumi removes a bullet
+    the anchor disappears; this reconcile DELETEs the row so recall can't
+    surface it. Guard: no deletes when md is empty/missing (avoids wiping
+    the table on first-render or file-gone).
+    stickers.meme_id is nullable with ON DELETE SET NULL — FK enforced via
+    PRAGMA foreign_keys=ON in storage.connect.
+    """
+    rpt = ReconcileReport()
+    md_path = Path(md_path)
+    if not md_path.exists():
+        return rpt
+    md_text = md_path.read_text(encoding="utf-8")
+    md_ids = _scan_anchored_ids(md_text)
+    if not md_ids:
+        return rpt  # empty file guard — don't wipe table
+    db_ids = {
+        r[0] for r in conn.execute("SELECT id FROM memes").fetchall()
+    }
+    to_delete = db_ids - md_ids
+    if not to_delete:
+        return rpt
+    with conn:
+        for rid in to_delete:
+            conn.execute("DELETE FROM memes WHERE id=?", (rid,))
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('memes', ?, 'delete', 'md-reconcile: removed from md')",
+                (str(rid),),
+            )
+            rpt.deleted += 1
+    return rpt
+
+
+def reconcile_profile(conn: sqlite3.Connection,
+                      md_path: Path) -> ReconcileReport:
+    """Soft-delete entity rows whose anchors are absent from profile.md.
+
+    entities uses superseded_by for soft-delete (active = superseded_by IS NULL).
+    When Lumi removes a bullet, set superseded_by = id (self-reference sentinel)
+    so the row is invisible to recall/inserter but not hard-deleted.
+    Guard: no changes when md is empty/missing.
+    """
+    rpt = ReconcileReport()
+    md_path = Path(md_path)
+    if not md_path.exists():
+        return rpt
+    md_text = md_path.read_text(encoding="utf-8")
+    md_ids = _scan_anchored_ids(md_text)
+    if not md_ids:
+        return rpt  # empty file guard
+    db_rows = conn.execute(
+        "SELECT id FROM entities WHERE superseded_by IS NULL"
+    ).fetchall()
+    to_retire = {r[0] for r in db_rows} - md_ids
+    if not to_retire:
+        return rpt
+    with conn:
+        for rid in to_retire:
+            conn.execute(
+                "UPDATE entities SET superseded_by=? WHERE id=?", (rid, rid)
+            )
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('entities', ?, 'soft_delete',"
+                " 'md-reconcile: removed from profile')",
+                (str(rid),),
+            )
+            rpt.deleted += 1
     return rpt
 
 
