@@ -156,7 +156,24 @@ def test_memes_paw_freq_gate_passes_high_count(db):
     assert row["type"] == "paw" and row["pinned"] == 1
 
 
-def test_memes_fact_bypasses_freq_gate(db):
+def test_memes_fact_requires_freq_gate(db):
+    """type=fact now gated — 0 events → dropped."""
+    raw = (
+        "===MEMES_CAND===\n"
+        "[{\"key\":\"Plan tier\",\"type\":\"fact\","
+        " \"value\":\"Max 5x\",\"context\":\"\","
+        " \"pinned\":0,\"conf\":0.9}]\n"
+        "===END===\n"
+    )
+    n = candidates.write_memes_cand(db, raw, date="2026-05-16")
+    assert n == 0
+    assert db.execute(
+        "SELECT 1 FROM memes WHERE key='Plan tier'").fetchone() is None
+
+
+def test_memes_fact_passes_freq_gate_with_3_days(db):
+    """type=fact passes when key seen on ≥3 distinct days in 14d window."""
+    _seed_events_with_key(db, "Plan tier", 4, "2026-05-16")
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\":\"Plan tier\",\"type\":\"fact\","
@@ -168,7 +185,23 @@ def test_memes_fact_bypasses_freq_gate(db):
     assert n == 1
 
 
-def test_memes_others_bypasses_freq_gate(db):
+def test_memes_others_requires_freq_gate(db):
+    """type=others now gated — 0 events → dropped."""
+    raw = (
+        "===MEMES_CAND===\n"
+        "[{\"key\":\"some-edge\",\"type\":\"others\","
+        " \"value\":\"x\",\"context\":\"\",\"pinned\":0,\"conf\":0.8}]\n"
+        "===END===\n"
+    )
+    n = candidates.write_memes_cand(db, raw, date="2026-05-16")
+    assert n == 0
+    assert db.execute(
+        "SELECT 1 FROM memes WHERE key='some-edge'").fetchone() is None
+
+
+def test_memes_others_passes_freq_gate_with_3_days(db):
+    """type=others passes when key seen on ≥3 distinct days in 14d window."""
+    _seed_events_with_key(db, "some-edge", 4, "2026-05-16")
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\":\"some-edge\",\"type\":\"others\","
@@ -197,6 +230,7 @@ def test_memes_paw_auto_pinned(db):
 
 
 def test_memes_fact_auto_pinned(db):
+    _seed_events_with_key(db, "keep14", 4, "2026-05-16")
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\":\"keep14\",\"type\":\"fact\","
@@ -208,7 +242,7 @@ def test_memes_fact_auto_pinned(db):
     row = db.execute(
         "SELECT pinned FROM memes WHERE key='keep14'"
     ).fetchone()
-    assert row["pinned"] == 1
+    assert row is not None and row["pinned"] == 1
 
 
 def test_memes_meme_default_unpinned(db):
@@ -227,6 +261,7 @@ def test_memes_meme_default_unpinned(db):
 
 
 def test_memes_others_default_unpinned(db):
+    _seed_events_with_key(db, "edge-kind", 4, "2026-05-16")
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\":\"edge-kind\",\"type\":\"others\","
@@ -237,7 +272,7 @@ def test_memes_others_default_unpinned(db):
     row = db.execute(
         "SELECT pinned FROM memes WHERE key='edge-kind'"
     ).fetchone()
-    assert row["pinned"] == 0
+    assert row is not None and row["pinned"] == 0
 
 
 # ── daily includes structured affect block ──────────────────────────────────
@@ -271,12 +306,12 @@ def test_memes_gate_short_cjk_key_uses_like_not_fts(db):
     assert n == 1
 
 
-def test_memes_gate_excludes_events_older_than_7d(db):
-    """Event 8 days before ref_date must NOT count toward the gate."""
+def test_memes_gate_excludes_events_older_than_14d(db):
+    """Event 15 days before ref_date must NOT count toward the gate."""
     base = dt.date.fromisoformat("2026-05-16")
-    # 4 hits, all 8 days before the ref_date → all out of window.
+    # 4 hits, all 15+ days before the ref_date → all out of window.
     for i in range(4):
-        ts = (base - dt.timedelta(days=8 + i)).isoformat() + "T10:00:00Z"
+        ts = (base - dt.timedelta(days=15 + i)).isoformat() + "T10:00:00Z"
         _ev(db, f"old{i}", ts, "user", f"random oldmeme tail {i}")
     db.commit()
     raw = (

@@ -22,9 +22,9 @@ _MILESTONE_SCOPES = {"me", "us"}
 #   others — catch-all reserved slot
 _MEMES_TYPES = {"paw", "meme", "news", "event", "fact", "others"}
 
-# Types subject to the 7d frequency gate (≥3 distinct event hits or drop).
-# fact/others are setup config / catch-all — direct insert, no repetition needed.
-_MEMES_FREQ_GATED = {"paw", "meme", "news", "event"}
+# Types subject to the 14d frequency gate (≥3 distinct event days or drop).
+# All six types gated — low-frequency mentions belong in recall, not memes.
+_MEMES_FREQ_GATED = {"paw", "meme", "news", "event", "fact", "others"}
 
 # Types auto-pinned=1 regardless of LLM-emitted flag.
 _MEMES_AUTO_PINNED = {"paw", "fact"}
@@ -272,19 +272,19 @@ def write_milestone_cand(conn, raw: str, date: str,
     return n
 
 
-def _events_like_count_7d(conn, key: str, ref_date: str | None) -> int:
+def _events_like_count_14d(conn, key: str, ref_date: str | None) -> int:
     """Count distinct CALENDAR DAYS on which an event's content LIKE '%key%'
-    over the 7d window ending at ref_date (or now if None). LIKE not FTS —
+    over the 14d window ending at ref_date (or now if None). LIKE not FTS —
     trigram tokenizer silently drops <3-char CJK keys (野鸡 etc.). Distinct
     days, not distinct events: same-day repetition does not count toward the
-    3-in-7d gate.
+    3-in-14d gate.
     """
     pat = "%" + key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     if ref_date:
         sql = (
             "SELECT COUNT(DISTINCT date(timestamp)) FROM events "
             "WHERE content LIKE ? ESCAPE '\\' "
-            "AND timestamp >= datetime(?, '-7 days') "
+            "AND timestamp >= datetime(?, '-14 days') "
             "AND timestamp < datetime(?, '+1 day')"
         )
         params = (pat, ref_date, ref_date)
@@ -292,7 +292,7 @@ def _events_like_count_7d(conn, key: str, ref_date: str | None) -> int:
         sql = (
             "SELECT COUNT(DISTINCT date(timestamp)) FROM events "
             "WHERE content LIKE ? ESCAPE '\\' "
-            "AND timestamp >= datetime('now', '-7 days')"
+            "AND timestamp >= datetime('now', '-14 days')"
         )
         params = (pat,)
     try:
@@ -357,9 +357,9 @@ def write_memes_cand(conn, raw: str, source: str = "daily",
     - Persistent-reject fast-skip (memes_reject_log SUM(count) ≥ N): drop
       the candidate before any further work — protects sonnet tokens from
       re-extracting a known dup next round.
-    - 7d events_fts frequency gate applied to meme/news/event only — key
-      must appear ≥3 times in events over the 7d window ending at `date`
-      (or now). paw/fact/others bypass the gate.
+    - 14d events_fts frequency gate applied to all six types — key
+      must appear on ≥3 distinct days in events over the 14d window ending
+      at `date` (or now).
     - Dedup against milestones.title / entities_live.name+aliases (exact
       case-insensitive) and cosine ≥ threshold against active memes.key /
       milestones.title / entities_live.name (bge-m3). Hits → reject + log.
@@ -424,7 +424,7 @@ def write_memes_cand(conn, raw: str, source: str = "daily",
         # New row path. Frequency gate first (cheap), then dedup (string +
         # cosine). freq_gate rejects are time-relative — NOT logged.
         if vtype in _MEMES_FREQ_GATED:
-            if _events_like_count_7d(conn, key, date) < 3:
+            if _events_like_count_14d(conn, key, date) < 3:
                 continue
         # Exact-string dedup against milestones / entities (incl. aliases).
         reason = memes_dedup.string_dup_reason(conn, key)

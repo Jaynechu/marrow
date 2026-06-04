@@ -228,12 +228,28 @@ def test_run_day_extracts_three_candidate_blocks(db):
     assert "milestone=1" in audit["summary"] and "memes=1" in audit["summary"]
 
 
+def _seed_key_events(conn, key: str, ref_date: str, count: int = 4) -> None:
+    """Seed `count` events containing `key` on distinct days within 14d window."""
+    import datetime as _dt
+    base = _dt.date.fromisoformat(ref_date)
+    for i in range(count):
+        ts = (base - _dt.timedelta(days=i % 13)).isoformat() + "T08:00:00Z"
+        conn.execute(
+            "INSERT INTO events(session_id,timestamp,role,content)"
+            " VALUES(?,?,?,?)",
+            (f"seed_{key}_{i}", ts, "user", f"mention of {key} today {i}"),
+        )
+    conn.commit()
+
+
 def test_run_day_memes_anchor_forces_pinned(db):
     """LLM emits pinned=0 on an anchor key → writer forces pinned=1.
     Using type=others so the anchor list is the sole pinning trigger
     (paw/fact would auto-pin regardless and obscure the assertion).
+    Requires 14d freq gate to pass — seed events containing the key.
     """
     p, conn = db
+    _seed_key_events(conn, "鸭子", "2026-05-16")
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\": \"鸭子\", \"type\": \"others\","
@@ -250,8 +266,11 @@ def test_run_day_memes_anchor_forces_pinned(db):
 
 
 def test_run_day_memes_fact_type_forces_pinned(db):
-    """type='fact' is always pinned regardless of LLM flag / anchor list."""
+    """type='fact' is always pinned regardless of LLM flag / anchor list.
+    Requires 14d freq gate to pass — seed events containing the key.
+    """
     p, conn = db
+    _seed_key_events(conn, "sec_anchor", "2026-05-16")
     raw = (
         "===MEMES_CAND===\n"
         "[{\"key\": \"sec_anchor\", \"type\": \"fact\","
