@@ -35,23 +35,25 @@ Common rules
 - Language: follow source (CN / Eng / Mix); do not translate.
 - conf: 0.0 to 1.0, certainty this is a real signal vs casual mention. \
 Per-block gates — entity 0.8 / milestone 0.85 / memes 0.7.
+- aliases: list only the literal jumps bge-m3 cannot bridge — leave [] if none.
+  - Include: abbr (BBB ↔ 毕冰冰), language pairs (南南 ↔ Allen), nicknames (南南 ↔ 姜南)
+  - Exclude: common public acronyms (HTN, BJJ, GAMSAT) — bge-m3 handles them.
 
 ─────────── ENTITY_CAND ───────────
 People / preferences / places mentioned with clear personal stake.
 - kind: one of person / pref / place
-  - person: a real person or pet the user may know — skip random unknown \
-strangers; exclude the user and assistant themselves (念念 / Lumi / 屿忱 / 鸭子 / 机子).
-  - pref: user's personal preference, lifestyle, or habit.
-  - place: somewhere with personal stake — skip pure news/chat places \
-the user has no tie to (e.g. mentions 乌克兰 in passing).
-- name: canonical short string (e.g. Bendigo, 张远).
-- note: optional short fact (role, location). May be "".
-- aliases: list only the literal jumps bge-m3 cannot bridge — leave [] if none.
-  Include:
-  - personal/small-circle abbreviations (BBB, 绿茶豹)
-  - cross-language name pairs (南南 ↔ Allen, Bendigo ↔ 本迪戈)
-  - CJK ≤2-char short names (南南, 铁锅)
-  Skip: common public acronyms (HTN, BJJ, GAMSAT) — bge-m3 handles them.
+1. Person: a real person or pet the user may know — skip ;
+  - Exclude:
+    - Random unknown strangers
+    - The user and assistant themselves (念念 / Lumi / 屿忱 / 鸭子 / 机子).
+    - Belong to Memes: e.g. 大龙虾, 铁锅
+  - name: canonical short string (e.g. Bendigo, 张远).
+  - note: optional short fact (role, location). May be "".
+2. pref: user's personal preference, lifestyle, or habit.
+    - Include: 兴趣爱好，日常生活 e.g. 音乐，运动，穿搭，审美...
+    - Exclude: study/workflow/interaction preference e.g. setting/config/coding
+3. Place: somewhere with personal stake — skip pure news/chat places \
+  - Skip places the user has no tie to (e.g. mentions 乌克兰 in passing).
 
 ─────────── MILESTONE_CAND ───────────
 Life-shaping events: graduation, breakup, job change, major move, family \
@@ -68,6 +70,13 @@ to fill title + description.
 
 ─────────── MEMES_CAND ───────────
 Recurring tokens worth keeping. Six types:
+- fact — Lumi's personal config/setting, devices, assets, subscriptions..
+  - e.g. Laptop: Macbook Pro M4pro 48GB 1TB; Current claude plan: Max 5x ...
+  - Exclude personal preference (belong to entities) or study/workflow/interaction preference \
+    Skip all coding configs!
+Lumi's OWN persistent configuration / setup fact (subscription \
+tier, tool quirk, personal protocol). NOT general world facts, NOT \
+anyone else's facts.
 - paw — Lumi's own / dyad-exclusive inside jokes (绿茶豹, 大笨鸭子). \
 Personal invention only.
 - meme — public / network meme (not Lumi's invention).
@@ -77,9 +86,6 @@ Personal invention only.
 - news — topical public news.
 - event — PUBLIC events only (earthquake, election, public concert). \
 Lumi's personal events go to MILESTONE_CAND or skip.
-- fact — Lumi's OWN persistent configuration / setup fact (subscription \
-tier, tool quirk, personal protocol). NOT general world facts, NOT \
-anyone else's facts.
 - others — catch-all reserved slot for edge cases that don't fit above.
 
 Exclude rules
@@ -90,7 +96,7 @@ unless that person themselves has become a sustained recurring meme.
 
 Fields
 - key: short term / phrase / name as used.
-- type: one of paw / meme / news / event / fact / others.
+- type: one of fact / paw / meme / news / event / others.
 - value: what it means or refers to.
 - context: short example of how it was used.
 - pinned: 0 or 1. Hint only — paw/fact are always force-pinned by the \
