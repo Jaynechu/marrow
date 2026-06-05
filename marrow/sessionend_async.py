@@ -365,6 +365,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             i += 1
 
+    try:
+        import os as _os_probe
+        _probe_path = _Path("~/Library/Logs/marrow-sessionend-probe.log").expanduser()
+        _probe_path.parent.mkdir(parents=True, exist_ok=True)
+        with _probe_path.open("a") as _pf:
+            _pf.write(
+                f"{_dt.datetime.now().isoformat()} PROBE argv={args!r} sid={sid!r} "
+                f"MARROW_BRIDGE={_os_probe.environ.get('MARROW_BRIDGE')!r}\n"
+            )
+    except Exception:
+        pass
+
     if log_path:
         _atexit.register(_cleanup_empty_log, _Path(log_path))
 
