@@ -57,12 +57,30 @@ def sample_prompts(conn: sqlite3.Connection) -> list[dict]:
         "ORDER BY RANDOM() LIMIT 40"
     ).fetchall()
 
+    JUNK_PREFIXES = (
+        "<local-command-stdout>", "<command-name>", "<parameter>", "<function",
+        "<!-", "<system-", "<result>",
+    )
+
+    def _is_junk(text: str) -> bool:
+        t = (text or "").strip()
+        if len(t) < 15:
+            return True
+        if t.startswith(tuple(JUNK_PREFIXES)):
+            return True
+        if t.startswith("/") and len(t) < 30:  # bare slash commands
+            return True
+        return False
+
     out = []
     for strat, rows in [("recent", recent), ("mid", mid), ("old", old)]:
         for r in rows:
+            text = (r["content"] or "")[:500]
+            if _is_junk(text):
+                continue
             out.append({
                 "event_id": r["id"],
-                "prompt": (r["content"] or "")[:500],
+                "prompt": text,
                 "cwd": r["cwd"] or "/Users/Gabrielle/CC-Lab/marrow",
                 "timestamp": r["timestamp"] or "",
                 "stratum": strat,

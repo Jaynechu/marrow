@@ -449,21 +449,25 @@ def _is_dormant(importance: int | None, age_days: float) -> bool:
 
 # ── cross-table vec lane lookups ──────────────────────────────────────────────
 
-# Minimum cosine similarity for a vec-only (no keyword match) row to surface.
-# Stops bge-m3 noise (~0.25-0.35 sim on unrelated CN/EN queries) from polluting
-# the candidate pool.
-_VEC_ONLY_FLOOR = 0.40
+# Minimum similarity for a vec-only (no keyword match) row to surface.
+# Under (2-d)/2 normalization, orthogonal pairs (dist≈1) score 0.5, so the
+# floor must be set above 0.5 to reject "barely-related" noise. Empirical:
+# unrelated CN/EN entities cluster around 0.44 sim; weakly-related around
+# 0.50-0.55; clearly-related ≥ 0.60. 0.55 is the cleanest gate.
+_VEC_ONLY_FLOOR = 0.55
 
 
 def _vec_score_map(
     conn: sqlite3.Connection, sql: str, qblob: bytes, k: int
 ) -> dict[int, float]:
-    """Execute sql(qblob, k), return {id: 1-distance} score map."""
+    """Execute sql(qblob, k), return {id: similarity} score map.
+    sqlite-vec cosine distance ∈ [0, 2]; normalize to similarity ∈ [0, 1]
+    as (2 - dist) / 2 so orthogonal pairs (dist=1) score 0.5, not 0."""
     try:
         rows = conn.execute(sql, (qblob, k)).fetchall()
     except sqlite3.Error:
         return {}
-    return {r["id"]: max(0.0, 1.0 - r["distance"]) for r in rows}
+    return {r["id"]: max(0.0, (2.0 - r["distance"]) / 2.0) for r in rows}
 
 
 def _vec_cards(
@@ -478,7 +482,7 @@ def _vec_cards(
     defs = defaults or {}
     out: list[dict] = []
     for r in rows:
-        vs = max(0.0, 1.0 - r["distance"])
+        vs = max(0.0, (2.0 - r["distance"]) / 2.0)
         card = {col: (r[col] if r[col] is not None else defs.get(col, "")) for col in r.keys() if col != "distance"}
         card["vec_score"] = vs
         out.append(card)
@@ -567,7 +571,7 @@ _MILESTONE_PINNED_BOOST = 0.10
 _ANCHOR_BIAS = 0.10
 # Entity card bonus: keeps the identity sheet ahead of bare event hits when
 # the entity is genuinely topical (FTS bm25 already gates topicality).
-_ENTITY_CARD_BIAS = 0.30
+_ENTITY_CARD_BIAS = 0.05
 
 # cwd → recall bucket mapping. Same-bucket events get +same_boost, known
 # cross-bucket events take -diff_penalty (soft cut, still possible to win
@@ -894,12 +898,13 @@ def recall_fusion(
             "vec": 0.0, "fts_hit": True,
         }
 
-    # Vec scores: distance is cosine distance (0=identical, 1=orthogonal)
+    # Vec scores: distance is cosine distance ∈ [0, 2]; normalize to [0, 1]
+    # as (2 - d) / 2 — orthogonal (dist=1) → 0.5, opposite (dist=2) → 0.
     if vec_available:
         vec_dists = [r["distance"] for r in vec_rows]
         for i, r in enumerate(vec_rows):
             eid = r["id"]
-            vec_score = max(0.0, 1.0 - vec_dists[i])
+            vec_score = max(0.0, (2.0 - vec_dists[i]) / 2.0)
             if eid in candidates:
                 candidates[eid]["vec"] = vec_score
             else:
@@ -1196,22 +1201,27 @@ def recall_fusion(
             w_bm25 * ec["bm25"]
             + w_entities_vec * ec.get("vec", 0.0)
             + _ENTITY_CARD_BIAS
-            + 0.1 * math.log1p(ec.get("mention_count", 0))
+            + min(0.05, 0.02 * math.log1p(ec.get("mention_count", 0)))
         )
         scored.append((raw, {**ec, "score": raw}))
 
+    # ── unified min_score gate ──────────────────────────────────────────────
+    # All lanes (events / anchors / diary / tasks) must clear the same floor.
+    # Without this, anchor lanes (milestone/memes/diary/tasks/entity) bypass
+    # the gate entirely and surface unrelated rows on every query.
+    scored = [(s, r) for s, r in scored if s >= min_score]
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # ── pick top-N by score (no per-kind cap / reservation) ─────────────────
-    # All tables and events compete on raw score; `limit` is the only budget.
-    # Event adjacency dedup stays: hook attaches ±1 same-session context per
-    # event hit, so neighbouring event ids (diff ≤ 1, same session) would
-    # surface twice. Keep the highest-scored of each adjacent run.
-    scored.sort(key=lambda x: x[0], reverse=True)
+    # ── pick top-N by raw score (no per-kind reservation) ────────────────────
+    # All lanes compete on raw score; min_score gate already excluded noise.
+    # Event adjacency dedup: hook attaches ±1 same-session context per event
+    # hit, so neighbouring event ids (diff ≤ 1, same session) would surface
+    # twice. Keep the highest-scored of each adjacent run.
     picks: list = []
     chosen_event_ids: dict[str, list[int]] = {}
     for s, r in scored:
-        if r.get("kind") in (None, "event"):
+        kind = r.get("kind") or "event"
+        if kind not in ("entity", "milestone", "memes", "diary", "task"):
             sid = r.get("session_id")
             rid = r.get("id")
             if sid and rid:
