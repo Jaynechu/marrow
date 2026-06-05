@@ -299,6 +299,88 @@ def test_diary_empty_md_guard(tmp_path):
     assert count == 1
 
 
+# ── md-mtime gate: rows newer than md mtime are spared from DELETE ───────────
+
+def test_diary_spares_db_row_inserted_after_md_mtime(tmp_path):
+    """daily.py race: row inserted AFTER md was last rendered must not be
+    swept by the reconcile DELETE pass — inserter renders it on same refresh.
+    Regression for 2026-06-04 silent-delete.
+    """
+    import os
+    import time as _time
+
+    db_path = _db(tmp_path)
+    conn = _conn(db_path)
+    with conn:
+        conn.execute(
+            "INSERT INTO diary(date,content) VALUES('2026-05-01','old')"
+        )
+
+    # md rendered yesterday — only contains 2026-05-01.
+    md = _make_diary_md(tmp_path, [
+        {"date": "2026-05-01", "content": "old"},
+    ])
+    # Backdate md mtime so the new INSERT below is unambiguously newer.
+    old_t = _time.time() - 3600
+    os.utime(md, (old_t, old_t))
+
+    # daily.py inserts a fresh row AFTER md was rendered.
+    with conn:
+        conn.execute(
+            "INSERT INTO diary(date,content,updated_at) "
+            "VALUES('2026-05-02','fresh',"
+            "strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+        )
+
+    rpt = reconcile_diary(conn, md)
+    remaining = {r[0] for r in conn.execute("SELECT date FROM diary").fetchall()}
+    conn.close()
+
+    # The fresh row must survive — its absence from md is expected.
+    assert rpt.deleted == 0
+    assert "2026-05-02" in remaining
+    assert "2026-05-01" in remaining
+
+
+def test_memes_spares_row_inserted_after_md_mtime(tmp_path):
+    """Same race-spare for inserter-pair memes/stickers/wallet/goose/profile."""
+    import os
+    import time as _time
+
+    db_path = _db(tmp_path)
+    conn = _conn(db_path)
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO memes(type,key) VALUES('paw','old')"
+        )
+        old_id = cur.lastrowid
+
+    # md rendered with only the old row.
+    md = tmp_path / "memes.md"
+    md.write_text(
+        f"- [paw] **old** <!-- id:{old_id} -->\n", encoding="utf-8"
+    )
+    old_t = _time.time() - 3600
+    os.utime(md, (old_t, old_t))
+
+    # Fresh row inserted after md mtime — must survive reconcile.
+    # memes table has created_at (no updated_at); gate falls back to it.
+    with conn:
+        cur2 = conn.execute(
+            "INSERT INTO memes(type,key,created_at) VALUES('fact','fresh',"
+            " strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
+        )
+        fresh_id = cur2.lastrowid
+
+    rpt = reconcile_memes(conn, md)
+    remaining = {r[0] for r in conn.execute("SELECT id FROM memes").fetchall()}
+    conn.close()
+
+    assert rpt.deleted == 0
+    assert fresh_id in remaining
+    assert old_id in remaining
+
+
 # ── milestone: existing reconcile already handles free-text edits ─────────────
 
 def test_milestone_reconcile_updates_title_and_description(tmp_path):

@@ -58,7 +58,11 @@ def reconcile_inserter_sync(
 
     Pass 1 (UPDATE): for each `<!-- id:N -->` line, call spec.parse_row;
     compare parsed editable_cols against DB row; UPDATE on diff.
-    Pass 2 (DELETE/soft-delete): DB ids absent from md → remove.
+    Pass 2 (DELETE/soft-delete): DB ids absent from md → remove. Rows whose
+    `updated_at` post-dates the md snapshot are spared — they were written
+    after md was last rendered (e.g. daily.py insert in the same refresh
+    pass) and absence from md is expected, not a user deletion. Mirrors the
+    md-mtime gating used in reconcile_alerts / reconcile_affect.
 
     Guards:
     - md absent or no anchors → return empty rpt (never wipe table).
@@ -72,6 +76,14 @@ def reconcile_inserter_sync(
     md_ids = _scan_anchored_ids(md_text)
     if not md_ids:
         return rpt  # empty-file guard
+
+    md_mtime_iso: str | None = None
+    try:
+        md_mtime_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(md_path.stat().st_mtime)
+        )
+    except OSError:
+        pass
 
     # ── pass 1: UPDATE editable fields ────────────────────────────────────
     if spec.parse_row is not None:
@@ -155,18 +167,43 @@ def reconcile_inserter_sync(
                         rpt.updated += 1
 
     # ── pass 2: DELETE rows absent from md ────────────────────────────────
+    # md-mtime gate: rows whose updated_at (or created_at if no updated_at)
+    # post-dates the md snapshot were inserted after the file was last
+    # rendered (typical: daily.py insert then write_all_subpages in one
+    # pass). Skip them — inserter will write them to md on the same refresh
+    # round. Mirrors reconcile_alerts / reconcile_affect mtime gating.
+    try:
+        cols = {
+            r[1] for r in conn.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
+        }
+    except sqlite3.Error:
+        cols = set()
+    gate_col = "updated_at" if "updated_at" in cols else (
+        "created_at" if "created_at" in cols else None
+    )
+    gate_sql = ""
+    gate_params: list = []
+    if md_mtime_iso and gate_col:
+        gate_sql = f" AND ({gate_col} IS NULL OR {gate_col} <= ?)"
+        gate_params = [md_mtime_iso]
+
     try:
         if soft_delete:
             db_active = {
                 r[0] for r in conn.execute(
                     f"SELECT {block_id_col} FROM {table}"
-                    f" WHERE superseded_by IS NULL"
+                    f" WHERE superseded_by IS NULL" + gate_sql,
+                    gate_params,
                 ).fetchall()
             }
         else:
             db_active = {
                 r[0] for r in conn.execute(
                     f"SELECT {block_id_col} FROM {table}"
+                    + (f" WHERE 1=1{gate_sql}" if gate_sql else ""),
+                    gate_params,
                 ).fetchall()
             }
     except sqlite3.Error:
@@ -229,12 +266,24 @@ def reconcile_diary(conn: sqlite3.Connection,
     Diary blocks are multi-line (#### heading / anchor / body), so we use
     a block-level scanner rather than the single-line reconcile_inserter_sync.
     The anchor line is `<!-- id:YYYY-MM-DD -->` (date string, not numeric id).
+
+    DELETE pass gates by md mtime: rows whose `updated_at` post-dates the
+    md snapshot are spared (daily.py writes a fresh diary row immediately
+    before write_all_subpages — the inserter renders it on the same pass).
     """
     rpt = ReconcileReport()
     md_path = Path(md_path)
     if not md_path.exists():
         return rpt
     md_text = md_path.read_text(encoding="utf-8")
+
+    md_mtime_iso: str | None = None
+    try:
+        md_mtime_iso = time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(md_path.stat().st_mtime)
+        )
+    except OSError:
+        pass
 
     # Collect all date anchors present in md.
     _DATE_ANCHOR_RE = re.compile(r"<!-- id:(\d{4}-\d{2}-\d{2}) -->")
@@ -305,11 +354,23 @@ def reconcile_diary(conn: sqlite3.Connection,
                        f"md-reconcile: content edit {date}")
                 rpt.updated += 1
 
-    # Delete pass: DB dates absent from md.
+    # Delete pass: DB dates absent from md. md-mtime gate spares rows
+    # written after the md snapshot (daily.py same-pass insert).
     try:
-        all_db_dates = {
-            r[0] for r in conn.execute("SELECT date FROM diary").fetchall()
-        }
+        if md_mtime_iso:
+            all_db_dates = {
+                r[0] for r in conn.execute(
+                    "SELECT date FROM diary"
+                    " WHERE updated_at IS NULL OR updated_at <= ?",
+                    (md_mtime_iso,),
+                ).fetchall()
+            }
+        else:
+            all_db_dates = {
+                r[0] for r in conn.execute(
+                    "SELECT date FROM diary"
+                ).fetchall()
+            }
     except sqlite3.Error:
         return rpt
 
