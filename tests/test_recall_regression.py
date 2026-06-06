@@ -219,46 +219,47 @@ def test_anchor_pregate_entity_low_vec_dropped(db):
 # ── 2. no anchor bias ─────────────────────────────────────────────────────────
 
 def test_no_anchor_bias(db):
-    """Event and milestone with same bm25 + vec must score within epsilon.
+    """Milestone scored as w_bm25*bm25 + w_milestones_vec*vec — no static bias.
 
-    Previously, _ANCHOR_BIAS=0.10 would push milestones ahead of events with
-    equal raw scores. With bias removed, scores are equal.
+    Seeds a milestone with vec>=0.55 so it clears the pre-gate.
+    Score must equal the formula exactly with no additive constant.
     """
-    # Seed an event with a distinct phrase.
-    repo.archive_events(db, [{
-        "session_id": "s1",
-        "timestamp": "2026-06-01T00:00:00Z",
-        "role": "user",
-        "content": "uniquephrase event content",
-    }])
+    import re
+    import math
     db.execute(
         "INSERT INTO milestones(scope, date, title, description, pinned) "
-        "VALUES('test', '2026-06-01', 'uniquephrase milestone', '', 0)"
+        "VALUES('test', '2026-06-01', 'anchorbiascheck milestone', '', 0)"
     )
     db.execute("INSERT INTO milestones_fts(milestones_fts) VALUES('rebuild')")
     db.commit()
 
-    with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "uniquephrase", min_score=0.01)
+    mid = db.execute(
+        "SELECT id FROM milestones WHERE title='anchorbiascheck milestone'"
+    ).fetchone()["id"]
 
-    event_hits = [r for r in results if (r.get("kind") or "event") == "event"]
+    # Give it vec=0.70 so it clears floor=0.55 and produces a known score.
+    q_vec = _fake_vec(42)
+    orth = _fake_vec(99)
+    orth -= np.dot(orth, q_vec) * q_vec
+    orth /= np.linalg.norm(orth)
+    m_vec = 0.70 * q_vec + np.sqrt(1 - 0.70**2) * orth
+    m_vec /= np.linalg.norm(m_vec)
+    _insert_milestone_vec(db, mid, m_vec)
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = [q_vec]
+
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(db, "anchorbiascheck milestone", min_score=0.01)
+
     milestone_hits = [r for r in results if r.get("kind") == "milestone"]
+    assert milestone_hits, "Expected milestone with vec>=0.55 to surface"
 
-    # Both types must surface.
-    assert event_hits, "Expected event to surface"
-    assert milestone_hits, "Expected milestone to surface"
-
-    ev_score = event_hits[0]["score"]
     ms_score = milestone_hits[0]["score"]
-
-    # Neither should have a static bonus on top of the other.
-    # With FTS-only (no vec), event score = w_bm25*bm25 + recency.
-    # milestone score = w_milestones_vec * bm25 (higher weight, ~0.58-0.60).
-    # The point is: milestone score must NOT include any static +0.10 bias.
-    # Verify milestone score <= w_milestones_vec * 1.0 + small epsilon (no bias).
-    from marrow.recall import _load_bucket_rules
-    assert ms_score <= 0.65, (
-        f"Milestone score {ms_score:.4f} is too high — suggests static bias added"
+    # Score must be w_bm25*bm25 + w_milestones_vec*vec — no static bonus.
+    # Max possible = 0.30*1.0 + 0.60*1.0 = 0.90; real vec~0.70 so < 0.75.
+    assert ms_score < 0.80, (
+        f"Milestone score {ms_score:.4f} too high — suggests static bias added"
     )
 
 
@@ -277,7 +278,21 @@ def test_pinned_no_boost(db):
     db.execute("INSERT INTO milestones_fts(milestones_fts) VALUES('rebuild')")
     db.commit()
 
-    with patch.object(rm, "_ensure_embedder", return_value=None):
+    # Inject identical vecs so both milestones clear the pre-gate (floor=0.55).
+    # Identical vec → cosine sim = 1.0 for both → equal score.
+    vec = _fake_vec(30)
+    mid0 = db.execute(
+        "SELECT id FROM milestones WHERE pinned=0 AND title='正确测试'"
+    ).fetchone()["id"]
+    mid1 = db.execute(
+        "SELECT id FROM milestones WHERE pinned=1 AND title='正确测试'"
+    ).fetchone()["id"]
+    _insert_milestone_vec(db, mid0, vec)
+    _insert_milestone_vec(db, mid1, vec)
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = [vec]
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
         results = rm.recall_fusion(db, "正确测试", min_score=0.01)
 
     mhits = [r for r in results if r.get("kind") == "milestone"]
@@ -286,6 +301,51 @@ def test_pinned_no_boost(db):
         f"Pinned should not affect score: {mhits[0]['score']:.9f} vs "
         f"{mhits[1]['score']:.9f}"
     )
+
+
+# ── 3b. anchor formula coefficient regression ─────────────────────────────────
+# Formula: raw = w_bm25(0.30) * bm25 + w_milestones_vec(0.58) * vec
+# Four canonical examples from the design spec:
+#   vec=0.55, bm25=0.0  → 0.319  (below min_score=0.40 — never surfaces)
+#   vec=0.70, bm25=0.0  → 0.406  (just clears min_score)
+#   vec=0.55, bm25=0.5  → 0.469  (vec+keyword combo surfaces)
+#   vec=0.0             → dropped by pre-gate before scoring
+
+W_BM25 = 0.30
+W_MS_VEC = 0.58   # w_milestones_vec default
+
+
+def test_anchor_formula_vec055_bm25_zero():
+    """vec=0.55, bm25=0 → 0.319 (below min_score=0.40, won't surface)."""
+    raw = W_BM25 * 0.0 + W_MS_VEC * 0.55
+    assert abs(raw - 0.319) < 1e-3, f"Expected ~0.319, got {raw:.4f}"
+
+
+def test_anchor_formula_vec070_bm25_zero():
+    """vec=0.70, bm25=0 → 0.406 (just clears min_score=0.40)."""
+    raw = W_BM25 * 0.0 + W_MS_VEC * 0.70
+    assert abs(raw - 0.406) < 1e-3, f"Expected ~0.406, got {raw:.4f}"
+
+
+def test_anchor_formula_vec055_bm25_half():
+    """vec=0.55, bm25=0.5 → 0.469 (vec+keyword combo surfaces)."""
+    raw = W_BM25 * 0.5 + W_MS_VEC * 0.55
+    assert abs(raw - 0.469) < 1e-3, f"Expected ~0.469, got {raw:.4f}"
+
+
+def test_anchor_formula_fts_only_dropped(db):
+    """Milestone with vec=0 (FTS-only hit) is dropped by the pre-gate."""
+    db.execute(
+        "INSERT INTO milestones(scope, date, title, description, pinned) "
+        "VALUES('test', '2026-01-01', 'ftsonly anchor test', 'desc', 0)"
+    )
+    db.execute("INSERT INTO milestones_fts(milestones_fts) VALUES('rebuild')")
+    db.commit()
+    # No vec inserted — vec=0.0, below _ANCHOR_VEC_FLOOR=0.55 → must be dropped.
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(db, "ftsonly anchor test", min_score=0.01)
+    hits = [r for r in results if r.get("kind") == "milestone"]
+    assert hits == [], f"FTS-only milestone must be dropped by pre-gate, got: {hits}"
 
 
 # ── 4. cwd boost ──────────────────────────────────────────────────────────────

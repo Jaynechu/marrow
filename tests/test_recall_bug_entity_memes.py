@@ -7,11 +7,37 @@ body_nonempty helper) are kept.
 from __future__ import annotations
 
 import datetime as dt
-from unittest.mock import patch
+import struct
+from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from marrow import recall as rm, repo, storage
+
+
+def _fake_vec(seed: int, dim: int = 1024) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    v = rng.random(dim).astype(np.float32)
+    return v / np.linalg.norm(v)
+
+
+def _blob(v: np.ndarray) -> bytes:
+    return struct.pack(f"{len(v)}f", *v.tolist())
+
+
+def _insert_memes_vec(db, meme_id: int, vec: np.ndarray) -> None:
+    blob = _blob(vec)
+    db.execute(
+        "INSERT OR REPLACE INTO memes_vec(rowid, embedding) VALUES(?, ?)",
+        (meme_id, blob),
+    )
+    db.execute(
+        "INSERT OR REPLACE INTO memes_vec_meta(rowid, embedder_id, dim) "
+        "VALUES(?, 'bge-m3', 1024)",
+        (meme_id,),
+    )
+    db.commit()
 
 
 @pytest.fixture()
@@ -60,9 +86,16 @@ def seeded_db(tmp_path):
 
 
 def test_memes_leg_returns_cipher_on_query_match(seeded_db):
-    """recall_fusion must surface memes row when key matches query (FTS)."""
+    """recall_fusion must surface memes row when key matches query (FTS+vec)."""
     conn, _ = seeded_db
-    with patch.object(rm, "_ensure_embedder", return_value=None):
+    meme_id = conn.execute(
+        "SELECT id FROM memes WHERE key='Plan'"
+    ).fetchone()["id"]
+    vec = _fake_vec(20)
+    _insert_memes_vec(conn, meme_id, vec)
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = [vec]
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
         results = rm.recall_fusion(conn, "我的 plan 是什么价钱", limit=10)
     memes_hits = [
         r for r in results

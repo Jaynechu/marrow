@@ -1203,23 +1203,22 @@ def recall_fusion(
             scored.append((final, {**c, "score": final}))
 
     # ── milestone scoring (recency/affect dropped — evergreen anchor —
-    # bm25 + vec drive rank). Vec pre-gate: rows with vec present but below
-    # _ANCHOR_VEC_FLOOR are dropped before scoring (cannot ride noise past
-    # min_score). bm25 uses w_milestones_vec weight (tuned for anchor tables,
-    # higher than w_bm25) so a strong FTS hit clears min_score on its own.
+    # vec dominates; bm25 adds keyword signal). Vec pre-gate: ALL rows with
+    # vec < _ANCHOR_VEC_FLOOR are dropped (including vec=0 FTS-only hits —
+    # those are CJK trigram noise on anchor lanes).
     for mc in milestone_cands:
         vec_val = mc.get("vec", 0.0)
-        if vec_val > 0.0 and vec_val < _ANCHOR_VEC_FLOOR:
-            continue  # vec present but below floor — drop
-        raw = w_milestones_vec * (mc["bm25"] + vec_val)
+        if vec_val < _ANCHOR_VEC_FLOOR:
+            continue
+        raw = w_bm25 * mc["bm25"] + w_milestones_vec * vec_val
         scored.append((raw, {**mc, "score": raw}))
 
     # ── memes scoring (mirror milestone) ─────────────────────────────────────
     for vc in memes_cands:
         vec_val = vc.get("vec", 0.0)
-        if vec_val > 0.0 and vec_val < _ANCHOR_VEC_FLOOR:
+        if vec_val < _ANCHOR_VEC_FLOOR:
             continue
-        raw = w_memes_vec * (vc["bm25"] + vec_val)
+        raw = w_bm25 * vc["bm25"] + w_memes_vec * vec_val
         scored.append((raw, {**vc, "score": raw}))
 
     # ── diary scoring (vec only — evergreen long-form prose) ─────────────────
@@ -1235,14 +1234,14 @@ def recall_fusion(
             scored.append((raw, {**tc, "score": raw}))
 
     # ── entity scoring (FTS + vec + mention boost, vec pre-gate) ───────────
-    # bm25 uses w_entities_vec weight (anchor-tuned) so FTS-only hits clear
-    # min_score. mention_count boost kept (proportional, not static).
+    # vec dominates; bm25 adds keyword signal. FTS-only (vec=0) dropped same
+    # as milestone/memes — CJK trigram noise. mention_count boost kept.
     for ec in entity_cands:
         vec_val = ec.get("vec", 0.0)
-        if vec_val > 0.0 and vec_val < _ANCHOR_VEC_FLOOR:
+        if vec_val < _ANCHOR_VEC_FLOOR:
             continue
         raw = (
-            w_entities_vec * (ec["bm25"] + vec_val)
+            w_bm25 * ec["bm25"] + w_entities_vec * vec_val
             + min(0.05, 0.02 * math.log1p(ec.get("mention_count", 0)))
         )
         scored.append((raw, {**ec, "score": raw}))
