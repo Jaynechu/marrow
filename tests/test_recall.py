@@ -393,20 +393,35 @@ def test_milestone_no_match_returns_nothing(db):
     assert [r for r in results if r.get("kind") == "milestone"] == []
 
 
-def test_milestone_pinned_outranks_unpinned(db):
-    """Same FTS bm25: pinned gets +0.10 boost."""
-    _make_milestone(
-        db, title="鸭子梗 unpinned", description="一样的内容", pinned=0,
+def test_milestone_pinned_no_boost(db):
+    """Pinned flag carries no score boost — score formula is bm25+vec only.
+    (_MILESTONE_PINNED_BOOST removed; pinned is metadata only.)
+    Two identical milestones (same bm25) must have equal scores regardless of
+    their pinned value.
+    """
+    # Identical content → identical BM25. Any score delta would reveal a boost.
+    db.execute(
+        "INSERT INTO milestones(scope, date, title, description, pinned) "
+        "VALUES('test', '2026-01-01', '鸭子梗相同', '一样的内容', 0)"
     )
-    _make_milestone(
-        db, title="鸭子梗 pinned", description="一样的内容", pinned=1,
+    db.execute(
+        "INSERT INTO milestones(scope, date, title, description, pinned) "
+        "VALUES('test', '2026-01-01', '鸭子梗相同', '一样的内容', 1)"
     )
+    db.execute(
+        "INSERT INTO milestones_fts(milestones_fts) VALUES('rebuild')"
+    )
+    db.commit()
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        results = rm.recall_fusion(db, "鸭子梗", min_score=0.1)
+        results = rm.recall_fusion(db, "鸭子梗相同", min_score=0.1)
     mhits = [r for r in results if r.get("kind") == "milestone"]
     assert len(mhits) == 2
-    assert mhits[0]["pinned"] == 1
-    assert mhits[0]["score"] > mhits[1]["score"]
+    # Equal bm25 + zero vec → equal scores. No static pinned boost should exist.
+    assert abs(mhits[0]["score"] - mhits[1]["score"]) < 1e-9, (
+        f"Pinned flag should not affect score, but got scores "
+        f"{mhits[0]['score']:.6f} vs {mhits[1]['score']:.6f} "
+        f"(pinned={mhits[0]['pinned']} vs {mhits[1]['pinned']})"
+    )
 
 
 def test_milestone_mixed_with_events(db):
