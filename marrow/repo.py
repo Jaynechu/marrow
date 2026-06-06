@@ -4,14 +4,54 @@ here; schema/connection stay in storage.py. Deterministic, no LLM.
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
+import sys
 from collections.abc import Sequence
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+from . import config
 from . import storage
 from . import recall as _recall_mod
 from . import top_sections as _top_sections
 from . import entity_recall as _entity_recall
 from . import candidates as _candidates
+
+_IN_SESSION_SUBDIR = "in-session"
+_PRUNE_PATTERN = "marrow-before-*.db"
+_PRUNE_MAX_AGE = timedelta(days=7)
+
+
+def safe_backup_db(reason: str, db_path: Path | None = None) -> Path:
+    """Snapshot the live db to backup/in-session/ before a destructive op.
+
+    Filename: marrow-before-<reason>-<utc_iso>.db  (utc_iso = %Y%m%dT%H%M%SZ).
+    Side effect: prune in-session/ files older than 7 days.
+    Returns the dest Path.
+    """
+    src = Path(db_path) if db_path is not None else Path(config.db_path())
+    dest_dir = Path(config.DATA_DIR) / "backup" / _IN_SESSION_SUBDIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc)
+    stamp = now.strftime("%Y%m%dT%H%M%SZ")
+    dest = dest_dir / f"marrow-before-{reason}-{stamp}.db"
+    shutil.copy2(src, dest)
+
+    # Prune best-effort — never touch daily backups (marrow-YYYY-MM-DD.db)
+    try:
+        cutoff = now - _PRUNE_MAX_AGE
+        for f in dest_dir.glob(_PRUNE_PATTERN):
+            try:
+                if datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc) < cutoff:
+                    f.unlink()
+            except Exception as exc:
+                print(f"safe_backup_db: prune {f.name}: {exc}", file=sys.stderr)
+    except Exception as exc:
+        print(f"safe_backup_db: prune scan failed: {exc}", file=sys.stderr)
+
+    return dest
 
 
 def _fts_query(q: str) -> str:
