@@ -51,12 +51,6 @@ File: `marrow/config.default.toml` → `[embedding]`
 - Swap by changing `model` + `dim`
 - Vec lanes auto-disable if model files absent (recall falls back to BM25 + recency + affect)
 
-## 7. handover.md template
-
-File: `~/.config/marrow/handover.md` (NOT in repo)
-
-Personal context for SessionStart. Marrow reads it into the SessionStart additionalContext block. Start blank.
-
 ## 8. Dashboard / sub-pages
 
 File: `marrow/config.default.toml` → `[paths]` + `[subpages]`

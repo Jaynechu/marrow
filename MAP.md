@@ -5,11 +5,10 @@
 ## 0. Contents
 
 - §1  System map — 1.1 data-flow diagram · 1.2 hooks registry
-- §2  Write path — 2.1 session capture · 2.2 sessionend extraction (STATE/NARRATIVE) · 2.3 daily candidate
+- §2  Write path — 2.1 session capture · 2.2 sessionend extraction (TASK_AFFECT/DIGEST) · 2.3 daily candidate
 - §3  Read path — injection back to CC (hooks + daemon)
 - §4  Storage & retrieval — 4.1 schema · 4.2 embedding · 4.3 recall fusion
 - §5  Surface — 5.1 dashboard · 5.2 subpage catalog (11) · 5.3 sync machinery · 5.4 write arbitration
-- §6  Handover subsystem
 - §7  Scheduled jobs (launchd, 7 plists)
 - §8  Alerts
 - §9  Catchup & self-heal
@@ -63,7 +62,6 @@
    ║                                                               ║
    ║   dashboard.md     Main Entrance                              ║
    ║   db-pages/        11 subpage (see §5.2)                      ║
-   ║   handover.md      + symlink × 3 root                         ║
    ╚═══════════════════════════════════════════════════════════════╝
    ╔═══════════════════════════════════════════════════════════════╗
    ║   Addon contract                                              ║
@@ -96,17 +94,18 @@
 - Headless spawns dropped via known-prompt-head matching.
 - **Where**: marrow/hooks.py:272 · marrow/transcript.py:1 · marrow/storage.py:22
 
-### 2.2 Sessionend extraction (STATE / NARRATIVE)
+### 2.2 Sessionend extraction (TASK_AFFECT / DIGEST)
 
 ### sessionend-extraction
-- Detached `sessionend_async` (spawned after lifecycle:end commits). Two sequential Sonnet calls on the archived transcript:
-  - **STATE** call → writers: `handover` · `task_cand`
-  - **NARRATIVE** call → writers: `affect` · `digest`
-- Both calls open with the byte-identical `_TRANSCRIPT_BLOCK` fence → NARRATIVE's prompt-cache read hits STATE's prefix. Serial in one process, no async runtime.
-- **Failure isolation**: STATE failure does not block NARRATIVE. `partial:<failed_writers>` logged when 1–3 of 4 writers fail; `fail:all` only when all four fail.
+- Detached `sessionend_async` (spawned after lifecycle:end commits). Two sequential LLM calls on the archived transcript:
+  - **TASK_AFFECT** call (sonnet mid) → writers: `task_cand` · `affect`
+  - **DIGEST** call (haiku low) → writer: `digest`
+- Both calls open with the byte-identical `_TRANSCRIPT_BLOCK` fence → DIGEST's prompt-cache read hits TASK_AFFECT's prefix. Serial in one process, no async runtime.
+- **Failure isolation**: TASK_AFFECT failure does not block DIGEST. `partial:<failed_writers>` logged when 1–2 writers fail; `fail:task_affect=...,digest=...` only when both calls fail.
 - **Stale-skip recovery**: if cc fires session_end mid-flush, skip:short_session is cleared once event count grows past threshold so the rerun completes (marrow/sessionend_async.py:128).
-- **Task-extraction gate**: sessions with ≤ 3 user turns skip the task writer entirely (sessionend_async.py:353); affect / handover / digest still run. Tasks have no count-based ingestion gate beyond this — new titles land directly subject to cosine dedup (0.85) against active tasks + done tasks in last 24h.
-- **Where**: marrow/sessionend_async.py:423 · marrow/sessionend_prompts.py:24 · marrow/sessionend_writers.py:63 · marrow/hooks.py:320
+- **Task-extraction gate**: sessions with ≤ 3 user turns skip extraction entirely. Tasks have no count-based ingestion gate beyond this — new titles land directly subject to cosine dedup (0.85) against active tasks + done tasks in last 24h.
+- **Digest log**: every successful digest appends raw haiku output to `~/.config/marrow/logs/digest/digest-YYYY-MM-DD.log` (6AM cutoff). Files older than 2.5 days pruned on each sessionend run.
+- **Where**: marrow/sessionend_async.py:403 · marrow/sessionend_prompts.py:24 · marrow/sessionend_writers.py:63 · marrow/hooks.py:320
 
 ### 2.3 Daily aggregation (candidate extraction)
 
@@ -124,7 +123,7 @@
 
 ## 3. Read path (what gets injected, when)
 
-- **SessionStart injects**: affect heartbeat warning (gap day in last 7d with events but no affect), open tasks + open alerts from repo.handoff(), affect backdrop (top_sections mood band).
+- **SessionStart injects**: affect heartbeat warning (gap day in last 7d with events but no affect), affect backdrop (top_sections mood band).
 - **UserPromptSubmit injects**: top-K recall fusion hits (vec + bm25 + recency + affect) as additionalContext labelled "Recall (auto) — passive context, do not answer"; also handles mm-/mm+ control prefixes.
 - **entity force-include**: Bypasses FTS5 via reverse-substring match (name.lower() in query.lower()) so 2-char CN names that fall below the trigram tokenizer's 3-char floor (e.g. 南南) are still surfaced; for names ≥3 chars FTS5 is tried first, LIKE-scan as fallback.
 - **Where**: marrow/hooks.py:205 · marrow/hooks.py:482 · marrow/entity_recall.py:73 · marrow/recall.py:1027
@@ -296,10 +295,8 @@ All subpages share: DB is SoT, reconcile runs before render, atomic write, `<!--
 ### tombstone
 - Marks blocks Lumi deleted so re-render doesn't re-emit them. Three live paths, none of them retired:
   1. **md_index `tombstone_at`** — subpage / dashboard blocks. Watcher sees a block vanish from md → `MdIndex.tombstone(path, block_id)`. dashboard.py:112 / inserter.py:137 read via `is_tombstoned()` / `list_tombstones()`. Aging 30d → DELETE. · marrow/md_index.py:60-63 · marrow/aging.py:162
-  2. **audit_log `action='tombstone'` / `action='handover_tombstone'`** — milestone candidate rejects + handover thread deletes. `candidates.py:241` queries this before re-emitting a milestone. No aging, permanent. · marrow/candidates.py:241
-  3. **handover_diff.py:191 in-memory diff** — `snap_ids - doing.keys()` against the last `handover_snapshot` row in audit_log. Snapshot itself persisted; the tombstone set is recomputed each sessionend.
-- `marrow/tombstone.py` defines `AuditLogTombstoneStore` + `MdIndexTombstoneStore` + `TombstoneStore` Protocol — early abstraction layer, **never imported by any caller**. Dead code; safe to delete, no effect on the three live paths above.
-- **Where**: marrow/md_index.py:60 · marrow/handover_diff.py:191 · marrow/dashboard.py:112 · marrow/inserter.py:137
+  2. **audit_log `action='tombstone'`** — milestone candidate rejects. `candidates.py:241` queries this before re-emitting a milestone. No aging, permanent. · marrow/candidates.py:241
+- **Where**: marrow/md_index.py:60 · marrow/dashboard.py:112 · marrow/inserter.py:137
 
 ### 5.4 Write arbitration
 
@@ -309,18 +306,6 @@ Three writers touch the dashboard top region:
 3. **sessionend-tail** — one-shot renderer at end of each sessionend, outside the 5s cycle, to flush newly-written affect/task/digest
 
 Both 2 and 3 call `write_dashboard` which runs reconcile (idempotent) then atomic write. A race = two successive atomic writes, second wins, no DB edit lost because reconcile ran in both. sync_loop guards with `USER_ACTIVE_WINDOW_S = 3.0` (skip if md touched within 3s); sessionend-tail has no guard (session is over, no editing).
-
----
-
-## 6. Handover subsystem
-
-- **3-section model**: `## Done` (CLOSEd threads rolling off after 24h, each stamped with `<!-- done:EPOCH -->`); `## Doing` (open threads keyed by `<!-- id:N -->` — code-managed, hand-edit reconciled); `## Lumi's Note` (freeform, Lumi-owned — code only removes lines she clearly completed, never adds or rewrites).
-- **diff-apply engine**: SessionEnd's STATE call emits a ===DOING_DIFF=== block with four verbs: CLOSE (move thread to Done, stamp epoch), UPDATE (rewrite thread body, keep id), KEEP (no-op), ADD (assign fresh id). apply_diff reads the current file under flock, reconciles hand-edits vs last snapshot (ids vanished → tombstoned, never revived; new no-id blocks → fresh id), applies the diff, rolls off Done entries older than 24h (_DONE_MAX_AGE = 86400), and removes Note lines whose hash_bullet matches a NOTE_DONE entry. Write is atomic temp-replace, fallback to .partial.<sid> on lock-loss.
-- **single-writer rule**: seg_handover in sessionend_writers.py is the sole writer, only called from sessionend_async.
-- **dual identity**: handover.md is a standalone subsystem — NOT in the subpage registry. It has its own render path (handover_render.py, handover_diff.py) separate from the subpage inserter/reconcile cycle. The watcher watches it for md_index updates only. Peer of dashboard.md, not a db-page.
-- **normalisation**: handover_norm.py provides bullet normalisation + sha1 hash used by Note-line tombstone matching so re-rendered Notes match Lumi's hand-edits character-for-character · marrow/handover_norm.py:1
-- **mm-/mm+ control plane**: UserPromptSubmit accepts `mm-` (manual skip current session) and `mm+` (force sessionend rerun) prefixes that bypass the spawn gate · marrow/hooks.py:416
-- **Where**: marrow/handover_diff.py:1 · marrow/handover_render.py:28 · marrow/sessionend_writers.py:256 · marrow/hooks.py:175 · marrow/handover_template.md:1
 
 ---
 
@@ -435,7 +420,6 @@ All five passes run inside `com.marrow.aging` weekly Sun 12:00.
 On-disk layout:
 - DATA_DIR = ~/.config/marrow · marrow/config.py:8
 - dashboard.md = ~/Desktop/NY/dashboard.md · marrow/paths.py:20
-- handover.md = ~/.config/marrow/handover.md (canonical); ~/Desktop/NY/handover.md is a symlink to it · marrow/paths.py:21
 - db-pages/ = ~/Desktop/NY/db-pages/ · marrow/config.py:56
 
 config.toml catalog:
@@ -484,16 +468,15 @@ Two unrelated systems both centred on the goose (铁锅) persona:
 ## 13. Invariants & current status
 
 **Invariants** (rules that must hold):
-- single-writer on handover.md (sessionend_async only; SessionStart is read-only)
-- flock on every md write (handover_render.py, sessionend_writers.py, inserter.py)
+- flock on every md write (inserter.py, dashboard)
 - lifecycle:end must commit to audit_log before the LLM popen is spawned
-- byte-identical transcript fence = shared prompt-cache prefix across STATE + NARRATIVE
+- byte-identical transcript fence = shared prompt-cache prefix across TASK_AFFECT + DIGEST
 - 4-flag detach on every popen_detach (DEVNULL + log fd + start_new_session + close_fds)
 - DB is SoT: subpage renders never trust md free-form text inside rendered blocks
 
 **Current status**:
 - stub: wallet (transactions table not shipped) · profile (entity Phase 2 not wired) · stickers (auto-describe ingest not shipped) · cheatsheet (file empty, hand-written when ready)
 - wip: study/projects child pages on legacy read_only render (no inserter) · candidate pin/drop/edit HTML buttons designed but not built
-- dead code (safe to delete, no functional impact): `marrow/tombstone.py` TombstoneStore Protocol + AuditLog/MdIndex store classes — never imported. The real tombstone paths live in md_index + audit_log + handover_diff (see §5.3 tombstone).
+- dead code (safe to delete, no functional impact): `marrow/tombstone.py` TombstoneStore Protocol + AuditLog/MdIndex store classes — never imported. The real tombstone paths live in md_index + audit_log (see §5.3 tombstone).
 - unwired: bridge (Phase 4 WeChat socket) · affect emotion backdrop in SessionStart (Phase 2)
 

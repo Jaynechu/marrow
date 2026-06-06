@@ -11,7 +11,7 @@
       - Local + cloud
       - Multi-provider: Claude, GPT, Gemini, local models — swap model/vendor by editing one config line.
 2. Persistent memory — recall on mention, no context bloat → Past facts resurface on mention; cold recall fast; no context repeated.
-3. Cross-window workflow continuity — pick up where you left off → handover.md written automatically by LLM and `@import`-ed into next session.
+3. Cross-window workflow continuity — pick up where you left off → session digest + task board auto-updated each sessionend; affect + tasks → SessionStart.
 4. Emotional continuity — relationship + persona density transfer losslessly without static docs → Affect tracked per episode and resurfaced with recall; persona stays in CLAUDE.md (no DB-side persona docs).
 5. High auto, low maintenance — system runs itself; manual edits respected → Memory + dashboard self-update; alerts surface what broke; one place to fix anything.
       - Memory auto-update (events / tables / tasks / catchup / aging).
