@@ -369,8 +369,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         for sid in pending[:MAX_FIRE]:
             log_path = _LOGS_DIR / f"sessionend_async_{sid}.log"
             try:
+                # --log-path lets the child unlink its own 0-byte log on
+                # normal return (already_done / skip / fail:no_events).
                 popen_detach(
-                    [sys.executable, "-m", "marrow.sessionend_async", "--sid", sid],
+                    [sys.executable, "-m", "marrow.sessionend_async",
+                     "--sid", sid, "--log-path", str(log_path)],
                     log_path=log_path,
                 )
                 spawned += 1
