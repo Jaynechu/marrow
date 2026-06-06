@@ -25,6 +25,12 @@ import sys
 from pathlib import Path as _Path
 from zoneinfo import ZoneInfo
 
+# Lazy stdio redirect — MUST run before any heavyweight import so
+# import-time tracebacks land in --log-path when they fire. popen_detach
+# itself is stdlib-only, safe to import first.
+from .popen_detach import _redirect_stdio_from_argv as _redirect_stdio
+_redirect_stdio()
+
 from . import config, handover_diff, handover_render, repo, storage
 from .hooks import _is_manual_skip
 from .llm import LLMClient, LLMError

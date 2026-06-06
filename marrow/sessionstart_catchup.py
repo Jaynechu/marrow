@@ -29,7 +29,7 @@ from typing import Literal
 
 from . import config, repo, storage
 from .paths import paths
-from .popen_detach import popen_detach
+from .popen_detach import popen_detach, popen_detach_lazy
 
 _LOGS_DIR = paths.logs_dir
 
@@ -369,9 +369,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
         for sid in pending[:MAX_FIRE]:
             log_path = _LOGS_DIR / f"sessionend_async_{sid}.log"
             try:
-                # --log-path lets the child unlink its own 0-byte log on
-                # normal return (already_done / skip / fail:no_events).
-                popen_detach(
+                # _lazy: child redirects its own stdio to log_path on first
+                # write, so silent catchup retries leave no file behind.
+                popen_detach_lazy(
                     [sys.executable, "-m", "marrow.sessionend_async",
                      "--sid", sid, "--log-path", str(log_path)],
                     log_path=log_path,

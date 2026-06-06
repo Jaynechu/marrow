@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from . import config, repo, storage, top_sections, transcript
-from .popen_detach import popen_detach
+from .popen_detach import popen_detach, popen_detach_lazy
 
 SESSION_START_HARD_CAP = 6000
 
@@ -664,7 +664,9 @@ def session_end() -> int:
                 # Absent (study / ny chat) → "" → _load_git_log returns "".
                 cwd = inp.get("cwd") or ""
                 try:
-                    popen_detach(
+                    # _lazy variant: child opens log on first write only,
+                    # so silent paths (skip / already_done) leave no file.
+                    popen_detach_lazy(
                         [sys.executable, "-m", "marrow.sessionend_async",
                          "--sid", sid, "--cwd", cwd, "--log-path", str(log)],
                         log_path=log,
@@ -814,7 +816,7 @@ def _handle_mm_prefix(inp: dict) -> bool:
                     conn.close()
                     conn = None
                     log = config.DATA_DIR / "logs" / f"sessionend_async_{target_sid}.log"
-                    popen_detach(
+                    popen_detach_lazy(
                         [sys.executable, "-m", "marrow.sessionend_async",
                          "--sid", target_sid, "--log-path", str(log)],
                         log_path=log,
