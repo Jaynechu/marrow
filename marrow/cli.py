@@ -219,11 +219,15 @@ def cmd_add_alert(args) -> int:
     sev = args.severity
     if sev not in {"warn", "critical"}:
         return _fail(f"severity must be warn|critical (got {sev})")
-    msg = (args.message or "").strip()
-    if not msg:
-        return _fail("message required")
-    aid = repo.add_alert(sev, args.type, msg, args.source, db=args.db)
-    print(f"alert #{aid} [{sev}/{args.type}] {msg[:80]}")
+    fp = (args.fingerprint or "").strip()
+    if not fp:
+        return _fail("fingerprint required")
+    msg = (args.message or "").strip() or None
+    aid = repo.add_alert(
+        sev, args.type, fp, args.source, message=msg, db=args.db,
+    )
+    detail = msg if msg is not None else fp
+    print(f"alert #{aid} [{sev}/{args.type}] {detail[:80]}")
     return 0
 
 
@@ -582,10 +586,13 @@ def build_parser() -> argparse.ArgumentParser:
     rs.set_defaults(fn=cmd_resolve)
 
     aa = sub.add_parser("add-alert", parents=[common],
-                        help="insert one alert row (idempotent on dup)")
+                        help="insert one alert row (dedup by type+fingerprint)")
     aa.add_argument("severity", choices=["warn", "critical"])
     aa.add_argument("type")
-    aa.add_argument("message")
+    aa.add_argument("fingerprint",
+                    help="stable dedup key; repeats bump hit_count")
+    aa.add_argument("--message", default=None,
+                    help="human-readable detail (defaults to fingerprint)")
     aa.add_argument("--source", default=None)
     aa.set_defaults(fn=cmd_add_alert)
 
