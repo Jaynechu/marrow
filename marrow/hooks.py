@@ -28,9 +28,13 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from . import config, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach, popen_detach_lazy
 from .timeutil import utc_iso_to_local_date, utc_iso_to_local_datetime
+
+_RECALL_TZ = ZoneInfo("Australia/Melbourne")
+_RECALL_CUTOFF_H = 6  # 6AM local day boundary (matches digest)
 
 SESSION_START_HARD_CAP = 6000
 
@@ -73,21 +77,58 @@ def _wipe_recall_seen(sid: str) -> None:
         pass
 
 
-def _rotate_recall_log() -> None:
-    """Rotate logs/recall.md → recall.md.prev so each session starts fresh."""
-    log = config.DATA_DIR / "logs" / "recall.md"
-    if not log.exists():
-        return
+def _recall_log_dir() -> Path:
+    """~/.config/marrow/logs/recall/ — created on first use."""
+    d = config.DATA_DIR / "logs" / "recall"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _recall_local_date(utc_now: datetime) -> str:
+    """UTC datetime → local recall-day string (YYYY-MM-DD) with 6AM cutoff."""
+    local = utc_now.astimezone(_RECALL_TZ) - timedelta(hours=_RECALL_CUTOFF_H)
+    return local.date().isoformat()
+
+
+def _recall_session_log_path(sid: str, utc_now: datetime) -> Path:
+    """Per-session recall log: recall/recall-YYYY-MM-DD-<sid8>.md."""
+    day = _recall_local_date(utc_now)
+    sid8 = (sid or "unknown")[:8]
+    return _recall_log_dir() / f"recall-{day}-{sid8}.md"
+
+
+def _prune_recall_logs() -> None:
+    """Delete recall log files older than today-1 (keep today + yesterday).
+
+    Mirrors digest prune: 6AM cutoff for local-day boundary, mtime-based
+    safety floor, today/yesterday whitelisted by filename."""
     try:
-        log.replace(log.with_suffix(".md.prev"))
-    except Exception:
+        now = datetime.now(timezone.utc)
+        today = _recall_local_date(now)
+        yesterday = _recall_local_date(now - timedelta(days=1))
+        cutoff = now.timestamp() - 1.5 * 24 * 3600
+        log_dir = _recall_log_dir()
+        for f in log_dir.glob("recall-*.md"):
+            name = f.stem  # "recall-YYYY-MM-DD-<sid8>"
+            parts = name.split("-", 4)  # ["recall", "YYYY", "MM", "DD", "<sid8>"]
+            if len(parts) < 5:
+                continue
+            date_part = "-".join(parts[1:4])
+            if date_part in (today, yesterday):
+                continue
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001 — prune is best-effort
         pass
 
 
 def _sweep_empty_async_logs() -> None:
     """Drop 0-byte sessionend_async_*.log left behind when cc SIGKILLs the
     detached child before its atexit cleanup runs. Only matches the exact
-    prefix + .log suffix so recall.md / .prev / unrelated files stay safe."""
+    prefix + .log suffix so recall/ logs / unrelated files stay safe."""
     log_dir = config.DATA_DIR / "logs"
     try:
         for p in log_dir.glob("sessionend_async_*.log"):
@@ -463,9 +504,9 @@ def session_start() -> int:
                            message=f"session_start catchup spawn failed: {e}")
         except Exception:
             pass
-    # Recall housekeeping — rotate side log + wipe per-session dedup state so
-    # every fresh window starts with a clean recall slate.
-    _rotate_recall_log()
+    # Recall housekeeping — prune day-2+ logs from recall/ dir + wipe per-session
+    # dedup state so every fresh window starts with a clean recall slate.
+    _prune_recall_logs()
     # Sweep 0-byte sessionend_async_*.log residues (SIGKILL fallback).
     _sweep_empty_async_logs()
     inp = _read_input()
@@ -970,7 +1011,7 @@ def user_prompt_submit() -> int:
     # Side log — markdown append so VSCode preview / tail both readable.
     # Mirror what actually got injected: dedup-filtered `visible`, not raw hits.
     try:
-        _append_recall_log(prompt_text, visible)
+        _append_recall_log(sid, prompt_text, visible)
     except Exception:
         pass
 
@@ -984,20 +1025,32 @@ def user_prompt_submit() -> int:
     return 0
 
 
-def _append_recall_log(prompt_text: str, hits: list[dict]) -> None:
-    """Append one markdown block per turn to ~/.config/marrow/logs/recall.md.
+def _append_recall_log(sid: str, prompt_text: str, hits: list[dict]) -> None:
+    """Append one markdown block per turn to recall/recall-<day>-<sid8>.md.
+
+    Per-session file; first write of the session also emits a top-of-file
+    header `# Session <sid8> · started <ts>` so opening the file shows a
+    clear new-session boundary. Day-prefix in filename makes prune trivial.
 
     Each block: timestamp header + prompt (truncated) + bullet list of hits
-    with kind, id, score, content snippet. Open in VSCode → preview reads
-    cleanly; `tail -F` also legible.
+    with kind, id, score, content snippet.
     """
-    log_dir = Path.home() / ".config" / "marrow" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "recall.md"
-    now = datetime.now(timezone.utc).astimezone()
-    ts = now.strftime("%Y-%m-%d %H:%M:%S")
+    now_utc = datetime.now(timezone.utc)
+    log_path = _recall_session_log_path(sid, now_utc)
+    is_new = not log_path.exists()
+    now_local = now_utc.astimezone()
+    ts = now_local.strftime("%Y-%m-%d %H:%M:%S")
     prompt_oneline = prompt_text.replace("\n", " ")[:200]
-    parts = [f"\n### {ts} · prompt: {prompt_oneline}", ""]
+    parts: list[str] = []
+    if is_new:
+        sid8 = (sid or "unknown")[:8]
+        parts.append(f"# Session {sid8} · started {ts}")
+        parts.append("")
+        parts.append(f"### {ts} · prompt: {prompt_oneline}")
+    else:
+        # Leading blank line keeps blocks visually separated in markdown.
+        parts.append(f"\n### {ts} · prompt: {prompt_oneline}")
+    parts.append("")
     for h in hits:
         kind = h.get("kind") or "event"
         hid = h.get("id", "?")
