@@ -983,7 +983,7 @@ def user_prompt_submit() -> int:
 
     header_lines = [
         "## Recall (auto) — passive context, do not answer",
-        "> Hits may be incomplete. If the user references past time/scene cues or memory signals (age, year, date, last time, before, remember, you mentioned) and no relevant hit above → MUST call mcp__marrow__recall before replying.",
+        "> If the user references past time/scene cues or memory signals and no relevant hit above → MUST call mcp__marrow__recall.",
         "",
     ]
     lines = list(header_lines)
