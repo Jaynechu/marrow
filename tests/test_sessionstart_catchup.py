@@ -167,12 +167,15 @@ def test_classify_state7_no_markers_in_events_spawns(db_env):
     assert result == "spawn"
 
 
-# ── alert tests ───────────────────────────────────────────────────────────────
+# ── alert + classify-exemption tests ─────────────────────────────────────────
 
-def test_silent_death_alert_written(db_env):
-    """lifecycle:start 31min ago, ppid dead, no end -> alert row written."""
+def test_no_silent_death_alert_ever(db_env):
+    """Contract: catchup MUST NOT emit speculative 'silent_death' alerts.
+    Even with start>30min + dead ppid + no end + no extract + no archive,
+    catchup either spawns sessionend_async or stays silent. Operator-visible
+    alerts come only from operational failure (catchup_spawn_failed)."""
     db, _ = db_env
-    sid = "alert-sid"
+    sid = "would-be-silent-sid"
     old_ts = _ago_ts(31 * 60)
     _insert_lifecycle(db, sid, "session_lifecycle:start",
                       "ppid=88888,source=cc,started_at=1000", occurred_at=old_ts)
@@ -184,158 +187,64 @@ def test_silent_death_alert_written(db_env):
 
     conn = storage.connect(db)
     try:
-        row = conn.execute(
-            "SELECT summary FROM audit_log"
-            " WHERE action='alert' AND target_id=? AND summary LIKE 'silent_death_no_end:%' LIMIT 1",
+        ad = conn.execute(
+            "SELECT 1 FROM audit_log WHERE action='alert' AND target_id=?"
+            " AND summary LIKE 'silent_death%' LIMIT 1",
             (sid,),
         ).fetchone()
-    finally:
-        conn.close()
-    assert row is not None, "silent death alert should be written"
-    assert sid in row["summary"]
-
-
-def test_alert_idempotent(db_env):
-    """Running catchup twice for a silent death -> only one alert row."""
-    db, _ = db_env
-    sid = "idem-alert-sid"
-    old_ts = _ago_ts(31 * 60)
-    _insert_lifecycle(db, sid, "session_lifecycle:start",
-                      "ppid=77777,source=cc,started_at=1000", occurred_at=old_ts)
-    _insert_user_events(db, sid, 5)
-
-    with patch("marrow.sessionstart_catchup.popen_detach_lazy"):
-        from marrow import sessionstart_catchup
-        sessionstart_catchup.main()
-        sessionstart_catchup.main()
-
-    conn = storage.connect(db)
-    try:
-        count = conn.execute(
-            "SELECT COUNT(*) c FROM audit_log"
-            " WHERE action='alert' AND target_id=? AND summary LIKE 'silent_death_no_end:%'",
-            (sid,),
-        ).fetchone()["c"]
-    finally:
-        conn.close()
-    assert count == 1, f"expected 1 alert row, got {count}"
-
-
-def test_silent_death_writes_to_alerts_table(db_env):
-    """Regression: silent_death must also write to the `alerts` table so the
-    dashboard 'Alerts' section surfaces it. Prior bug: only audit_log got
-    the row, dashboard read alerts table and showed 'none' while sessions
-    silently dropped."""
-    db, _ = db_env
-    sid = "dash-alert-sid"
-    old_ts = _ago_ts(31 * 60)
-    _insert_lifecycle(db, sid, "session_lifecycle:start",
-                      "ppid=66666,source=cc,started_at=1000", occurred_at=old_ts)
-    _insert_user_events(db, sid, 5)
-
-    with patch("marrow.sessionstart_catchup.popen_detach_lazy"):
-        from marrow import sessionstart_catchup
-        sessionstart_catchup.main()
-
-    conn = storage.connect(db)
-    try:
-        row = conn.execute(
-            "SELECT severity, type, message, fingerprint FROM alerts"
-            " WHERE type='silent_death' AND resolved=0"
-            " AND fingerprint='silent_death' LIMIT 1",
+        al = conn.execute(
+            "SELECT 1 FROM alerts WHERE type='silent_death' LIMIT 1"
         ).fetchone()
     finally:
         conn.close()
-    assert row is not None, "silent_death must surface in alerts table"
-    assert row["severity"] == "warn"
-    assert sid[:8] in row["message"], "aggregated message must list the offending sid prefix"
+    assert ad is None, "audit_log silent_death markers must not be written"
+    assert al is None, "alerts table silent_death rows must not be written"
 
 
-def test_silent_death_extract_row_exempts_alert(db_env):
-    """Regression: cc SIGKILL on the hook process group can land between the
-    lifecycle:end INSERT and the popen_detach in hooks.session_end, so the
-    end marker never gets written even though sessionend_async survived and
-    wrote its extract row. The session is NOT silently dead. Catchup must
-    not alert when any sessionend_extract row exists for the sid."""
-    db, _ = db_env
-    sid = "extract-exempts-sid"
-    old_ts = _ago_ts(31 * 60)
-    _insert_lifecycle(db, sid, "session_lifecycle:start",
-                      "ppid=55555,source=cc,started_at=1000", occurred_at=old_ts)
-    _insert_user_events(db, sid, 5)
-    _insert_extract(db, sid, "skip:short_session,user_count=0")
-
-    with patch("marrow.sessionstart_catchup.popen_detach_lazy"):
-        from marrow import sessionstart_catchup
-        sessionstart_catchup.main()
-
-    conn = storage.connect(db)
-    try:
-        row = conn.execute(
-            "SELECT id FROM alerts WHERE type='silent_death' AND resolved=0 LIMIT 1"
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row is None, "extract row must exempt sid from silent_death alert"
-
-
-def test_silent_death_session_block_exempts_alert(db_env):
-    """Regression: a session that Lumi (or the bridge) explicitly archived via
-    session_block / manual_skip has no sessionend_extract by design — these
-    are not silent deaths. Catchup must not alert."""
+def test_classify_user_archived_skips(db_env):
+    """Regression: session_block / manual_skip means Lumi explicitly closed
+    the sid. _classify must return skip — these are NOT spawn candidates."""
     db, _ = db_env
     old_ts = _ago_ts(31 * 60)
     for sid, action, summary in (
-        ("blocked-archive-sid", "session_block", "archive"),
-        ("blocked-manual-sid", "manual_skip", "skip"),
-        ("blocked-bridge-sid", "manual_skip", "bridge_owns"),
+        ("clsblk-archive", "session_block", "archive"),
+        ("clsmsk-skip", "manual_skip", "skip"),
+        ("clsmsk-bridge", "manual_skip", "bridge_owns"),
     ):
         _insert_lifecycle(db, sid, "session_lifecycle:start",
                           "ppid=33333,source=cc,started_at=1000", occurred_at=old_ts)
         _insert_lifecycle(db, sid, action, summary)
         _insert_user_events(db, sid, 5)
-
-    with patch("marrow.sessionstart_catchup.popen_detach_lazy"):
-        from marrow import sessionstart_catchup
-        sessionstart_catchup.main()
-
-    conn = storage.connect(db)
-    try:
-        row = conn.execute(
-            "SELECT id FROM alerts WHERE type='silent_death' AND resolved=0 LIMIT 1"
-        ).fetchone()
-    finally:
-        conn.close()
-    assert row is None, "user-archived sids must not trigger silent_death alert"
+        assert _classify(db, sid, set()) == "skip", \
+            f"user-archived sid {sid} must classify as skip"
 
 
-def test_silent_death_fingerprint_collapses_multiple_sids(db_env):
-    """Regression: fingerprint used to embed sid[:8] so every dead sid spawned
-    its own row, flooding the dashboard. Now fingerprint is type-level so N
-    silent sids in one window produce exactly 1 alert row that lists them."""
+def test_catchup_spawn_failed_alert(db_env):
+    """Operational alert: popen_detach_lazy raising during spawn produces a
+    single type-level catchup_spawn_failed alert listing the failing sids."""
     db, _ = db_env
+    sid = "spawn-fail-sid"
     old_ts = _ago_ts(31 * 60)
-    sids = ["multi-fp-a-aaa", "multi-fp-b-bbb", "multi-fp-c-ccc"]
-    for sid in sids:
-        _insert_lifecycle(db, sid, "session_lifecycle:start",
-                          "ppid=44444,source=cc,started_at=1000", occurred_at=old_ts)
-        _insert_user_events(db, sid, 5)
+    _insert_lifecycle(db, sid, "session_lifecycle:start",
+                      "ppid=22222,source=cc,started_at=1000", occurred_at=old_ts)
+    _insert_user_events(db, sid, 5)
 
-    with patch("marrow.sessionstart_catchup.popen_detach_lazy"):
+    with patch("marrow.sessionstart_catchup.popen_detach_lazy",
+               side_effect=OSError("fork rejected")):
         from marrow import sessionstart_catchup
         sessionstart_catchup.main()
 
     conn = storage.connect(db)
     try:
         rows = conn.execute(
-            "SELECT message FROM alerts WHERE type='silent_death' AND resolved=0"
+            "SELECT fingerprint, message FROM alerts"
+            " WHERE type='catchup' AND resolved=0"
         ).fetchall()
     finally:
         conn.close()
-    assert len(rows) == 1, f"expected 1 aggregated alert row, got {len(rows)}"
-    msg = rows[0]["message"]
-    for sid in sids:
-        assert sid[:8] in msg, f"sid {sid[:8]} missing from aggregated message"
+    assert len(rows) == 1, f"expected exactly 1 catchup alert, got {len(rows)}"
+    assert rows[0]["fingerprint"] == "catchup_spawn_failed"
+    assert sid[:8] in rows[0]["message"]
 
 
 def test_classify_legacy_ok_without_lifecycle_end_skips(db_env):

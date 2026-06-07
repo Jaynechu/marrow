@@ -195,6 +195,18 @@ def _classify(conn, sid: str, live_ppids: set[int]) -> Literal["spawn", "skip"]:
     if _bridge_owns_active(conn, sid):
         return "skip"
 
+    # Precondition: Lumi (or the bridge) explicitly archived this sid via
+    # session_block / manual_skip. There is nothing to catch up by design —
+    # the session was closed on purpose, not silently dropped.
+    user_archived = conn.execute(
+        "SELECT 1 FROM audit_log"
+        " WHERE target_id=? AND action IN ('session_block','manual_skip')"
+        " LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if user_archived:
+        return "skip"
+
     now = time.time()
 
     # Fetch start marker rows for this sid.
@@ -305,91 +317,13 @@ def main(argv: list[str] | None = None) -> int:  # noqa: ARG001
             if _classify(conn, sid, live_ppids) == "spawn":
                 pending.append(sid)
 
-        # Alert on silent deaths: start >= 30min ago, ppid dead, no lifecycle:end,
-        # AND no sessionend_extract row (extract row = sessionend_async actually
-        # ran; lifecycle:end marker may have been racekilled by cc SIGKILL but
-        # the session is NOT silently dead). Fingerprint is type-level so the
-        # whole class collapses to a single dashboard row regardless of how
-        # many sids qualify in a given window.
-        silent_sids: list[str] = []
-        for sid in candidates:
-            start_rows = conn.execute(
-                "SELECT summary, occurred_at FROM audit_log"
-                " WHERE action='session_lifecycle:start' AND target_id=?"
-                " ORDER BY id DESC LIMIT 1",
-                (sid,),
-            ).fetchall()
-            if not start_rows:
-                continue
-            start_epoch = _ts_to_epoch(start_rows[0]["occurred_at"])
-            if (now - start_epoch) < _SILENT_DEATH_MIN * 60:
-                continue
-            ppid, _ = _parse_ppid_started_at(start_rows[0]["summary"] or "")
-            if ppid is None or ppid in live_ppids:
-                continue
-            end_exists = conn.execute(
-                "SELECT 1 FROM audit_log"
-                " WHERE action='session_lifecycle:end' AND target_id=? LIMIT 1",
-                (sid,),
-            ).fetchone()
-            if end_exists:
-                continue
-            # sessionend_async wrote an extract row -> session finished work,
-            # only the lifecycle:end marker is missing. Not a silent death.
-            extract_done = conn.execute(
-                "SELECT 1 FROM audit_log"
-                " WHERE action='sessionend_extract' AND target_id=? LIMIT 1",
-                (sid,),
-            ).fetchone()
-            if extract_done:
-                continue
-            # Lumi (or the bridge) explicitly archived/skipped the session ->
-            # there is no extract by design, not a silent death.
-            user_archived = conn.execute(
-                "SELECT 1 FROM audit_log"
-                " WHERE target_id=? AND action IN ('session_block','manual_skip')"
-                " LIMIT 1",
-                (sid,),
-            ).fetchone()
-            if user_archived:
-                continue
-            # Per-sid audit_log marker prevents the same sid being counted in
-            # every catchup pass; the aggregated alert fires only on the
-            # first-seen batch.
-            already_alerted = conn.execute(
-                "SELECT 1 FROM audit_log"
-                " WHERE action='alert' AND target_id=?"
-                " AND summary LIKE 'silent_death_no_end:sid=%' LIMIT 1",
-                (sid,),
-            ).fetchone()
-            if already_alerted:
-                continue
-            try:
-                with conn:
-                    conn.execute(
-                        "INSERT INTO audit_log (target_table, target_id, action, summary)"
-                        " VALUES ('events', ?, 'alert', ?)",
-                        (sid, f"silent_death_no_end:sid={sid}"),
-                    )
-            except Exception:  # noqa: BLE001
-                pass
-            silent_sids.append(sid)
-
-        if silent_sids:
-            sample = ", ".join(s[:8] for s in silent_sids[:5])
-            extra = f" (+{len(silent_sids) - 5} more)" if len(silent_sids) > 5 else ""
-            try:
-                repo.add_alert(
-                    "warn", "silent_death",
-                    "silent_death",
-                    source="sessionstart_catchup.py", db=db,
-                    message=(
-                        f"{len(silent_sids)} sid(s) no lifecycle:end + no extract "
-                        f"(>= {_SILENT_DEATH_MIN}min, ppid dead): {sample}{extra}"
-                    ),
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        # NOTE: Predicate-based "silent_death" alerting was removed in this
+        # change. Speculative "I think this session died" alerts based on
+        # missing markers conflict with the contract: catchup only alerts on
+        # operational failure (spawn raised, child immediately exited). If
+        # _classify mis-categorises a sid, sessionend_async will figure it
+        # out — there is nothing for an operator to do for a healthy
+        # short/archived/blocked session.
 
         spawned = 0
         failures: list[str] = []
