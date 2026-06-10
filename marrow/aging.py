@@ -263,10 +263,13 @@ def evict_vec_window(
     if newest is None or (today - newest).days > _BACKUP_STALE_DAYS:
         age_str = str((today - newest).days) + "d" if newest else "missing"
         repo.add_alert(
-            "warn", "aging",
-            f"vec_evict skipped: backup {age_str} (need ≤{_BACKUP_STALE_DAYS}d). "
-            f"Run `python -m marrow.backup --apply` then retry.",
-            source="aging.py", db=alert_db,
+            "warn", "aging", "vec_evict_backup_stale",
+            source="aging.py",
+            message=(
+                f"vec_evict skipped: backup {age_str} (need ≤{_BACKUP_STALE_DAYS}d). "
+                f"Run `python -m marrow.backup --apply` then retry."
+            ),
+            db=alert_db,
         )
         result["skipped"] = True
         return result
@@ -319,20 +322,26 @@ def evict_vec_window(
     ).fetchone()[0]
     if total_vec > 0 and evict_count > total_vec * _VEC_EVICT_CAP_PCT:
         repo.add_alert(
-            "critical", "aging",
-            f"vec_evict aborted: would evict {evict_count}/{total_vec} rows "
-            f"({evict_count/total_vec:.0%} > {_VEC_EVICT_CAP_PCT:.0%} cap). "
-            "Manual investigation required.",
-            source="aging.py", db=alert_db,
+            "critical", "aging", "vec_evict_cap_pct",
+            source="aging.py",
+            message=(
+                f"vec_evict aborted: would evict {evict_count}/{total_vec} rows "
+                f"({evict_count/total_vec:.0%} > {_VEC_EVICT_CAP_PCT:.0%} cap). "
+                "Manual investigation required."
+            ),
+            db=alert_db,
         )
         result["aborted"] = True
         return result
     if evict_count > _VEC_EVICT_CAP_ABS:
         repo.add_alert(
-            "critical", "aging",
-            f"vec_evict aborted: would evict {evict_count} rows "
-            f"(> {_VEC_EVICT_CAP_ABS} abs cap). Manual investigation required.",
-            source="aging.py", db=alert_db,
+            "critical", "aging", "vec_evict_cap_abs",
+            source="aging.py",
+            message=(
+                f"vec_evict aborted: would evict {evict_count} rows "
+                f"(> {_VEC_EVICT_CAP_ABS} abs cap). Manual investigation required."
+            ),
+            db=alert_db,
         )
         result["aborted"] = True
         return result
