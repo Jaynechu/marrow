@@ -386,8 +386,9 @@ def main(argv: list[str] | None = None) -> int:
             _cleanup_empty_log(log_obj)
 
 
-def _run_writer(conn, sid: str, name: str, writer) -> bool:
-    """Run one writer; log audit row. Returns True on success.
+def _run_writer(conn, sid: str, name: str, writer):
+    """Run one writer; log audit row. Returns the writer's row count on
+    success (audited ok, or ok:0 on zero rows), None on exception.
 
     Catches every Exception (including sqlite3.OperationalError and OSError)
     so one writer failing never escapes to the outer session-level try and
@@ -399,13 +400,13 @@ def _run_writer(conn, sid: str, name: str, writer) -> bool:
         n = writer()
         _write_segment_audit(conn, sid, name,
                              "ok:0" if n == 0 else "ok")
-        return True
+        return n
     except Exception as e:  # noqa: BLE001
         try:
             _write_segment_audit(conn, sid, name, f"fail:{type(e).__name__}")
         except Exception:  # noqa: BLE001
             pass
-        return False
+        return None
 
 
 def _run_extraction(conn, sid: str, date: str,
@@ -457,9 +458,21 @@ def _run_extraction(conn, sid: str, date: str,
     if digest_err:
         _write_segment_audit(conn, sid, "digest_call", f"fail:{digest_err}")
     else:
-        _run_writer(conn, sid, "digest",
-                    lambda: seg_digest(conn, digest_raw, sid, date,
-                                       raw_llm=digest_raw))
+        n = _run_writer(conn, sid, "digest",
+                        lambda: seg_digest(conn, digest_raw, sid, date,
+                                           raw_llm=digest_raw))
+        if n == 0:
+            # A digest call on a non-empty session must always produce text;
+            # zero rows means extract miss or empty LLM reply — alert, don't
+            # rely on anyone reading ok:0 audit rows. (affect/task_cand zero
+            # is legitimate for small sessions; digest zero never is.)
+            try:
+                repo.add_alert(
+                    "warn", "sessionend", "digest_zero_write",
+                    source="sessionend_async.py", db=config.db_path(),
+                    message=f"digest writer wrote 0 rows for sid={sid}")
+            except Exception:  # noqa: BLE001
+                pass
 
     # ── tail: slow side-effects (fail-soft; cc can't kill us here) ───────────
     db = config.db_path()
