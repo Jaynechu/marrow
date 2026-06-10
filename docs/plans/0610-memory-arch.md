@@ -31,8 +31,14 @@
 - Exit B — recall time-lane:
   - Time-cue regex ((昨天/今早/上周三/N天前)...) → Melbourne-local date range → UTC → SQL window on events/digests, optional FTS keyword inside window. Deterministic, no embedding.
   - mcp recall gains since/until params for active queries.
+  - Canonical case: (你还记得我上周说过灭绝师太说了xxx) → active recall("灭绝师太", since/until=last week) → window-first then FTS/vec. Without window, recency 0.15 can't outrank older high-score hits of a recurring term.
 - Exit C — visualization (cyberboss-style day/week/month page): last priority, dashboard subpage.
 - Division: A = recent days always present; B = precise time lookup; vec recall = timeless semantic association.
+
+## 5. Retrieval quality (vec/FTS backlog)
+- Passive events FTS phrase-quotes the whole query → conversational queries near-always miss this lane. Fix: needle extraction (2-4 low-freq terms, split search; reuse _expand_needles idea).
+- Nickname/abbrev/CN-EN terms: FTS + entities alias is the reliable path, not bge. Same root cause as parked enrich-at-insert item [06/08] — treat together. Recurring persons → entities rows with aliases (substring strong-hit, no embedding gamble).
+- Recall-hit boost (imprint/mem0 pattern): each recall hit bumps importance/score bias. Revive exists, boost doesn't; frequently-recalled events drift toward semi-permanent, composes with vec window exemption.
 
 ## Prerequisite test (before A)
 - Pick 3 real sessions: different topics, different lengths, incl one large.
