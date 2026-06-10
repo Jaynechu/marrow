@@ -897,6 +897,53 @@ def _handle_mm_prefix(inp: dict) -> bool:
     return True
 
 
+# ── pure recall-render helpers (extracted for testability) ───────────────────
+
+def _apply_rel_cutoff(hits: list[dict], rel_cutoff: float) -> list[dict]:
+    """Drop hits whose score < top_score * rel_cutoff. Returns filtered list."""
+    if not hits:
+        return []
+    top_score = hits[0].get("score", 0.0)
+    cutoff = top_score * rel_cutoff
+    return [h for h in hits if (h.get("score") or 0.0) >= cutoff]
+
+
+def _render_hit_block(rank: int, h: dict, rank_caps: list[int]) -> list[str]:
+    """Return the markdown lines for one recall hit at the given rank.
+
+    rank_caps[rank] (falling back to rank_caps[-1]) controls max content chars.
+    Context turns (h['_context']) are only rendered for rank-0 event hits.
+    Pure function — no I/O, no DB access.
+    """
+    cap = rank_caps[rank] if rank < len(rank_caps) else rank_caps[-1]
+    block: list[str] = []
+    ts = format_recall_ts(h.get("timestamp") or "")
+    kind = h.get("kind") or "event"
+    content_full = (h.get("content") or "").replace("\n", " ")
+    if kind in _TABLE_KINDS:
+        block.append(f"- {ts} {content_full[:cap]}")
+    else:
+        ctxs = h.get("_context") or [] if rank == 0 else []
+        main_cap = max(40, cap - 60) if ctxs else cap
+        main = content_full[:main_cap]
+        block.append(f"- {ts} {main}")
+        remaining = max(0, cap - len(main))
+        if ctxs and remaining > 0:
+            per_ctx = max(0, remaining // len(ctxs))
+            for c in ctxs:
+                if per_ctx <= 0:
+                    break
+                cts = utc_iso_to_local_datetime(c.get("timestamp") or "")
+                csnip = _strip_wx_time_prefix(
+                    (c.get("content") or "").replace("\n", " ")
+                )[:per_ctx]
+                if not csnip:
+                    continue
+                arrow = "↑" if c.get("rel") == "prev" else "↓"
+                block.append(f"    {arrow} [{cts}] ({c.get('role')}) {csnip}")
+    return block
+
+
 def user_prompt_submit() -> int:
     """Inject top-K recall hits as UserPromptSubmit additionalContext.
 
@@ -962,9 +1009,7 @@ def user_prompt_submit() -> int:
         return 0
 
     # ── relative score cutoff ─────────────────────────────────────────────────
-    top_score = hits[0].get("score", 0.0) if hits else 0.0
-    cutoff = top_score * rel_cutoff
-    hits = [h for h in hits if (h.get("score") or 0.0) >= cutoff]
+    hits = _apply_rel_cutoff(hits, rel_cutoff)
     if not hits:
         return 0
 
@@ -1009,34 +1054,8 @@ def user_prompt_submit() -> int:
     used = sum(len(line) + 1 for line in header_lines)
     visible: list[dict] = []
     for rank, h in enumerate(candidates):
-        cap = rank_caps[rank] if rank < len(rank_caps) else rank_caps[-1]
-        block: list[str] = []
-        ts = format_recall_ts(h.get("timestamp") or "")
+        block = _render_hit_block(rank, h, rank_caps)
         kind = h.get("kind") or "event"
-        content_full = (h.get("content") or "").replace("\n", " ")
-        if kind in _TABLE_KINDS:
-            # Anchor rows: truncate at rank cap, never get context.
-            block.append(f"- {ts} {content_full[:cap]}")
-        else:
-            # rank 1 (index 0): include ±1 context turns within the cap.
-            ctxs = h.get("_context") or [] if rank == 0 else []
-            main_cap = max(40, cap - 60) if ctxs else cap
-            main = content_full[:main_cap]
-            block.append(f"- {ts} {main}")
-            remaining = max(0, cap - len(main))
-            if ctxs and remaining > 0:
-                per_ctx = max(0, remaining // len(ctxs))
-                for c in ctxs:
-                    if per_ctx <= 0:
-                        break
-                    cts = utc_iso_to_local_datetime(c.get("timestamp") or "")
-                    csnip = _strip_wx_time_prefix(
-                        (c.get("content") or "").replace("\n", " ")
-                    )[:per_ctx]
-                    if not csnip:
-                        continue
-                    arrow = "↑" if c.get("rel") == "prev" else "↓"
-                    block.append(f"    {arrow} [{cts}] ({c.get('role')}) {csnip}")
         block_len = sum(len(line) + 1 for line in block)
         if visible and used + block_len > budget_chars:
             break  # drop this hit — and skip seen-write so it can surface later
