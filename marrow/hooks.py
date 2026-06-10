@@ -1117,11 +1117,15 @@ def _append_recall_log(sid: str, prompt_text: str, hits: list[dict]) -> None:
         kind = h.get("kind") or "event"
         hid = h.get("id", "?")
         score = h.get("score", 0.0)
+        when = format_recall_ts(h.get("timestamp") or "")
         content = _strip_wx_time_prefix((h.get("content") or "").replace("\n", " "))
         # Mirror injection-side shaping: anchor tables ship full content
         # (rows are short + dense); only event hits get the 120-char cap.
         snip = content if kind in _TABLE_KINDS else content[:120]
-        parts.append(f"- `{kind}#{hid}` score={score:.2f} — {snip}")
+        head = f"- `{kind}#{hid}` score={score:.2f}"
+        if when:
+            head += f" {when}"
+        parts.append(f"{head} — {snip}")
         for c in h.get("_context", []) or []:
             arrow = "↑prev" if c.get("rel") == "prev" else "↓next"
             cs = _strip_wx_time_prefix((c.get("content") or "").replace("\n", " "))[:80]
