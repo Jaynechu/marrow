@@ -53,6 +53,47 @@ def _normalise_category(raw: str | None) -> str:
 
 # ── segment writers ─────────────────────────────────────────────────────────
 
+def _match_event_hint(conn, hint: str | None, sid: str) -> int | None:
+    """Match hint phrase against this session's events rows.
+
+    Strategy: FTS phrase match first (trigram tokenizer, ≥3-char phrases),
+    then plain LIKE substring. Returns event id only when exactly one row
+    matches — ambiguous (multiple equal-confidence rows) or no match → None.
+    """
+    if not hint or not hint.strip():
+        return None
+    phrase = hint.strip()
+    # FTS phrase match (trigram — works for CN ≥3 chars and EN)
+    try:
+        fts_q = '"' + phrase.replace('"', '""') + '"'
+        rows = conn.execute(
+            "SELECT e.id FROM events_fts f"
+            " JOIN events e ON e.id = f.rowid"
+            " WHERE events_fts MATCH ?"
+            " AND e.session_id = ?",
+            (fts_q, sid),
+        ).fetchall()
+        if len(rows) == 1:
+            return rows[0]["id"]
+        if len(rows) > 1:
+            return None  # ambiguous
+    except Exception:
+        pass
+    # Fallback: plain substring LIKE
+    try:
+        rows = conn.execute(
+            "SELECT id FROM events"
+            " WHERE session_id = ?"
+            " AND content LIKE ?",
+            (sid, f"%{phrase}%"),
+        ).fetchall()
+        if len(rows) == 1:
+            return rows[0]["id"]
+    except Exception:
+        pass
+    return None
+
+
 def seg_affect(conn, raw: str, sid: str, date: str) -> int:
     """Insert affect rows with importance clamp + unresolved/reconcile linkage."""
     items = candidates.extract_block(raw, "AFFECT")
@@ -101,22 +142,35 @@ def seg_affect(conn, raw: str, sid: str, date: str) -> int:
             if prior:
                 reconcile_ref = prior["id"]
 
+        # event_hint link: try hint first, fall back to description
+        hint_text = it.get("event_hint") or description
+        event_id = _match_event_hint(conn, hint_text, sid)
+
         with conn:
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO affect (date, ep, valence, arousal, importance,"
                 " label, description, entities, source, unresolved,"
-                " reconcile_ref, reconcile_prev_text)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " reconcile_ref, reconcile_prev_text, event_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (date, ep, valence, arousal, importance, label, description,
                  entities, "sessionend_async", unresolved, reconcile_ref,
-                 reconcile_prev),
+                 reconcile_prev, event_id),
             )
+            affect_id = cur.lastrowid
             if reconcile_ref:
                 ts_now = _dt.datetime.now(_dt.timezone.utc).strftime(
                     "%Y-%m-%dT%H:%M:%SZ")
                 conn.execute(
                     "UPDATE affect SET resolved_at=? WHERE id=?",
                     (ts_now, reconcile_ref),
+                )
+            if event_id is not None:
+                conn.execute(
+                    "INSERT INTO audit_log"
+                    " (target_table, target_id, action, summary)"
+                    " VALUES ('affect', ?, 'event_link', ?)",
+                    (str(affect_id),
+                     f"label={label!r} linked to event_id={event_id}"),
                 )
             n += 1
     return n
