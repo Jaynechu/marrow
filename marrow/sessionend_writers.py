@@ -289,6 +289,10 @@ def seg_digest(conn, raw: str, sid: str, date: str,
     """
     body = _extract_text_block(raw, "DIGEST")
     if not body:
+        # DIGEST is a dedicated call: the whole reply is the digest.
+        # Fence-less output (prompt does not mandate ===DIGEST===) lands here.
+        body = raw.replace("===DIGEST===", "").replace("===END===", "").strip()
+    if not body:
         return 0
     ts_now = _dt.datetime.now(_dt.timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ")

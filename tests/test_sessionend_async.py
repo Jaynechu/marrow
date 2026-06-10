@@ -525,13 +525,42 @@ def test_seg_digest_replace_on_resave(db_env):
         conn.close()
 
 
-def test_seg_digest_no_marker_returns_zero(db_env):
-    """Raw without ===DIGEST=== marker writes nothing, returns 0."""
+def test_seg_digest_no_marker_falls_back_to_whole_raw(db_env):
+    """Fence-less raw is stored whole — DIGEST call's entire reply is the digest."""
     db, _ = db_env
     from marrow import sessionend_async
     conn = storage.connect(db)
     try:
         n = sessionend_writers.seg_digest(conn, "no markers here", "sid-x",
+                                         "2026-05-23")
+        assert n == 1
+        rows = conn.execute(
+            "SELECT text FROM session_digests WHERE sid='sid-x'").fetchall()
+        assert [r["text"] for r in rows] == ["no markers here"]
+    finally:
+        conn.close()
+
+
+def test_seg_digest_trailing_end_fence_stripped(db_env):
+    """Raw ending with bare ===END=== (no open fence) stores body without it."""
+    db, _ = db_env
+    conn = storage.connect(db)
+    try:
+        n = sessionend_writers.seg_digest(
+            conn, "digest body\n===END===", "sid-y", "2026-05-23")
+        assert n == 1
+        rows = conn.execute(
+            "SELECT text FROM session_digests WHERE sid='sid-y'").fetchall()
+        assert [r["text"] for r in rows] == ["digest body"]
+    finally:
+        conn.close()
+
+
+def test_seg_digest_empty_raw_returns_zero(db_env):
+    db, _ = db_env
+    conn = storage.connect(db)
+    try:
+        n = sessionend_writers.seg_digest(conn, "  ===END===  ", "sid-z",
                                          "2026-05-23")
         assert n == 0
         rows = conn.execute("SELECT * FROM session_digests").fetchall()
