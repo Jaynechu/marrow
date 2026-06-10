@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 
 from . import config, recall as _recall_mod, repo, storage
 from .llm import LLMClient
-from .timeutil import utc_iso_to_local_datetime
+from .timeutil import utc_iso_to_local_datetime, format_recall_ts
 
 mcp = FastMCP("marrow")
 
