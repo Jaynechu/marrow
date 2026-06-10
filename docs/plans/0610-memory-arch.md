@@ -37,6 +37,16 @@
 - Evicted rows: still FTS-searchable; no re-embed/return path (digest lane covers old-range semantic queries: near = fine, old = coarse, by design).
 - Where: aging.py new pass in existing Sunday weekly transaction; matches read-time rule recall.py:433-447 (materialise scan-then-drop into the index).
 
+### Safety nets (Batch 2 — eviction is the only destructive step)
+- Evict = DELETE events_vec row + events_vec_meta row together, same transaction. Meta left behind = embed_pending thinks row is embedded forever = unrecoverable hole (same orphan class as todo Audit 3 — fix together).
+- Reversible by design: events row intact → clearing meta deliberately lets embed_pending re-embed. Document the recovery command in MAP.
+- Run cap: single aging run evicting >25% of vec rows or >10k rows → abort whole pass + critical alert (mass-evict = bug, not aging).
+- Backup gate: skip destructive pass + warn alert if last DB backup older than 7d (mw-db-backup.plist exists — verify freshness, don't assume).
+- Audit: one audit_log row per run — evicted N, exempted M (by reason), duration.
+- event_hint match: ambiguous (multiple equal hits) → NULL, never guess; matched pairs logged to audit_log for spot-checking.
+- recall_count/last_recalled_at updates: best-effort try/except — a stats write must never block or fail the recall path.
+- Rollback levers are all config: budget/caps/cutoff/window-days revert by config edit, no code revert needed.
+
 ## Batch 3 — Timeline (test first, then A, then B)
 
 ### 0. Prerequisite test (before A)
