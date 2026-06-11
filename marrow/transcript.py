@@ -23,6 +23,7 @@ _DEFAULT_WORKER_MODELS = ["claude-haiku-4-5", "claude-sonnet-4-6"]
 # constants in marrow/daily.py, marrow/sessionend_prompts.py, and
 # ~/.claude/hooks/prompt-lint.py.
 _SPAWN_HEADS = (
+    "===== BEGIN ORIGINAL TRANSCRIPT",
     "You compress ONE long session of dialogue",
     "Extract per-episode affect from the session",
     "Extract candidate entities mentioned in the session",

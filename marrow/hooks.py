@@ -975,6 +975,13 @@ def user_prompt_submit() -> int:
     prompt_text = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
     sid = inp.get("session_id") if isinstance(inp, dict) else None
 
+    # Pipeline-prompt gate: a hand-run digest/eval claude (spawned without
+    # llm.py's --setting-sources isolation) still loads this hook. Its prompt
+    # opens with the transcript fence from sessionend_prompts._TRANSCRIPT_BLOCK
+    # — never inject, log, or backfill title/model for it.
+    if prompt_text.startswith("===== BEGIN ORIGINAL TRANSCRIPT"):
+        return 0
+
     # Sticky title + model backfill for wx /resume picker — run regardless
     # of recall config so short-lived cli sessions still get a model written.
     _maybe_set_session_model(sid)
