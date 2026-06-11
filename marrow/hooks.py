@@ -482,9 +482,6 @@ def _affect_heartbeat(conn: sqlite3.Connection) -> str | None:
     return None
 
 
-# Affect backdrop = top_sections.render_affect (shared with dashboard).
-
-
 # ── session-start payload ────────────────────────────────────────────────────
 
 def _read_input() -> dict:
