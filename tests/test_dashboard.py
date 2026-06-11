@@ -204,10 +204,7 @@ def test_content_block_carries_id_marker(db, tmp_path):
         text = dash.read_text()
     finally:
         conn.close()
-    for bid in (
-        "dashboard.alerts", "dashboard.tasks", "dashboard.milestone_cand",
-        "dashboard.affect", "dashboard.content",
-    ):
+    for bid in top_sections.DASHBOARD_BLOCK_IDS:
         assert f"<!-- id:{bid} -->" in text, bid
 
 

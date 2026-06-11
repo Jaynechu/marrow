@@ -433,13 +433,15 @@ def render_top(conn: sqlite3.Connection,
                *, dashboard_path: str | None = None) -> str:
     """Concatenate all dashboard top sections.
 
-    Order: Alerts → Tasks → Milestone candidate → Affect → Content.
-    `## Content` lives just below Affect (DESIGN L60).
+    Order: Alerts → Tasks → Timeline → Affect → Content (Lumi 06/11).
+    Milestone-cand block retired from dashboard — cand pipeline is broken
+    (≈0 yield); its home gets redesigned with the cand fix.
     """
+    from .timeline import render_timeline
     return "\n\n".join([
         render_alerts(conn),
         render_tasks(conn),
-        render_milestone_candidate(conn),
+        render_timeline(conn),
         render_affect(conn),
         render_content(conn, dashboard_path=dashboard_path),
     ])
@@ -453,9 +455,8 @@ def render_top(conn: sqlite3.Connection,
 DASHBOARD_BLOCK_IDS = (
     "dashboard.alerts",
     "dashboard.tasks",
-    "dashboard.milestone_cand",
-    "dashboard.affect",
     "dashboard.timeline",
+    "dashboard.affect",
     "dashboard.content",
 )
 
@@ -466,7 +467,6 @@ DASHBOARD_BLOCK_IDS = (
 RECONCILED_BLOCK_IDS = frozenset({
     "dashboard.alerts",
     "dashboard.tasks",
-    "dashboard.milestone_cand",
     "dashboard.affect",
     "dashboard.timeline",
 })
@@ -501,9 +501,8 @@ def iter_top_blocks(conn: sqlite3.Connection,
     pairs = [
         ("dashboard.alerts", render_alerts(conn)),
         ("dashboard.tasks", render_tasks(conn)),
-        ("dashboard.milestone_cand", render_milestone_candidate(conn)),
-        ("dashboard.affect", render_affect(conn)),
         ("dashboard.timeline", render_timeline(conn)),
+        ("dashboard.affect", render_affect(conn)),
         ("dashboard.content",
          render_content(conn, dashboard_path=dashboard_path)),
     ]
