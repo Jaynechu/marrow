@@ -151,11 +151,14 @@ def _week_trend(this_week: list[dict], last_week: list[dict]) -> str:
 
 
 def _tl_or_fallback(sd: dict) -> str:
-    """tl_line if set; else truncate body to _TL_FALLBACK_CHARS."""
+    """tl_line if set; else sanitised truncation of legacy prose body."""
     tl = sd.get("tl_line")
     if tl:
         return tl
     body = (sd.get("text") or "").strip()
+    # Legacy prose digests carry markdown + newlines — flatten before cut.
+    body = _re.sub(r"[#*`>]+", "", body)
+    body = _re.sub(r"\s+", " ", body).strip()
     if len(body) > _TL_FALLBACK_CHARS:
         return body[:_TL_FALLBACK_CHARS] + "…"
     return body
