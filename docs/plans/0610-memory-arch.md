@@ -47,18 +47,40 @@
 - recall_count/last_recalled_at updates: best-effort try/except — a stats write must never block or fail the recall path.
 - Rollback levers are all config: budget/caps/cutoff/window-days revert by config edit, no code revert needed.
 
-## Batch 3 — Timeline (test first, then A, then B)
+## Batch 3 — Timeline + digest reshape (test first, then A, then B)
 
-### 0. Prerequisite test (before A)
-- 3 real sessions: varied topic + length, incl one large. Dual-run haiku vs sonnet on same transcript for TL line; blind compare (Lumi judges).
-- Haiku fails → TL field moves to a sonnet call (one line, cost negligible).
+> Root principle (Lumi 06/11): every session must inherit memory, inherit emotion, perceive her current emotion. Life details ((拿铁拉花是一片叶子，散步看到小雏菊)) are first-class memory; study/code details are noise. Pipeline skeleton unchanged: events (code) + sonnet (task+affect) + haiku (digest) + 07:00 daily (diary+dims). No new calls, no new segments on sonnet.
 
-### 4A. SessionStart `## Timeline` block
-- Source: append (TL: <15-25 CN chars>) line to DIGEST task instructions — cache-safe, shared prefix ends at _TRANSCRIPT_BLOCK (sessionend_prompts.py:23-28); only post-prefix task text changes.
-- Parse: strip trailing TL: line from prose body → new column session_digests.tl_line; parse fail → column NULL + alert, digest body unaffected.
-- Per-day rollup: daily.py diary call outputs one day-summary line (25-40 chars) → new column diary.tl_line.
-- Render: per-session lines <72h (HH:MM Melbourne-local from session start ts), per-day lines 3-14d, nothing beyond 14d (recall covers). No line for the in-progress session.
-- Block cap ~800 chars, trim oldest first; lives inside SESSION_START_HARD_CAP 6000 beside Affect.
+### 0. Prerequisite test — mini-gate v2 (before A)
+- First gate run 06/11 ((docs/notes/0611-tl-gate-blind.md + key)): both models failed once each (haiku CN fluency on small session; sonnet zero-information jargon line on large session) → verdict: prompt was the problem, not the model. TL stays in the haiku DIGEST call.
+- Rerun on the SAME 3 sessions with the reshaped prompt below; haiku vs sonnet, blind, Lumi judges. Judge criteria: LIFE accuracy (zero confabulation), CN fluency, TL written from life perspective ((深夜和老婆一起更新recall机制) style, plain words, no project jargon).
+- Haiku fails → TL+LIFE move to a sonnet call (cost negligible).
+
+### 4A-1. DIGEST output reshape (haiku call, structure replaces prose)
+- Digest's consumers are all machines (daily merge, timeline render, recall FTS) — prose moves entirely to diary; digest becomes structured lines. Cache-safe: shared prefix ends at _TRANSCRIPT_BLOCK (sessionend_prompts.py:23-28); only post-prefix task text changes.
+- Output format:
+  - `KIND: casual|task` — model's existing two-branch judgement, now explicit.
+  - `TL: <15-30 CN chars>` — both kinds. Life perspective: who + what happened, plain words, no project jargon. Length soft (embedded EN terms don't count against it).
+  - `LIFE:` — **casual sessions only**, one line per item ≤20 chars (food/drink/sights/places/body state/small moods), 0-10 lines, `N/A` when none.
+  - `VOICE:` — casual only, verbatim fragments, current rules unchanged.
+  - `FACTS:` — task only, `<subject> <did> <outcome>` lines, current rules unchanged.
+- ANTI-CONFABULATION (Lumi decision 06/11, firm): task sessions keep the existing "drop ALL details" rule — NO LIFE extraction. >95% of task sessions contain no life details; forcing extraction makes the model dress code details up as life. Accepted loss: a latte mentioned mid-coding is dropped. Do not soften this with "N/A if none" prompt tricks.
+- Parse: new columns session_digests.kind, .tl_line, .life_lines (newline-joined, FTS-searchable); VOICE/FACTS stay in body. Parse fail → columns NULL + alert, body kept raw.
+- Fullwidth-colon tolerance in parser ((TL：)) — haiku slipped once in gate v1.
+
+### 4A-2. Diary — unchanged
+- 07:00 daily keeps timing, role (the system's only prose layer: weaves the day's LIFE/VOICE/FACTS lines into narrative), dims cand. Input-format note in prompt only.
+- Adds diary.tl_line (25-40 chars day summary) as planned.
+
+### 4A-3. SessionStart `## Timeline` block (pure-code render)
+- Layers (Lumi 06/11 — multi-session days make "last session" near-meaningless; LIFE pool beats single-session detail):
+  - 0-24h: **LIFE lines only**, pooled across all casual sessions in the window, newest first — budget 500 chars. No TL lines in this layer.
+  - 24-72h: per-session `HH:MM TL` lines (Melbourne-local) — budget ~400.
+  - 4-7d: diary.tl_line per day — budget ~200.
+  - >7d: nothing (recall covers).
+- No line for the in-progress session.
+- Trim order when over budget: oldest day lines → task-session TL lines (kind column) → oldest casual TL lines → LIFE pool halved.
+- Budget math: timeline ~1100 + current SessionStart payload (tasks+alerts+affect, ~1500-2500) ≈ 2600-3600 — inside SESSION_START_HARD_CAP 6000, far from hook stdout cap ~10000. UserPromptSubmit recall (800) is a separate hook invocation, separate cap. HANDOVER is @import, not hook-bound.
 
 ### 4B. Recall time-lane
 - Passive: time-cue regex ((昨天/今早/昨晚/前天/上周X/周X/N天前/X月X号)... enumerate + unit tests at impl) → Melbourne-local range → UTC → SQL window.
