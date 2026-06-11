@@ -433,7 +433,7 @@ def render_top(conn: sqlite3.Connection,
                *, dashboard_path: str | None = None) -> str:
     """Concatenate all dashboard top sections.
 
-    Order: Alerts → Tasks → Timeline → Affect → Content (Lumi 06/11).
+    Order: Alerts → Tasks → Timeline → Content → Affect-last (Lumi 06/11; affect block kept ONLY as the aff: anchor edit/delete entry, parked at bottom).
     Milestone-cand block retired from dashboard — cand pipeline is broken
     (≈0 yield); its home gets redesigned with the cand fix.
     """
@@ -442,8 +442,8 @@ def render_top(conn: sqlite3.Connection,
         render_alerts(conn),
         render_tasks(conn),
         render_timeline(conn),
-        render_affect(conn),
         render_content(conn, dashboard_path=dashboard_path),
+        render_affect(conn),
     ])
 
 
@@ -456,8 +456,8 @@ DASHBOARD_BLOCK_IDS = (
     "dashboard.alerts",
     "dashboard.tasks",
     "dashboard.timeline",
-    "dashboard.affect",
     "dashboard.content",
+    "dashboard.affect",
 )
 
 # Blocks whose user edits are absorbed into the DB by a reconcile pass before
@@ -502,8 +502,8 @@ def iter_top_blocks(conn: sqlite3.Connection,
         ("dashboard.alerts", render_alerts(conn)),
         ("dashboard.tasks", render_tasks(conn)),
         ("dashboard.timeline", render_timeline(conn)),
-        ("dashboard.affect", render_affect(conn)),
         ("dashboard.content",
          render_content(conn, dashboard_path=dashboard_path)),
+        ("dashboard.affect", render_affect(conn)),
     ]
     return [(bid, _stamp_block_id(body, bid)) for bid, body in pairs]

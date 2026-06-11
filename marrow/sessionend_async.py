@@ -414,6 +414,27 @@ def _run_writer(conn, sid: str, name: str, writer, *, zero_is_fail: bool = False
         return None
 
 
+def _collect_run_failures(conn, sid: str) -> list[str]:
+    """Failed segment names from THIS run only — rows after the latest
+    'start' stamp. Stale fail rows from a prior attempt must not flip a
+    fully-successful retry back to partial (which would false-fire the
+    two-strike alert)."""
+    seg_rows = conn.execute(
+        "SELECT action, summary FROM audit_log"
+        " WHERE target_id=? AND action LIKE 'sessionend_extract_%'"
+        " AND action != 'sessionend_extract_llm_call'"
+        " AND id > COALESCE((SELECT MAX(id) FROM audit_log"
+        "   WHERE action='sessionend_extract' AND target_id=?"
+        "   AND summary='start'), 0)",
+        (sid, sid),
+    ).fetchall()
+    return [
+        r["action"].removeprefix("sessionend_extract_")
+        for r in seg_rows
+        if not r["summary"].startswith("ok")
+    ]
+
+
 def _run_extraction(conn, sid: str, date: str,
                     events_text: str, cfg: dict, count: int,
                     cwd: str = "") -> int:
@@ -481,17 +502,7 @@ def _run_extraction(conn, sid: str, date: str,
             pass
 
     # ── final audit ───────────────────────────────────────────────────────────
-    seg_rows = conn.execute(
-        "SELECT action, summary FROM audit_log"
-        " WHERE target_id=? AND action LIKE 'sessionend_extract_%'"
-        " AND action != 'sessionend_extract_llm_call'",
-        (sid,),
-    ).fetchall()
-    failures: list[str] = [
-        r["action"].removeprefix("sessionend_extract_")
-        for r in seg_rows
-        if not r["summary"].startswith("ok")
-    ]
+    failures = _collect_run_failures(conn, sid)
 
     all_writers = ("task_cand", "affect", "digest")
     if not failures:

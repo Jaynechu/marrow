@@ -1483,6 +1483,66 @@ def test_digest_zero_rows_becomes_partial_no_immediate_alert(db_env):
     assert final is not None and "digest" in final["summary"]
 
 
+def _stamp_start(conn, sid: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('events', ?, 'sessionend_extract', 'start')",
+            (sid,),
+        )
+
+
+def test_retry_success_after_prior_fail_collects_nothing(db_env):
+    """Stale fail rows from a prior attempt must not flip a successful retry
+    back to partial: _collect_run_failures sees only rows after the latest
+    'start' stamp."""
+    from marrow import sessionend_async
+    db, _ = db_env
+    sid = "retry-scope-ok"
+    conn = storage.connect(db)
+    try:
+        _stamp_start(conn, sid)
+        sessionend_async._write_segment_audit(conn, sid, "digest",
+                                              "fail:zero_rows")
+        _stamp_start(conn, sid)
+        sessionend_async._write_segment_audit(conn, sid, "task_cand", "ok")
+        sessionend_async._write_segment_audit(conn, sid, "affect", "ok")
+        sessionend_async._write_segment_audit(conn, sid, "digest", "ok")
+        assert sessionend_async._collect_run_failures(conn, sid) == []
+    finally:
+        conn.close()
+
+
+def test_current_run_failure_still_collected(db_env):
+    from marrow import sessionend_async
+    db, _ = db_env
+    sid = "retry-scope-fail"
+    conn = storage.connect(db)
+    try:
+        _stamp_start(conn, sid)
+        sessionend_async._write_segment_audit(conn, sid, "affect", "ok")
+        sessionend_async._write_segment_audit(conn, sid, "digest",
+                                              "fail:zero_rows")
+        assert sessionend_async._collect_run_failures(conn, sid) == ["digest"]
+    finally:
+        conn.close()
+
+
+def test_collect_without_start_row_falls_back_to_all_rows(db_env):
+    """COALESCE 0 fallback: if the start stamp failed, every segment row
+    counts (old behaviour, fail-safe)."""
+    from marrow import sessionend_async
+    db, _ = db_env
+    sid = "retry-scope-nostart"
+    conn = storage.connect(db)
+    try:
+        sessionend_async._write_segment_audit(conn, sid, "digest",
+                                              "fail:LLMError")
+        assert sessionend_async._collect_run_failures(conn, sid) == ["digest"]
+    finally:
+        conn.close()
+
+
 # ── A-3: add_alert fallback sink ──────────────────────────────────────────────
 
 def test_add_alert_fallback_on_db_failure(tmp_path, monkeypatch):

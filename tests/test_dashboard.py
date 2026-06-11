@@ -110,8 +110,8 @@ def test_render_top_includes_content_section(db, tmp_path, monkeypatch):
     assert "---" in block
     # Numbered list form is gone.
     assert "1. [" not in block and "2. [" not in block
-    # Affect section precedes Content
-    assert block.index("## Affect") < block.index("## Content")
+    # Affect parked last (aff: anchor edit entry) — Content precedes it
+    assert block.index("## Content") < block.index("## Affect")
 
 
 def test_iter_top_blocks_canonical_ids(db):

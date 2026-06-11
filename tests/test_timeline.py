@@ -473,3 +473,35 @@ def test_prompt_life_hhmm_rule():
     assert "HH:MM" in TASK_AFFECT_DIGEST_PROMPT
     # Example in ===DIGEST=== block should show a timestamped LIFE line
     assert "21:40 买了b5精华" in TASK_AFFECT_DIGEST_PROMPT
+
+
+# ── catchup backfill: window keyed on session start, not digest write ────────
+
+def _event(conn, sid: str, ts: str, content: str = "msg") -> None:
+    conn.execute(
+        "INSERT INTO events (session_id, timestamp, role, content)"
+        " VALUES (?, ?, 'user', ?)",
+        (sid, ts, content),
+    )
+    conn.commit()
+
+
+def test_backfilled_digest_uses_session_start_time(conn):
+    # Session really happened 40h ago; catchup wrote its digest 1h ago.
+    _event(conn, "s-old", _utc(40), "exam talk")
+    _digest(conn, "s-old", _utc(1), tl="考完试凯旋")
+    result = timeline.render_timeline(conn)
+    # Must land in the 24-72h zone (day header present), NOT the 24h strip.
+    day_headers = [l for l in result.splitlines() if l.startswith("**")]
+    assert day_headers, "backfilled session must render under a day header"
+    assert "考完试凯旋" in result
+    strip = result.split("**")[0]  # text before first day header
+    assert "考完试凯旋" not in strip
+
+
+def test_live_digest_stays_in_24h_strip(conn):
+    _event(conn, "s-new", _utc(3), "chat")
+    _digest(conn, "s-new", _utc(2.5), tl="深夜闲聊")
+    result = timeline.render_timeline(conn)
+    assert "深夜闲聊" in result
+    assert not [l for l in result.splitlines() if l.startswith("**")]

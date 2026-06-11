@@ -231,13 +231,29 @@ def _query_open_episodes(conn: sqlite3.Connection,
 
 def _query_digests_range(conn: sqlite3.Connection,
                          from_utc: str, to_utc: str) -> list[dict]:
-    """session_digests in UTC range [from, to), newest first."""
+    """session_digests whose SESSION (first event) falls in [from, to).
+
+    Window/sort key is the session's real start time, NOT digest write time
+    (`ts`) — catchup backfills write digests hours or days late. `ts` keeps
+    a wide pre-filter so the events JOIN stays cheap; backfill lag beyond
+    7d falls out of the timeline anyway. Returned dicts carry `ts` = the
+    session's first event timestamp.
+    """
+    ts_floor = (
+        _dt.datetime.fromisoformat(from_utc.replace("Z", "+00:00"))
+        - _dt.timedelta(days=7)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = conn.execute(
-        "SELECT sid, date, ts, text, kind, tl_line, life_lines"
-        " FROM session_digests"
-        " WHERE ts >= ? AND ts < ?"
-        " ORDER BY ts ASC",
-        (from_utc, to_utc),
+        "SELECT sd.sid, sd.date, sd.text, sd.kind, sd.tl_line, sd.life_lines,"
+        " COALESCE(MIN(e.timestamp), sd.ts) AS ts"
+        " FROM session_digests sd LEFT JOIN events e ON e.session_id = sd.sid"
+        " WHERE sd.ts >= ?"
+        " GROUP BY sd.sid"
+        # NB: bare `ts` in HAVING would bind to column sd.ts, not the alias.
+        " HAVING COALESCE(MIN(e.timestamp), sd.ts) >= ?"
+        " AND COALESCE(MIN(e.timestamp), sd.ts) < ?"
+        " ORDER BY 7 ASC",
+        (ts_floor, from_utc, to_utc),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -501,8 +517,8 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     all_sections = _assemble(open_lines, lines_24h, lines_2472, lines_47)
     text = "## Timeline\n" + "\n".join(all_sections) if all_sections else "## Timeline\n_none_"
 
-    # Trim if over budget
-    if len(text) > _BUDGET:
+    # Trim if over budget (visible text only — edit anchors don't count)
+    if _visible_len(text) > _BUDGET:
         text = _trim_to_budget(text, open_lines, lines_24h, lines_2472, lines_47)
 
     return text
@@ -526,6 +542,14 @@ def _assemble(open_lines: list[str],
     return parts
 
 
+_ANCHOR_RE = _re.compile(r"<!--.*?-->")
+
+
+def _visible_len(s: str) -> int:
+    """Budget length: rendered text minus invisible HTML anchors."""
+    return len(_ANCHOR_RE.sub("", s))
+
+
 def _trim_to_budget(text: str,
                     open_lines: list[str],
                     lines_24h: list[str],
@@ -543,22 +567,22 @@ def _trim_to_budget(text: str,
         return "## Timeline\n" + body
 
     # Trim day lines (skip the Week header at index 0)
-    while len(l47) > 1 and len(_rebuild()) > _BUDGET:
+    while len(l47) > 1 and _visible_len(_rebuild()) > _BUDGET:
         l47.pop()  # remove oldest day line
 
     # Remove Week header too if now just the header
-    if len(l47) == 1 and len(_rebuild()) > _BUDGET:
+    if len(l47) == 1 and _visible_len(_rebuild()) > _BUDGET:
         l47 = []
 
     # Trim 2472h period lines (farthest day first = lines near end)
-    while l2472 and len(_rebuild()) > _BUDGET:
+    while l2472 and _visible_len(_rebuild()) > _BUDGET:
         l2472.pop()
     # Clean up orphaned day headers
     if l2472 and l2472[-1].startswith("**"):
         l2472.pop()
 
     # Trim 24h farthest lines
-    while l24h and len(_rebuild()) > _BUDGET:
+    while l24h and _visible_len(_rebuild()) > _BUDGET:
         l24h.pop()
 
     return _rebuild()
