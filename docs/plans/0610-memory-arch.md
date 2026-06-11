@@ -85,7 +85,7 @@
 - Trim order when over budget: oldest day lines → task-session TL lines (kind column) → oldest casual TL lines → LIFE pool halved.
 - Budget math: timeline ~1100 + current SessionStart payload (tasks+alerts+affect, ~1500-2500) ≈ 2600-3600 — inside SESSION_START_HARD_CAP 6000, far from hook stdout cap ~10000. UserPromptSubmit recall (800) is a separate hook invocation, separate cap. HANDOVER is @import, not hook-bound.
 
-### 4B. Recall time-lane
+### 4B. Recall time-lane — DONE 06-11 (timecue.py + window params; coarse path reads session_digests.text until Batch 3 lands tl_line)
 - Passive: time-cue regex ((昨天/今早/昨晚/前天/上周X/周X/N天前/X月X号)... enumerate + unit tests at impl) → Melbourne-local range → UTC → SQL window.
 - Window query: no keyword → session_digests/tl lines (coarse); with keyword → FTS events inside window (fine).
 - Merge: time-lane hits take top injection slots (deterministic beats probabilistic), then semantic hits fill remaining budget.

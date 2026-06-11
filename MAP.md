@@ -60,7 +60,8 @@ Three runtimes:
 
 - SessionStart: affect heartbeat warning + mood backdrop (§1.2).
 - UserPromptSubmit: recall fusion hits as passive context. Render shaping in `hooks:user_prompt_submit`: budget 800 chars · rank_caps [300,120,120,40,40] · rel_cutoff 0.6×top1 · only rank-1 event hit gets ±1 context turns (`recall:fetch_event_context`) · timestamps via `timeutil:format_recall_ts` · recall_seen dedup per session · post-injection `recall:bump_recall_counts` (best-effort).
-- MCP `daemon:recall` — same fusion, exclude_kinds=() (hook excludes diary+task), optional context=bool for ±1 turns, `when` relative-time field.
+- Time-lane (passive): `timecue:parse_time_cue` on prompt (昨天/前天/上周X/N天前/X月X号/EN equivalents → Melbourne natural-day → UTC window; future cues → None). Cue + substantive stripped text → windowed fusion takes TOP slots (budget min([recall].timelane_budget 400, budget/2)); stripped trivial → `recall:fetch_window_digests` lines `[MM-DD Day · digest]`, seen-key ("digest", sid). Semantic pool fills remainder, deduped vs windowed; rel_cutoff per-pool only.
+- MCP `daemon:recall` — same fusion, exclude_kinds=() (hook excludes diary+task), optional context=bool for ±1 turns, `when` relative-time field. since/until params (Melbourne YYYY-MM-DD, converted via `timecue:melb_day_range`); empty query + window → window digests instead of fusion.
 
 ## 4. Storage & retrieval
 
@@ -78,6 +79,7 @@ Three runtimes:
 - Gates: min_score 0.35 · _VEC_ONLY_FLOOR 0.55 (cross-table vec-only adds) · _ANCHOR_VEC_FLOOR 0.50 (pre-gate, bypassed by strong-hit) · _ANCHOR_BIAS +0.10 (rows clearing floor or strong-hit) · cwd bucket bias ±0.10 (cc-lab→project, desktop/ny→daily, study→study).
 - Strong-hit: full-table substring scan, `recall:_expand_needles` cjk 2-4 char windows, ascii ≥2 — covers 2-char CN names below the trigram floor (entity force-include lives HERE, in recall.py; entity_recall.py only does mention-count bumps).
 - Dormant: importance ≤2 AND age >90d excluded; FTS keyword hit revives (clears superseded_by). Adjacency dedup: same-session events with |id diff| ≤1 collapse to highest score. Double min_score gate (inner events + unified all-lanes) is intentional.
+- Window (since/until UTC ISO, optional): events FTS gets SQL `timestamp >= ? AND < ?`; events vec fetches k×6 then Python-filters (KNN virtual-table WHERE unreliable); diary filtered by Melbourne-local dates; anchor lanes unaffected. `recall:fetch_window_digests` — session_digests by ts (date-column fallback), newest first, 150ch/row.
 
 ## 5. Surface (DB ↔ md)
 
