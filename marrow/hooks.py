@@ -994,6 +994,14 @@ def user_prompt_submit() -> int:
     if not prompt_text:
         return 0
 
+    # Strip synapse-wx bridge boilerplate before recall so media Read
+    # instructions / merge notes / dot sentinels never become query needles.
+    # If nothing meaningful remains after stripping, skip recall entirely.
+    from .transcript import strip_wx_boilerplate as _strip_wx
+    recall_query = _strip_wx(prompt_text)
+    if not recall_query:
+        return 0
+
     rcfg = cfg.get("recall", {})
     ctx_n = int(rcfg.get("event_context_window", 1))
     budget_chars = int(rcfg.get("budget_chars", 800))
@@ -1007,7 +1015,7 @@ def user_prompt_submit() -> int:
     cue = None
     try:
         from .timecue import parse_time_cue
-        cue = parse_time_cue(prompt_text)
+        cue = parse_time_cue(recall_query)
     except Exception:
         cue = None
 
@@ -1050,12 +1058,12 @@ def user_prompt_submit() -> int:
         wlane.append(h)
     # windowed hits skip rel_cutoff — they are time-pinned, not semantic ranked
 
-    # ── semantic recall with original prompt text ─────────────────────────────
+    # ── semantic recall with boilerplate-stripped query ───────────────────────
     try:
         from . import recall as recall_mod
         conn = storage.connect(config.db_path())
         try:
-            hits = recall_mod.recall_with_config(conn, prompt_text, current_cwd=cwd)
+            hits = recall_mod.recall_with_config(conn, recall_query, current_cwd=cwd)
         finally:
             conn.close()
     except Exception:
@@ -1178,7 +1186,7 @@ def user_prompt_submit() -> int:
     # Side log — markdown append so VSCode preview / tail both readable.
     # Mirror what actually got injected: dedup-filtered `visible`, not raw hits.
     try:
-        _append_recall_log(sid, prompt_text, visible)
+        _append_recall_log(sid, recall_query, visible)
     except Exception:
         pass
 
