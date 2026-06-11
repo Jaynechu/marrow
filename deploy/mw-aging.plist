@@ -11,6 +11,7 @@
     <string>/Users/Gabrielle/CC-Lab/marrow/.venv/bin/python</string>
     <string>-m</string>
     <string>marrow.aging</string>
+    <string>--apply</string>
   </array>
 
   <key>WorkingDirectory</key>
