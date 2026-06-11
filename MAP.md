@@ -1,489 +1,155 @@
 # Marrow — MAP
 
-> This doc produced by agents based on code. It's not SoT. If unsure, go back to code.
+> Speed-read for a new session: how each board works, without opening code. Not SoT — code wins.
+> Refs are `file:function` (grep them; line numbers rot). Params inline are the live defaults (config.toml can override).
+> Rewritten 2026-06-11 from per-module fact cards + adversarial verify (docs/notes/0611-system-review.md).
 
 ## 0. Contents
 
-- §1  System map — 1.1 data-flow diagram · 1.2 hooks registry
-- §2  Write path — 2.1 session capture · 2.2 sessionend extraction (TASK_AFFECT/DIGEST) · 2.3 daily candidate
-- §3  Read path — injection back to CC (hooks + daemon)
-- §4  Storage & retrieval — 4.1 schema · 4.2 embedding · 4.3 recall fusion
-- §5  Surface — 5.1 dashboard · 5.2 subpage catalog (11) · 5.3 sync machinery · 5.4 write arbitration
-- §7  Scheduled jobs (launchd, 7 plists)
-- §8  Alerts
-- §9  Catchup & self-heal
-- §10 Cleanup / aging
-- §11 Infra — 11.1 daemon/MCP · 11.2 LLM provider · 11.3 config/paths · 11.4 popen/backup/migrate
-- §12 Addons — 12.1 daily/day-plan · 12.2 buddy/goose-bites
-- §13 Invariants & current status
-
-> Each sub-section is self-contained — grep `## N` / `### N.M` anchor + Read offset+limit for partial load.
+§1 system map+hooks · §2 write path · §3 read path · §4 storage+recall · §5 surface sync · §7 scheduled jobs · §8 alerts · §9 catchup/self-heal · §10 aging · §11 infra · §12 addons · §13 invariants+status
 
 ## 1. System map
 
-### 1.1 Data-flow diagram + 3 runtimes
-
 ```
-   ┌─────────────────────────────────────────────────────────────┐
-   │                      CC session                             │
-   │                                                             │
-   │     transcript.jsonl                  injected context      │
-   │           │                                  ▲              │
-   │           │ SessionEnd                       │              │
-   └───────────┼──────────────────────────────────┼──────────────┘
-               │                                  │
-               ▼                       ┌──────────┴──────────────┐
-      ┌──────────────────┐             │   · hooks (auto)        │
-      │ events           │             │   · daemon (MCP, on-    │
-      └────────┬─────────┘             │     demand)             │
-               │ popen_detach          └──────────┬──────────────┘
-               ▼                                  │
-      ┌─────────────────────────┐                 │
-      │ sessionend_async        │                 │
-      │ STATE | NARRATIVE       │                 │
-      └──────────┬──────────────┘                 │
-                 │                                │
-   daily.py 7AM ─┤                                │
-                 │                                │
-                 ▼                                │
-   ╔═══════════════════════════════════════════════════════════════╗
-   ║              DB (SQLite) — Memory core                        ║
-   ║                                                               ║
-   ║  events · tasks · affect · entities · milestones · memes      ║
-   ║  diary · digests · alerts · audit_log · pit · stickers        ║
-   ║  atlas · goose_bites · md_index · memes_reject_log            ║
-   ║                                                               ║
-   ║  bge-m3 + 6 vec lanes + recall fusion                         ║
-   ╚═══════════════════╤═══════════════════════════════════════════╝
-                       │ watcher + sync_loop (5s)│ 
-                       ▼                         ▲ user edits md
-   ╔═══════════════════════════════════════════════════════════════╗
-   ║                       Surface (md)                            ║
-   ║                                                               ║
-   ║   dashboard.md     Main Entrance                              ║
-   ║   db-pages/        11 subpage (see §5.2)                      ║
-   ╚═══════════════════════════════════════════════════════════════╝
-   ╔═══════════════════════════════════════════════════════════════╗
-   ║   Addon contract                                              ║
-   ║                                                               ║
-   ║   planned  :  WeChat bridge (Phase 4)                         ║
-   ║               stellan_wallet (Phase 5)                        ║
-   ║               external MCPs (.mcp.json)                       ║
-   ╚═══════════════════════════════════════════════════════════════╝
+ CC session ── transcript.jsonl ──SessionEnd──▶ events ──popen──▶ sessionend_async
+     ▲                                            │                (TASK_AFFECT + DIGEST)
+     │ injected context                           ▼
+ hooks (auto) / daemon (MCP) ◀────────── DB (SQLite) ◀── daily.py 07:00 (candidates+diary)
+                                          │  events·tasks·affect·entities·milestones·memes
+                                          │  diary·digests·alerts·audit_log·atlas·md_index…
+                                          │  bge-m3 · 6 vec lanes · recall fusion
+                                          ▼▲ watcher + sync_loop (5s) / user md edits
+                                Surface: dashboard.md + db-pages/ (11 subpages)
 ```
 
-- **daemon (MCP)** — stdio MCP server exposing recall / atlas_lookup / embed_pending; launched on-demand by CC via .mcp.json, persistent for the session lifetime.
-- **watcher (launchd)** — long-running file-system watcher; detects md edits, updates md_index, triggers reconcile + render; supervised by launchd with KeepAlive=true.
-- **hooks (one-shot)** — CC lifecycle callbacks (SessionStart / SessionEnd / UserPromptSubmit / PreToolUse); spawn as a child process per event and exit immediately after injecting context or firing popen_detach.
+Three runtimes:
+- **hooks** — one-shot per CC lifecycle event, exit after injecting/spawning.
+- **watcher** — launchd persistent (KeepAlive); hosts SyncLoop(5s) + AtlasSweepLoop(60s) threads.
+- **daemon** — stdio MCP (recall / atlas_lookup / embed_pending), spawned by CC via .mcp.json, no plist; holds bge-m3 in memory.
 
-### 1.2 Hooks registry
+### 1.2 Hooks registry (all in marrow/hooks.py)
 
-- SessionStart: every session open · injects open tasks + alerts + affect backdrop as additionalContext; spawns sessionstart_catchup detached · marrow/hooks.py:205
-- SessionEnd: every session close · archives transcript events, writes lifecycle:end, idempotent spawn gate compares current user_count vs last ok row to skip popen when no new events, then spawns sessionend_async detached · marrow/hooks.py:272 · marrow/hooks.py:306
-- UserPromptSubmit: every user turn · handles mm-/mm+ control prefixes + injects recall-fusion cards as additionalContext · marrow/hooks.py:482
-- PreToolUse (Write/Edit/Bash): every file-write or file-op · emits atlas placement guidance for the target path's ancestor chain; global hooks also apply prompt-guard (CJK/table lint) and prompt-lint (haiku trim) · marrow/hooks.py:541 · ~/.claude/hooks/prompt-guard.py · ~/.claude/hooks/prompt-lint.py
-
----
+- SessionStart `hooks:session_start` — injects affect heartbeat (events-but-no-affect gap day in last 7d) + affect backdrop via `top_sections:render_affect`. Hardcap 6000 chars. Does NOT inject tasks/alerts. Spawns sessionstart_catchup detached. Writes lifecycle:start marker (ppid+started_at).
+- SessionEnd `hooks:session_end` — transcript.clean → repo:archive_events (idempotent by source_hash) → lifecycle:end commits BEFORE popen → idempotent spawn gate (skip popen when user_count ≤ last ok,user_count=N) → popen_detach_lazy sessionend_async. MARROW_BRIDGE=1 suppresses popen (bridge owns timing).
+- UserPromptSubmit `hooks:user_prompt_submit` — mm-/mm+ control prefixes + recall fusion injection (params §3). Per-session recall_seen dedup state under DATA_DIR/state/recall_seen/<sid>.json (wiped at start+end).
+- PreToolUse `hooks:pretool_use` — Write/Bash placement ops get atlas ancestor-chain guidance (desc + naming_hint); others get a literal path reminder.
 
 ## 2. Write path
 
-### 2.1 Session capture
+### 2.1 session capture
+- `transcript:clean` code-only strip: tool calls, thinking, sidechains, buddy HTML comments; headless spawns dropped via `transcript:is_headless` (worker_models prefix match + 12 known prompt heads). `repo:archive_events` also bumps entity mention_count + memes use_count in the same txn.
 
-### session-capture
-- SessionEnd hook reads transcript path from stdin → `transcript.clean()` (code-only, no LLM) strips tool calls, thinking blocks, sidechain spawns, and buddy (铁锅) end-of-turn HTML comments at marrow/transcript.py:40 — keeps only user/assistant text with source_hash dedup → `repo.archive_events()` idempotent insert.
-- Headless spawns dropped via known-prompt-head matching.
-- **Where**: marrow/hooks.py:272 · marrow/transcript.py:1 · marrow/storage.py:22
+### 2.2 sessionend extraction (sessionend_async.py)
+- Skip rule: ≤3 user turns (`[sessionend].skip_turn_threshold`) → terminal `skip:short_session,user_count=N`. Stale-skip recovery `sessionend_async:_drop_stale_skip`: skip row dropped + reprocessed if count later grew past threshold.
+- Two serial LLM calls sharing a byte-identical transcript fence (2nd call gets prompt-cache read): TASK_AFFECT (sonnet mid) → writers seg_task_cand + seg_affect; DIGEST (haiku low) → seg_digest. One call failing doesn't block the other; per-writer audit rows; final row ok,user_count=N / partial:<writers> / fail:*.
+- seg_affect: event_hint resolved FTS→LIKE within same-session events; reconcile_prev resolves most-recent unresolved affect row — KNOWN GAP: lookup is global, not session/date-scoped (review P0-3).
+- seg_task_cand: cosine dedup 0.85 vs active + 24h-done tasks; tick-by-id from sonnet `{"id":N,"status":"done"}`.
+- Digest raw log → ~/.config/marrow/logs/digest/digest-YYYY-MM-DD.log (6AM cutoff, pruned >2.5d).
+- Tail (fail-soft, alerted): `dashboard:write_dashboard` + `recall:embed_pending(batch=200)`.
 
-### 2.2 Sessionend extraction (TASK_AFFECT / DIGEST)
+### 2.3 daily candidates (daily.py 07:00, for yesterday)
+- One sonnet call → 3 fenced blocks (entity/milestone/memes), block-isolated parse; second sonnet call → diary prose. Idempotent per date unless --force; serialised by `daily_catchup:app_lock` (fcntl).
+- Ingestion gates (`candidates.py`):
+  - entities: conf ≥0.8; cosine 0.85 same-kind hit → merge aliases into matched row (never blocks).
+  - milestones: conf ≥0.85; cosine 0.85 blocks; tombstone anti-revive via audit_log sha256(scope|date|title); affect importance=5 force-emits a candidate.
+  - memes: ALL six types gated by `candidates:_events_like_count_14d` — key on ≥3 distinct calendar days in last 14d; cosine 0.85 vs memes+milestones+entities blocks; paw/fact auto-pinned.
+- Shared dedup config `[*_dedup]`: cosine_threshold 0.85 · fast_skip_count 3 (persistent rejects short-circuit via memes_reject_log).
+- Empty day (no digests, no affect) writes stub diary row '—' — KNOWN GAP: stub blocks later backfill (review P1-8).
 
-### sessionend-extraction
-- Detached `sessionend_async` (spawned after lifecycle:end commits). Two sequential LLM calls on the archived transcript:
-  - **TASK_AFFECT** call (sonnet mid) → writers: `task_cand` · `affect` (affect resolves `event_hint` via FTS phrase → LIKE fallback against same-session events; sets `event_id`; logs `event_link` to audit_log · marrow/sessionend_writers.py:56)
-  - **DIGEST** call (haiku low) → writer: `digest`
-- Both calls open with the byte-identical `_TRANSCRIPT_BLOCK` fence → DIGEST's prompt-cache read hits TASK_AFFECT's prefix. Serial in one process, no async runtime.
-- **Failure isolation**: TASK_AFFECT failure does not block DIGEST. `partial:<failed_writers>` logged when 1–2 writers fail; `fail:task_affect=...,digest=...` only when both calls fail.
-- **Stale-skip recovery**: if cc fires session_end mid-flush, skip:short_session is cleared once event count grows past threshold so the rerun completes (marrow/sessionend_async.py:128).
-- **Task-extraction gate**: sessions with ≤ 3 user turns skip extraction entirely. Tasks have no count-based ingestion gate beyond this — new titles land directly subject to cosine dedup (0.85) against active tasks + done tasks in last 24h.
-- **Digest log**: every successful digest appends raw haiku output to `~/.config/marrow/logs/digest/digest-YYYY-MM-DD.log` (6AM cutoff). Files older than 2.5 days pruned on each sessionend run.
-- **Where**: marrow/sessionend_async.py:403 · marrow/sessionend_prompts.py:24 · marrow/sessionend_writers.py:63 · marrow/hooks.py:320
+## 3. Read path (what gets injected)
 
-### 2.3 Daily aggregation (candidate extraction)
-
-### daily-aggregation
-- **What**: Nightly Sonnet call per day → entity / milestone / memes candidates, one writer per block (`===BLOCK===` / `===END===` markers). Block parse failure isolates to that block; the other two still land.
-- **Per-table ingestion gates** (where new candidates can actually land):
-  - **entities**: LLM confidence ≥ 0.8 → land directly. Cosine 0.85 hit against same-kind active entity → **merge** new name+aliases into the matched row (auto-learn, never blocks insert). · marrow/candidates.py:148 · marrow/candidates.py:186
-  - **milestones**: LLM confidence ≥ 0.85 → land directly. Cosine 0.85 against existing titles blocks. Force rule: any affect episode with `importance=5` must emit a milestone. · marrow/candidates.py:219 · marrow/daily_prompts.py:37
-  - **memes** (types paw / meme / news / event — NOT fact / others): frequency gate = **key substring must appear on ≥ 3 distinct calendar days in last 7d of events** (counted by `DATE(timestamp)` distinctions in `_events_like_count_7d`, not row count). Cosine 0.85 vs existing memes blocks. paw / fact auto-pinned (never age). · marrow/candidates.py:275 · marrow/candidates.py:427
-- **Shared dedup config** (all four candidate tables, config.toml `[*_dedup]`):
-  - `cosine_threshold = 0.85` · `fast_skip_count = 3` (3+ persistent rejects on the same key short-circuits future LLM dedup checks) · marrow/config.default.toml:83
-- **Where**: marrow/daily.py:150 · marrow/daily_prompts.py:28 · marrow/candidates.py:38 · marrow/semantic_dedup.py
-
----
-
-## 3. Read path (what gets injected, when)
-
-- **SessionStart injects**: affect heartbeat warning (gap day in last 7d with events but no affect), affect backdrop (top_sections mood band).
-- **UserPromptSubmit injects**: top-K recall fusion hits (vec + bm25 + recency + affect) as additionalContext labelled "Recall (auto) — passive context, do not answer"; also handles mm-/mm+ control prefixes.
-- **Render shaping** (hook side): per-rank char caps `rank_caps=[300,120,120,40,40]` — only rank-1 event hit gets ±1 context turns; anchor cards truncate at rank cap, never context. Rows < top1 × `rel_cutoff` (0.6) dropped pre-injection; block budget 800 chars. Hits timestamped `[06-08 Mon · 2d ago]` via `timeutil.format_recall_ts` (shared with mcp recall `when` field; mcp recall also accepts `context: bool` to attach ±1 turns to rows).
-- **entity force-include**: Bypasses FTS5 via reverse-substring match (name.lower() in query.lower()) so 2-char CN names that fall below the trigram tokenizer's 3-char floor (e.g. 南南) are still surfaced; for names ≥3 chars FTS5 is tried first, LIKE-scan as fallback.
-- **Where**: marrow/hooks.py:205 · marrow/hooks.py:482 · marrow/entity_recall.py:73 · marrow/recall.py:1027
-
----
+- SessionStart: affect heartbeat warning + mood backdrop (§1.2).
+- UserPromptSubmit: recall fusion hits as passive context. Render shaping in `hooks:user_prompt_submit`: budget 800 chars · rank_caps [300,120,120,40,40] · rel_cutoff 0.6×top1 · only rank-1 event hit gets ±1 context turns (`recall:fetch_event_context`) · timestamps via `timeutil:format_recall_ts` · recall_seen dedup per session · post-injection `recall:bump_recall_counts` (best-effort).
+- MCP `daemon:recall` — same fusion, exclude_kinds=() (hook excludes diary+task), optional context=bool for ±1 turns, `when` relative-time field.
 
 ## 4. Storage & retrieval
 
-### 4.1 Schema + table catalog
+### 4.1 schema (storage.py, v16)
+- Migrations `storage:init_db` _migrate_to_v2…v16 idempotent, PRAGMA user_version guarded; v5/v7/v8/v9 are empty sentinels.
+- Connection: journal_mode=DELETE (deliberate — DECISIONS.md, APFS SIGBUS; never WAL) · busy_timeout 30s · sqlite-vec loaded per conn. Rule: never open a second conn to the same DB inside a write txn.
+- Tables: events (recall_count/last_recalled_at v16; never aged) · tasks (active→archived on 30d no-mention) · milestones (pinned exempt) · memes (pinned=0 + last_seen>90d → DELETE) · stickers · pit · diary (date PK, DELETE+INSERT rewrite) · goose_bites · alerts · audit_log · affect (superseded_by NULL = live; affect_live view) · entities (entities_live view) · session_digests · md_index (block hash + tombstone_at) · memes_reject_log · atlas · 6×*_vec + *_vec_meta.
 
-Schema version: 16. Migrations: idempotent numbered functions (_migrate_to_v2…v16) run in sequence on every init_db call, guarded by PRAGMA user_version; column ALTERs swallow duplicate-column errors silently.
+### 4.2 embedding (recall.py)
+- bge-m3 ONNX CPU singleton, 1024d, CLS-pool L2-norm, max_length 512. `recall:embed_pending` iterates 6 lanes (events/memes/entities/milestones/diary/tasks), batch 50/lane, so events backlog can't starve others; diary lane sweeps orphaned vec rows (rowid reuse after DELETE+INSERT).
 
-- events: per-turn transcript rows (role/content/session_id/channel) · primary recall surface · no aging · `recall_count INTEGER NOT NULL DEFAULT 0` + `last_recalled_at TEXT` added v16 (bumped on recall hits; `recall_count > 0` exempts from vec eviction) · marrow/storage.py:21
-- tasks: active work items (study + project) · status = active/done/archived · active with 0 mentions in 30d → archived · marrow/storage.py:32
-- milestones: identity/life anchors (scope/date/title) · pinned=1 exempts from aging · no expiry · marrow/storage.py:45
-- memes: concept glossary / lore entries · status = active/dormant · pinned=0 AND last_seen > 90d → DELETE (no dormant intermediate step) · marrow/storage.py:57
-- stickers: asset attachments linked to a meme row · no aging · marrow/storage.py:70
-- pit: project idea backlog · status = idea/active/done · no aging · marrow/storage.py:79
-- diary: one row per date (TEXT PK) · no aging; daily.py rewrites by DELETE+INSERT · marrow/storage.py:89
-- goose_bites: per-session distilled goose (铁锅) quotes · best=1 flags top picks · no aging · marrow/storage.py:97
-- alerts: cross-system signal rows · severity = info/warn/critical · resolved by manual flag or aging · marrow/storage.py:106
-- audit_log: action history (target_table/target_id/action/summary) · no aging · marrow/storage.py:116
-- affect: per-episode emotion (V/A/importance/label) · superseded_by=NULL = live; affect_live view filters · event_id INTEGER REFERENCES events(id) via _match_event_hint (FTS→LIKE; NULL if ambiguous) · marrow/storage.py:124
-- entities: named people/places/concepts with fact + aliases · kinds = person/preference/place/event/concept · superseded_by=NULL = live · marrow/storage.py:140
-- session_digests: one DIGEST text per sessionend run · keyed by session id · no aging · marrow/storage.py:382
-- md_index: per-block content hash per subpage file (path, block_id) · tombstone_at non-null = user deleted · marrow/storage.py:525
-- memes_reject_log: persistent dedup rejection counter (key, type, reason) · marrow/storage.py:554
-- atlas: directory heading tree (path/description/naming_hint/depth) · stale rows deleted on sweep · marrow/storage.py:579
-- *_vec / *_vec_meta: six sqlite-vec virtual tables (events, memes, entities, milestones, diary, tasks) + companion meta tracking embedder_id and dim · marrow/storage.py:151
-
-### 4.2 Embedding & vec lanes
-
-### embedding
-- BAAI/bge-m3 via ONNX runtime → 1024d float vectors. Lazy-loaded singleton (model.onnx + tokenizer.json from HuggingFace snapshot). CLS-pool output L2-normalised.
-- Six vec lanes: **events · memes · entities · milestones · diary · tasks**. `embed_pending()` iterates all six per call, capped batch each, so a huge events backlog can't starve cross-table lanes.
-- **Where**: marrow/recall.py:59 · marrow/recall.py:399 · marrow/recall.py:132 · marrow/storage.py:224
-
-### 4.3 Recall fusion (scoring)
-
-### recall
-- FTS5 (BM25-normalised) ∪ vec (cosine) candidates merge by event id → weighted sum: **vec 0.55 · bm25 0.30 · recency 0.15 · affect 0.10**.
-- Milestones / memes / diary / tasks lanes contribute vec-only or substring candidates with reserved slot caps (anchor rows can't be starved by events flood).
-- Entity force-include: any entity name found in the query prepends its entity-card + linked events, bypassing FTS5 (handles 2-char CJK names that fall below the trigram tokenizer's 3-char floor).
-- **Thresholds**: `min_score=0.35` for events (milestones / memes / entities skip this gate) · vec-only floor `0.40` (cross-table) · relative gate `rel_cutoff=0.6` × top1 score (hook render layer, hooks.py `_apply_rel_cutoff`) · dormant rule: importance ≤ 3 AND age > 90d excluded unless FTS keyword hit revives
-- **Where**: marrow/recall.py:693 · marrow/recall.py:433 · marrow/recall.py:444 · marrow/recall.py:455 · marrow/entity_recall.py:73
-
-### 4.4 Anchor lane tokenizer
-
-Anchor tables (memes / milestone / entity) use **reverse-substring** matching: if name/title/key is substring of `query.lower()`, kw_score = 1.0.
-
-- Trigger list: full name + split components on `/` / whitespace, len ≥ 2 (e.g. Openclaw / 大龙虾 → [Openclaw / 大龙虾, Openclaw, 大龙虾]).
-- No token-fraction fallback: if no trigger in query, row out — semantic vec still picks up.
-- Anchor-style subpage lanes (project / pit / study / pending wallet) use reverse-substring, not `_query_tokens`.
-- **Where**: marrow/entity_recall.py:73 · marrow/recall.py:605 (`_milestone_candidates`) · marrow/recall.py:661 (`_memes_candidates`) · marrow/recall.py:575 (`_anchor_triggers`)
+### 4.3 recall fusion (`recall:recall_fusion` / entry `recall:recall_with_config`)
+- Events: FTS5 (phrase-quoted, BM25-normalised) ∪ vec cosine, merged by id. Weighted sum: vec .55 · bm25 .30 · recency .15 · affect .10. Recency exp(-days/30) with floors: imp 5 / override → 0.5 · imp 3-4 → 0.18 · imp ≤2 → 0.
+- Anchor lanes (memes/milestones/entities): vec weight .60; diary/tasks .55; reserved slot caps so events can't starve them.
+- Gates: min_score 0.35 · _VEC_ONLY_FLOOR 0.55 (cross-table vec-only adds) · _ANCHOR_VEC_FLOOR 0.50 (pre-gate, bypassed by strong-hit) · _ANCHOR_BIAS +0.10 (rows clearing floor or strong-hit) · cwd bucket bias ±0.10 (cc-lab→project, desktop/ny→daily, study→study).
+- Strong-hit: full-table substring scan, `recall:_expand_needles` cjk 2-4 char windows, ascii ≥2 — covers 2-char CN names below the trigram floor (entity force-include lives HERE, in recall.py; entity_recall.py only does mention-count bumps).
+- Dormant: importance ≤2 AND age >90d excluded; FTS keyword hit revives (clears superseded_by). Adjacency dedup: same-session events with |id diff| ≤1 collapse to highest score. Double min_score gate (inner events + unified all-lanes) is intentional.
 
 ## 5. Surface (DB ↔ md)
 
-### 5.1 Dashboard render contract
+### 5.1 dashboard (`dashboard:write_dashboard`)
+- Flow: 4 reconcile passes (milestone_cands, tasks, affect, alerts — each fail-soft + warn alert) → `top_sections:iter_top_blocks` render (Alerts→Tasks→Milestone cand→Affect→Content) → `dashboard:_resolve_blocks` per-block: RECONCILED_BLOCK_IDS always overwrite (reconcile absorbed edits) · pure-display blocks hash-skip if user-edited · tombstoned omit → atomic write → md_index hashes recorded after write.
+- Tasks bucketing: today / next7 / later / no_date, 6AM Melbourne boundary. Affect: last batch + 24h + 7d windows, V/A split-tone label when std_v>0.3.
 
-### dashboard
-- Top region written atomically: alert, tasks, milestone candidates, affect.
-- Contents: Links to all subpages
-- `write_dashboard` flow: reconcile absorbs md edits into DB) → `top_sections.iter_top_blocks` (render fresh block bodies from DB) → `_resolve_blocks` per-block decision against md_index hash:
-  - hash == baseline → **overwrite** (auto-write replaces auto-write)
-  - hash != baseline → **skip** (user hand-edited, preserve)
-  - tombstoned → **omit** (user deleted, don't re-emit)
-- **Where**: marrow/dashboard.py:142 · marrow/dashboard.py:96 · marrow/top_sections.py:448 · marrow/dashboard.py:31
+### 5.2 subpage catalog (registry `subpages:_REGISTRY`, specs `subpage_specs.py`)
+- All inserter-backed unless noted; `<!-- id:N -->` anchors; DB→md unless noted.
+- profile (entities, bidirectional soft-delete) · milestone (bidirectional, pinned only) · diary (block_id=date) · memes (Personal/Public) · stickers (stub) · wallet (stub, fetch=[]) · goose→goose-bites.md · study index (children legacy read_only, hand-managed) · projects index (children read_only; KNOWN: title unsanitised in child path) · cheatsheet (read_only, disk SoT) · atlas (bidirectional, respect_tombstones=False, force_sort_consistency).
+- Legacy render fns in subpages_render.py are unreachable (inserter precedes, failure does NOT fall back) — scheduled for deletion (review bloat #1). render_pit is cli-only (`cli:cmd_export_pit`).
 
-### 5.2 Subpage catalog
+### 5.3 sync machinery
+- `md_index` — SHA-256 per (path, block_id); baseline = last auto-write; observe mode freezes baseline on user edit. Missing file in observe mode bulk-tombstones its blocks (debounced 200ms). Tombstone aging 30d.
+- `watcher` — watchdog on dashboard/handover/db-pages; 200ms debounce; boot full_scan(observe=True) covers crash gap; never renders.
+- `sync_loop` — 5s tick: md newer (mtime epsilon 1s) → reconcile; DB newer (max updated_at per source table) → render. USER_ACTIVE_WINDOW 3s skips render under cursor. KNOWN GAP: tick exception is log-only, no alert (plan B-9).
+- `reconcile.py` — routes: milestones (bidirectional + id-anchor splice-back) · milestone_candidates (✅pin/❌tombstone/✏️edit + trail diff) · tasks (trail marker, tick/untick/archive/insert, cosine dedup) · affect (aff:id segments + pending id:affect.N; delete window mtime-7d) · alerts (md delete = resolve; zero-anchor block no-op guard; mtime gate). reconcile_memes/profile/diary/etc live in reconcile_inserter.py (reconcile.py shims are back-compat only). Conflicts go to rpt.conflicts — surfaced only via exceptions, not alerts.
+- `drift_sweep` — Trigger A same-root move (immediate) · B cross-root delete+create matched by basename+size within 30s batch window, pending TTL 1800s · dangling delete warn. Refs via rg (timeout 30s, 10MB cap, Python fallback); safe exts auto-apply with info alert; unsafe → pending JSON + `mw drift apply <pid>`. AUTHORIZED_ROOTS ×5 = atlas seed roots.
+- `atlas` — seed (INSERT OR IGNORE per root) → `atlas:atlas_sweep_fs` depth-walk stubs/deletes → `atlas:reconcile_atlas` md headings back to DB; retract logic drops stub-only rows outside seed coverage; out-of-root purge guard. Canonical render ~/Desktop/NY/db-pages/atlas.md only.
 
-Total pages: 11. Registry: subpages._REGISTRY (marrow/subpages.py:306). Config groups: [subpages] top/bottom/hidden in config.toml; defaults at marrow/subpages.py:339.
+### 5.4 write arbitration
+- Dashboard writers: watcher (observe-only) · sync_loop (timed) · sessionend-tail (one-shot). Both renderers run reconcile first; a race = two atomic writes, second wins, nothing lost. sync_loop guards USER_ACTIVE_WINDOW; sessionend-tail doesn't (session over). flock on every md write.
 
-All subpages share: DB is SoT, reconcile runs before render, atomic write, `<!-- marrow:key:start/end -->` markers. Inserter (md-as-SoT block-level upsert via md_index) is the current standard; legacy full-render is the fallback.
+## 7. Scheduled jobs (launchd, 7 plists)
 
-#### profile
-- **What**: Entity rows (person/pref/place) from entities_live, grouped by kind.
-- **Status**: done (inserter wired) · empty until Phase 2 entity render populates rows
-- **Where**: marrow/subpage_specs.py:58 · marrow/subpages.py:307 · Write: inserter · Direction: DB→md
-
-#### milestone
-- **What**: Pinned milestones (pinned=1) grouped by scope Us/Me, H5 format.
-- **Status**: done (inserter + reconcile_milestones, bidirectional)
-- **Where**: marrow/subpage_specs.py:98 · marrow/reconcile.py:162 · Write: inserter · Direction: bidirectional
-
-#### diary
-- **What**: Daily diary entries (date→content→mood), grouped by year then month.
-- **Status**: done · block_id = date; no reconcile callback, DB is SoT
-- **Where**: marrow/subpage_specs.py:141 · Write: inserter · Direction: DB→md
-
-#### memes
-- **What**: Meme rows grouped Personal (paw/fact) vs Public (meme/event/news/others).
-- **Status**: done · Where: marrow/subpage_specs.py:188 · Write: inserter · Direction: DB→md
-
-#### stickers
-- **What**: Sticker gallery — one bullet per asset, grouped by linked meme key.
-- **Status**: stub (inserter wired but empty — auto-describe ingest not shipped)
-- **Where**: marrow/subpage_specs.py:224 · Write: inserter · Direction: DB→md
-
-#### wallet
-- **What**: Placeholder for bank-statement render (Phase 5 stellan_wallet).
-- **Status**: stub (inserter wired, fetch always returns empty; transactions table not shipped)
-- **Where**: marrow/subpage_specs.py:261 · Write: inserter · Direction: DB→md
-
-#### goose-bites
-- **What**: Best goose quote per day, grouped by year and month.
-- **Status**: done · registry key = "goose" but filename overridden to goose-bites.md
-- **Where**: marrow/subpage_specs.py:285 · marrow/subpages.py:424 · Write: inserter · Direction: DB→md
-
-#### study (index + per-unit pages)
-- Only index bothway; unit pages hand manage [NOT DONE]
-- **What**: study.md index with Obsidian links per unit; child study/<unit>.md per task group.
-- **Status**: wip — index inserter; child pages read_only legacy render, skipped by watcher
-- **Where**: marrow/subpages.py:164 · Write: index=inserter / children=legacy read_only · Direction: DB→md
-
-#### projects (index + pit + per-project pages)
-> index & pit will need both way db-md [NOT DONE]
-> other pages no need db? pure hand-edit/grep reading
-- **What**: projects.md index, plus per-project detail pages under projects/.
-- **Status**: wip — index inserter; child pages read_only legacy (Phase E will add file-per-project + frontmatter)
-- **Where**: marrow/subpages.py:211 · Write: index=inserter / children=legacy read_only · Direction: DB→md
-
-#### cheatsheet
-- **What**: Hand-written reference sheet; disk is SoT.
-- **Status**: stub (file empty — Lumi hand-writes when ready; no DB backing, no InserterSpec, legacy full-overwrite render)
-- **Where**: marrow/subpages.py:329 · Write: legacy read_only · Direction: read_only (disk SoT)
-
-#### atlas
-- **What**: Directory heading tree for AUTHORIZED_ROOTS, with description and naming hints.
-- **Status**: done (inserter + reconcile_atlas bidirectional + atlas_sweep_fs)
-- **Notes**: respect_tombstones=False (depth changes must resurface tombstoned paths); ATLAS_ROOT_ORDER decoupled from AUTHORIZED_ROOTS order.
-- **Where**: marrow/subpage_specs.py:406 · marrow/atlas.py:358 · marrow/atlas.py:442 · Write: inserter · Direction: bidirectional
-
-### 5.3 Sync machinery
-
-### md_index
-- Per-block content hash per (path, block_id) across all watched md files. Baseline hash = "last auto-write" — divergence = user edit.
-- `sync_file` does full overwrite; `sync_file_observe` leaves baseline frozen when a user edit is detected, only new / tombstoned blocks are touched. Watcher always calls observe.
-- **Where**: marrow/md_index.py:107 · marrow/md_index.py:171 · marrow/md_index.py:228
-
-### reconcile
-- Each route parses its md section by id anchors / heading markers, diffs against DB, applies INSERT/UPDATE/DELETE with audit_log entries. Fail-soft: error logs alert, render proceeds.
-- **Routes** (all complete): `reconcile_milestones` (bidirectional) · `reconcile_milestone_candidates` (✅/❌/row-delete) · `reconcile_tasks` (tick/untick/archive/insert) · `reconcile_affect` (ep-segment + pending label/desc edit) · `reconcile_atlas` (heading tree upsert/delete)
-- **Shared dedup**: tasks reconcile + all candidate writers gate inserts through `semantic_dedup` (cosine vs existing rows; per-table threshold + fast_skip in config.toml). See §2.3 for thresholds.
-- **Where**: marrow/reconcile.py:162 · 397 · 595 · 1000 · marrow/atlas.py:358
-
-### watcher
-- launchd-supervised process. Watches dashboard.md, handover.md, db-pages/ via `watchdog.Observer`. Boot: observe-only `full_scan` to cover crash gap. Events debounce 200ms per path → `sync_file_observe` (md_index hash/tombstone update only, never renders).
-- Hosts two timer threads in the same process: **SyncLoop (5s)** + **AtlasSweepLoop (60s)**.
-- **Where**: marrow/watcher.py:285 · marrow/watcher.py:318 · marrow/watcher.py:31
-
-### sync_loop
-- 5s tick. Compares md mtime vs `max(updated_at)` of the subpage's source tables. md newer → `write_subpage` (reconcile then render). DB newer → `write_subpage` / `write_dashboard`.
-- `USER_ACTIVE_WINDOW_S = 3.0`: skip render if md was touched within 3s (no rewrites under the cursor).
-- **Where**: marrow/sync_loop.py:135 · marrow/sync_loop.py:180 · marrow/sync_loop.py:26
-
-### drift_sweep
-- Detects rename/move via watchdog. **Trigger A** = same-root move (immediate). **Trigger B** = cross-root inferred from delete+create with matching basename+size within 30s.
-- Refs found via `rg`, classified safe / unsafe. Safe auto-applied with info alert. Unsafe held in pending JSON, await `mw drift apply <pid>`.
-- **AUTHORIZED_ROOTS**: ~/CC-Lab · ~/.config · ~/.claude · ~/Desktop/NY · ~/Library/Mobile Documents/com~apple~CloudDocs/Study (identical to atlas seed roots).
-- `refresh_dir_tree` (legacy): regenerates ~/.config/marrow/dir_tree.md on every apply_confirm; not user-facing, kept for back-compat. · marrow/drift_sweep.py:461
-- **Where**: marrow/drift_sweep.py:32 · marrow/drift_sweep.py:704 · marrow/drift_sweep.py:635
-
-### atlas
-- `seed_atlas_from_roots` inserts one stub (depth=1) per AUTHORIZED_ROOT (idempotent INSERT OR IGNORE). `atlas_sweep_fs` depth-walks each row with depth > 0, stubs new subdirs, deletes vanished ones. `reconcile_atlas` reads atlas.md heading markers back to DB.
-- Seed roots = drift_sweep.AUTHORIZED_ROOTS. `ATLAS_ROOT_ORDER` controls display order independently.
-- Single canonical render at `~/Desktop/NY/db-pages/atlas.md` (no copy under ~/.config/marrow/db-pages; other docs just hyperlink the canonical path).
-- **Where**: marrow/atlas.py:642 · marrow/atlas.py:442 · marrow/atlas.py:55 · marrow/subpage_specs.py:406
-
-### tombstone
-- Marks blocks Lumi deleted so re-render doesn't re-emit them. Three live paths, none of them retired:
-  1. **md_index `tombstone_at`** — subpage / dashboard blocks. Watcher sees a block vanish from md → `MdIndex.tombstone(path, block_id)`. dashboard.py:112 / inserter.py:137 read via `is_tombstoned()` / `list_tombstones()`. Aging 30d → DELETE. · marrow/md_index.py:60-63 · marrow/aging.py:162
-  2. **audit_log `action='tombstone'`** — milestone candidate rejects. `candidates.py:241` queries this before re-emitting a milestone. No aging, permanent. · marrow/candidates.py:241
-- **Where**: marrow/md_index.py:60 · marrow/dashboard.py:112 · marrow/inserter.py:137
-
-### 5.4 Write arbitration
-
-Three writers touch the dashboard top region:
-1. **watcher** — observe-only, never renders (md_index hash/tombstone update only)
-2. **sync_loop** — sole timed renderer (5s tick, same process as watcher)
-3. **sessionend-tail** — one-shot renderer at end of each sessionend, outside the 5s cycle, to flush newly-written affect/task/digest
-
-Both 2 and 3 call `write_dashboard` which runs reconcile (idempotent) then atomic write. A race = two successive atomic writes, second wins, no DB edit lost because reconcile ran in both. sync_loop guards with `USER_ACTIVE_WINDOW_S = 3.0` (skip if md touched within 3s); sessionend-tail has no guard (session is over, no editing).
-
----
-
-## 7. Scheduled jobs (launchd)
-
-- com.marrow.watcher: persistent · RunAtLoad + KeepAlive=true · auto-restarted on crash · marrow/watcher.py
-- com.marrow.dashboard-tick: daily 06:01 · force-render dashboard at startup · deploy/mw-dashboard-tick.plist
-- com.marrow.goose-bites: daily 06:30 · distil best-of-day quote from goose pipeline · deploy/mw-goose-bites.plist
-- com.marrow.daily-routine: daily 07:00 · full candidate extraction + diary write for yesterday · deploy/mw-daily-routine.plist
-- com.marrow.daily-catchup: daily 19:00 · backfill last 7d event-days with no diary, cap 3/run · deploy/mw-daily-catchup.plist
-- com.marrow.db-backup: daily 03:00 · VACUUM INTO local + iCloud offsite, keep newest 14 · deploy/mw-db-backup.plist
-- com.marrow.aging: weekly Sun 12:00 · seven-pass cleanup (memes/tasks/milestone alerts/goose blocks/md_index tombstones/worktree shells/vec window eviction) · deploy/mw-aging.plist
-Total: 7 plists; watcher is the only persistent process, the other 6 are scheduled jobs. MCP daemon has no plist — CC launches it on-demand via .mcp.json. (CC's own jsonl-cleanup lives in ~/.claude/settings.json, separate from marrow.)
-
----
+- com.marrow.watcher — persistent, KeepAlive.
+- com.marrow.dashboard-tick 06:01 daily — force dashboard render.
+- com.marrow.goose-bites 06:30 daily — best-of-day quote.
+- com.marrow.daily-routine 07:00 daily — candidates + diary for yesterday.
+- com.marrow.daily-catchup 19:00 daily — backfill ≤3 missing diary days in 7d window.
+- com.marrow.db-backup 03:00 daily — VACUUM INTO local + iCloud offsite, keep 14 each.
+- com.marrow.aging Sun 12:00 weekly — 7 cleanup passes (§10).
+- MCP daemon has no plist (CC-spawned).
 
 ## 8. Alerts
 
-- Stored in `alerts` table via `repo.add_alert(severity, type, message, source)`; idempotent on (severity, type, message, source) unresolved row. Severity: info / warn / critical.
-- Surface: dashboard `## Alerts` (top_sections.render_alerts) + SessionStart handoff payload. Resolve: `mw resolve <id>` manual; aging auto-resolves `milestone_added` > 7d.
-- **Where**: marrow/storage.py:106 · marrow/repo.py:68 · marrow/top_sections.py:88 · marrow/aging.py:99
-
-### 8.1 Scenarios
-
-- backup · critical/warn · local VACUUM or iCloud offsite copy failed · backup.py:127,140
-- daily routine · critical/warn · daily run aborted / diary write failed / candidate parse or per-day partial fail · daily.py:167,228,258,322
-- daily subroutine · warn · daily subpage render or goose-bites pick failed · daily.py:301,313
-- dashboard reconcile · warn · milestone/task/affect reconcile raised during dashboard render · dashboard.py:150,158,166
-- dashboard write · warn · sessionend-tail dashboard render failed · sessionend_async.py:486
-- subpage db_pages · warn · subpage render / sync / reconcile / inserter / md_index path failed · subpages.py:118,129,136,378,388
-- atlas sweep · warn · atlas_sweep_fs via subpage path failed · subpages.py:293
-- atlas hook · info · PreToolUse atlas guidance raised · hooks.py:679
-- hook main · warn · top-level hook crash · hooks.py:704
-- hook spawn · warn · catchup or sessionend_async popen failed · hooks.py:211,333 + sessionstart_catchup.py:330
-- catchup retry · critical/warn · sessionend_async catchup respawn outcome · sessionend_async.py:233
-- sessionend retry failed · critical/warn · sessionend_async wrote fail:/partial: AND prior_fails ≥ 1; single type-level row, hit_count++ per new sid · sessionend_async.py:250
-- embed lane · warn · embed_pending raised (alert #169 site) · sessionend_async.py:496
-- unanchored task · warn · task line in md with no DB id · reconcile.py:794
-- drift sweep · info/warn/critical · move/rename apply paths (dynamic via _emit_alert) · drift_sweep.py:452
-- vec evict backup stale · warn · backup missing or >7d old, vec eviction skipped · aging.py `vec_evict_backup_stale`
-- vec evict cap pct · critical · would evict >25% of vec rows, pass aborted · aging.py `vec_evict_cap_pct`
-- vec evict cap abs · critical · would evict >10000 rows, pass aborted · aging.py `vec_evict_cap_abs`
-
-### 8.2 Known gaps
-
-- watcher crash · no alert · watchdog.Observer dying silently kills the sync layer
-- embed_pending UNIQUE · DB-level UNIQUE collisions bypass the try/except, alert #169 hides root cause
-- sync_loop reconcile exception · raised tick re-tries forever, no alert surfaces
-- atlas_sweep_fs standalone · launchd path skips the subpages.py:293 alert wrap
-
----
+- `repo:add_alert(severity, type, fingerprint, message=, db=)` — dedup key (type, fingerprint, resolved=0); repeats bump hit_count/updated_at/message. resolve = acknowledge: recurrence re-inserts (anti-mute, by design). Surface: dashboard ## Alerts (`top_sections:render_alerts`, resolved=0) ; resolve via md-delete (reconcile_alerts) or `mw resolve <id>`; aging auto-resolves milestone_added >7d only.
+- Current contract + full call-site/falsing audit + fixes: docs/plans/0611-alert-redesign.md. Headline gaps until Batch A lands: first sessionend failure is audit-log-only (prior_fails≥1 gate) · catchup P5 can park failed sids forever · add_alert itself can lose alerts on DB lock (no fallback sink) · 3 hooks.py sites use exception text as fingerprint (row flood).
 
 ## 9. Catchup & self-heal
 
-- sessionstart_catchup: fires at every SessionStart; checks all sids seen in last 24h; max 2 spawns per run · marrow/sessionstart_catchup.py:9
-  only catchup_spawn_failed; no predicate-based silent_death · marrow/sessionstart_catchup.py:330. Real-death alerting in sessionend_async.py:250.
-  Seven classifier states:
-  1. ppid live → skip (active session still running)
-  2. lifecycle:end + ok,user_count=N + events.user_count > N → spawn (session resumed and grew)
-  3. lifecycle:end + ok,user_count=N + events.user_count ≤ N → skip (extraction covers it)
-  4. lifecycle:end + no ok + elapsed < 5 min → skip (async still in grace window)
-  5. lifecycle:end + no ok + elapsed ≥ 5 min → spawn (async died mid-run)
-  6. no lifecycle:end + ppid dead → spawn (end hook never fired)
-  7. no marker rows + sid in 24h events → spawn (cc died before hooks)
-- daily_catchup: timed (mw-daily-catchup 19:00) · scans last 7d for event days with no diary, backfills cap 3/run · marrow/daily_catchup.py:55
-- affect-heartbeat: at SessionStart, if any day in last 7d had events but no affect_live row, injects warning into session-start payload · marrow/hooks.py:123
-- dormant-revive: during recall scoring, events with importance≤3 and age>90d are excluded unless an FTS keyword hit revives them (clears superseded_by) · marrow/recall.py:914
-- diary-orphan: on every embed_pending diary lane call, sweeps diary_vec/diary_vec_meta rows whose rowid no longer maps to a diary table row (daily DELETE+INSERT reassigns rowids) · marrow/recall.py:340
+- `sessionstart_catchup:_classify` per sid (24h window, union audit_log lifecycle + events): preconditions P1 bridge_owns (TTL 12h, superseded by newer extract row) · P2 session_block=archive · P3 manual_skip · P4 end summary worktree=1/mm_minus_blocked · P5 in-flight if any start row newer than end — KNOWN GAP: no terminal-row/age check, parks partial/fail/died sids forever (review P0-1). States: 1 ppid live→skip · 2 ok,user_count=N & grew→spawn · 3 covered→skip (skip:short_session counts as terminal ok here) · 4 end <5min→skip · 5 end ≥5min no ok→spawn · 6 start+ppid dead→spawn · 7 events only→spawn. MAX_FIRE 2/run. Alerts only on spawn failure (no predicate-based death alerts, by design).
+- ppid liveness `sessionstart_catchup:_live_cc_ppids`: os.kill(pid,0) primary; ps lstart (LC_ALL=C) soft confirm.
+- daily_catchup 19:00 — diary backfill cap 3/run, 7d window, 6AM cutoff.
+- affect heartbeat (SessionStart) · dormant revive (§4.3) · diary vec orphan sweep (§4.2) · mm+ `hooks:_handle_mm_prefix` reset:mm_plus forces re-extraction (pre-archives live jsonl).
 
----
+## 10. Aging (weekly, one txn, alerts flushed post-txn)
 
-## 10. Cleanup / aging
-
-All seven passes run inside `com.marrow.aging` weekly Sun 12:00.
-
-**Tables that age**:
-- **memes**: `pinned=0 AND last_seen < 90d` → **DELETE**. NULL last_seen or pinned=1 (paw / fact auto-pinned, plus any hand-pinned) never touched. · marrow/aging.py:48
-- **tasks**: `status=active` with 0 FTS phrase-match hits of the title in events over last 30d → `status=archived`. · marrow/aging.py:63
-- **milestone alerts** (type=milestone_added only): `resolved=0 AND age > 7d` → `resolved=1` (treated as auto-confirmed if Lumi didn't reject). · marrow/aging.py:99
-- **goose_log md blocks**: `### YYYY-MM-DD` blocks older than 7d deleted from the monthly md; empty monthly files removed. · marrow/aging.py:116
-- **md_index tombstones**: `tombstone_at IS NOT NULL AND age > 30d` → **DELETE**. · marrow/aging.py:162
-- **projects worktree shells**: `~/.claude/projects/<slug>/` dirs whose name contains "worktrees" → `shutil.rmtree`. cc's native 30d jsonl cleanup leaves the shells; purged unconditionally. · marrow/aging.py:190
-- **events_vec / events_vec_meta (vec window)**: rows whose `events.timestamp < now - vec_window_days` → **DELETE**, exempt if `recall_count > 0` OR `affect.importance >= 3` link exists. Config key `[recall] vec_window_days = 90` (0 = disabled). Safety caps abort: >25% of vec rows (inert below 100 rows) or >10000 rows. Backup gate: skip if newest `marrow-YYYY-MM-DD.db` is missing or >7d old → `warn` alert fingerprint `vec_evict_backup_stale`. Cap abort → `critical` alerts `vec_evict_cap_pct` / `vec_evict_cap_abs`. Alerts collected in `result["pending_alerts"]` and flushed by `main()` AFTER the txn closes to avoid db-lock conflict. · marrow/aging.py:243
-  - **Recovery**: evicted vec rows are recoverable — re-run `embed_pending()` re-embeds from intact `events` rows (events are never deleted by vec eviction; vectors are derived data).
-
-**Tables with NO automatic retirement**:
-- affect (rows stay indefinitely; `resolved_at` marks reconcile completion, not aging)
-- entities (live until manually superseded; `superseded_by IS NOT NULL` = dormant)
-- milestones (rows stay; only the milestone_added *alert* ages, the milestone row itself doesn't)
-- diary, events, audit_log, session_digests, atlas, stickers, pit (no aging logic)
-
----
+- memes: pinned=0 + last_seen<90d → DELETE (NULL last_seen kept).
+- tasks: active, 0 FTS title hits in events 30d → archived.
+- milestone_added alerts: >7d → resolved (auto-confirm).
+- goose md blocks >7d deleted; empty monthly files removed.
+- md_index tombstones >30d → DELETE.
+- ~/.claude/projects worktree shells → rmtree.
+- events vec window: timestamp < now-90d (`[recall].vec_window_days`, 0=off) → DELETE vec rows; exempt recall_count>0 OR affect importance ≥3; caps abort >25% (inert <100 rows) or >10k rows (critical alerts); backup gate: newest daily backup missing/>7d → skip + warn. Recovery: embed_pending re-embeds from intact events rows (vectors are derived data). KNOWN GAP: pending_alerts lost if audit INSERT raises (plan A-4).
 
 ## 11. Infra
 
-### 11.1 daemon / MCP
-
-### daemon
-- Persistent stdio MCP server (FastMCP) exposing three tools: `recall` · `atlas_lookup` · `embed_pending`. Holds bge-m3 model weights in memory across calls.
-- CC spawns + owns the process for the session lifetime via `.mcp.json`. No launchd plist.
-- **Where**: marrow/daemon.py:14 · ~/CC-Lab/marrow/.mcp.json
-
-### 11.2 llm provider
-
-### llm
-- **Abstraction**: `LLMClient.call(role, body, tier)` — caller passes intent + tier only; provider/model resolved internally via config. New provider = add `[llm.X]` block + `_run` kind branch + edit `default` key.
-- **Provider**: `claude_cli` stream-json.
-- **Chain (dormant)**: default.toml sets default="claude_cli", emergency="", no fallback → no rotation.
-- **Isolation**: spawned `claude` gets `_ISOLATION = ["--setting-sources", "", "--strict-mcp-config"]` to block persona/MCP bleed.
-- **Tier dispatch**: caller passes intent + tier (cheap/mid/top) → resolved to model via `config.toml [tiers]`.
-- **Refusal detection**: `stop_reason=="refusal"` primary; fingerprint scan (`_REFUSAL_FINGERPRINTS`) when `is_error==false`.
-- **Failure**: 1 retry/provider → `LLMError` + critical alert; no in-process fallback. Recovery: sessionstart_catchup (async re-spawn), daily_catchup (diary backfill).
-- **Cost log**: successful calls write `llm_call_cost` to audit_log (model, tokens). Best-effort, never raises.
-- **Where**: marrow/llm.py:76 · marrow/llm.py:95 · marrow/llm.py:123 · marrow/llm.py:292 · marrow/config.default.toml:25
-
-### 11.3 config / paths / on-disk layout
-
-On-disk layout:
-- DATA_DIR = ~/.config/marrow · marrow/config.py:8
-- dashboard.md = ~/Desktop/NY/dashboard.md · marrow/paths.py:20
-- db-pages/ = ~/Desktop/NY/db-pages/ · marrow/config.py:56
-
-config.toml catalog:
-- [paths]: overrides for db, backup_dir, offsite_backup_dir, dashboard, db_pages, db_pages_state
-- [backup]: keep count (flat daily retention, default 14)
-- [llm]: provider chain + per-provider sub-tables [llm.claude_cli] / [llm.ollama]
-- [tiers]: intent-to-model mapping (cheap/mid/top)
-- [embedding]: bge-m3 model id, dim=1024, provenance tag
-- [recall]: vector flag, fusion weights (w_vec/w_bm25/w_recency/w_affect + per-lane), min_score, rank_caps, rel_cutoff, budget_chars, vec_window_days (default 90; 0 = disabled)
-- [sessionend]: skip_turn_threshold
-- [memes_dedup] / [tasks_dedup] / [milestones_dedup] / [entities_dedup]: cosine_threshold + fast_skip_count per table
-- [subpages]: top/bottom/hidden render order lists
-- [transcript]: worker_models list for headless-spawn detection
-
-### 11.4 backup / popen_detach / migrate
-
-### popen_detach
-- Fire-and-forget subprocess launcher. Mandatory 4-flag combo (any one missing reproduces the ny-memm stuck-prompt hang 100%): `stdin=DEVNULL` · `stdout/stderr → log fd (append, child owns)` · `start_new_session=True` · `close_fds=True`.
-- **Where**: marrow/popen_detach.py:14 · marrow/hooks.py:208 · marrow/hooks.py:326
-
-### backup
-- `VACUUM INTO` temp file → `os.replace` into `~/.config/marrow/backup/marrow-YYYY-MM-DD.db`. Offsite leg copies same pattern to iCloud; offsite failure → `warn` alert but local leg still succeeds.
-- Flat daily retention: keep newest N each side (default 14). Scheduled 03:00 via `com.marrow.db-backup`.
-- **Where**: marrow/backup.py:59 · marrow/backup.py:100 · deploy/mw-db-backup.plist
-
----
+- `llm:LLMClient.call(role, body, tier)` — claude CLI stream-json subprocess, OAuth, no API key. Tier cheap/mid/top → model via [tiers]. Isolation flags strip persona/MCP. 1 retry/provider; severity warn (more providers left) / critical (last); timeout 120s, SIGTERM→SIGKILL ladder; refusal: stop_reason + 22 fingerprints; cost → audit_log llm_call_cost. on_alert is caller-supplied — title.py passes none (its failures stay silent).
+- `popen_detach` — mandatory 4-flag combo (DEVNULL stdin, log-fd stdout/err, start_new_session, close_fds); _lazy variant: child self-redirects on first write, silent runs leave no log file.
+- backup: `backup:run` VACUUM INTO tmp → os.replace, offsite copy fail-soft (warn, local still lands); `repo:safe_backup_db` in-session copies pruned >7d.
+- config: default.toml ← user config.toml deep-merge; paths.toml (paths.py) supplies fallback/extra paths (drift_pending, goose_log). Key tables: [paths] [backup] [llm.*] [tiers] [embedding] [recall] [sessionend] [*_dedup] [subpages] [transcript].
+- title: `title:summarize` detached per prompt, ≥2 user turns, ≤8 units, tier cheap, audit-dedup.
 
 ## 12. Addons
 
-> wallet is covered in §5.2 (subpage catalog) — not duplicated here.
+- daily.py pipeline (§2.3) vs day-plan CC skill (.claude/skills/day-plan) — unrelated, share the name.
+- buddy MCP (external/claude-buddy, status-line goose) vs goose_bites table (`goose_bites:select_quote_for_date`, haiku picks best line inside 19:00 catchup; fallback = longest on mismatch) — unrelated, share the goose.
+- synapse-wx — own repo + MAP; talks to marrow via MARROW_BRIDGE=1 env + mw CLI + direct sqlite audit flags only.
 
-### 12.1 daily / day-plan
-Two unrelated systems sharing the "daily" name:
-- **daily.py** — automated pipeline, launchd-scheduled (07:00 writes yesterday's diary + candidate extraction; 19:00 catchup backfills up to 3 missing days). Two Sonnet calls per run: one for candidates, one for diary prose.
-- **day-plan** — interactive CC skill at `.claude/skills/day-plan/SKILL.md`, Scan → Brainstorm → Self-grill → Plan loop, saves plan files to `docs/plans/`.
-- **Where**: marrow/daily.py:1 · marrow/daily_prompts.py:1 · marrow/daily_catchup.py:3 · .claude/skills/day-plan/SKILL.md
+## 13. Invariants & status
 
-### 12.2 buddy / goose-bites
-Two unrelated systems both centred on the goose (铁锅) persona:
-- **buddy** — external claude-buddy MCP at `CC-Lab/external/claude-buddy/`, renders status-line persona. End-of-turn comments are HTML, stripped by `transcript.py:40` before sessionend extraction.
-- **goose_bites** — `select_quote_for_date` parses monthly `YYYY-MM.md` log, Haiku (`tier=cheap`) picks best line, upserts into `goose_bites` table. Runs inside the 19:00 daily catchup; no independent plist.
-- **Where**: marrow/goose_bites.py:1 · marrow/subpage_specs.py:285 · marrow/transcript.py:40 · CC-Lab/external/claude-buddy/
+**Invariants**: flock every md write · lifecycle:end commits before popen · byte-identical transcript fence across both sessionend calls · 4-flag detach · DB never trusts md free-text inside rendered blocks · journal DELETE + no second conn inside write txn · all DB timestamps UTC.
 
----
-
-## 13. Invariants & current status
-
-**Invariants** (rules that must hold):
-- flock on every md write (inserter.py, dashboard)
-- lifecycle:end must commit to audit_log before the LLM popen is spawned
-- byte-identical transcript fence = shared prompt-cache prefix across TASK_AFFECT + DIGEST
-- 4-flag detach on every popen_detach (DEVNULL + log fd + start_new_session + close_fds)
-- DB is SoT: subpage renders never trust md free-form text inside rendered blocks
-
-**Current status**:
-- stub: wallet (transactions table not shipped) · profile (entity Phase 2 not wired) · stickers (auto-describe ingest not shipped) · cheatsheet (file empty, hand-written when ready)
-- wip: study/projects child pages on legacy read_only render (no inserter) · candidate pin/drop/edit HTML buttons designed but not built
-- dead code (safe to delete, no functional impact): `marrow/tombstone.py` TombstoneStore Protocol + AuditLog/MdIndex store classes — never imported. The real tombstone paths live in md_index + audit_log (see §5.3 tombstone).
-- unwired: bridge (Phase 4 WeChat socket) · affect emotion backdrop in SessionStart (Phase 2)
-
+**Status**: stub = wallet, stickers, cheatsheet, profile-render(rows flow once entities populate) · wip = study/projects child pages (legacy read_only), candidate pin/drop HTML buttons · deletable = subpages_render legacy fns (verified unreachable), sessionend_prompts parse_doing_diff cluster (dead ~90 LOC) · open bugs/gaps = review P0/P1 list (docs/notes/0611-system-review.md) until alert-redesign batches land.
