@@ -48,13 +48,13 @@ _BUDDY = re.compile(r"\s*<!--\s*buddy\s*:.*?-->", re.S | re.I)
 # Three patterns injected by the bridge that must not enter recall queries or
 # event bodies.
 #
-# 1. Media Read instruction — appended as "\n\n<instruction>" by
-#    synapse_wx/media/inbound.py build_read_tool_instruction.
-#    Starts with "Use the Read tool to view:" and spans to end of string
-#    (the instruction block is always the last content in the prompt).
+# 1. Media Read instruction — a bare "Use the Read tool to view: <paths>"
+#    line appended by synapse_wx/media/inbound.py build_read_tool_instruction
+#    (no tag). Spans to end of string — the instruction is always the last
+#    content in the prompt. Optional <instruction> wrapper tolerated.
 _WX_READ_INSTR_RE = re.compile(
-    r"\n*<instruction>\s*Use the Read tool to view:.*",
-    re.S | re.I,
+    r"\n*^(?:<instruction>\s*)?Use the Read tool to view:.*",
+    re.S | re.I | re.M,
 )
 # 2. Merge note — prepended as the first line by synapse_wx/loop.py.
 #    Defensive: match any full line of the form "[bridge: ...]".

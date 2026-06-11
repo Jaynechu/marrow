@@ -996,10 +996,11 @@ def user_prompt_submit() -> int:
 
     # Strip synapse-wx bridge boilerplate before recall so media Read
     # instructions / merge notes / dot sentinels never become query needles.
-    # If nothing meaningful remains after stripping, skip recall entirely.
+    # Emptiness is judged with the [time: ...] anchor ALSO removed (recall.py
+    # strips it internally anyway) so a pure-media bubble skips recall.
     from .transcript import strip_wx_boilerplate as _strip_wx
     recall_query = _strip_wx(prompt_text)
-    if not recall_query:
+    if not _WX_TIME_PREFIX_RE.sub("", recall_query).strip():
         return 0
 
     rcfg = cfg.get("recall", {})
