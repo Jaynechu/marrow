@@ -583,7 +583,8 @@ def session_start() -> int:
             if heartbeat:
                 parts.append(heartbeat)
 
-            backdrop = top_sections.render_affect(conn)
+            from . import timeline as _timeline_mod
+            backdrop = _timeline_mod.render_timeline(conn)
             if backdrop:
                 parts.append(backdrop)
 

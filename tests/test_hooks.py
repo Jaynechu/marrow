@@ -188,23 +188,29 @@ def _insert_event(conn, date: str, session_id: str = "s1"):
 
 
 def test_affect_backdrop_empty_renders_placeholder(env, monkeypatch, capsys):
-    """No affect rows => Affect block still renders with _none_ placeholders."""
+    """No data => Timeline block renders with _none_ placeholder."""
     _stdin(monkeypatch, {})
     rc = hooks.main(["session_start"])
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     ctx = out["hookSpecificOutput"]["additionalContext"]
-    assert "## Affect" in ctx
+    assert "## Timeline" in ctx
     assert "_none_" in ctx
 
 
 def test_affect_backdrop_present_in_context(env, monkeypatch, capsys):
-    """With recent affect rows, session_start injects the shared render_affect block."""
+    """With recent open affect rows, session_start injects the Timeline block."""
     db, _, _ = env
     conn = storage.connect(db)
+    ts_now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     today = datetime.now(timezone.utc).date()
-    _insert_affect(conn, today.isoformat(), 1, 0.7, 0.7, importance=3, label="开心",
-                   description="项目过审")
+    conn.execute(
+        "INSERT INTO affect (date, ep, valence, arousal, importance, label,"
+        " description, source, unresolved, created_at)"
+        " VALUES (?, 1, 0.7, 0.7, 3, '开心', '项目过审', 'test', 1, ?)",
+        (today.isoformat(), ts_now),
+    )
+    conn.commit()
     conn.close()
 
     _stdin(monkeypatch, {})
@@ -212,27 +218,29 @@ def test_affect_backdrop_present_in_context(env, monkeypatch, capsys):
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     ctx = out["hookSpecificOutput"]["additionalContext"]
-    assert "## Affect" in ctx
-    assert "### Today" in ctx
-    assert "### This Week" in ctx
-    assert "eph3 开心 | 项目过审" in ctx
+    assert "## Timeline" in ctx
+    assert "项目过审" in ctx
 
 
 def test_affect_backdrop_anchors_after_6am_rollover(env, monkeypatch, capsys):
-    """Past 6AM with no new sessionend → prior day still surfaces (no empty Today)."""
+    """Past 6AM: recent session digest appears in Timeline 24h film-strip."""
     db, _, _ = env
     conn = storage.connect(db)
-    yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
-    _insert_affect(conn, yesterday, 1, 0.5, 0.5, importance=2, label="昨",
-                   description="昨天的事")
+    ts_recent = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        "INSERT INTO session_digests (sid, date, ts, text, kind, tl_line)"
+        " VALUES ('sid-test', ?, ?, 'body', 'casual', '昨晚聊了很多')",
+        (ts_recent[:10], ts_recent),
+    )
+    conn.commit()
     conn.close()
 
     _stdin(monkeypatch, {})
     hooks.main(["session_start"])
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "### Today" in ctx
-    assert "eph2 昨" in ctx
-    assert "_none_" not in ctx.split("### This Week")[0].split("### Today")[1]
+    assert "## Timeline" in ctx
+    assert "昨晚聊了很多" in ctx
 
 
 def test_session_start_total_hard_cap(env, monkeypatch, capsys):
