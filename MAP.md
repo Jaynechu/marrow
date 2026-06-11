@@ -41,7 +41,7 @@ Three runtimes:
 
 ### 2.2 sessionend extraction (sessionend_async.py)
 - Skip rule: ≤3 user turns (`[sessionend].skip_turn_threshold`) → terminal `skip:short_session,user_count=N`. Stale-skip recovery `sessionend_async:_drop_stale_skip`: skip row dropped + reprocessed if count later grew past threshold.
-- ONE merged sonnet call (replaced sonnet+haiku pair): TASK_AFFECT_DIGEST_PROMPT emits ===TASK===/===AFFECT===/===DIGEST=== fenced blocks → writers seg_task_cand + seg_affect + seg_digest. Per-writer audit rows; final row ok,user_count=N / partial:<writers> / fail:*. Transcript lines carry `[HH:MM] [name]` prefixes (Melbourne) — LIFE lines copy these timestamps.
+- ONE merged sonnet call (replaced sonnet+haiku pair): TASK_AFFECT_DIGEST_PROMPT emits ===TASK===/===AFFECT===/===DIGEST=== fenced blocks → writers seg_task_cand + seg_affect + seg_digest. Per-writer audit rows; digest 0 rows → `fail:zero_rows` (rides the retry chain — immediate digest_zero_write alert deleted 06/11); final row rebuilt from THIS run's segment rows only (`_collect_run_failures`, after latest 'start' stamp): ok,user_count=N / partial:<writers> / fail:*. Transcript lines carry `[HH:MM] [name]` prefixes (Melbourne) — LIFE lines copy these timestamps.
 - DIGEST segment is structured lines (KIND casual|task · TL 15-30 CN chars life-perspective · LIFE per-line `HH:MM detail` casual-only · VOICE verbatim casual-only · FACTS one phase-line task-only, TL+FACTS ≤60 words). Parser fullwidth-colon tolerant; parse fail → kind/tl_line/life_lines NULL + alert, body kept raw. AFFECT episodes carry `open` flag (unresolved emotion).
 - seg_affect: event_hint resolved FTS→LIKE within same-session events; reconcile_prev resolves most-recent unresolved affect row — KNOWN GAP: lookup is global, not session/date-scoped (review P0-3).
 - seg_task_cand: cosine dedup 0.85 vs active + 24h-done tasks; tick-by-id from sonnet `{"id":N,"status":"done"}`.
@@ -117,17 +117,18 @@ Three runtimes:
 
 ## 8. Alerts
 
-- `repo:add_alert(severity, type, fingerprint, message=, db=)` — dedup key (type, fingerprint, resolved=0); repeats bump hit_count/updated_at/message. resolve = acknowledge: recurrence re-inserts (anti-mute, by design). Surface: dashboard ## Alerts (`top_sections:render_alerts`, resolved=0) ; resolve via md-delete (reconcile_alerts) or `mw resolve <id>`; aging auto-resolves milestone_added >7d only.
-- Current contract + full call-site/falsing audit + fixes: docs/plans/0611-alert-redesign.md. Headline gaps until Batch A lands: first sessionend failure is audit-log-only (prior_fails≥1 gate) · catchup P5 can park failed sids forever · add_alert itself can lose alerts on DB lock (no fallback sink) · 3 hooks.py sites use exception text as fingerprint (row flood).
+- `repo:add_alert(severity, type, fingerprint, message=, db=)` — dedup key (type, fingerprint, resolved=0); repeats bump hit_count/updated_at/message. Never raises: any DB failure appends the record to DATA_DIR/alerts-fallback.jsonl + stderr note, returns -1; drained at catchup boot (truncate-then-replay). resolve = acknowledge: recurrence re-inserts (anti-mute, by design). Surface: dashboard ## Alerts (`top_sections:render_alerts`, resolved=0) ; resolve via md-delete (reconcile_alerts) or `mw resolve <id>`; aging auto-resolves milestone_added >7d only.
+- Current contract + full call-site/falsing audit + fixes: docs/plans/0611-alert-redesign.md. Batch A landed 06/11 (P5 unpark, digest-zero retry chain, fallback sink, aging finally-flush; two-strike chain proven by tests). Remaining gaps (Batch B/C): 3 hooks.py sites use exception text as fingerprint (row flood) · sync_loop tick exception log-only · reconcile_ref cross-day guessing · false-positive diet.
 
 ## 9. Catchup & self-heal
 
-- `sessionstart_catchup:_classify` per sid (24h window, union audit_log lifecycle + events): preconditions P1 bridge_owns (TTL 12h, superseded by newer extract row) · P2 session_block=archive · P3 manual_skip · P4 end summary worktree=1/mm_minus_blocked · P5 in-flight if any start row newer than end — KNOWN GAP: no terminal-row/age check, parks partial/fail/died sids forever (review P0-1). States: 1 ppid live→skip · 2 ok,user_count=N & grew→spawn · 3 covered→skip (skip:short_session counts as terminal ok here) · 4 end <5min→skip · 5 end ≥5min no ok→spawn · 6 start+ppid dead→spawn · 7 events only→spawn. MAX_FIRE 2/run. Alerts only on spawn failure (no predicate-based death alerts, by design).
+- `sessionstart_catchup:_classify` per sid (24h window, union audit_log lifecycle + events): preconditions P1 bridge_owns (TTL 12h, superseded by newer extract row) · P2 session_block=archive · P3 manual_skip · P4 end summary worktree=1/mm_minus_blocked · P5 in-flight iff start row newer than end AND no terminal row (ok/skip/fail/partial) after that start AND start age <15min (`_INFLIGHT_GRACE_SECONDS`) — terminal or stale start falls through, so fail/partial/died sids respawn (fixed 06/11, was park-forever P0-1). States: 1 ppid live→skip · 2 ok,user_count=N & grew→spawn · 3 covered→skip (skip:short_session counts as terminal ok here) · 4 end <5min→skip · 5 end ≥5min no ok→spawn · 6 start+ppid dead→spawn · 7 events only→spawn. MAX_FIRE 2/run. Alerts only on spawn failure (no predicate-based death alerts, by design).
 - ppid liveness `sessionstart_catchup:_live_cc_ppids`: os.kill(pid,0) primary; ps lstart (LC_ALL=C) soft confirm.
+- catchup `main` boot: `_drain_fallback_sink` replays alerts-fallback.jsonl into alerts table before classification (malformed lines dropped with stderr note).
 - daily_catchup 19:00 — diary backfill cap 3/run, 7d window, 6AM cutoff.
 - affect heartbeat (SessionStart) · dormant revive (§4.3) · diary vec orphan sweep (§4.2) · mm+ `hooks:_handle_mm_prefix` reset:mm_plus forces re-extraction (pre-archives live jsonl).
 
-## 10. Aging (weekly, one txn, alerts flushed post-txn)
+## 10. Aging (weekly, one txn, alerts flushed in finally)
 
 - memes: pinned=0 + last_seen<90d → DELETE (NULL last_seen kept).
 - tasks: active, 0 FTS title hits in events 30d → archived.
@@ -135,7 +136,7 @@ Three runtimes:
 - goose md blocks >7d deleted; empty monthly files removed.
 - md_index tombstones >30d → DELETE.
 - ~/.claude/projects worktree shells → rmtree.
-- events vec window: timestamp < now-90d (`[recall].vec_window_days`, 0=off) → DELETE vec rows; exempt recall_count>0 OR affect importance ≥3; caps abort >25% (inert <100 rows) or >10k rows (critical alerts); backup gate: newest daily backup missing/>7d → skip + warn. Recovery: embed_pending re-embeds from intact events rows (vectors are derived data). KNOWN GAP: pending_alerts lost if audit INSERT raises (plan A-4).
+- events vec window: timestamp < now-90d (`[recall].vec_window_days`, 0=off) → DELETE vec rows; exempt recall_count>0 OR affect importance ≥3; caps abort >25% (inert <100 rows) or >10k rows (critical alerts); backup gate: newest daily backup missing/>7d → skip + warn. Recovery: embed_pending re-embeds from intact events rows (vectors are derived data). pending_alerts flushed in `main`'s finally — survives audit INSERT failure (A-4, 06/11).
 
 ## 11. Infra
 

@@ -11,7 +11,7 @@
 - The alert pipeline itself must not fail silently (fallback sink) — losing a record is worse than a quiet day.
 - Catchup must never permanently park a sid (no terminal-less skip states). Skips are terminal, never alerted.
 
-## Batch A — unbreak the chain (P0)
+## Batch A — unbreak the chain (P0) — DONE 06/11 (merged f8b0c33; plus follow-up fix: final-audit failures scoped to current run's start stamp, so a successful retry no longer re-reads stale fail rows as partial)
 
 1. catchup P5 fix · sessionstart_catchup.py `_classify`
    - in-flight iff: start newer than end_row AND no sessionend_extract terminal row (ok/skip/fail/partial/reset) with id > that start id AND start age < 15 min.
