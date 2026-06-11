@@ -266,6 +266,7 @@ def render_affect(conn: sqlite3.Connection) -> str:
 
     line1_ids: set[int] = set()
     line2_ids: set[int] = set()
+    _rendered_ids: set[int] = set()
 
     # Line 1 — last sessionend batch (event-anchored). Single-ep batch uses
     # eph/epl based on valence sign, not a forced 'h'.
@@ -292,6 +293,7 @@ def render_affect(conn: sqlite3.Connection) -> str:
             f"- 【{last_tone}】 · {body} [{ago}] {_affect_anchor_inline(ids)}"
         )
         line1_ids.update(ids)
+        _rendered_ids.update(ids)
 
     # Line 2 — rolling 24h aggregate, deduped against line 1.
     today_pool = [r for r in today_rows if r["id"] not in line1_ids]
@@ -315,6 +317,7 @@ def render_affect(conn: sqlite3.Connection) -> str:
             f"- 【{tone}】 · {body} [24h] {_affect_anchor_inline(ids)}"
         )
         line2_ids.update(ids)
+        _rendered_ids.update(ids)
     elif not last_batch:
         out.append("_none_")
 
@@ -362,6 +365,7 @@ def render_affect(conn: sqlite3.Connection) -> str:
             f"- 【{tone_label}】 · " + " · ".join(segs) + " [7d] "
             f"{_affect_anchor_inline(ids)}"
         )
+        _rendered_ids.update(ids)
     else:
         out.append("_none_")
 
@@ -379,6 +383,10 @@ def render_affect(conn: sqlite3.Connection) -> str:
             text = r["description"] or r["label"] or "(ep)"
             box = "x" if r["resolved_at"] else " "
             out.append(f"- [{box}] {text} {_affect_pending_anchor(dict(r))}")
+
+    _rendered_ids.update(r["id"] for r in pending_rows)
+    if _rendered_ids:
+        out.append(f"<!-- aff-rendered:{','.join(str(i) for i in sorted(_rendered_ids))} -->")
     return "\n".join(out)
 
 
@@ -447,17 +455,20 @@ DASHBOARD_BLOCK_IDS = (
     "dashboard.tasks",
     "dashboard.milestone_cand",
     "dashboard.affect",
+    "dashboard.timeline",
     "dashboard.content",
 )
 
 # Blocks whose user edits are absorbed into the DB by a reconcile pass before
 # render — safe to overwrite the block body with fresh DB-driven content.
 # alerts: reconcile_alerts treats a deleted bullet as `resolved=1`.
+# timeline: reconcile_timeline writes tl_line edits back to session_digests/diary.
 RECONCILED_BLOCK_IDS = frozenset({
     "dashboard.alerts",
     "dashboard.tasks",
     "dashboard.milestone_cand",
     "dashboard.affect",
+    "dashboard.timeline",
 })
 
 
@@ -486,11 +497,13 @@ def iter_top_blocks(conn: sqlite3.Connection,
     body carries the `<!-- id:<block_id> -->` marker on its H2 line so the
     inserter and md_index see the same block boundary.
     """
+    from .timeline import render_timeline
     pairs = [
         ("dashboard.alerts", render_alerts(conn)),
         ("dashboard.tasks", render_tasks(conn)),
         ("dashboard.milestone_cand", render_milestone_candidate(conn)),
         ("dashboard.affect", render_affect(conn)),
+        ("dashboard.timeline", render_timeline(conn)),
         ("dashboard.content",
          render_content(conn, dashboard_path=dashboard_path)),
     ]

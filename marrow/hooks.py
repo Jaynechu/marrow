@@ -482,9 +482,6 @@ def _affect_heartbeat(conn: sqlite3.Connection) -> str | None:
     return None
 
 
-# Affect backdrop = top_sections.render_affect (shared with dashboard).
-
-
 # ── session-start payload ────────────────────────────────────────────────────
 
 def _read_input() -> dict:
@@ -583,7 +580,8 @@ def session_start() -> int:
             if heartbeat:
                 parts.append(heartbeat)
 
-            backdrop = top_sections.render_affect(conn)
+            from . import timeline as _timeline_mod
+            backdrop = _timeline_mod.render_timeline(conn)
             if backdrop:
                 parts.append(backdrop)
 
