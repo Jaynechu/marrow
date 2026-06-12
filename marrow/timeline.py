@@ -308,7 +308,7 @@ def _query_digests_range(conn: sqlite3.Connection,
         "SELECT sd.sid, sd.date, sd.text, sd.kind, sd.tl_line, sd.life_lines,"
         " COALESCE(MIN(e.timestamp), sd.ts) AS ts"
         " FROM session_digests sd LEFT JOIN events e ON e.session_id = sd.sid"
-        " WHERE sd.ts >= ?"
+        " WHERE sd.ts >= ? AND sd.tl_hidden = 0"
         " GROUP BY sd.sid"
         # NB: bare `ts` in HAVING would bind to column sd.ts, not the alias.
         " HAVING COALESCE(MIN(e.timestamp), sd.ts) >= ?"
@@ -384,7 +384,7 @@ def _query_diary_range(conn: sqlite3.Connection,
     """
     rows = conn.execute(
         "SELECT date, tl_line FROM diary"
-        " WHERE date >= ? AND date <= ? AND tl_line IS NOT NULL",
+        " WHERE date >= ? AND date <= ? AND tl_line IS NOT NULL AND tl_hidden = 0",
         (date_from, date_to),
     ).fetchall()
     result: dict[str, str] = {}
@@ -396,6 +396,22 @@ def _query_diary_range(conn: sqlite3.Connection,
             continue
         result[r["date"]] = tl
     return result
+
+
+def _query_manual_events_24h(conn: sqlite3.Connection,
+                             from_utc: str, to_utc: str) -> list[dict]:
+    """Manual events (channel='manual') in the 24h window.
+
+    Uses inclusive upper bound (<=) so an event inserted in the same second
+    as the render is not excluded.
+    """
+    rows = conn.execute(
+        "SELECT id, timestamp, content FROM events"
+        " WHERE channel='manual' AND timestamp >= ? AND timestamp <= ?"
+        " ORDER BY timestamp ASC",
+        (from_utc, to_utc),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _query_current_sid(conn: sqlite3.Connection) -> str | None:
@@ -432,7 +448,8 @@ def _render_open_episodes(episodes: list[dict]) -> list[str]:
 
 def _render_24h(digests: list[dict],
                 current_sid: str | None,
-                affect_by_sid: dict[str, list[dict]] | None = None) -> list[str]:
+                affect_by_sid: dict[str, list[dict]] | None = None,
+                manual_events: list[dict] | None = None) -> list[str]:
     """Flat film-strip newest→oldest, cap 15.
 
     Casual sessions: each LIFE line is stamped with its own HH:MM (parsed
@@ -489,6 +506,13 @@ def _render_24h(digests: list[dict],
                 else:
                     rendered = f"{line_hhmm} {text}"
                 flat_entries.append((sort_key, line_date, rendered, idx == 0))
+
+    # Inject manual events (channel='manual') into the film-strip
+    for ev in (manual_events or []):
+        hhmm = _hhmm_melb(ev["timestamp"])
+        anchor = f"<!-- tl:e:{ev['id']} -->"
+        rendered = f"{hhmm} {ev['content']} {anchor}"
+        flat_entries.append((ev["timestamp"], _local_date_from_utc(ev["timestamp"]), rendered, False))
 
     # Newest first
     flat_entries.sort(key=lambda e: e[0], reverse=True)
@@ -617,7 +641,8 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     # ── last 24h ─────────────────────────────────────────────────────────────
     digests_24h = _query_digests_range(conn, t_24h, now_utc_iso)
     affect_by_sid_24h = _query_affect_by_session(conn, t_24h, now_utc_iso)
-    lines_24h = _render_24h(digests_24h, current_sid, affect_by_sid_24h)
+    manual_24h = _query_manual_events_24h(conn, t_24h, now_utc_iso)
+    lines_24h = _render_24h(digests_24h, current_sid, affect_by_sid_24h, manual_24h)
 
     # ── zone (b): diary dates today-1, today-2, today-3 ─────────────────────
     # Window: from diary-day-start of today-3 (06:00 local → UTC) up to t_24h
@@ -659,6 +684,18 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     if _visible_len(text) > _BUDGET:
         text = _trim_to_budget(text, open_lines, lines_24h, lines_2472, lines_47)
 
+    # Append tl-rendered trail marker so reconcile knows which anchors were rendered
+    trail_sids  = sorted(set(_TL_TRAIL_SID_RE.findall(text)))
+    trail_dates = sorted(set(_TL_TRAIL_DATE_RE.findall(text)))
+    trail_evts  = sorted(set(_TL_TRAIL_EVT_RE.findall(text)))
+
+    parts: list[str] = []
+    if trail_sids:  parts.append("s=" + ",".join(trail_sids))
+    if trail_dates: parts.append("d=" + ",".join(trail_dates))
+    if trail_evts:  parts.append("e=" + ",".join(trail_evts))
+    if parts:
+        text += f"\n<!-- tl-rendered:{';'.join(parts)} -->"
+
     return text
 
 
@@ -681,6 +718,11 @@ def _assemble(open_lines: list[str],
 
 
 _ANCHOR_RE = _re.compile(r"<!--.*?-->")
+
+# Trail marker regexes — used to extract rendered anchor IDs for reconcile
+_TL_TRAIL_SID_RE  = _re.compile(r"<!--\s*tl:(?!d:|e:)(\S+?)\s*-->")
+_TL_TRAIL_DATE_RE = _re.compile(r"<!--\s*tl:d:(\d{4}-\d{2}-\d{2})\s*-->")
+_TL_TRAIL_EVT_RE  = _re.compile(r"<!--\s*tl:e:(\d+)\s*-->")
 
 
 def _visible_len(s: str) -> int:
