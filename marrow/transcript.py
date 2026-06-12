@@ -38,6 +38,40 @@ _SPAWN_HEADS = (
     "Compress NEW per the rules",
 )
 
+# ── CC harness marker strip ──────────────────────────────────────────────────
+# Six patterns injected by the CC harness that pollute event bodies and recall
+# queries. Stripped before archiving and before building recall needles.
+_CMD_MSG_RE = re.compile(r'<command-message>.*?</command-message>', re.DOTALL)
+_CMD_NAME_RE = re.compile(r'<command-name>(.*?)</command-name>', re.DOTALL)
+_CMD_ARGS_RE = re.compile(r'<command-args>(.*?)</command-args>', re.DOTALL)
+_IMG_REF_RE = re.compile(r'\[Image #\d+\]')
+_IMG_SRC_RE = re.compile(r'\[Image: source: [^\]]*\]')
+_LOCAL_STDOUT_RE = re.compile(r'<local-command-stdout>.*?</local-command-stdout>', re.DOTALL)
+
+
+def strip_harness_markers(text: str) -> str:
+    """Strip CC harness markers from a prompt or event body.
+
+    Removes (in order):
+      1. <command-message>...</command-message> — stripped entirely
+      2. <command-name>foo</command-name> — replaced with inner text
+      3. <command-args>bar</command-args> — replaced with inner text
+      4. [Image #N] — stripped
+      5. [Image: source: url] — stripped
+      6. <local-command-stdout>...</local-command-stdout> — stripped entirely
+
+    Collapses whitespace runs to a single space, then strips.
+    Safe to call on non-CC text — all patterns are specific enough to be no-ops.
+    """
+    text = _CMD_MSG_RE.sub('', text)
+    text = _CMD_NAME_RE.sub(r'\1', text)
+    text = _CMD_ARGS_RE.sub(r'\1', text)
+    text = _IMG_REF_RE.sub('', text)
+    text = _IMG_SRC_RE.sub('', text)
+    text = _LOCAL_STDOUT_RE.sub('', text)
+    return re.sub(r'[ \t]+', ' ', text).strip()
+
+
 # ── synapse-wx bridge boilerplate strip ──────────────────────────────────────
 # Three patterns injected by the bridge that must not enter recall queries or
 # event bodies.
@@ -138,7 +172,7 @@ def _text(content) -> str:
         )
     else:
         return ""
-    return strip_wx_boilerplate(s)
+    return strip_harness_markers(strip_wx_boilerplate(s))
 
 
 def _active_chain_uuids(records: list[dict]) -> set[str]:

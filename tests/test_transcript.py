@@ -300,3 +300,80 @@ def test_sdk_cli_real_session_kept(tmp_path):
     assert transcript.is_headless(jl) is False
     assert [r["content"] for r in transcript.clean(jl)] == [
         "老公 clawbot 真实对话", "real reply"]
+
+
+# ── strip_harness_markers ────────────────────────────────────────────────────
+
+def test_command_message_stripped_entirely():
+    text = "before <command-message>do not keep this</command-message> after"
+    assert transcript.strip_harness_markers(text) == "before after"
+
+
+def test_command_name_inner_text_kept():
+    text = "<command-name>foo</command-name>"
+    assert transcript.strip_harness_markers(text) == "foo"
+
+
+def test_command_args_inner_text_kept():
+    text = "<command-args>bar baz</command-args>"
+    assert transcript.strip_harness_markers(text) == "bar baz"
+
+
+def test_image_ref_stripped():
+    text = "hello [Image #1] world"
+    assert transcript.strip_harness_markers(text) == "hello world"
+
+
+def test_image_source_stripped():
+    text = "see [Image: source: https://example.com/img.png] here"
+    assert transcript.strip_harness_markers(text) == "see here"
+
+
+def test_local_stdout_stripped_entirely():
+    text = "start <local-command-stdout>some output\nmore output</local-command-stdout> end"
+    assert transcript.strip_harness_markers(text) == "start end"
+
+
+def test_mixed_markers_only_real_text_remains():
+    text = (
+        "<command-message>noise</command-message>"
+        "actual text "
+        "[Image #3]"
+        " <command-name>myskill</command-name>"
+        " <local-command-stdout>stdout</local-command-stdout>"
+    )
+    assert transcript.strip_harness_markers(text) == "actual text myskill"
+
+
+def test_empty_after_stripping_returns_empty():
+    text = "<command-message>everything</command-message>"
+    assert transcript.strip_harness_markers(text) == ""
+
+
+def test_no_markers_passthrough():
+    text = "hello 你好 world"
+    assert transcript.strip_harness_markers(text) == "hello 你好 world"
+
+
+def test_command_message_multiline_stripped():
+    text = "hi\n<command-message>\nline1\nline2\n</command-message>\nbye"
+    result = transcript.strip_harness_markers(text)
+    assert "line1" not in result and "line2" not in result
+    assert "hi" in result and "bye" in result
+
+
+def test_clean_drops_empty_content_after_stripping(tmp_path):
+    # A row whose content is only a command-message tag becomes empty after
+    # strip_harness_markers; the `if not text: continue` guard at
+    # transcript.py:208 drops it so no empty event row is archived.
+    jl = _w(tmp_path / "s.jsonl", [
+        {"type": "user", "sessionId": "s1", "timestamp": "t",
+         "message": {"role": "user",
+                     "content": "<command-message>skip me</command-message>"}},
+        {"type": "assistant", "sessionId": "s1", "timestamp": "t",
+         "message": {"role": "assistant", "model": "claude-opus-4-7",
+                     "content": [{"type": "text",
+                                  "text": "real answer"}]}},
+    ])
+    rows = transcript.clean(jl)
+    assert [r["content"] for r in rows] == ["real answer"]
