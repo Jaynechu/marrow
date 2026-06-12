@@ -46,7 +46,7 @@ People / preferences / places mentioned with clear personal stake.
   - Exclude:
     - Random unknown strangers
     - The user and assistant themselves (念念 / Lumi / 屿忱 / 鸭子 / 机子).
-    - Belong to Memes: e.g. 大龙虾, 铁锅
+    - Belong to Memes: e.g. 大龙虾
   - name: canonical short string (e.g. Bendigo, 张远).
   - note: optional short fact (role, location). May be "".
 2. pref: user's personal preference, lifestyle, or habit.

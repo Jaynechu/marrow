@@ -38,12 +38,6 @@ _SPAWN_HEADS = (
     "Compress NEW per the rules",
 )
 
-# Buddy MCP appends an invisible end-of-turn HTML comment to assistant text
-# (<!-- buddy: ... -->). It is a legal text block so the type-based filter
-# below never sees it; strip it here or it leaks into events -> digest ->
-# diary as if 铁锅 were a speaker.
-_BUDDY = re.compile(r"\s*<!--\s*buddy\s*:.*?-->", re.S | re.I)
-
 # ── synapse-wx bridge boilerplate strip ──────────────────────────────────────
 # Three patterns injected by the bridge that must not enter recall queries or
 # event bodies.
@@ -144,7 +138,6 @@ def _text(content) -> str:
         )
     else:
         return ""
-    s = _BUDDY.sub("", s).strip()
     return strip_wx_boilerplate(s)
 
 

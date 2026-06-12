@@ -151,7 +151,7 @@ def write_subpage_inserter(spec: InserterSpec, conn: sqlite3.Connection,
         if spec.respect_tombstones else set()
     )
 
-    # Sort-consistency check — diary / goose / milestone want canonical
+    # Sort-consistency check — diary / milestone want canonical
     # chronological order. If catchup-style inserts have left md blocks
     # out of fetch-order, rebootstrap the marker block from scratch.
     # db_order mirrors _bootstrap's emit order: rows grouped by section in
