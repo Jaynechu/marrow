@@ -1,4 +1,4 @@
-"""Weekly maintenance: memes decay, task auto-archive, milestone auto-confirm, goose prune.
+"""Weekly maintenance: memes decay, task auto-archive, milestone auto-confirm.
 
 No LLM. Triggered by deploy/mw-aging.plist (Sun 12:00 local).
 
@@ -14,16 +14,14 @@ Passes (single txn):
    → status = 'archived'.
 3. confirm_milestone_alerts — alerts.type='milestone_added' AND created_at
    > 7d ago AND resolved=0 → set resolved=1, resolved_at=now.
-4. prune_goose_quotes — delete ### YYYY-MM-DD blocks older than 7d from
-   ~/.config/marrow/goose_log/*.md; delete empty monthly files.
-5. prune_md_index_tombstones — DELETE md_index rows whose tombstone_at is
+4. prune_md_index_tombstones — DELETE md_index rows whose tombstone_at is
    older than 30 days. Stops the table accumulating dead rows from blocks
    the user permanently removed.
-6. prune_projects_worktrees — delete every ~/.claude/projects/<slug>
+5. prune_projects_worktrees — delete every ~/.claude/projects/<slug>
    directory whose name contains "worktrees". cc auto-cleans jsonl 30d+
    but leaves the slug shells; worktree sessions are task-isolated and
    not part of the user's continuous memory, so the whole shell goes.
-7. evict_vec_window — DELETE events_vec + events_vec_meta rows whose
+6. evict_vec_window — DELETE events_vec + events_vec_meta rows whose
    events.timestamp is older than vec_window_days (config). Exempt rows:
    affect-linked (importance>=3) or recall_count>0. Safety caps abort the
    pass if eviction would exceed 25% of vec rows or 10000 rows. Backup
@@ -41,15 +39,7 @@ import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
 from . import config, repo, storage
-from .paths import paths
-
-_MEL_TZ = ZoneInfo("Australia/Melbourne")
-_GOOSE_DIR = paths.goose_log_dir
-_BANNER_RE = re.compile(r"^!\[\[")
-_DAY_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2})\s*$")
 
 
 def _fts_phrase(q: str) -> str:
@@ -123,52 +113,6 @@ def confirm_milestone_alerts(conn: sqlite3.Connection) -> int:
         "AND created_at < datetime('now', '-7 days')"
     )
     return cur.rowcount or 0
-
-
-def prune_goose_quotes(quote_dir: Path | None = None) -> int:
-    """Delete ### YYYY-MM-DD blocks older than 7d; remove empty monthly files. Returns blocks pruned."""
-    if quote_dir is None and os.environ.get("PYTEST_CURRENT_TEST"):
-        return 0
-    d = quote_dir or _GOOSE_DIR
-    if not d.exists():
-        return 0
-    cutoff = (date.today() - timedelta(days=7))
-    pruned = 0
-    for md_path in sorted(d.glob("*.md")):
-        try:
-            lines = md_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        except OSError:
-            continue
-        out: list[str] = []
-        skip = False
-        for line in lines:
-            m = _DAY_RE.match(line.rstrip("\n"))
-            if m:
-                block_date = date.fromisoformat(m.group(1))
-                if block_date < cutoff:
-                    skip = True
-                    pruned += 1
-                    continue
-                else:
-                    skip = False
-            if skip:
-                continue
-            out.append(line)
-        # Remove trailing blank lines after pruning, keep banner
-        banner_lines = [l for l in out if _BANNER_RE.match(l.lstrip())]
-        content_lines = [l for l in out if not _BANNER_RE.match(l.lstrip())]
-        has_content = any(l.strip() for l in content_lines)
-        if not has_content:
-            try:
-                md_path.unlink()
-            except OSError:
-                pass
-        else:
-            try:
-                md_path.write_text("".join(out), encoding="utf-8")
-            except OSError:
-                pass
-    return pruned
 
 
 def prune_md_index_tombstones(conn: sqlite3.Connection) -> int:
@@ -378,7 +322,7 @@ def main(argv: list[str] | None = None) -> None:
     """Single entrypoint: run all passes, log summary."""
     ap = argparse.ArgumentParser(
         prog="marrow.aging",
-        description="Weekly DB maintenance: memes, tasks, milestones, goose, vec window.",
+        description="Weekly DB maintenance: memes, tasks, milestones, vec window.",
     )
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--apply", action="store_true",
@@ -404,7 +348,6 @@ def main(argv: list[str] | None = None) -> None:
             retired = retire_memes(conn)
             archived = archive_tasks(conn)
             confirmed = confirm_milestone_alerts(conn)
-            pruned = prune_goose_quotes()
             tombs = prune_md_index_tombstones(conn)
             wtshells = prune_projects_worktrees()
             vec = evict_vec_window(
@@ -420,7 +363,7 @@ def main(argv: list[str] | None = None) -> None:
                 "(target_table, target_id, action, summary) "
                 "VALUES ('aging', NULL, 'weekly', ?)",
                 (f"retired={retired} archived={archived} "
-                 f"confirmed={confirmed} pruned={pruned} "
+                 f"confirmed={confirmed} "
                  f"tombs={tombs} wtshells={wtshells} "
                  f"vec_evicted={vec['evicted']} vec_exempted={vec['exempted']} "
                  f"vec_skipped={vec['skipped']} vec_aborted={vec['aborted']}",),
@@ -435,7 +378,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         sys.stderr.write(
             f"[aging] retired={retired} archived={archived} "
-            f"confirmed={confirmed} pruned={pruned} "
+            f"confirmed={confirmed} "
             f"tombs={tombs} wtshells={wtshells} "
             f"vec_evicted={vec['evicted']} vec_exempted={vec['exempted']} "
             f"vec_skipped={vec['skipped']} vec_aborted={vec['aborted']}"

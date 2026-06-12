@@ -3,9 +3,8 @@
 Each renderer returns a complete markdown block (including markers).
 Anchor formats:
 - Structured views: `<!-- id:{id} -->` at line end (DESIGN L118).
-- Narrative views (diary, goose-bites): `#### YYYY-MM-DD` heading (diary)
-  or `- [YYYY-MM-DD]` bullet (goose) is the row boundary; no inline anchor.
-  Both pages stack `## YYYY` / `### MonthName` above for navigation.
+- Narrative views (diary): `#### YYYY-MM-DD` heading is the row boundary; no inline anchor.
+  Stacks `## YYYY` / `### MonthName` above for navigation.
 """
 from __future__ import annotations
 

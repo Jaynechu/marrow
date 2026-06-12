@@ -468,7 +468,6 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         # SQLite ALTER cannot use non-constant defaults, so the column is
         # added nullable then backfilled from created_at on the same pass.
         for tbl, col, decl in (
-            ("goose_bites", "source_hash", "TEXT"),
             ("milestones", "updated_at", "TEXT"),
             ("sessions", "cwd", "TEXT"),
         ):

@@ -42,7 +42,7 @@ class InserterSpec:
     group_by:
     - "append"  — flat list, new rows append at file tail (profile, wallet).
     - "tag"     — section per categorical key (memes Personal/Public, stickers).
-    - "date"    — section per date or date-range (diary, goose, milestone).
+    - "date"    — section per date or date-range (diary, milestone).
     - "none"    — single section, ordered by row order.
 
     section_of(row) returns the section label. section_order(labels) returns
@@ -50,7 +50,7 @@ class InserterSpec:
     section_order; new sections append at the end of the canonical list.
 
     subsection_of(row) is an optional second-level grouping inside each
-    section — e.g. month inside year for goose-bites. Empty string ('')
+    section — e.g. month inside year. Empty string ('')
     means no subsection header for that row. Subsection labels are emitted
     in first-seen order from the bootstrap fetch.
     """
@@ -74,7 +74,7 @@ class InserterSpec:
     empty_message: str = "_(none yet)_"
     # When True, the inserter rebootstraps the file whenever the md block
     # order diverges from `fetch`'s canonical order. Reserved for views
-    # where chronological order is a hard contract (diary, goose, milestone).
+    # where chronological order is a hard contract (diary, milestone).
     # Side effect — non-anchored hand-edits inside the marker block are
     # wiped on rebootstrap. Tombstoned rows stay tombstoned.
     force_sort_consistency: bool = False
@@ -86,8 +86,8 @@ class InserterSpec:
     # When True, subsection_of acts as a divider — render_subsection_header
     # is emitted ONLY at sub-to-sub transitions inside a section, never at
     # the section's first sub. Use for memes (Personal/Public sections,
-    # type-keyed dividers between fact|paw etc.). goose-style "every month
-    # gets its own ### header" stays as default (False).
+    # type-keyed dividers between fact|paw etc.). Default (False) emits a
+    # header at every new subsection (e.g. month inside year).
     subsection_separator_only: bool = False
     # Inverse of render_row: given one md line carrying `<!-- id:N -->`,
     # return a dict of the row's editable fields (same shape render_row
@@ -259,11 +259,10 @@ def _append_new_rows(spec: InserterSpec, text: str,
     (no blank line between rows). Section header insertion keeps one blank
     line above + below the header.
 
-    Subsection-aware specs (goose-bites month-inside-year) emit subsection
-    headers on cold-start only; append-mode here glues new rows to the
-    section's last existing row without injecting a fresh `### Month`. If
-    that creates a visible header gap, deleting the md file triggers a
-    fresh bootstrap on the next pass.
+    Subsection-aware specs emit subsection headers on cold-start only;
+    append-mode glues new rows to the section's last existing row without
+    injecting a fresh `### Month`. If that creates a visible header gap,
+    deleting the md file triggers a fresh bootstrap on the next pass.
 
     Behaviour is deliberately additive — never re-orders existing user content.
     """

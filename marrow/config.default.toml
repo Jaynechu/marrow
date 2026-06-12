@@ -141,11 +141,11 @@ cosine_threshold = 0.85
 
 [subpages]
 # Sub-page render order + visibility (DESIGN L43-65). Known keys:
-#   profile · milestone · diary · memes · stickers · wallet · goose
+#   profile · milestone · diary · memes · stickers · wallet
 #   study · projects · cheatsheet
 # `top` = content (numbered on dashboard). `bottom` = utility (unnumbered).
 # `hidden` = built but not listed in dashboard `## Content`.
-top = ["profile", "milestone", "diary", "memes", "stickers", "wallet", "goose"]
+top = ["profile", "milestone", "diary", "memes", "stickers", "wallet"]
 bottom = ["study", "projects", "cheatsheet"]
 hidden = []
 
