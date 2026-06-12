@@ -23,7 +23,6 @@ _DEFAULTS = {
     "dir_tree_md": "~/.config/marrow/dir_tree.md",
     "logs_dir": "~/.config/marrow/logs",
     "state_dir": "~/.config/marrow/state",
-    "goose_log_dir": "~/.config/marrow/goose_log",
 }
 
 
@@ -37,7 +36,6 @@ class Paths:
     dir_tree_md: Path
     logs_dir: Path
     state_dir: Path
-    goose_log_dir: Path
 
 
 def load_paths(toml_path: str | Path | None = None) -> Paths:
@@ -67,7 +65,6 @@ def load_paths(toml_path: str | Path | None = None) -> Paths:
         dir_tree_md=_p("dir_tree_md"),
         logs_dir=_p("logs_dir"),
         state_dir=_p("state_dir"),
-        goose_log_dir=_p("goose_log_dir"),
     )
 
 

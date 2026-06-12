@@ -369,19 +369,6 @@ def main(argv: list[str] | None = None) -> int:
                              f"absent post-refresh — rerun `mw daily --day <date> "
                              f"--force` after diagnosis"),
                 )
-        if catchup:
-            try:
-                from . import goose_bites
-                yday = (_dt.datetime.now(daily_catchup._TZ).date()
-                        - _dt.timedelta(days=1)).isoformat()
-                goose_bites.select_quote_for_date(conn, yday)
-            except Exception as e:
-                repo.add_alert(
-                    "warn", "goose_bites",
-                    "daily_goose_bites_failed",
-                    source="daily.py", db=db,
-                    message=f"daily catchup skipped goose-bites: {e}",
-                )
         print(f"[{ts}] daily {mode} ok: wrote={wrote or '[]'}", flush=True)
         return 0
     except Exception as e:

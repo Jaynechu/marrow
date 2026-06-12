@@ -6,7 +6,6 @@ an exit code. Hooks/daemon never call here — they use repo.py.
 from __future__ import annotations
 
 import argparse
-import datetime
 import hashlib
 import re
 import shutil
@@ -14,7 +13,6 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from . import config, dashboard, repo, storage, subpages
 
@@ -279,25 +277,6 @@ def _add_milestone(conn, args) -> int:
 
 
 _ADD_TABLES = {"milestone": _add_milestone}
-
-_MEL_TZ = ZoneInfo("Australia/Melbourne")
-
-
-def cmd_goose_bites(args) -> int:
-    from .goose_bites import select_quote_for_date
-    if args.date:
-        date = args.date
-    else:
-        today = datetime.datetime.now(_MEL_TZ).date()
-        date = (today - datetime.timedelta(days=1)).isoformat()
-    with _conn(args.db) as conn:
-        quote = select_quote_for_date(conn, date)
-    if quote:
-        print(f"selected: {quote}")
-    else:
-        print(f"no quote for {date}")
-    return 0
-
 
 
 def cmd_sessionend(args) -> int:
@@ -660,10 +639,6 @@ def build_parser() -> argparse.ArgumentParser:
     ad.add_argument("--theme", default=None)
     ad.add_argument("--pinned", action="store_true")
     ad.set_defaults(fn=cmd_add)
-
-    gs = sub.add_parser("goose-bites", parents=[common])
-    gs.add_argument("--date", default=None, metavar="YYYY-MM-DD")
-    gs.set_defaults(fn=cmd_goose_bites)
 
     rf = sub.add_parser("refresh", parents=[common])
     rf.add_argument("--all", action="store_true")
