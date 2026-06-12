@@ -1375,10 +1375,12 @@ _TL_DATE_RE = re.compile(r"<!--\s*tl:d:(?P<date>\d{4}-\d{2}-\d{2})\s*-->")
 # Strip anchors from a line to get the user-editable text.
 _TL_ANCHOR_RE = re.compile(r"\s*<!--\s*tl:[^>]+-->\s*$")
 # Strip leading prefixes from timeline lines before extracting editable text.
-_TL_HHMM_RE   = re.compile(r"^\d{2}:\d{2}\s+")
+# \s* (not \s+) so prefix-only stub lines strip to empty → no write-back.
+_TL_HHMM_RE   = re.compile(r"^\d{2}:\d{2}\s*")
+_TL_TONE_RE   = re.compile(r"^【[^】]*】\s*")
 _TL_PERIOD_RE  = re.compile(r"^(?:AM|PM|ND)\s+")
-# Diary day-line prefix: "MM-DD Day 【tone】 " (day 4-7 zone).
-_TL_DAY_RE    = re.compile(r"^\d{2}-\d{2}\s+Day\s+【[^】]*】\s+")
+# Diary day-line prefix: "MM-DD Day 【tone】" (day 4-8 zone).
+_TL_DAY_RE    = re.compile(r"^\d{2}-\d{2}\s+Day\s+【[^】]*】\s*")
 
 
 def _strip_tl_anchor(line: str) -> str:
@@ -1386,9 +1388,10 @@ def _strip_tl_anchor(line: str) -> str:
 
 
 def _extract_tl_text(line: str) -> str:
-    """Strip prefixes (HH:MM / AM/PM/ND / MM-DD Day 【tone】) and anchor suffix."""
+    """Strip prefixes (HH:MM【tone】 / AM/PM/ND / MM-DD Day 【tone】) and anchor."""
     s = _strip_tl_anchor(line)
     s = _TL_HHMM_RE.sub("", s)
+    s = _TL_TONE_RE.sub("", s)
     s = _TL_PERIOD_RE.sub("", s)
     s = _TL_DAY_RE.sub("", s)
     return s.strip()
