@@ -48,7 +48,7 @@
 ### 1. Subpage 双向 reconcile — 剩 6 个 render-only (merged from 2Subpage-reconcile.md)
 - ⚑ 前置决策未拍: 前端走 db CRUD → reconcile 整条路作废全砍; 前端走 md → 按下表补。先拍这个再动工。
 - Done: milestones · milestone_candidates · tasks (tick→archive works, reconcile.py:737) · affect · memes · profile · alerts · atlas (hash-diff guard atlas.py:395 — 打字被吞 bug 已修)
-- 剩 render-only (spec 在 subpage_specs.py): diary:141 · goose-bites:285 · stickers:224 · wallet:261 · projects_index:325 · study_index:366
+- 剩 render-only (spec 在 subpage_specs.py): diary:141 · stickers:224 · wallet:261 · projects_index:325 · study_index:366
 - 不补: cheatsheet (read-only, hand-edit preserved) · dir_tree (atlas 替代) · projects/<name>.md (走 reconcile_tasks)
 - 模式: 抄 reconcile_milestones (reconcile.py:162) — id anchor parse、diff vs DB、INSERT/UPDATE/DELETE + audit_log
 - 遗留 bug: milestone 剪贴 id 短暂消失即 dead — 要 "消失 X 分钟内可复活, 超时才 dead"

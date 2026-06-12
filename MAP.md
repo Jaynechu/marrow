@@ -37,7 +37,7 @@ Three runtimes:
 ## 2. Write path
 
 ### 2.1 session capture
-- `transcript:clean` code-only strip: tool calls, thinking, sidechains, buddy HTML comments; headless spawns dropped via `transcript:is_headless` (worker_models prefix match + 12 known prompt heads). `repo:archive_events` also bumps entity mention_count + memes use_count in the same txn.
+- `transcript:clean` code-only strip: tool calls, thinking, sidechains; headless spawns dropped via `transcript:is_headless` (worker_models prefix match + 12 known prompt heads). `repo:archive_events` also bumps entity mention_count + memes use_count in the same txn.
 
 ### 2.2 sessionend extraction (sessionend_async.py)
 - Skip rule: ≤3 user turns (`[sessionend].skip_turn_threshold`) → terminal `skip:short_session,user_count=N`. Stale-skip recovery `sessionend_async:_drop_stale_skip`: skip row dropped + reprocessed if count later grew past threshold.
@@ -69,7 +69,7 @@ Three runtimes:
 ### 4.1 schema (storage.py, v17)
 - Migrations `storage:init_db` _migrate_to_v2…v17 idempotent, PRAGMA user_version guarded; v5/v7/v8/v9 are empty sentinels.
 - Connection: journal_mode=DELETE (deliberate — DECISIONS.md, APFS SIGBUS; never WAL) · busy_timeout 30s · sqlite-vec loaded per conn. Rule: never open a second conn to the same DB inside a write txn.
-- Tables: events (recall_count/last_recalled_at v16; never aged) · tasks (active→archived on 30d no-mention) · milestones (pinned exempt) · memes (pinned=0 + last_seen>90d → DELETE) · stickers · pit · diary (date PK, DELETE+INSERT rewrite; v17: +tl_line) · goose_bites · alerts · audit_log · affect (superseded_by NULL = live; affect_live view) · entities (entities_live view) · session_digests (v17: +kind/tl_line/life_lines; sid PK, date, text, ts) · md_index (block hash + tombstone_at) · memes_reject_log · atlas · 6×*_vec + *_vec_meta.
+- Tables: events (recall_count/last_recalled_at v16; never aged) · tasks (active→archived on 30d no-mention) · milestones (pinned exempt) · memes (pinned=0 + last_seen>90d → DELETE) · stickers · pit · diary (date PK, DELETE+INSERT rewrite; v17: +tl_line) · goose_bites (schema history only) · alerts · audit_log · affect (superseded_by NULL = live; affect_live view) · entities (entities_live view) · session_digests (v17: +kind/tl_line/life_lines; sid PK, date, text, ts) · md_index (block hash + tombstone_at) · memes_reject_log · atlas · 6×*_vec + *_vec_meta.
 
 ### 4.2 embedding (recall.py)
 - bge-m3 ONNX CPU singleton, 1024d, CLS-pool L2-norm, max_length 512. `recall:embed_pending` iterates 6 lanes (events/memes/entities/milestones/diary/tasks), batch 50/lane, so events backlog can't starve others; diary lane sweeps orphaned vec rows (rowid reuse after DELETE+INSERT).
@@ -90,7 +90,7 @@ Three runtimes:
 
 ### 5.2 subpage catalog (registry `subpages:_REGISTRY`, specs `subpage_specs.py`)
 - All inserter-backed unless noted; `<!-- id:N -->` anchors; DB→md unless noted.
-- profile (entities, bidirectional soft-delete) · milestone (bidirectional, pinned only) · diary (block_id=date) · memes (Personal/Public) · stickers (stub) · wallet (stub, fetch=[]) · goose→goose-bites.md · study index (children legacy read_only, hand-managed) · projects index (children read_only; KNOWN: title unsanitised in child path) · cheatsheet (read_only, disk SoT) · atlas (bidirectional, respect_tombstones=False, force_sort_consistency).
+- profile (entities, bidirectional soft-delete) · milestone (bidirectional, pinned only) · diary (block_id=date) · memes (Personal/Public) · stickers (stub) · wallet (stub, fetch=[]) · study index (children legacy read_only, hand-managed) · projects index (children read_only; KNOWN: title unsanitised in child path) · cheatsheet (read_only, disk SoT) · atlas (bidirectional, respect_tombstones=False, force_sort_consistency).
 - Legacy render fns in subpages_render.py are unreachable (inserter precedes, failure does NOT fall back) — scheduled for deletion (review bloat #1). render_pit is cli-only (`cli:cmd_export_pit`).
 
 ### 5.3 sync machinery
@@ -108,7 +108,6 @@ Three runtimes:
 
 - com.marrow.watcher — persistent, KeepAlive.
 - com.marrow.dashboard-tick 06:01 daily — force dashboard render.
-- com.marrow.goose-bites 06:30 daily — best-of-day quote.
 - com.marrow.daily-routine 07:00 daily — candidates + diary for yesterday.
 - com.marrow.daily-catchup 19:00 daily — backfill ≤3 missing diary days in 7d window.
 - com.marrow.db-backup 03:00 daily — VACUUM INTO local + iCloud offsite, keep 14 each.
@@ -133,7 +132,6 @@ Three runtimes:
 - memes: pinned=0 + last_seen<90d → DELETE (NULL last_seen kept).
 - tasks: active, 0 FTS title hits in events 30d → archived.
 - milestone_added alerts: >7d → resolved (auto-confirm).
-- goose md blocks >7d deleted; empty monthly files removed.
 - md_index tombstones >30d → DELETE.
 - ~/.claude/projects worktree shells → rmtree.
 - events vec window: timestamp < now-90d (`[recall].vec_window_days`, 0=off) → DELETE vec rows; exempt recall_count>0 OR affect importance ≥3; caps abort >25% (inert <100 rows) or >10k rows (critical alerts); backup gate: newest daily backup missing/>7d → skip + warn. Recovery: embed_pending re-embeds from intact events rows (vectors are derived data). pending_alerts flushed in `main`'s finally — survives audit INSERT failure (A-4, 06/11).
@@ -149,7 +147,6 @@ Three runtimes:
 ## 12. Addons
 
 - daily.py pipeline (§2.3) vs day-plan CC skill (.claude/skills/day-plan) — unrelated, share the name.
-- buddy MCP (external/claude-buddy, status-line goose) vs goose_bites table (`goose_bites:select_quote_for_date`, haiku picks best line inside 19:00 catchup; fallback = longest on mismatch) — unrelated, share the goose.
 - synapse-wx — own repo + MAP; talks to marrow via MARROW_BRIDGE=1 env + mw CLI + direct sqlite audit flags only.
 
 ## 13. Invariants & status
