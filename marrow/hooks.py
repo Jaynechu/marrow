@@ -998,9 +998,9 @@ def user_prompt_submit() -> int:
     # instructions / merge notes / dot sentinels never become query needles.
     # Emptiness is judged with the [time: ...] anchor ALSO removed (recall.py
     # strips it internally anyway) so a pure-media bubble skips recall.
-    from .transcript import strip_wx_boilerplate as _strip_wx
-    recall_query = _strip_wx(prompt_text)
-    if not _WX_TIME_PREFIX_RE.sub("", recall_query).strip():
+    from .transcript import strip_wx_boilerplate as _strip_wx, strip_harness_markers as _strip_harness
+    recall_query = _strip_harness(_strip_wx(prompt_text))
+    if not recall_query or not _WX_TIME_PREFIX_RE.sub("", recall_query).strip():
         return 0
 
     rcfg = cfg.get("recall", {})
