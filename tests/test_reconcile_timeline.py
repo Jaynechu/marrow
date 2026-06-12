@@ -150,6 +150,50 @@ def test_reconcile_tl_diary_unknown_date(conn, dash_path):
     assert any("2026-06-07" in c for c in rpt.conflicts)
 
 
+# ── prefix-only / tone-tag lines must not write back ─────────────────────────
+
+def test_reconcile_tl_stub_day_line_no_writeback(conn, dash_path):
+    """Prefix-only stub day line (NULL tl_line) strips to empty → no write-back."""
+    date = "2026-06-07"
+    _insert_diary(conn, date, tl=None)
+    dash_path.write_text(
+        f"## Timeline\n06-07 Day 【平淡】 <!-- tl:d:{date} -->"
+    )
+    rpt = reconcile_timeline(conn, dash_path)
+    assert rpt.updated == 0
+    row = conn.execute(
+        "SELECT tl_line FROM diary WHERE date=?", (date,)
+    ).fetchone()
+    assert row["tl_line"] is None
+
+
+def test_reconcile_tl_tone_tagged_line_strips_tag(conn, dash_path):
+    """HH:MM【tone】 prefix is display-only — stripped before write-back."""
+    sid = "sid-tone"
+    _insert_digest(conn, sid, tl="原始TL")
+    dash_path.write_text(
+        f"## Timeline\n17:46【释怀】 用户改的TL <!-- tl:{sid} -->"
+    )
+    reconcile_timeline(conn, dash_path)
+    row = conn.execute(
+        "SELECT tl_line FROM session_digests WHERE sid=?", (sid,)
+    ).fetchone()
+    assert row["tl_line"] == "用户改的TL"
+
+
+def test_reconcile_tl_tone_only_line_no_writeback(conn, dash_path):
+    """HH:MM【tone】-only line strips to empty → tl_line untouched."""
+    sid = "sid-tone-only"
+    _insert_digest(conn, sid, tl="原始TL")
+    dash_path.write_text(f"## Timeline\n17:46【释怀】 <!-- tl:{sid} -->")
+    rpt = reconcile_timeline(conn, dash_path)
+    assert rpt.updated == 0
+    row = conn.execute(
+        "SELECT tl_line FROM session_digests WHERE sid=?", (sid,)
+    ).fetchone()
+    assert row["tl_line"] == "原始TL"
+
+
 # ── deleted line = no-op ─────────────────────────────────────────────────────
 
 def test_reconcile_tl_deleted_line_noop(conn, dash_path):
