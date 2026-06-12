@@ -150,10 +150,17 @@ def _week_trend(this_week: list[dict], last_week: list[dict]) -> str:
     return f"{tone_label} {arrow}"
 
 
+# Bug 5: rendered day-line pattern written by old backfill (e.g. "06-09 Day 【平淡】")
+_RENDERED_DAY_RE = _re.compile(r"^\d{2}-\d{2}\s+Day\s+【.+】")
+
+
 def _tl_or_fallback(sd: dict) -> str:
-    """tl_line if set; else sanitised truncation of legacy prose body."""
+    """tl_line if set and not a rendered day-line artifact; else sanitised
+    truncation of legacy prose body."""
     tl = sd.get("tl_line")
-    if tl:
+    # Bug 5 guard: treat rendered "MM-DD Day 【tone】" strings and blank/
+    # whitespace-only values as NULL so we fall through to the body fallback.
+    if tl and tl.strip() and not _RENDERED_DAY_RE.match(tl.strip()):
         return tl
     body = (sd.get("text") or "").strip()
     # Legacy prose digests carry markdown + newlines — flatten before cut.
@@ -185,13 +192,68 @@ def _life_line_hhmm(item: str, session_hhmm: str) -> tuple[str, str]:
     return session_hhmm, item
 
 
+def _life_line_utc_and_date(item: str, session_utc_iso: str,
+                            session_hhmm: str) -> tuple[str, _dt.date]:
+    """Return (utc_iso_sort_key, diary_date) for a LIFE line.
+
+    Uses the session's real UTC start to derive the line's calendar datetime
+    in Melbourne local time, then applies the single 6AM diary cutoff.
+
+    Midnight-crossing heuristic: if the line's HH:MM is more than 6 hours
+    earlier than the session start's local HH:MM, the line is assumed to be
+    on the NEXT calendar day (e.g. session at 23:50, line at 00:10).
+    """
+    m = _LIFE_TS_RE.match(item)
+    if not m:
+        # No prefix: inherit session start
+        diary_date = _local_date_from_utc(session_utc_iso)
+        return session_utc_iso, diary_date
+
+    hhmm = m.group(1)
+    try:
+        h, mi = int(hhmm[:2]), int(hhmm[3:5])
+    except ValueError:
+        diary_date = _local_date_from_utc(session_utc_iso)
+        return session_utc_iso, diary_date
+
+    # Parse session start in Melbourne local
+    s = (session_utc_iso or "").strip().replace("Z", "+00:00")
+    try:
+        sess_dt = _dt.datetime.fromisoformat(s)
+    except ValueError:
+        diary_date = _local_date_from_utc(session_utc_iso)
+        return session_utc_iso, diary_date
+    if sess_dt.tzinfo is None:
+        sess_dt = sess_dt.replace(tzinfo=_dt.timezone.utc)
+    sess_local = sess_dt.astimezone(_TZ)
+
+    # Build candidate on the session's CALENDAR date (not diary date).
+    # A line's HH:MM is always on the same calendar day as the session —
+    # models write local wall-clock times relative to the session day.
+    # The only "crossing" that matters for diary attribution is the 6AM
+    # cutoff: a 00:30 line on a session-day where the session was at 23:00
+    # means early morning of that same calendar day → diary date = day before.
+    cal_date = sess_local.date()
+    candidate = _dt.datetime(cal_date.year, cal_date.month, cal_date.day,
+                             h, mi, 0, tzinfo=_TZ)
+
+    # Single 6AM diary cutoff (no midnight-next-day shift needed here).
+    if candidate.hour < _CUTOFF_H:
+        diary_date = (candidate - _dt.timedelta(days=1)).date()
+    else:
+        diary_date = candidate.date()
+
+    utc_sort = candidate.astimezone(_dt.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    return utc_sort, diary_date
+
+
 def _life_line_local_date(item: str, session_date: _dt.date,
                           session_hhmm: str) -> _dt.date:
-    """Resolve local diary date for a LIFE line.
+    """Kept for unit-test compatibility. Derives diary date from session_date
+    treated as the session's LOCAL CALENDAR date (not diary date).
 
-    Lines with their own HH:MM: build a full datetime using that time on
-    the session's local date, then apply 6AM cutoff (in case line is 00-05).
-    Prefix-less lines inherit the session date directly.
+    For new code use _life_line_utc_and_date instead.
     """
     m = _LIFE_TS_RE.match(item)
     if not m:
@@ -201,12 +263,11 @@ def _life_line_local_date(item: str, session_date: _dt.date,
         h, mi = int(hhmm[:2]), int(hhmm[3:5])
     except ValueError:
         return session_date
-    # Build candidate datetime on the session's calendar date
+    # Build candidate on the given calendar date; single 6AM cutoff.
     candidate = _dt.datetime(
         session_date.year, session_date.month, session_date.day,
         h, mi, 0, tzinfo=_TZ)
-    # Apply 6AM cutoff: 00-05 belongs to previous diary day
-    if h < _CUTOFF_H:
+    if candidate.hour < _CUTOFF_H:
         return (candidate - _dt.timedelta(days=1)).date()
     return candidate.date()
 
@@ -271,15 +332,70 @@ def _query_affect_range(conn: sqlite3.Connection,
     return [dict(r) for r in rows]
 
 
+def _query_affect_by_session(conn: sqlite3.Connection,
+                              from_utc: str, to_utc: str) -> dict[str, list[dict]]:
+    """Affect rows grouped by session_id for 24h tone tags (Bug 3).
+
+    Affect rows don't carry a session_id column, so we match by time span:
+    rows whose created_at falls within [session_start, session_end) where
+    session_end = next session's start (or to_utc).  We approximate this by
+    joining on events: affect.created_at between first and last event of
+    the session.  For sessions with no events we use the digest ts window.
+    Returns {sid: [affect_row, ...]}
+    """
+    # Fetch affect rows in range with their timestamps
+    rows = conn.execute(
+        "SELECT valence, arousal, importance, created_at"
+        " FROM affect"
+        " WHERE superseded_by IS NULL"
+        " AND created_at >= ? AND created_at < ?",
+        (from_utc, to_utc),
+    ).fetchall()
+    affect_rows = [dict(r) for r in rows]
+
+    # Fetch session time spans (first_event_ts, last_event_ts) from events
+    spans = conn.execute(
+        "SELECT session_id, MIN(timestamp) AS t_start, MAX(timestamp) AS t_end"
+        " FROM events"
+        " WHERE timestamp >= ? AND timestamp < ?"
+        " GROUP BY session_id",
+        (from_utc, to_utc),
+    ).fetchall()
+
+    by_sid: dict[str, list[dict]] = {}
+    for span in spans:
+        sid = span["session_id"]
+        t_start = span["t_start"]
+        t_end = span["t_end"]
+        by_sid[sid] = [
+            ar for ar in affect_rows
+            if t_start <= ar["created_at"] <= t_end
+        ]
+    return by_sid
+
+
 def _query_diary_range(conn: sqlite3.Connection,
                        date_from: str, date_to: str) -> dict[str, str]:
-    """diary.tl_line keyed by date string, for day 4-7 zone."""
+    """diary.tl_line keyed by date string, for day 4-8 zone.
+
+    Bug 5 guard: rows whose tl_line matches the rendered-day-line pattern
+    (MM-DD Day 【tone】) or are empty/whitespace-only are excluded here so
+    the renderer treats them as missing and uses the fallback path.
+    """
     rows = conn.execute(
         "SELECT date, tl_line FROM diary"
         " WHERE date >= ? AND date <= ? AND tl_line IS NOT NULL",
         (date_from, date_to),
     ).fetchall()
-    return {r["date"]: r["tl_line"] for r in rows}
+    result: dict[str, str] = {}
+    for r in rows:
+        tl = (r["tl_line"] or "").strip()
+        if not tl:
+            continue
+        if _RENDERED_DAY_RE.match(tl):
+            continue
+        result[r["date"]] = tl
+    return result
 
 
 def _query_current_sid(conn: sqlite3.Connection) -> str | None:
@@ -315,7 +431,8 @@ def _render_open_episodes(episodes: list[dict]) -> list[str]:
 
 
 def _render_24h(digests: list[dict],
-                current_sid: str | None) -> list[str]:
+                current_sid: str | None,
+                affect_by_sid: dict[str, list[dict]] | None = None) -> list[str]:
     """Flat film-strip newest→oldest, cap 15.
 
     Casual sessions: each LIFE line is stamped with its own HH:MM (parsed
@@ -326,10 +443,14 @@ def _render_24h(digests: list[dict],
     Sort key and day-divider attribution use the per-line time where
     available so lines spanning 08:00-20:00 land at their own hours.
     Day crossings get --- MM-DD --- divider.
+
+    Bug 3 fix: first rendered line of each session with affect rows carries
+    a 【tone】 tag: e.g. "17:46【释怀】老婆亲手送buddy退役 <!-- tl:... -->".
     """
+    if affect_by_sid is None:
+        affect_by_sid = {}
+
     # Each flat_entry: (sort_key_str, disp_date, rendered_line, is_first_of_session)
-    # sort_key is a string we can compare lexicographically (UTC ISO for session,
-    # or a synthetic local-HH:MM key for per-line times within the session)
     flat_entries: list[tuple[str, _dt.date, str, bool]] = []
 
     for sd in digests:
@@ -344,21 +465,27 @@ def _render_24h(digests: list[dict],
         life_items = [x.strip() for x in life_raw.splitlines() if x.strip()]
         anchor = _tl_anchor_sid(sd["sid"])
 
+        # Bug 3: compute tone tag for this session if affect rows exist
+        sess_affect = affect_by_sid.get(sd["sid"], [])
+        tone_tag = f"【{_tone_from_rows(sess_affect)}】" if sess_affect else ""
+
         if kind == "task" or not life_items:
             # Single line: TL at session start time
-            rendered = f"{sess_hhmm} {tl} {anchor}"
+            rendered = f"{sess_hhmm}{tone_tag} {tl} {anchor}"
             flat_entries.append((ts, sess_date, rendered, True))
         else:
-            # Casual with LIFE items — one rendered line per item
+            # Casual with LIFE items — one rendered line per item.
+            # Use _life_line_utc_and_date for correct UTC sort key and diary
+            # date (fixes Bug 1 + Bug 2: no more double 6AM shift or wrong
+            # date-prefix on sort key).
             for idx, item in enumerate(life_items):
                 line_hhmm, text = _life_line_hhmm(item, sess_hhmm)
-                line_date = _life_line_local_date(item, sess_date, sess_hhmm)
-                # Sort key: use ts for first item so session ordering is stable;
-                # subsequent items inherit the session ts with HH:MM appended
-                # to maintain relative ordering within the same session.
-                sort_key = ts if idx == 0 else f"{ts[:10]}T{line_hhmm}:00Z"
+                sort_key, line_date = _life_line_utc_and_date(item, ts, sess_hhmm)
+                # First item uses session ts so session-level ordering is stable
                 if idx == 0:
-                    rendered = f"{line_hhmm} {text} {anchor}"
+                    sort_key = ts
+                    # Bug 3: tone tag on first line only
+                    rendered = f"{line_hhmm}{tone_tag} {text} {anchor}"
                 else:
                     rendered = f"{line_hhmm} {text}"
                 flat_entries.append((sort_key, line_date, rendered, idx == 0))
@@ -478,40 +605,51 @@ def render_timeline(conn: sqlite3.Connection) -> str:
 
     current_sid = _query_current_sid(conn)
 
+    # Melbourne diary-date for "today" (6AM boundary)
+    now_melb = now_utc.astimezone(_TZ)
+    today_melb = (now_melb if now_melb.hour >= _CUTOFF_H
+                  else now_melb - _dt.timedelta(days=1)).date()
+
     # ── open episodes ────────────────────────────────────────────────────────
     open_eps = _query_open_episodes(conn, t_7d)
     open_lines = _render_open_episodes(open_eps)
 
     # ── last 24h ─────────────────────────────────────────────────────────────
     digests_24h = _query_digests_range(conn, t_24h, now_utc_iso)
-    lines_24h = _render_24h(digests_24h, current_sid)
+    affect_by_sid_24h = _query_affect_by_session(conn, t_24h, now_utc_iso)
+    lines_24h = _render_24h(digests_24h, current_sid, affect_by_sid_24h)
 
-    # ── 24-72h ───────────────────────────────────────────────────────────────
-    digests_2472 = _query_digests_range(conn, t_72h, t_24h)
-    affect_2472 = _query_affect_range(conn, t_72h, t_24h)
+    # ── zone (b): diary dates today-1, today-2, today-3 ─────────────────────
+    # Window: from diary-day-start of today-3 (06:00 local → UTC) up to t_24h
+    # so sessions shown in zone (a) are not repeated.
+    # Bug 4 fix: use diary-date boundaries, not rolling 72h.
+    day3 = today_melb - _dt.timedelta(days=3)
+    zone_b_from_utc = _day_start_utc(day3).strftime("%Y-%m-%dT%H:%M:%SZ")
+    digests_2472 = _query_digests_range(conn, zone_b_from_utc, t_24h)
+    affect_2472 = _query_affect_range(conn, zone_b_from_utc, t_24h)
     lines_2472 = _render_2472h(digests_2472, affect_2472, current_sid)
 
-    # ── day 4-7 ──────────────────────────────────────────────────────────────
-    # Diary date boundaries (Melbourne local)
-    now_melb = now_utc.astimezone(_TZ)
-    today_melb = (now_melb if now_melb.hour >= _CUTOFF_H
-                  else now_melb - _dt.timedelta(days=1)).date()
-    # Day 4-7: 3 days ago through 6 days ago (0-indexed from today)
-    dates_4_7 = [today_melb - _dt.timedelta(days=d) for d in range(3, 7)]
-    date_4_7_str_from = dates_4_7[-1].isoformat()
-    date_4_7_str_to   = dates_4_7[0].isoformat()
+    # ── zone (c): diary dates today-4 .. today-8 (five days) ────────────────
+    # Bug 4 fix: was range(3,7) → today-3..today-6; now range(4,9) → today-4..today-8.
+    dates_4_8 = [today_melb - _dt.timedelta(days=d) for d in range(4, 9)]
+    date_c_str_from = dates_4_8[-1].isoformat()   # oldest (today-8)
+    date_c_str_to   = dates_4_8[0].isoformat()    # newest (today-4)
 
-    diary_tl = _query_diary_range(conn, date_4_7_str_from, date_4_7_str_to)
-    affect_4_7 = _query_affect_range(conn, t_7d, t_72h)
+    diary_tl = _query_diary_range(conn, date_c_str_from, date_c_str_to)
+
+    # Affect for zone (c): from diary-day-start of today-8 up to zone_b_from_utc
+    day8 = today_melb - _dt.timedelta(days=8)
+    zone_c_from_utc = _day_start_utc(day8).strftime("%Y-%m-%dT%H:%M:%SZ")
+    affect_4_8 = _query_affect_range(conn, zone_c_from_utc, zone_b_from_utc)
     affect_last_wk = _query_affect_range(conn, t_14d, t_7d)
 
     affect_by_date: dict[_dt.date, list[dict]] = {}
-    for ar in affect_4_7:
+    for ar in affect_4_8:
         d, _ = _period_diary_date(ar.get("created_at") or "")
         affect_by_date.setdefault(d, []).append(ar)
 
-    lines_47 = _render_day47(dates_4_7, affect_by_date, diary_tl,
-                             affect_4_7, affect_last_wk)
+    lines_47 = _render_day47(dates_4_8, affect_by_date, diary_tl,
+                             affect_4_8, affect_last_wk)
 
     # ── assemble + trim to budget ────────────────────────────────────────────
     all_sections = _assemble(open_lines, lines_24h, lines_2472, lines_47)
