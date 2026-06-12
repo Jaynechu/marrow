@@ -141,7 +141,7 @@ Three runtimes:
 - `llm:LLMClient.call(role, body, tier)` — claude CLI stream-json subprocess, OAuth, no API key. Tier cheap/mid/top → model via [tiers]. Isolation flags strip persona/MCP. 1 retry/provider; severity warn (more providers left) / critical (last); timeout 120s, SIGTERM→SIGKILL ladder; refusal: stop_reason + 22 fingerprints; cost → audit_log llm_call_cost. on_alert is caller-supplied — title.py passes none (its failures stay silent).
 - `popen_detach` — mandatory 4-flag combo (DEVNULL stdin, log-fd stdout/err, start_new_session, close_fds); _lazy variant: child self-redirects on first write, silent runs leave no log file.
 - backup: `backup:run` VACUUM INTO tmp → os.replace, offsite copy fail-soft (warn, local still lands); `repo:safe_backup_db` in-session copies pruned >7d.
-- config: default.toml ← user config.toml deep-merge; paths.toml (paths.py) supplies fallback/extra paths (drift_pending, goose_log). Key tables: [paths] [backup] [llm.*] [tiers] [embedding] [recall] [sessionend] [*_dedup] [subpages] [transcript].
+- config: default.toml ← user config.toml deep-merge; paths.toml (paths.py) supplies fallback/extra paths (drift_pending). Key tables: [paths] [backup] [llm.*] [tiers] [embedding] [recall] [sessionend] [*_dedup] [subpages] [transcript].
 - title: `title:summarize` detached per prompt, ≥2 user turns, ≤8 units, tier cheap, audit-dedup.
 
 ## 12. Addons
