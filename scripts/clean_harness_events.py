@@ -24,7 +24,7 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from marrow import config  # noqa: E402
+from marrow import config, storage  # noqa: E402
 from marrow.transcript import strip_harness_markers  # noqa: E402
 
 
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     db = args.db or config.db_path()
-    conn = sqlite3.connect(db)
+    conn = storage.connect(db)
     conn.row_factory = sqlite3.Row
     try:
         plan = _build_plan(conn)
