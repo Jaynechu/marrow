@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from marrow import dashboard, storage
+import marrow.reconcile as reconcile_mod
 from marrow.reconcile import reconcile_timeline, ReconcileReport
 
 
@@ -68,6 +69,19 @@ def _make_timeline_block(sid: str, tl: str, date: str | None = None,
     if date and diary_tl:
         lines.append(f"06-07 Day 【平淡】 {diary_tl} <!-- tl:d:{date} -->")
     return "\n".join(lines)
+
+
+def _freeze_reconcile_now(monkeypatch, melb_dt: _dt.datetime) -> None:
+    class FrozenDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return melb_dt.replace(tzinfo=None)
+            return melb_dt.astimezone(tz)
+
+    utc_iso = melb_dt.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(reconcile_mod._dt, "datetime", FrozenDateTime)
+    monkeypatch.setattr(reconcile_mod, "_now", lambda: utc_iso)
 
 
 # ── session tl write-back ─────────────────────────────────────────────────────
@@ -387,6 +401,84 @@ def test_add_plus_line_without_time_uses_now(conn, dash_path):
     ts = _dt.datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
     after = _dt.datetime.now(_dt.timezone.utc)
     assert before <= ts <= after
+
+
+def test_add_plus_line_uses_day_divider_context(conn, dash_path, monkeypatch):
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Australia/Melbourne")
+    _freeze_reconcile_now(
+        monkeypatch, _dt.datetime(2026, 6, 13, 22, 50, tzinfo=tz)
+    )
+    dash_path.write_text(
+        "## Timeline\n"
+        "--- 06-12 ---\n"
+        "+AM 吃饭\n"
+        "+ 14:30 咖啡"
+    )
+
+    rpt = reconcile_timeline(conn, dash_path)
+    assert rpt.updated == 2
+    rows = conn.execute(
+        "SELECT content, timestamp FROM events WHERE channel='manual'"
+        " ORDER BY id"
+    ).fetchall()
+    got = {r["content"]: r["timestamp"] for r in rows}
+    assert got["吃饭"] == "2026-06-11T23:00:00Z"
+    assert got["咖啡"] == "2026-06-12T04:30:00Z"
+
+
+def test_add_plus_line_top_without_time_uses_now(conn, dash_path, monkeypatch):
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Australia/Melbourne")
+    _freeze_reconcile_now(
+        monkeypatch, _dt.datetime(2026, 6, 13, 22, 50, tzinfo=tz)
+    )
+    dash_path.write_text("## Timeline\n+ 随手记\n--- 06-12 ---")
+
+    reconcile_timeline(conn, dash_path)
+    row = conn.execute(
+        "SELECT content, timestamp FROM events WHERE channel='manual'"
+    ).fetchone()
+    assert row["content"] == "随手记"
+    assert row["timestamp"] == "2026-06-13T12:50:00Z"
+
+
+def test_add_plus_line_uses_full_date_anchor_context(conn, dash_path, monkeypatch):
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Australia/Melbourne")
+    _freeze_reconcile_now(
+        monkeypatch, _dt.datetime(2026, 6, 13, 22, 50, tzinfo=tz)
+    )
+    dash_path.write_text(
+        "## Timeline\n"
+        "<!-- tl:d:2026-06-09 -->\n"
+        "+ND 宵夜"
+    )
+
+    reconcile_timeline(conn, dash_path)
+    row = conn.execute(
+        "SELECT content, timestamp FROM events WHERE channel='manual'"
+    ).fetchone()
+    assert row["content"] == "宵夜"
+    assert row["timestamp"] == "2026-06-09T11:00:00Z"
+
+
+def test_add_plus_line_yearless_context_uses_recent_past_year(
+    conn, dash_path, monkeypatch
+):
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Australia/Melbourne")
+    _freeze_reconcile_now(
+        monkeypatch, _dt.datetime(2026, 6, 13, 22, 50, tzinfo=tz)
+    )
+    dash_path.write_text("## Timeline\n--- 01-15 ---\n+PM 旧事")
+
+    reconcile_timeline(conn, dash_path)
+    row = conn.execute(
+        "SELECT content, timestamp FROM events WHERE channel='manual'"
+    ).fetchone()
+    assert row["content"] == "旧事"
+    assert row["timestamp"] == "2026-01-15T04:00:00Z"
 
 
 def test_manual_event_appears_in_render(conn, dash_path):

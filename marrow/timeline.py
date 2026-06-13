@@ -414,6 +414,17 @@ def _query_manual_events_24h(conn: sqlite3.Connection,
     return [dict(r) for r in rows]
 
 
+def _query_manual_events_range(conn: sqlite3.Connection,
+                               from_utc: str, to_utc: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, timestamp, content FROM events"
+        " WHERE channel='manual' AND timestamp >= ? AND timestamp < ?"
+        " ORDER BY timestamp ASC",
+        (from_utc, to_utc),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _query_current_sid(conn: sqlite3.Connection) -> str | None:
     """Latest in-progress session id (lifecycle:start with no end).
     Used to exclude the current session from timeline."""
@@ -498,9 +509,7 @@ def _render_24h(digests: list[dict],
             for idx, item in enumerate(life_items):
                 line_hhmm, text = _life_line_hhmm(item, sess_hhmm)
                 sort_key, line_date = _life_line_utc_and_date(item, ts, sess_hhmm)
-                # First item uses session ts so session-level ordering is stable
                 if idx == 0:
-                    sort_key = ts
                     # Bug 3: tone tag on first line only
                     rendered = f"{line_hhmm}{tone_tag} {text} {anchor}"
                 else:
@@ -535,17 +544,23 @@ def _render_24h(digests: list[dict],
 
 def _render_2472h(digests: list[dict],
                   affect_rows: list[dict],
-                  current_sid: str | None) -> list[str]:
+                  current_sid: str | None,
+                  manual_events: list[dict] | None = None) -> list[str]:
     """Per-day headers + AM/PM/ND period lines, newest day first, cap ~12."""
-    # Bucket digests by (diary_date, period)
     from collections import defaultdict
-    buckets: dict[tuple[_dt.date, str], list[dict]] = defaultdict(list)
+    buckets: dict[tuple[_dt.date, str], list[tuple[str, str, str]]] = defaultdict(list)
     for sd in digests:
         if sd["sid"] == current_sid:
             continue
         ts = sd.get("ts") or ""
         diary_date, period = _period_diary_date(ts)
-        buckets[(diary_date, period)].append(sd)
+        buckets[(diary_date, period)].append((ts, _tl_or_fallback(sd), ""))
+
+    for ev in (manual_events or []):
+        ts = ev.get("timestamp") or ""
+        diary_date, period = _period_diary_date(ts)
+        anchor = f"<!-- tl:e:{ev['id']} -->"
+        buckets[(diary_date, period)].append((ts, ev.get("content") or "", anchor))
 
     # Bucket affect by diary_date for tone
     affect_by_date: dict[_dt.date, list[dict]] = defaultdict(list)
@@ -564,20 +579,41 @@ def _render_2472h(digests: list[dict],
             f"**{date.strftime('%m-%d')} Day 【{tone_label}】**"
         )
         for period in ("AM", "PM", "ND"):
-            sds = sorted(buckets.get((date, period), []),
-                         key=lambda sd: sd.get("ts") or "")
-            if not sds:
+            items = sorted(buckets.get((date, period), []), key=lambda x: x[0])
+            if not items:
                 continue
-            parts = [_tl_or_fallback(sd) for sd in sds]
-            text = " · ".join(parts)
-            # Truncate to keep budget
-            if len(text) > 80:
-                text = text[:77] + "…"
+            text = _render_2472_period_text(items)
             lines.append(f"{period} {text}")
             if len(lines) >= _2472H_CAP:
                 break
 
     return lines
+
+
+def _render_2472_period_text(items: list[tuple[str, str, str]]) -> str:
+    parts: list[str] = []
+    visible_len = 0
+    deferred_anchors: list[str] = []
+    for _ts, text, anchor in items:
+        visible = (text or "").strip()
+        sep = " · " if parts else ""
+        room = 80 - visible_len - len(sep)
+        if room <= 0:
+            if anchor:
+                deferred_anchors.append(anchor)
+            continue
+        if len(visible) > room:
+            visible = visible[: max(0, room - 1)] + "…"
+        piece = sep + visible
+        if anchor:
+            piece += f" {anchor}"
+        parts.append(piece)
+        visible_len += len(sep) + len(visible)
+
+    text = "".join(parts).rstrip()
+    if deferred_anchors:
+        text = f"{text} {' '.join(deferred_anchors)}".strip()
+    return text
 
 
 def _render_day47(dates_4_7: list[_dt.date],
@@ -652,7 +688,10 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     zone_b_from_utc = _day_start_utc(day3).strftime("%Y-%m-%dT%H:%M:%SZ")
     digests_2472 = _query_digests_range(conn, zone_b_from_utc, t_24h)
     affect_2472 = _query_affect_range(conn, zone_b_from_utc, t_24h)
-    lines_2472 = _render_2472h(digests_2472, affect_2472, current_sid)
+    manual_2472 = _query_manual_events_range(conn, zone_b_from_utc, t_24h)
+    lines_2472 = _render_2472h(
+        digests_2472, affect_2472, current_sid, manual_2472
+    )
 
     # ── zone (c): diary dates today-4 .. today-8 (five days) ────────────────
     # Bug 4 fix: was range(3,7) → today-3..today-6; now range(4,9) → today-4..today-8.

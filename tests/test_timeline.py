@@ -64,6 +64,17 @@ def _affect(conn, valence: float, arousal: float, importance: int,
     return cur.lastrowid
 
 
+def _freeze_timeline_now(monkeypatch, melb_dt: _dt.datetime) -> None:
+    class FrozenDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return melb_dt.replace(tzinfo=None)
+            return melb_dt.astimezone(tz)
+
+    monkeypatch.setattr(timeline._dt, "datetime", FrozenDateTime)
+
+
 # ── open episodes ─────────────────────────────────────────────────────────────
 
 def test_open_episode_renders_at_top(conn):
@@ -253,6 +264,45 @@ def test_2472h_day_header_present(conn):
     _digest(conn, "s-2472", _utc(36), kind="task", tl="前天任务")
     result = timeline.render_timeline(conn)
     assert "**" in result and "Day" in result
+
+
+def test_2472h_manual_event_renders_with_anchor_and_deletes(
+    conn, tmp_path, monkeypatch
+):
+    from marrow.reconcile import reconcile_timeline
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
+    _freeze_timeline_now(
+        monkeypatch, _dt.datetime(2026, 6, 13, 22, 50, tzinfo=melb)
+    )
+    manual_local = _dt.datetime(2026, 6, 12, 9, 0, tzinfo=melb)
+    manual_utc = manual_local.astimezone(_dt.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    conn.execute(
+        "INSERT INTO events (session_id, timestamp, role, content, channel)"
+        " VALUES ('manual:2472test', ?, 'user', '补记早餐', 'manual')",
+        (manual_utc,),
+    )
+    conn.commit()
+    eid = conn.execute(
+        "SELECT id FROM events WHERE session_id='manual:2472test'"
+    ).fetchone()["id"]
+
+    result = timeline.render_timeline(conn)
+    assert "**06-12 Day" in result
+    assert "AM 补记早餐" in result
+    assert f"<!-- tl:e:{eid} -->" in result
+
+    dash = tmp_path / "dashboard.md"
+    kept = "\n".join(
+        line for line in result.splitlines() if "补记早餐" not in line
+    )
+    dash.write_text(kept)
+    rpt = reconcile_timeline(conn, dash)
+    assert rpt.updated >= 1
+    row = conn.execute("SELECT id FROM events WHERE id=?", (eid,)).fetchone()
+    assert row is None
 
 
 # ── day 4-7 zone ─────────────────────────────────────────────────────────────
@@ -545,6 +595,56 @@ def test_life_line_sort_key_correct_utc(conn):
         assert idx_b < idx_a_life, (
             f"newest session (idx {idx_b}) must precede older life line (idx {idx_a_life})"
         )
+
+
+def test_24h_first_life_line_sorts_by_own_display_time():
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
+
+    def local_iso(year, month, day, hour, minute):
+        return _dt.datetime(
+            year, month, day, hour, minute, tzinfo=melb
+        ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    lines = timeline._render_24h(
+        [
+            {
+                "sid": "s-early-first",
+                "ts": local_iso(2026, 6, 13, 20, 0),
+                "kind": "casual",
+                "tl_line": "晚间总结",
+                "text": "body",
+                "life_lines": "04:30 清晨醒来\n20:10 晚上聊天",
+            },
+            {
+                "sid": "s-midday",
+                "ts": local_iso(2026, 6, 13, 12, 0),
+                "kind": "task",
+                "tl_line": "中午任务",
+                "text": "body",
+                "life_lines": None,
+            },
+            {
+                "sid": "s-prev-evening",
+                "ts": local_iso(2026, 6, 12, 22, 0),
+                "kind": "task",
+                "tl_line": "前夜任务",
+                "text": "body",
+                "life_lines": None,
+            },
+        ],
+        current_sid=None,
+    )
+
+    assert lines == [
+        "20:10 晚上聊天",
+        "12:00 中午任务 <!-- tl:s-midday -->",
+        "--- 06-12 ---",
+        "04:30 清晨醒来 <!-- tl:s-early-first -->",
+        "22:00 前夜任务 <!-- tl:s-prev-evening -->",
+    ]
+    assert lines.count("--- 06-12 ---") == 1
+    assert not any(line == "--- 06-13 ---" for line in lines)
 
 
 # ── Bug 2: no double 6AM cutoff ───────────────────────────────────────────────

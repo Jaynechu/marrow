@@ -1456,8 +1456,16 @@ _TL_DAY_RE    = re.compile(r"^\d{2}-\d{2}\s+Day\s+【[^】]*】\s*")
 
 _TL_TRAIL_RE  = re.compile(r"<!--\s*tl-rendered:(?P<payload>[^>]+)\s*-->")
 _TL_EVT_RE    = re.compile(r"<!--\s*tl:e:(?P<eid>\d+)\s*-->")
-_TL_PLUS_RE   = re.compile(r"^\+\s+(?:(?P<hhmm>\d{2}:\d{2})\s+)?(?P<text>.+)$")
+_TL_PLUS_RE   = re.compile(
+    r"^\+\s*(?:(?P<hhmm>\d{2}:\d{2})|(?P<period>AM|PM|ND))?\s*(?P<text>.+)$",
+    re.IGNORECASE,
+)
+_TL_DAY_DIVIDER_RE = re.compile(r"^-+\s*(?P<mmdd>\d{2}-\d{2})\s*-+\s*$")
+_TL_DAY_HEADER_RE = re.compile(
+    r"^\**(?P<mmdd>\d{2}-\d{2})\s+Day\b"
+)
 _TZ_MELB      = ZoneInfo("Australia/Melbourne")
+_TL_PERIOD_HOUR = {"AM": 9, "PM": 15, "ND": 21}
 
 
 def _strip_tl_anchor(line: str) -> str:
@@ -1472,6 +1480,62 @@ def _extract_tl_text(line: str) -> str:
     s = _TL_PERIOD_RE.sub("", s)
     s = _TL_DAY_RE.sub("", s)
     return s.strip()
+
+
+def _tl_now_melb() -> _dt.datetime:
+    return _dt.datetime.now(_TZ_MELB)
+
+
+def _resolve_tl_mmdd(mmdd: str, today: _dt.date) -> _dt.date | None:
+    try:
+        month, day = (int(x) for x in mmdd.split("-", 1))
+        candidate = _dt.date(today.year, month, day)
+    except ValueError:
+        return None
+    if candidate > today:
+        try:
+            candidate = _dt.date(today.year - 1, month, day)
+        except ValueError:
+            return None
+    return candidate
+
+
+def _timeline_day_context(line: str, today: _dt.date) -> _dt.date | None:
+    m_date = _TL_DATE_RE.search(line)
+    if m_date:
+        try:
+            return _dt.date.fromisoformat(m_date.group("date"))
+        except ValueError:
+            return None
+
+    m_div = _TL_DAY_DIVIDER_RE.match(line.strip())
+    if m_div:
+        return _resolve_tl_mmdd(m_div.group("mmdd"), today)
+
+    m_head = _TL_DAY_HEADER_RE.match(line.strip())
+    if m_head:
+        return _resolve_tl_mmdd(m_head.group("mmdd"), today)
+
+    return None
+
+
+def _manual_event_ts_utc(day: _dt.date, explicit_day: bool,
+                         hhmm_str: str | None,
+                         period_str: str | None) -> str:
+    now_melb = _tl_now_melb()
+    if hhmm_str:
+        h, mi = int(hhmm_str[:2]), int(hhmm_str[3:5])
+        ts_melb = _dt.datetime(day.year, day.month, day.day, h, mi, tzinfo=_TZ_MELB)
+        if not explicit_day and day == now_melb.date() and ts_melb > now_melb:
+            ts_melb -= _dt.timedelta(days=1)
+    elif period_str:
+        h = _TL_PERIOD_HOUR[period_str.upper()]
+        ts_melb = _dt.datetime(day.year, day.month, day.day, h, 0, tzinfo=_TZ_MELB)
+    elif day == now_melb.date():
+        ts_melb = now_melb.replace(microsecond=0)
+    else:
+        ts_melb = _dt.datetime(day.year, day.month, day.day, 12, 0, tzinfo=_TZ_MELB)
+    return ts_melb.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def reconcile_timeline(conn: sqlite3.Connection,
@@ -1519,17 +1583,24 @@ def reconcile_timeline(conn: sqlite3.Connection,
     present_sids:  set[str] = set()
     present_dates: set[str] = set()
     present_evts:  set[int] = set()
-    plus_lines:    list[str] = []
+    plus_lines:    list[tuple[_dt.date, bool, str]] = []
     evt_edits:     dict[int, str] = {}
+    now_melb = _tl_now_melb()
+    current_day = now_melb.date()
+    current_day_explicit = False
 
     for raw in block.splitlines():
         line = raw.rstrip()
         # Skip the trail marker line itself
         if _TL_TRAIL_RE.search(line):
             continue
+        day_context = _timeline_day_context(line, now_melb.date())
+        if day_context is not None:
+            current_day = day_context
+            current_day_explicit = True
         # Lines starting with `+ ` are manual add requests
         if _TL_PLUS_RE.match(line):
-            plus_lines.append(line)
+            plus_lines.append((current_day, current_day_explicit, line))
             continue
         # Manual event anchor
         m_evt = _TL_EVT_RE.search(line)
@@ -1644,32 +1715,24 @@ def reconcile_timeline(conn: sqlite3.Connection,
                 rpt.updated += 1
 
         # ── ADD: lines starting with `+ ` → insert manual events ─────────────
-        for raw_line in plus_lines:
+        for day_context, explicit_day, raw_line in plus_lines:
             m_plus = _TL_PLUS_RE.match(raw_line)
             if not m_plus:
                 rpt.conflicts.append(f"tl:+ unparseable: {raw_line[:60]!r}")
                 continue
             hhmm_str = m_plus.group("hhmm")
+            period_str = m_plus.group("period")
             add_text = (m_plus.group("text") or "").strip()
             if not add_text:
                 rpt.conflicts.append(f"tl:+ empty text: {raw_line[:60]!r}")
                 continue
             if hhmm_str:
                 try:
-                    h, mi = int(hhmm_str[:2]), int(hhmm_str[3:5])
+                    int(hhmm_str[:2]), int(hhmm_str[3:5])
                 except ValueError:
                     rpt.conflicts.append(f"tl:+ bad time {hhmm_str!r}: {raw_line[:60]!r}")
                     continue
-                now_melb = _dt.datetime.now(_TZ_MELB)
-                ts_melb = now_melb.replace(hour=h, minute=mi, second=0, microsecond=0)
-                # Backdating semantics: a note is always about the past. A
-                # future-resolving HH:MM means the previous day (e.g. `+ 23:00`
-                # written at 09:00 = last night), so roll back 24h.
-                if ts_melb > now_melb:
-                    ts_melb -= _dt.timedelta(days=1)
-                ts_utc = ts_melb.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            else:
-                ts_utc = _now()
+            ts_utc = _manual_event_ts_utc(day_context, explicit_day, hhmm_str, period_str)
             sid_manual = "manual:" + secrets.token_hex(4)
             conn.execute(
                 "INSERT INTO events (session_id, timestamp, role, content, channel)"
