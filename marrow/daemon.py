@@ -113,6 +113,39 @@ def embed_pending(batch: int = 50) -> dict:
         conn.close()
 
 
+@mcp.tool()
+def sticker_search(query: str, limit: int = 5) -> list[dict]:
+    """Search sticker catalog by description. Returns top matches with path.
+    Use when you want to send a sticker — pick one from results, then send
+    it with <image path="..."/>. Call sticker_pick(id) after sending."""
+    conn = storage.connect(_DB)
+    try:
+        rows = conn.execute(
+            "SELECT id, desc, path, source FROM stickers"
+            " WHERE desc LIKE ? ORDER BY last_used DESC NULLS LAST"
+            " LIMIT ?",
+            (f"%{query}%", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def sticker_pick(sticker_id: int) -> dict:
+    """Record that a sticker was sent — bumps last_used. Call after sending."""
+    conn = storage.connect(_DB)
+    try:
+        conn.execute(
+            "UPDATE stickers SET last_used = strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+            " WHERE id = ?", (sticker_id,),
+        )
+        conn.commit()
+        return {"ok": True, "id": sticker_id}
+    finally:
+        conn.close()
+
+
 def main() -> None:
     storage.init_db(_DB).close()
     mcp.run()
