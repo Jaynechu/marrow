@@ -1020,7 +1020,7 @@ def user_prompt_submit() -> int:
 
     # Sticker nudge: increment turn counter; flag nudge if 10 turns since last sticker.
     _nudge_line: str | None = None
-    if sid:
+    if sid and os.environ.get("MARROW_BRIDGE") == "1":
         try:
             _sn = _load_sticker_nudge(sid)
             _sn["turn_count"] = _sn.get("turn_count", 0) + 1
