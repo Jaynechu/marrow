@@ -257,7 +257,7 @@ def _find_refs_rg(old_name: str, rg_bin: str, roots: list[Path]) -> list[dict] |
     args = [rg_bin, "--line-number", "--column", "--no-heading",
             "--color=never", "-e", old_name]
     for d in EXCLUDE_DIRS_SCAN:
-        args += ["--glob", f"!{d}/**"]
+        args += ["--glob", f"!**/{d}/**"]
     # Exclude any path segment that *contains* `.bak` (catches
     # `.bak-20260518-220058`, `.venv.py314.bak/`, `foo.db.bak` etc.).
     for part in SKIP_SCAN_SUFFIX_PARTS:
