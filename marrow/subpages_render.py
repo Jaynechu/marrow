@@ -165,11 +165,7 @@ def render_profile(conn: sqlite3.Connection) -> str:
 
 
 def render_stickers(conn: sqlite3.Connection) -> str:
-    return _stub_block(
-        "stickers",
-        "Stickers",
-        "Position reserved — gallery render lands once auto-describe ingest ships.",
-    )
+    return ""
 
 
 def render_wallet(conn: sqlite3.Connection) -> str:

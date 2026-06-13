@@ -889,12 +889,12 @@ def reconcile_diary(conn: sqlite3.Connection,
 
 def reconcile_stickers(conn: sqlite3.Connection,
                        md_path: Path) -> ReconcileReport:
-    """UPDATE sticker key/asset_path/mime_type on edit; DELETE absent rows."""
+    """UPDATE sticker desc on edit; DELETE absent rows."""
     from . import subpage_specs
     spec = subpage_specs.build_stickers_spec(str(Path(md_path).parent))
     return reconcile_inserter_sync(
         conn, spec, md_path, "stickers",
-        editable_cols=["key", "asset_path", "mime_type"],
+        editable_cols=["desc"],
         soft_delete=False,
     )
 

@@ -276,40 +276,30 @@ def build_memes_spec(folder: str) -> InserterSpec:
 
 
 def build_stickers_spec(folder: str) -> InserterSpec:
-    """Stickers — gallery; one bullet per asset, grouped by linked meme key
-    when present. Empty until auto-describe ingest ships.
-    """
+    """Stickers — C2 catalog; flat list, one bullet per asset."""
     def fetch(conn: sqlite3.Connection) -> list[dict]:
         try:
             rows = conn.execute(
-                "SELECT s.id, s.key, s.asset_path, s.mime_type, m.key as meme_key"
-                " FROM stickers s LEFT JOIN memes m ON s.meme_id = m.id"
-                " ORDER BY s.created_at ASC"
+                "SELECT id, path, desc, source"
+                " FROM stickers ORDER BY created_at ASC"
             ).fetchall()
         except sqlite3.Error:
             return []
         return [dict(r) for r in rows]
 
     def render(r: dict) -> str:
-        mime = f" ({r['mime_type']})" if r.get("mime_type") else ""
-        return f"- **{r['key']}** `{r['asset_path']}`{mime} {_anchor(r['id'])}"
+        desc = r["desc"] or "(no desc)"
+        return f"- stk_{r['id']:03d} {desc} {_anchor(r['id'])}"
 
-    # Pattern: `- **key** `asset_path`{ (mime_type)} <!-- id:N -->`
     _STICKER_RE = re.compile(
-        r"^-\s+\*\*(?P<key>[^*]+)\*\*\s+`(?P<asset_path>[^`]+)`"
-        r"(?:\s+\((?P<mime_type>[^)]+)\))?"
-        r"\s*<!-- id:(?P<id>\d+) -->"
+        r"^-\s+stk_\d+\s+(?P<desc>.+?)\s*<!-- id:(?P<id>\d+) -->"
     )
 
     def parse_sticker(line: str) -> dict | None:
         m = _STICKER_RE.match(line.strip())
         if not m:
             return None
-        return {
-            "key": m.group("key").strip(),
-            "asset_path": m.group("asset_path").strip(),
-            "mime_type": (m.group("mime_type") or "").strip() or None,
-        }
+        return {"desc": m.group("desc").strip()}
 
     return InserterSpec(
         key="stickers",
@@ -318,12 +308,7 @@ def build_stickers_spec(folder: str) -> InserterSpec:
         block_id_of=lambda r: str(r["id"]),
         render_row=render,
         parse_row=parse_sticker,
-        group_by="tag",
-        section_of=lambda r: r.get("meme_key") or "Other",
-        section_order=lambda labels: sorted(set(labels)),
-        empty_message=(
-            "_Sticker gallery lands once auto-describe ingest ships._"
-        ),
+        empty_message="_No stickers yet._",
     )
 
 

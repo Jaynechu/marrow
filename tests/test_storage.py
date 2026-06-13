@@ -71,14 +71,15 @@ def test_init_idempotent(tmp_path):
     conn.close()
 
 
-def test_foreign_key_set_null_on_memes_delete(db):
-    db.execute("INSERT INTO memes(type,key) VALUES('cipher','P')")
-    mid = db.execute("SELECT id FROM memes").fetchone()[0]
-    db.execute("INSERT INTO stickers(meme_id,key,asset_path) VALUES(?,?,?)",
-               (mid, "P", "/tmp/x.png"))
-    db.execute("DELETE FROM memes WHERE id=?", (mid,))
+def test_stickers_c2_schema(db):
+    db.execute(
+        "INSERT INTO stickers(path, desc, source) VALUES(?,?,?)",
+        ("/tmp/s.png", "test desc", "finder"),
+    )
     db.commit()
-    assert db.execute("SELECT meme_id FROM stickers").fetchone()[0] is None
+    row = db.execute("SELECT path, desc, source FROM stickers").fetchone()
+    assert row["path"] == "/tmp/s.png"
+    assert row["desc"] == "test desc"
 
 
 # --- Phase 2 schema freeze (Step 0) ---

@@ -170,7 +170,7 @@ def test_stickers_bootstrap_emits_empty_placeholder(db, tmp_path):
     spec = subpage_specs.build_stickers_spec(str(tmp_path / "ny"))
     counts = _run(spec, db)
     text = Path(spec.path).read_text()
-    assert "auto-describe" in text
+    assert "No stickers yet" in text
     assert counts["bootstrapped"] == 0
 
 

@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -76,12 +76,13 @@ CREATE TABLE IF NOT EXISTS memes (
 );
 CREATE TABLE IF NOT EXISTS stickers (
   id INTEGER PRIMARY KEY,
-  meme_id INTEGER REFERENCES memes(id) ON DELETE SET NULL,
-  key TEXT NOT NULL,
-  asset_path TEXT NOT NULL,
-  mime_type TEXT,
-  use_count INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  path TEXT NOT NULL,
+  sha256 TEXT,
+  phash TEXT,
+  desc TEXT,
+  source TEXT NOT NULL DEFAULT 'finder',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  last_used TEXT
 );
 CREATE TABLE IF NOT EXISTS pit (
   id INTEGER PRIMARY KEY,
@@ -496,6 +497,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v16(conn)
         _migrate_to_v17(conn)
         _migrate_to_v18(conn)
+        _migrate_to_v19(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -881,6 +883,19 @@ def _migrate_to_v18(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
             pass
+
+
+def _migrate_to_v19(conn: sqlite3.Connection) -> None:
+    """v19: stickers table C2 schema — drop meme-era columns, add path/sha256/
+    phash/desc/source/last_used. Table is empty in prod so DROP+recreate is safe.
+    Idempotent via user_version + column check.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 19:
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(stickers)")}
+    if "meme_id" in cols:
+        conn.execute("DROP TABLE stickers")
 
 
 def _migrate_to_v14(conn: sqlite3.Connection) -> None:
