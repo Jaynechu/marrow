@@ -25,11 +25,6 @@ def phash_file(path: str) -> str | None:
         return str(imagehash.phash(img))
 
 
-def next_sticker_id(conn) -> int:
-    row = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM stickers").fetchone()
-    return int(row[0])
-
-
 def _hamming(a: str, b: str) -> int | None:
     try:
         return (int(a, 16) ^ int(b, 16)).bit_count()
@@ -60,14 +55,20 @@ def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> di
                     "near_dup": True,
                 }
 
-    next_id = next_sticker_id(conn)
     stickers_dir = STICKERS_DIR.expanduser()
     thumb_dir = stickers_dir / "_thumb"
     stickers_dir.mkdir(parents=True, exist_ok=True)
     thumb_dir.mkdir(parents=True, exist_ok=True)
 
+    cursor = conn.execute(
+        "INSERT INTO stickers(path, sha256, phash, desc, source)"
+        " VALUES(?,?,?,?,?)",
+        ("_pending", digest, phash, desc, source),
+    )
+    stk_id = cursor.lastrowid
+
     ext = src.suffix
-    new_path = stickers_dir / f"stk_{next_id:03d}{ext}"
+    new_path = stickers_dir / f"stk_{stk_id:03d}{ext}"
     shutil.copy2(src, new_path)
 
     try:
@@ -75,18 +76,17 @@ def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> di
     except ImportError:
         pass
     else:
-        thumb_path = thumb_dir / f"stk_{next_id:03d}.webp"
+        thumb_path = thumb_dir / f"stk_{stk_id:03d}.webp"
         with Image.open(new_path) as img:
             img.thumbnail((240, 240))
             img.save(thumb_path, "WEBP")
 
     conn.execute(
-        "INSERT INTO stickers(id, path, sha256, phash, desc, source)"
-        " VALUES(?,?,?,?,?,?)",
-        (next_id, str(new_path), digest, phash, desc, source),
+        "UPDATE stickers SET path = ? WHERE id = ?",
+        (str(new_path), stk_id),
     )
     conn.commit()
-    return {"duplicate": False, "id": next_id, "path": str(new_path), "desc": desc}
+    return {"duplicate": False, "id": stk_id, "path": str(new_path), "desc": desc}
 
 
 def update_sticker(conn, sticker_id: int, desc: str) -> dict:

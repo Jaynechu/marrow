@@ -319,6 +319,9 @@ class _StickerHandler(FileSystemEventHandler):
             else:
                 self._log.info("sticker_ingest new: %s -> id=%s path=%s",
                                path, result.get("id"), result.get("path"))
+            if p.exists() and p.resolve() != Path(result.get("path", "")).resolve():
+                p.unlink()
+                self._log.info("sticker_ingest cleaned source: %s", path)
         except Exception:
             self._log.exception("sticker_ingest failed: %s", path)
         finally:
