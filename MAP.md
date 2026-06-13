@@ -25,7 +25,7 @@
 Three runtimes:
 - **hooks** — one-shot per CC lifecycle event, exit after injecting/spawning.
 - **watcher** — launchd persistent (KeepAlive); hosts SyncLoop(5s) + AtlasSweepLoop(60s) threads.
-- **daemon** — stdio MCP (recall / atlas_lookup / embed_pending), spawned by CC via .mcp.json, no plist; holds bge-m3 in memory.
+- **daemon** — stdio MCP (recall / atlas_lookup / embed_pending / sticker_search / sticker_pick / sticker_ingest), spawned by CC via .mcp.json, no plist; holds bge-m3 in memory.
 
 ### 1.2 Hooks registry (all in marrow/hooks.py)
 
@@ -66,8 +66,8 @@ Three runtimes:
 
 ## 4. Storage & retrieval
 
-### 4.1 schema (storage.py, v18)
-- Migrations `storage:init_db` _migrate_to_v2…v18 idempotent, PRAGMA user_version guarded; v5/v7/v8/v9 are empty sentinels; v18 = tl_hidden on session_digests + diary.
+### 4.1 schema (storage.py, v19)
+- Migrations `storage:init_db` _migrate_to_v2…v19 idempotent, PRAGMA user_version guarded; v5/v7/v8/v9 are empty sentinels; v18 = tl_hidden on session_digests + diary; v19 = stickers C2 schema (path/sha256/phash/desc/source/last_used).
 - Connection: journal_mode=DELETE (deliberate — DECISIONS.md, APFS SIGBUS; never WAL) · busy_timeout 30s · sqlite-vec loaded per conn. Rule: never open a second conn to the same DB inside a write txn.
 - Tables: events (recall_count/last_recalled_at v16; never aged) · tasks (active→archived on 30d no-mention) · milestones (pinned exempt) · memes (pinned=0 + last_seen>90d → DELETE) · stickers · pit · diary (date PK, DELETE+INSERT rewrite; v17: +tl_line) · goose_bites (schema history only) · alerts · audit_log · affect (superseded_by NULL = live; affect_live view) · entities (entities_live view) · session_digests (v17: +kind/tl_line/life_lines; sid PK, date, text, ts) · md_index (block hash + tombstone_at) · memes_reject_log · atlas · 6×*_vec + *_vec_meta.
 
@@ -90,7 +90,7 @@ Three runtimes:
 
 ### 5.2 subpage catalog (registry `subpages:_REGISTRY`, specs `subpage_specs.py`)
 - All inserter-backed unless noted; `<!-- id:N -->` anchors; DB→md unless noted.
-- profile (entities, bidirectional soft-delete) · milestone (bidirectional, pinned only) · diary (block_id=date) · memes (Personal/Public) · stickers (stub) · wallet (stub, fetch=[]) · study index (children legacy read_only, hand-managed) · projects index (children read_only; KNOWN: title unsanitised in child path) · cheatsheet (read_only, disk SoT) · atlas (bidirectional, respect_tombstones=False, force_sort_consistency).
+- profile (entities, bidirectional soft-delete) · milestone (bidirectional, pinned only) · diary (block_id=date) · memes (Personal/Public) · stickers (C2 catalog, flat `stk_NNN desc` format, desc-editable) · wallet (stub, fetch=[]) · study index (children legacy read_only, hand-managed) · projects index (children read_only; KNOWN: title unsanitised in child path) · cheatsheet (read_only, disk SoT) · atlas (bidirectional, respect_tombstones=False, force_sort_consistency).
 - Legacy render fns in subpages_render.py are unreachable (inserter precedes, failure does NOT fall back) — scheduled for deletion (review bloat #1). render_pit is cli-only (`cli:cmd_export_pit`).
 
 ### 5.3 sync machinery
@@ -153,4 +153,4 @@ Three runtimes:
 
 **Invariants**: flock every md write · lifecycle:end commits before popen · single merged sessionend call, fenced segment blocks · 4-flag detach · DB never trusts md free-text inside rendered blocks · journal DELETE + no second conn inside write txn · all DB timestamps UTC.
 
-**Status**: stub = wallet, stickers, cheatsheet, profile-render(rows flow once entities populate) · wip = study/projects child pages (legacy read_only), candidate pin/drop HTML buttons · deletable = subpages_render legacy fns (verified unreachable), sessionend_prompts parse_doing_diff cluster (dead ~90 LOC) · open bugs/gaps = review P0/P1 list (docs/notes/0611-system-review.md) until alert-redesign batches land.
+**Status**: stub = wallet, cheatsheet, profile-render(rows flow once entities populate) · shipped = stickers C2 (MCP: sticker_search/sticker_pick/sticker_ingest; sticker_ops.py: sha256+phash dedup, thumb gen; subpage sync live) · wip = study/projects child pages (legacy read_only), candidate pin/drop HTML buttons · deletable = subpages_render legacy fns (verified unreachable), sessionend_prompts parse_doing_diff cluster (dead ~90 LOC) · open bugs/gaps = review P0/P1 list (docs/notes/0611-system-review.md) until alert-redesign batches land.
