@@ -27,7 +27,7 @@
 4. aging flush in finally · aging.py `main`
    - Move pending_alerts flush into finally before conn.close(); audit INSERT failure no longer eats alerts.
 
-## Batch B — correctness + coverage (P1)
+## Batch B — correctness + coverage (P1) — DONE 06/15 (6a69709)
 
 5. reconcile_ref scoping · sessionend_writers.py `seg_affect`
    - Candidate SELECT adds `AND date = ?`; if no same-day unresolved row, skip resolve + audit_log note (no cross-day guessing).
@@ -43,7 +43,7 @@
    - wx media: decrypt/upload/pdf failure → AlertSink warn media_{in|out}_failed, only on 2nd consecutive failure per kind.
    - seg_task_cand embedder-absent path → reuse semantic_dedup.warn_embedder_missing alert (currently audit-only).
 
-## Batch C — false-positive diet (P2)
+## Batch C — false-positive diet (P2) — DONE 06/15 (6a69709)
 
 10. digest_zero_write: superseded by A-2 (deleted; 0-row digest rides the two-strike retry chain).
 11. daily_catchup_overflow: auto-resolve when pending_days() <= CATCHUP_MAX on a later run (aging pass or daily tail).

@@ -43,12 +43,12 @@
 ---
 ## Audit items (MAP review)
 
-### 2. Alert types 待加 (§8 重写 done 48862fd; 以下未核验逐条状态)
-- persistent process health (critical) — watcher 死 + MCP daemon 死
+### 2. Alert types 待加 (Batch A-C done; remaining below)
+- persistent process health (critical) — MCP daemon 死 (watcher thread-start covered 06/15)
 - rapid-fire write detector (critical) — 同表 1min INSERT >20 → alert + 暂停 writer
-- sync_loop reconcile exception (warn) · atlas_sweep_fs launchd 路径 (warn)
 - plist job 没触发 (warn) — daily-routine/catchup/backup/aging ≥24h 没跑
 - LLM extract 失败/超时 (warn) — sessionend/daily/affect 三处外层 try 吃掉
+- wx death escalation + wx media failure alerts (synapse-wx side, plan B-7/B-9)
 - 备选不加: handover 写失败 · recall hook >2s · disk full · DB lock
 
 ### 3. embed_pending 剩余 (INSERT OR IGNORE 已有, 其余未做)
