@@ -478,6 +478,8 @@ class Watcher:
             self._attach_dir(handler, d)
         for f in self.file_roots:
             self._attach_file(handler, f)
+        self.observer.start()
+        self.log.info("observer started")
         # Build watched_files set BEFORE we start — handler already holds the
         # reference, so additions land in time. (_MdHandler reads it on each
         # event.)
@@ -503,7 +505,6 @@ class Watcher:
         self.observer.schedule(sticker_handler, str(stickers_dir), recursive=False)
         self.log.info("sticker_ingest watching %s", stickers_dir)
 
-        self.observer.start()
         # Start sync loop — boot tick fires immediately (after _reconcile_boot)
         # to catch drift while watcher was down.
         try:
