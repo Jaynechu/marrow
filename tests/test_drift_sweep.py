@@ -173,6 +173,12 @@ def test_dangling_delete(drift_env):
 
     from marrow.drift_sweep import handle_dangling_delete
 
+    # file still exists → path-absent gate returns None
+    assert handle_dangling_delete(str(a)) is None
+
+    # delete the source file (simulates real dangling delete)
+    a.unlink()
+
     pid = handle_dangling_delete(str(a))
     assert pid is not None, "expected report for file with refs"
 

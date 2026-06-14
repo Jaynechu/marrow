@@ -689,6 +689,8 @@ def handle_move(src: str, dest: str, roots: list[Path] | None = None) -> str | N
 
 def handle_dangling_delete(src: str, roots: list[Path] | None = None) -> str | None:
     """Trigger C: deleted file with no matching create. Write report if refs>0."""
+    if Path(src).exists():
+        return None
     old_name = Path(src).name
     refs = find_refs(old_name, roots)
     if not refs:

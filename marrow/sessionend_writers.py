@@ -141,20 +141,35 @@ def seg_affect(conn, raw: str, sid: str, date: str) -> int:
             reconcile_prev = None
 
         reconcile_ref = None
+        reconcile_skip_summary = None
         if reconcile_prev:
             prior = conn.execute(
                 "SELECT id FROM affect_live"
                 " WHERE unresolved=1 AND resolved_at IS NULL"
-                " ORDER BY created_at DESC, id DESC LIMIT 1"
+                " AND date = ?"
+                " ORDER BY created_at DESC, id DESC LIMIT 1",
+                (date,),
             ).fetchone()
             if prior:
                 reconcile_ref = prior["id"]
+            else:
+                reconcile_skip_summary = (
+                    f"reconcile_prev={reconcile_prev!r} skipped:"
+                    " no same-day unresolved row"
+                )
 
         # event_hint link: try hint first, fall back to description
         hint_text = it.get("event_hint") or description
         event_id = _match_event_hint(conn, hint_text, sid)
 
         with conn:
+            if reconcile_skip_summary:
+                conn.execute(
+                    "INSERT INTO audit_log"
+                    " (target_table, action, summary)"
+                    " VALUES ('affect', 'reconcile_skip', ?)",
+                    (reconcile_skip_summary,),
+                )
             cur = conn.execute(
                 "INSERT INTO affect (date, ep, valence, arousal, importance,"
                 " label, description, entities, source, unresolved,"

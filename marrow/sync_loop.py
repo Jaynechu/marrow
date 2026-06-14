@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from . import config, repo
+
 _SYNC_TICK_S = float(os.environ.get("MARROW_SYNC_TICK_S", "5.0"))
 _MTIME_EPSILON_S = 1.0  # jitter guard
 # If md was touched within this window, skip render this tick — protects
@@ -143,6 +145,7 @@ class SyncLoop:
         self._tick_s = tick_s
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._consecutive_fails: dict[str, int] = {}
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -173,8 +176,21 @@ class SyncLoop:
         for target in self._targets:
             try:
                 self._process(target)
+                self._consecutive_fails[target.name] = 0
             except Exception:  # noqa: BLE001
                 log.exception("sync_loop error processing %s", target.name)
+                fails = self._consecutive_fails.get(target.name, 0) + 1
+                if fails >= 3:
+                    repo.add_alert(
+                        "warn", "sync_loop",
+                        f"sync_loop_tick_failed:{target.name}",
+                        source="watcher.py",
+                        message=(f"3+ consecutive tick failures for "
+                                 f"{target.name}"),
+                        db=config.db_path(),
+                    )
+                    fails = 0
+                self._consecutive_fails[target.name] = fails
 
     def _process(self, target: SyncTarget) -> None:
         md_path = target.md_path

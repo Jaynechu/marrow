@@ -1,6 +1,6 @@
 """DESIGN net "DB never lost": daily atomic DB snapshot + iCloud offsite.
 
-Snapshot uses sqlite `VACUUM INTO` (consistent read of the live WAL DB,
+Snapshot uses sqlite `VACUUM INTO` (consistent read of the live DB,
 no destructive lock) to a temp path, then atomic os.replace into the
 local backup dir as marrow-YYYY-MM-DD.db. The same snapshot is atomically
 placed offsite (iCloud). Offsite unreachable never fails the local leg:
@@ -15,6 +15,7 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 from datetime import date
 from pathlib import Path
 
@@ -57,7 +58,7 @@ def plan(*, local_dir: str, keep: int, today: str,
 
 
 def _snapshot(db: str, dest: Path) -> None:
-    """Consistent snapshot of a live (WAL) DB, then atomic replace."""
+    """Consistent snapshot of a live DB, then atomic replace."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".mw-bk-", suffix=".db",
                                dir=str(dest.parent))
@@ -134,7 +135,11 @@ def run(*, apply: bool = False, db: str | None = None,
         return rep
 
     try:
-        _place(local_file, Path(offsite_dir) / p["name"])
+        try:
+            _place(local_file, Path(offsite_dir) / p["name"])
+        except Exception:
+            time.sleep(30)
+            _place(local_file, Path(offsite_dir) / p["name"])
         rep["offsite_ok"] = True
     except Exception as e:
         repo.add_alert(

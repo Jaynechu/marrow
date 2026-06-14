@@ -775,7 +775,8 @@ def session_end() -> int:
                     try:
                         repo.add_alert(
                             "warn", "sessionend_async",
-                            f"session_end async spawn failed: {e}",
+                            "sessionend_spawn_failed",
+                            message=f"spawn failed: {e}",
                             source="hooks.py", db=db,
                         )
                     except Exception:  # noqa: BLE001
@@ -1515,7 +1516,8 @@ def pretool_use() -> int:
 
     except Exception as e:  # noqa: BLE001
         try:
-            repo.add_alert("info", "atlas_hook", str(e), source="hooks.py",
+            repo.add_alert("info", "atlas_hook", "atlas_hook_error",
+                           message=str(e), source="hooks.py",
                            db=config.db_path())
         except Exception:
             pass
@@ -1540,8 +1542,9 @@ def main(argv: list[str] | None = None) -> int:
         return _EVENTS[args[0]]()
     except Exception as e:  # hook must never break the session
         try:
-            repo.add_alert("warn", "hook", f"{args[0]} failed: {e}",
-                           source="hooks.py", db=config.db_path())
+            repo.add_alert("warn", "hook", f"hook_dispatch_failed:{args[0]}",
+                           message=str(e), source="hooks.py",
+                           db=config.db_path())
         except Exception:
             pass
         return 0

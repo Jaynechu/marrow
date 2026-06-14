@@ -24,7 +24,7 @@ import sqlite3
 
 import sqlite_vec
 
-from . import config, storage
+from . import config, repo, storage
 from .drift_sweep import AUTHORIZED_ROOTS, EXCLUDE_DIRS_SCAN, DriftWatcher
 from .md_index import MdIndex
 from .sticker_ops import STICKERS_DIR, ingest_sticker, sweep_orphans, sweep_file_orphans
@@ -513,9 +513,29 @@ class Watcher:
             dash = cfg["paths"]["dashboard"]
             targets = build_targets(folder, state_dir, dash)
             self._sync_loop = SyncLoop(storage.connect, targets)
-            self._sync_loop.start()
+            try:
+                self._sync_loop.start()
+            except Exception as e:
+                repo.add_alert(
+                    "critical", "watcher",
+                    "watcher_thread_start_failed",
+                    source="watcher.py",
+                    message=f"Thread start failed: {e}",
+                    db=config.db_path(),
+                )
+                raise
             self._atlas_sweep = AtlasSweepLoop(storage.connect)
-            self._atlas_sweep.start()
+            try:
+                self._atlas_sweep.start()
+            except Exception as e:
+                repo.add_alert(
+                    "critical", "watcher",
+                    "watcher_thread_start_failed",
+                    source="watcher.py",
+                    message=f"Thread start failed: {e}",
+                    db=config.db_path(),
+                )
+                raise
             self.log.info("sync_loop started targets=%d", len(targets))
         except Exception:
             self.log.exception("sync_loop failed to start; watcher continues without it")

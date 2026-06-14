@@ -314,7 +314,22 @@ def run(conn, llm: LLMClient, *, db: str | None = None,
         days = miss[:daily_catchup.CATCHUP_MAX]
     else:
         days = [daily_catchup.routine_target()]
-    return [d for d in days if run_day(conn, d, llm, db=db, force=force)]
+    wrote = [d for d in days if run_day(conn, d, llm, db=db, force=force)]
+    if catchup:
+        remaining = daily_catchup.pending_days(conn)
+        if len(remaining) <= daily_catchup.CATCHUP_MAX:
+            now_utc = _dt.datetime.now(_dt.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            with conn:
+                conn.execute(
+                    "UPDATE alerts SET resolved=1, updated_at=? "
+                    "WHERE type IN ('daily_catchup', 'routine') "
+                    "AND fingerprint='daily_catchup_overflow' "
+                    "AND resolved=0",
+                    (now_utc,),
+                )
+    return wrote
 
 
 def main(argv: list[str] | None = None) -> int:

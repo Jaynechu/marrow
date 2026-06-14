@@ -574,11 +574,11 @@ def test_seg_affect_persists_reconcile_prev_text(db_env):
     from marrow import sessionend_async
     conn = storage.connect(db)
     try:
-        # Seed an unresolved prior so reconcile_ref links.
+        # Seed an unresolved prior so reconcile_ref links (same day).
         conn.execute(
             "INSERT INTO affect (date, ep, valence, arousal, importance,"
             " label, source, unresolved)"
-            " VALUES ('2026-05-22', 1, 0.2, 0.7, 4, '焦虑',"
+            " VALUES ('2026-05-23', 1, 0.2, 0.7, 4, '焦虑',"
             " 'sessionend_async', 1)")
         conn.commit()
         raw = (
@@ -593,7 +593,7 @@ def test_seg_affect_persists_reconcile_prev_text(db_env):
         assert n == 1
         row = conn.execute(
             "SELECT reconcile_prev_text, reconcile_ref FROM affect"
-            " WHERE date='2026-05-23'"
+            " WHERE date='2026-05-23' ORDER BY id DESC LIMIT 1"
         ).fetchone()
         assert row["reconcile_prev_text"] == "和好了"
         assert row["reconcile_ref"] is not None

@@ -56,7 +56,12 @@ def pending_days(conn, window_days: int = CATCHUP_WINDOW_DAYS) -> list[str]:
     """Days in [today-window, last-closed] that have events but no diary."""
     floor = (_dt.date.today()
              - _dt.timedelta(days=window_days)).isoformat()
-    done = {r["date"] for r in conn.execute("SELECT date FROM diary")}
+    done = {
+        r["date"] for r in conn.execute(
+            "SELECT date FROM diary "
+            "WHERE content IS NOT NULL AND content != '—' AND content != '-'"
+        )
+    }
     days = {diary_day(r["timestamp"]) for r in _scan_rows(conn, window_days)}
     ceil = routine_target()
     return sorted(d for d in days
