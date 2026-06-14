@@ -39,24 +39,36 @@ def _hamming(a: str, b: str) -> int | None:
         return None
 
 
-def _standardize_image(path: Path) -> bool:
-    """Fit to _CANVAS x _CANVAS square (aspect-preserved, white pad). Skips GIF."""
+def _standardize_image(path: Path) -> Path:
+    """Fit to _CANVAS x _CANVAS square (aspect-preserved, white pad). Skips GIF.
+
+    Converts JPG to PNG first to avoid lossy recompression.
+    Returns the (possibly renamed) output path.
+    """
     if path.suffix.lower() == ".gif":
-        return False
+        return path
+    out = path
     try:
+        if path.suffix.lower() in (".jpg", ".jpeg"):
+            out = path.with_suffix(".png")
+            subprocess.run(
+                [_SIPS, "-s", "format", "png", str(path), "--out", str(out)],
+                check=True, timeout=15, capture_output=True,
+            )
+            path.unlink()
         subprocess.run(
-            [_SIPS, "-Z", str(_CANVAS), str(path), "--out", str(path)],
+            [_SIPS, "-Z", str(_CANVAS), str(out), "--out", str(out)],
             check=True, timeout=15, capture_output=True,
         )
         subprocess.run(
             [_SIPS, "-p", str(_CANVAS), str(_CANVAS),
-             "--padColor", "FFFFFF", str(path), "--out", str(path)],
+             "--padColor", "FFFFFF", str(out), "--out", str(out)],
             check=True, timeout=15, capture_output=True,
         )
-        return True
+        return out
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         logger.warning("sticker standardize failed for %s: %s", path.name, e)
-        return False
+        return out if out.exists() else path
 
 
 def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> dict:
@@ -97,7 +109,7 @@ def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> di
     ext = src.suffix
     new_path = stickers_dir / f"stk_{stk_id:03d}{ext}"
     shutil.copy2(src, new_path)
-    _standardize_image(new_path)
+    new_path = _standardize_image(new_path)
 
     try:
         from PIL import Image
