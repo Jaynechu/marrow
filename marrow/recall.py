@@ -376,7 +376,8 @@ def _embed_pending_lane(
     if not rows:
         return 0
     ids = [r["id"] for r in rows]
-    texts = [(r["text"] or "") for r in rows]
+    _media_tag = re.compile(r'\s*<(?:image|file)\s+path="[^"]*?"[^>]*>\s*')
+    texts = [_media_tag.sub(" ", r["text"] or "").strip() for r in rows]
     vecs = emb.embed(texts)
     written = 0
     vt = cfg["vec_table"]
