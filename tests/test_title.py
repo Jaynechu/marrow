@@ -71,6 +71,10 @@ def _write_jsonl(path: Path, lines: list[dict]) -> None:
             f.write(json.dumps(d, ensure_ascii=False) + "\n")
 
 
+def _user_lines(n: int) -> list[dict]:
+    return [{"type": "user", "message": {"content": f"u{i}"}} for i in range(n)]
+
+
 def test_gather_turns_reads_user_and_assistant(tmp_path: Path) -> None:
     p = tmp_path / "s.jsonl"
     _write_jsonl(p, [
@@ -123,6 +127,9 @@ def test_summarize_writes_title_and_audit(monkeypatch, tmp_path: Path) -> None:
         {"type": "user", "message": {"content": "帮我改一下微信的split逻辑"}},
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "好的"}]}},
         {"type": "user", "message": {"content": "短句不要合并"}},
+        {"type": "user", "message": {"content": "括号里面不能拆"}},
+        {"type": "user", "message": {"content": "英文也要处理"}},
+        {"type": "user", "message": {"content": "最后加测试"}},
     ])
 
     class _StubClient:
@@ -156,7 +163,7 @@ def test_summarize_writes_title_and_audit(monkeypatch, tmp_path: Path) -> None:
         conn.close()
     assert audit is not None
     assert audit["target_table"] == "sessions"
-    assert audit["summary"] == "微信气泡切割重构"
+    assert audit["summary"] == "微信气泡切割重构|uc=5"
 
 
 def test_summarize_skips_when_already_summarized(monkeypatch, tmp_path: Path) -> None:
@@ -167,7 +174,7 @@ def test_summarize_skips_when_already_summarized(monkeypatch, tmp_path: Path) ->
     try:
         conn.execute(
             "INSERT INTO audit_log (target_table, target_id, action, summary) "
-            "VALUES ('sessions', ?, 'title_summarize', '老 title')",
+            "VALUES ('sessions', ?, 'title_summarize', '老 title|uc=10')",
             (sid,),
         )
         conn.commit()
@@ -188,10 +195,7 @@ def test_summarize_skips_when_already_summarized(monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr(llm_mod, "LLMClient", _StubClient)
 
     jsonl = tmp_path / "s.jsonl"
-    _write_jsonl(jsonl, [
-        {"type": "user", "message": {"content": "x"}},
-        {"type": "user", "message": {"content": "y"}},
-    ])
+    _write_jsonl(jsonl, _user_lines(12))
     assert title.summarize(sid, jsonl_path=str(jsonl)) is None
     assert called["n"] == 0  # LLM never invoked
     # sessions.title left alone
@@ -203,8 +207,11 @@ def test_summarize_skips_when_too_few_user_prompts(monkeypatch, tmp_path: Path) 
     _seed_session(sid)
     jsonl = tmp_path / "s.jsonl"
     _write_jsonl(jsonl, [
-        {"type": "user", "message": {"content": "only one prompt"}},
+        {"type": "user", "message": {"content": "u1"}},
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}},
+        {"type": "user", "message": {"content": "u2"}},
+        {"type": "user", "message": {"content": "u3"}},
+        {"type": "user", "message": {"content": "u4"}},
     ])
 
     called = {"n": 0}
@@ -228,10 +235,7 @@ def test_summarize_llm_failure_leaves_row_retry_eligible(monkeypatch, tmp_path: 
     sid = "test-sid-4"
     _seed_session(sid, current_title="fallback head")
     jsonl = tmp_path / "s.jsonl"
-    _write_jsonl(jsonl, [
-        {"type": "user", "message": {"content": "u1"}},
-        {"type": "user", "message": {"content": "u2"}},
-    ])
+    _write_jsonl(jsonl, _user_lines(5))
 
     class _BoomClient:
         def __init__(self, *a, **kw) -> None:
@@ -262,10 +266,7 @@ def test_summarize_truncates_overlong_llm_output(monkeypatch, tmp_path: Path) ->
     sid = "test-sid-5"
     _seed_session(sid)
     jsonl = tmp_path / "s.jsonl"
-    _write_jsonl(jsonl, [
-        {"type": "user", "message": {"content": "u1"}},
-        {"type": "user", "message": {"content": "u2"}},
-    ])
+    _write_jsonl(jsonl, _user_lines(5))
 
     class _ChattyClient:
         def __init__(self, *a, **kw) -> None:
@@ -280,3 +281,119 @@ def test_summarize_truncates_overlong_llm_output(monkeypatch, tmp_path: Path) ->
     result = title.summarize(sid, jsonl_path=str(jsonl))
     assert result is not None
     assert len(result) <= 8  # truncation enforced
+
+
+def test_summarize_allows_upgrade_when_session_grows(monkeypatch, tmp_path: Path) -> None:
+    sid = "test-sid-6"
+    _seed_session(sid, current_title="早期 title")
+    conn = storage.connect(config.db_path())
+    try:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary) "
+            "VALUES ('sessions', ?, 'title_summarize', '早期 title|uc=5')",
+            (sid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    called = {"n": 0}
+
+    class _StubClient:
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def call(self, *a, **kw):
+            called["n"] += 1
+            return "升级后的标题"
+
+    import marrow.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "LLMClient", _StubClient)
+
+    jsonl = tmp_path / "s.jsonl"
+    _write_jsonl(jsonl, _user_lines(16))
+
+    assert title.summarize(sid, jsonl_path=str(jsonl)) == "升级后的标题"
+    assert called["n"] == 1
+    assert repo.get_session(sid)["title"] == "升级后的标题"
+
+    conn = storage.connect(config.db_path())
+    try:
+        audit = conn.execute(
+            "SELECT summary FROM audit_log WHERE action='title_summarize' "
+            "AND target_id=? ORDER BY id DESC LIMIT 1",
+            (sid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert audit["summary"] == "升级后的标题|uc=16"
+
+
+def test_summarize_stays_sticky_for_substantial_sessions(monkeypatch, tmp_path: Path) -> None:
+    sid = "test-sid-7"
+    _seed_session(sid, current_title="够用 title")
+    conn = storage.connect(config.db_path())
+    try:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary) "
+            "VALUES ('sessions', ?, 'title_summarize', '够用 title|uc=10')",
+            (sid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    called = {"n": 0}
+
+    class _StubClient:
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def call(self, *a, **kw):
+            called["n"] += 1
+            return "should-not-be-called"
+
+    import marrow.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "LLMClient", _StubClient)
+
+    jsonl = tmp_path / "s.jsonl"
+    _write_jsonl(jsonl, _user_lines(30))
+
+    assert title.summarize(sid, jsonl_path=str(jsonl)) is None
+    assert called["n"] == 0
+    assert repo.get_session(sid)["title"] == "够用 title"
+
+
+def test_summarize_legacy_audit_row_stays_sticky(monkeypatch, tmp_path: Path) -> None:
+    sid = "test-sid-8"
+    _seed_session(sid, current_title="旧 title")
+    conn = storage.connect(config.db_path())
+    try:
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary) "
+            "VALUES ('sessions', ?, 'title_summarize', '旧 title')",
+            (sid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    called = {"n": 0}
+
+    class _StubClient:
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def call(self, *a, **kw):
+            called["n"] += 1
+            return "should-not-be-called"
+
+    import marrow.llm as llm_mod
+    monkeypatch.setattr(llm_mod, "LLMClient", _StubClient)
+
+    jsonl = tmp_path / "s.jsonl"
+    _write_jsonl(jsonl, _user_lines(30))
+
+    assert title.summarize(sid, jsonl_path=str(jsonl)) is None
+    assert called["n"] == 0
+    assert repo.get_session(sid)["title"] == "旧 title"

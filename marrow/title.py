@@ -1,9 +1,8 @@
 """Smart session title — LLM-summarized, ≤8 cn-chars / 8 en-words.
 
 Wired by ``hooks._maybe_set_session_title``: each user_prompt_submit
-checks ``audit_log`` for a prior ``title_summarize`` row; if absent it
 fires this module as a detached subprocess (``python -m marrow.title``)
-so the LLM call never blocks the hook.
+when the session is eligible, so the LLM call never blocks the hook.
 
 Length rule: 8 CJK chars OR 8 ASCII tokens — matches Lumi's '≤8字'
 across languages. The prompt asks the model to follow the dominant
@@ -23,12 +22,11 @@ from . import config, repo, storage
 
 # Length cap on the final title. CJK char = 1 unit; ASCII token = 1 unit.
 TITLE_UNITS_MAX = 8
-# Skip summarisation until the user has actually engaged a couple times —
-# avoids burning a haiku call on a single greeting / typo prompt.
-MIN_PROMPT_COUNT = 2
+# Skip summarisation until the user has actually engaged enough to title well.
+MIN_PROMPT_COUNT = 5
 # Cap on how many turns we feed the LLM — enough signal without dragging
 # multi-thousand-token transcripts into a cheap-tier call.
-MAX_TURNS_FOR_CONTEXT = 4
+MAX_TURNS_FOR_CONTEXT = 8
 
 
 def _is_cjk(ch: str) -> bool:
@@ -114,6 +112,30 @@ def gather_turns(jsonl_path: str | Path, max_turns: int = MAX_TURNS_FOR_CONTEXT)
     return turns
 
 
+def _count_user_prompts(jsonl_path: str | Path) -> int:
+    if not jsonl_path:
+        return 0
+    p = Path(jsonl_path)
+    if not p.exists():
+        return 0
+    n = 0
+    try:
+        with p.open(encoding="utf-8") as f:
+            for ln in f:
+                try:
+                    d = json.loads(ln)
+                except Exception:  # noqa: BLE001 — skip malformed lines
+                    continue
+                if d.get("type") != "user":
+                    continue
+                msg = d.get("message") or {}
+                if _extract_text(msg.get("content")):
+                    n += 1
+    except OSError:
+        return 0
+    return n
+
+
 _PROMPT_TPL = (
     "Read the conversation and produce a short session title.\n\n"
     "Rules:\n"
@@ -131,24 +153,36 @@ def build_prompt(turns: list[tuple[str, str]]) -> str:
     return _PROMPT_TPL.format(turns=body)
 
 
-def _already_summarized(conn, sid: str) -> bool:
-    """Sticky dedup: any prior successful title_summarize row blocks
-    re-running. Failed attempts (err/empty) are NOT written so they leave
-    room for a retry on the next user_prompt_submit."""
+def _prior_user_count(summary: str | None) -> int:
+    if not summary or "|uc=" not in summary:
+        return 999
+    try:
+        return int(summary.rsplit("|uc=", 1)[1])
+    except ValueError:
+        return 999
+
+
+def _should_skip_summarize(conn, sid: str, current_user_count: int) -> bool:
+    """Upgradeable dedup: thin early titles get one later improvement chance."""
     row = conn.execute(
-        "SELECT 1 FROM audit_log "
+        "SELECT summary FROM audit_log "
         "WHERE action='title_summarize' AND target_table='sessions' AND target_id=? "
-        "LIMIT 1",
+        "ORDER BY id DESC LIMIT 1",
         (sid,),
     ).fetchone()
-    return row is not None
+    if row is None:
+        return False
+    prior_uc = _prior_user_count(row["summary"])
+    if prior_uc >= 10:
+        return True
+    return current_user_count < prior_uc * 3
 
 
-def _record_ok(conn, sid: str, title: str) -> None:
+def _record_ok(conn, sid: str, title: str, user_count: int) -> None:
     conn.execute(
         "INSERT INTO audit_log (target_table, target_id, action, summary) "
         "VALUES ('sessions', ?, 'title_summarize', ?)",
-        (sid, title),
+        (sid, f"{title}|uc={user_count}"),
     )
     conn.commit()
 
@@ -161,8 +195,6 @@ def summarize(sid: str, jsonl_path: str | None = None) -> str | None:
         return None
     conn = storage.connect(config.db_path())
     try:
-        if _already_summarized(conn, sid):
-            return None
         if jsonl_path is None:
             # Lazy import — avoids circular hooks ↔ title at module load.
             from . import hooks
@@ -170,7 +202,9 @@ def summarize(sid: str, jsonl_path: str | None = None) -> str | None:
         if not jsonl_path:
             return None
         turns = gather_turns(jsonl_path)
-        user_count = sum(1 for r, _ in turns if r == "user")
+        user_count = _count_user_prompts(jsonl_path)
+        if _should_skip_summarize(conn, sid, user_count):
+            return None
         if user_count < MIN_PROMPT_COUNT:
             return None
         try:
@@ -186,7 +220,7 @@ def summarize(sid: str, jsonl_path: str | None = None) -> str | None:
         channel = (cur or {}).get("channel") or "cli"
         model = (cur or {}).get("model")
         repo.upsert_session(sid, model, channel, title=title)
-        _record_ok(conn, sid, title)
+        _record_ok(conn, sid, title, user_count)
         return title
     finally:
         conn.close()
