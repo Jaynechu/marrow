@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 STICKERS_DIR = Path.home() / "Desktop/NY/stickers"
 _SIPS = "/usr/bin/sips"
-_CANVAS = 320
+_CANVAS = 240
 
 
 def sha256_file(path: str) -> str:
