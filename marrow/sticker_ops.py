@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 STICKERS_DIR = Path.home() / "Desktop/NY/stickers"
 _CANVAS = 240
+_STICKER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
 def sha256_file(path: str) -> str:
@@ -197,3 +198,40 @@ def sweep_orphans(conn) -> list[int]:
     if removed:
         conn.commit()
     return removed
+
+
+def sweep_file_orphans(conn) -> list[int]:
+    """Re-register stk_NNN files on disk that have no DB row."""
+    stickers_dir = STICKERS_DIR.expanduser()
+    if not stickers_dir.exists():
+        return []
+    db_ids = {r["id"] for r in conn.execute("SELECT id FROM stickers").fetchall()}
+    db_phashes = {}
+    for r in conn.execute("SELECT id, phash FROM stickers WHERE phash IS NOT NULL"):
+        db_phashes[r["phash"]] = r["id"]
+
+    registered = []
+    for f in sorted(stickers_dir.iterdir()):
+        if f.is_dir() or f.suffix.lower() not in _STICKER_EXTS:
+            continue
+        m = re.match(r"stk_(\d{3,})", f.stem)
+        if not m:
+            continue
+        stk_id = int(m.group(1))
+        if stk_id in db_ids:
+            continue
+        ph = phash_file(str(f))
+        if ph and ph in db_phashes:
+            f.unlink()
+            logger.info("sweep_file_orphans: deleted dup %s (matches id=%d)", f.name, db_phashes[ph])
+            continue
+        sha = sha256_file(str(f))
+        conn.execute(
+            "INSERT INTO stickers(id, path, sha256, phash, desc, source) VALUES(?,?,?,?,?,?)",
+            (stk_id, str(f), sha, ph, "(pending)", "finder"),
+        )
+        registered.append(stk_id)
+
+    if registered:
+        conn.commit()
+    return registered
