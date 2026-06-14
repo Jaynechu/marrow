@@ -40,8 +40,9 @@ def _hamming(a: str, b: str) -> int | None:
 
 
 def _standardize_image(path: Path) -> Path:
-    """Fit to _CANVAS x _CANVAS square (aspect-preserved, white pad). Skips GIF.
+    """Scale down to max edge _CANVAS (aspect-preserved, no pad). Skips GIF.
 
+    Images already within _CANVAS are left as-is.
     Converts JPG to PNG first to avoid lossy recompression.
     Returns the (possibly renamed) output path.
     """
@@ -56,15 +57,21 @@ def _standardize_image(path: Path) -> Path:
                 check=True, timeout=15, capture_output=True,
             )
             path.unlink()
-        subprocess.run(
-            [_SIPS, "-Z", str(_CANVAS), str(out), "--out", str(out)],
-            check=True, timeout=15, capture_output=True,
+        info = subprocess.run(
+            [_SIPS, "-g", "pixelWidth", "-g", "pixelHeight", str(out)],
+            check=True, timeout=15, capture_output=True, text=True,
         )
-        subprocess.run(
-            [_SIPS, "-p", str(_CANVAS), str(_CANVAS),
-             "--padColor", "FFFFFF", str(out), "--out", str(out)],
-            check=True, timeout=15, capture_output=True,
-        )
+        w = h = 0
+        for line in info.stdout.splitlines():
+            if "pixelWidth" in line:
+                w = int(line.split(":")[-1].strip())
+            elif "pixelHeight" in line:
+                h = int(line.split(":")[-1].strip())
+        if max(w, h) > _CANVAS:
+            subprocess.run(
+                [_SIPS, "-Z", str(_CANVAS), str(out), "--out", str(out)],
+                check=True, timeout=15, capture_output=True,
+            )
         return out
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
         logger.warning("sticker standardize failed for %s: %s", path.name, e)
