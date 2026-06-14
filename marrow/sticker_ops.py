@@ -4,13 +4,11 @@ import hashlib
 import logging
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 STICKERS_DIR = Path.home() / "Desktop/NY/stickers"
-_SIPS = "/usr/bin/sips"
 _CANVAS = 200
 
 
@@ -40,40 +38,27 @@ def _hamming(a: str, b: str) -> int | None:
 
 
 def _standardize_image(path: Path) -> Path:
-    """Scale down to max edge _CANVAS (aspect-preserved, no pad). Skips GIF.
+    """Scale down to max edge _CANVAS (aspect-preserved, LANCZOS, no pad). Skips GIF.
 
     Images already within _CANVAS are left as-is.
-    Converts JPG to PNG first to avoid lossy recompression.
+    Converts all formats to PNG for lossless storage.
     Returns the (possibly renamed) output path.
     """
     if path.suffix.lower() == ".gif":
         return path
-    out = path
+    out = path.with_suffix(".png") if path.suffix.lower() in (".jpg", ".jpeg") else path
     try:
-        if path.suffix.lower() in (".jpg", ".jpeg"):
-            out = path.with_suffix(".png")
-            subprocess.run(
-                [_SIPS, "-s", "format", "png", str(path), "--out", str(out)],
-                check=True, timeout=15, capture_output=True,
-            )
+        from PIL import Image
+        with Image.open(path) as img:
+            if img.mode not in ("RGBA", "RGB"):
+                img = img.convert("RGBA")
+            if max(img.size) > _CANVAS:
+                img.thumbnail((_CANVAS, _CANVAS), Image.LANCZOS)
+            img.save(out, "PNG")
+        if out != path and path.exists():
             path.unlink()
-        info = subprocess.run(
-            [_SIPS, "-g", "pixelWidth", "-g", "pixelHeight", str(out)],
-            check=True, timeout=15, capture_output=True, text=True,
-        )
-        w = h = 0
-        for line in info.stdout.splitlines():
-            if "pixelWidth" in line:
-                w = int(line.split(":")[-1].strip())
-            elif "pixelHeight" in line:
-                h = int(line.split(":")[-1].strip())
-        if max(w, h) > _CANVAS:
-            subprocess.run(
-                [_SIPS, "-Z", str(_CANVAS), str(out), "--out", str(out)],
-                check=True, timeout=15, capture_output=True,
-            )
         return out
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+    except Exception as e:
         logger.warning("sticker standardize failed for %s: %s", path.name, e)
         return out if out.exists() else path
 
