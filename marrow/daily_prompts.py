@@ -36,7 +36,7 @@ Common rules
 - conf: 0.0 to 1.0, certainty this is a real signal vs casual mention. \
 Per-block gates — entity 0.8 / milestone 0.85 / memes 0.7.
 - aliases: list only the literal jumps bge-m3 cannot bridge — leave [] if none.
-  - Include: abbr (BBB ↔ 毕冰冰), language pairs (南南 ↔ Allen), nicknames (南南 ↔ 姜南)
+  - Include: abbr (JW ↔ James Wang), language pairs (小明 ↔ Mike), nicknames (阿花 ↔ 王小花)
   - Exclude: common public acronyms (HTN, BJJ, GAMSAT) — bge-m3 handles them.
 
 ─────────── ENTITY_CAND ───────────
