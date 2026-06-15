@@ -53,7 +53,7 @@ Three runtimes:
 - Ingestion gates (`candidates.py`):
   - entities: conf ≥0.8; cosine 0.85 same-kind hit → merge aliases into matched row (never blocks).
   - milestones: conf ≥0.85; cosine 0.85 blocks; tombstone anti-revive via audit_log sha256(scope|date|title); affect importance=5 force-emits a candidate.
-  - memes: ALL six types gated by `candidates:_events_like_count_14d` — key on ≥3 distinct calendar days in last 14d; cosine 0.85 vs memes+milestones+entities blocks; paw/fact auto-pinned.
+  - memes: ALL six types gated by `candidates:_events_semantic_count_14d` — max(LIKE, vec KNN cosine>=0.65) on >=3 distinct calendar days in last 14d; cosine 0.85 vs memes+milestones+entities blocks; paw/fact auto-pinned.
 - Shared dedup config `[*_dedup]`: cosine_threshold 0.85 · fast_skip_count 3 (persistent rejects short-circuit via memes_reject_log).
 - Empty day (no digests, no affect) writes stub diary row '—'; pending_days excludes stubs (content='—'/'-') so daily re-runs when digests appear.
 
