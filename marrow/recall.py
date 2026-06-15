@@ -1433,7 +1433,7 @@ def recall_fusion(
             _e = _dt.fromisoformat(until.replace("Z", "+00:00"))
             _diary_dates = set()
             _cur = _s
-            while _cur < _e:
+            while _cur <= _e:
                 _diary_dates.add(_u2d(_cur.strftime("%Y-%m-%dT%H:%M:%SZ")))
                 _cur += _td(days=1)
         except Exception:
@@ -1819,7 +1819,7 @@ def fetch_window_digests(
             _e = _dt.fromisoformat(until_utc.replace("Z", "+00:00"))
             dates: list[str] = []
             _cur = _s
-            while _cur < _e:
+            while _cur <= _e:
                 dates.append(_u2d(_cur.strftime("%Y-%m-%dT%H:%M:%SZ")))
                 _cur += _td(days=1)
         except Exception:
