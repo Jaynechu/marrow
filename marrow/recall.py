@@ -1440,24 +1440,39 @@ def recall_fusion(
             _diary_dates = None
 
     diary_cands: list[dict] = []
-    for card in diary_vec_cards:
-        vs = card["vec_score"]
-        if vs < _VEC_ONLY_FLOOR:
-            continue
-        if not card["content"] or card["content"] == "—":
-            continue
-        date = card["date"]
-        if _diary_dates is not None and date not in _diary_dates:
-            continue
-        ts = date if "T" in date else (date + "T00:00:00Z" if date else "")
-        diary_cands.append({
-            "kind": "diary", "id": card["id"],
-            "session_id": None, "timestamp": ts,
-            "role": "diary", "content": card["content"],
-            "channel": None, "compressed": 0,
-            "bm25": 0.0, "vec": vs, "fts_hit": False,
-            "date": date,
-        })
+    if _diary_dates is not None:
+        # Date window present — direct SELECT, bypass vec floor.
+        _ph = ",".join("?" * len(_diary_dates))
+        for row in conn.execute(
+            f"SELECT rowid, date, content FROM diary "
+            f"WHERE date IN ({_ph}) AND COALESCE(content,'') NOT IN ('','—')",
+            list(_diary_dates),
+        ).fetchall():
+            ts = row["date"] + "T00:00:00Z" if row["date"] else ""
+            diary_cands.append({
+                "kind": "diary", "id": int(row["rowid"]),
+                "session_id": None, "timestamp": ts,
+                "role": "diary", "content": row["content"],
+                "channel": None, "compressed": 0,
+                "bm25": 0.0, "vec": 1.0, "fts_hit": False,
+                "date": row["date"],
+            })
+    else:
+        for card in diary_vec_cards:
+            vs = card["vec_score"]
+            if vs < _VEC_ONLY_FLOOR:
+                continue
+            if not card["content"] or card["content"] == "—":
+                continue
+            ts = card["date"] + "T00:00:00Z" if card["date"] else ""
+            diary_cands.append({
+                "kind": "diary", "id": card["id"],
+                "session_id": None, "timestamp": ts,
+                "role": "diary", "content": card["content"],
+                "channel": None, "compressed": 0,
+                "bm25": 0.0, "vec": vs, "fts_hit": False,
+                "date": card["date"],
+            })
 
     # Tasks: vec-only lane (no kw scan for now — titles are short, can land
     # later if needed). Evergreen — no recency on the recall ranking either.
