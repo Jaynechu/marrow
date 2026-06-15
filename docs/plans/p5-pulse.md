@@ -110,6 +110,7 @@ Reuses existing pattern from `.claude/rules/agent-dispatch.md`.
 - tasks table source/category columns (Phase 2.5 or Phase 3) — FUTURE: `tasks_table_extensions`
 - ScreenTime FDA authorization + `~/Library/Application Support/Knowledge/knowledgeC.db` reader (Phase 5)
 - cccompanion_ios_fork APNs surface (Phase 5+)
+- Location feed: pyicloud Find My or iOS Shortcut scheduled push (Phase 5)
 - weclaude rebuild for bridge push (Phase 4)
 - inbox / findings / today_draft file structure (Phase 5 marrow_pulse self-owned)
 - recall stable (currently P0 bug blocks)
