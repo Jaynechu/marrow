@@ -35,7 +35,7 @@ def recall(
     Call when the user references the past.
     Set context=True to attach ±1 adjacent same-session turns to each event row.
     since/until: Melbourne-local YYYY-MM-DD day strings for time-lane filtering.
-    Diary: recall(query="diary", since="2026-06-12", until="2026-06-12")."""
+    Diary: recall(query="diary", since="date", until="date")."""
     from .timecue import melb_day_range
     since_utc: str | None = None
     until_utc: str | None = None
