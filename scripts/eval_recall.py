@@ -20,7 +20,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-DB_PATH = "/Users/Gabrielle/.config/marrow/marrow.db"
+DB_PATH = str(Path.home() / ".config" / "marrow" / "marrow.db")
 
 # Use storage.connect() so sqlite-vec extension is loaded automatically.
 WORKTREE = Path(__file__).parent.parent
@@ -81,7 +81,7 @@ def sample_prompts(conn: sqlite3.Connection) -> list[dict]:
             out.append({
                 "event_id": r["id"],
                 "prompt": text,
-                "cwd": r["cwd"] or "/Users/Gabrielle/CC-Lab/marrow",
+                "cwd": r["cwd"] or str(WORKTREE),
                 "timestamp": r["timestamp"] or "",
                 "stratum": strat,
             })
