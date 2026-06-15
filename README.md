@@ -144,7 +144,7 @@ launchctl kickstart -k gui/$(id -u)/com.marrow.watcher
 ## Contributors
 
 - [Jaynechu](https://github.com/Jaynechu) (Gabrielle Chu)
-- **Stellan** (褚屿忱) — Claude-based co-developer. Architecture, implementation, and daily operations since day one.
+- [Stellan] (Claude Code)
 
 ## Architecture
 
