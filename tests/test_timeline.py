@@ -3,7 +3,7 @@
 Covers:
 - ND attribution (00-05 belongs to previous diary day)
 - Day dividers in 24h film-strip
-- 24h cap (15 lines)
+- 24h cap (25 lines)
 - 2472h period/day bucketing, empty period hidden
 - Day 4-7 zone + Week header
 - Trim order: day lines → period lines → 24h farthest
@@ -133,8 +133,8 @@ def test_24h_shows_life_lines_for_casual(conn):
     assert "喝了拿铁" in result
 
 
-def test_24h_cap_15_lines(conn):
-    for i in range(20):
+def test_24h_cap_25_lines(conn):
+    for i in range(30):
         _digest(conn, f"s-cap-{i}", _utc(0.5 + i * 0.05),
                 kind="task", tl=f"任务{i}", life=None)
     result = timeline.render_timeline(conn)
@@ -151,8 +151,8 @@ def test_24h_cap_15_lines(conn):
     assert len(content_lines) <= timeline._24H_CAP
 
 
-def test_day_divider_on_date_crossing(conn):
-    """--- MM-DD --- divider appears in 24h zone when sessions cross a diary day.
+def test_no_day_divider_on_diary_only_crossing(conn):
+    """No divider is needed when sessions cross diary date only.
 
     Build two sessions exactly straddling the 6AM day boundary within 24h.
     """
@@ -180,7 +180,46 @@ def test_day_divider_on_date_crossing(conn):
     _digest(conn, "s-after6", ts_a, kind="task", tl="上午任务")
     _digest(conn, "s-before6", ts_b, kind="task", tl="深夜任务")
     result = timeline.render_timeline(conn)
-    assert "---" in result
+    assert "---" not in result
+
+
+def test_24h_divider_uses_calendar_date_not_diary_date():
+    """03:00 and 23:00 same night share diary date but need a calendar divider."""
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
+
+    def local_iso(year, month, day, hour, minute):
+        return _dt.datetime(
+            year, month, day, hour, minute, tzinfo=melb
+        ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    lines = timeline._render_24h(
+        [
+            {
+                "sid": "s-2300",
+                "ts": local_iso(2026, 6, 15, 23, 0),
+                "kind": "task",
+                "tl_line": "夜里聊天",
+                "text": "body",
+                "life_lines": None,
+            },
+            {
+                "sid": "s-0300",
+                "ts": local_iso(2026, 6, 16, 3, 0),
+                "kind": "task",
+                "tl_line": "早晨还没睡",
+                "text": "body",
+                "life_lines": None,
+            },
+        ],
+        current_sid=None,
+    )
+
+    assert lines == [
+        "03:00 早晨还没睡 <!-- tl:s-0300 -->",
+        "--- 06-15 ---",
+        "23:00 夜里聊天 <!-- tl:s-2300 -->",
+    ]
 
 
 def test_current_sid_excluded(conn):
@@ -259,11 +298,39 @@ def test_2472h_empty_period_hidden(conn):
                 pytest.fail("AM line present without AM session data")
 
 
-def test_2472h_day_header_present(conn):
+def test_2472h_day_header_present(conn, monkeypatch):
     """Day header **MM-DD Day 【tone】** appears for sessions 24-72h ago."""
-    _digest(conn, "s-2472", _utc(36), kind="task", tl="前天任务")
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
+    _freeze_timeline_now(
+        monkeypatch, _dt.datetime(2026, 6, 16, 15, 0, tzinfo=melb)
+    )
+    ts = _dt.datetime(
+        2026, 6, 14, 14, 0, tzinfo=melb
+    ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _digest(conn, "s-2472", ts, kind="task", tl="前天任务")
     result = timeline.render_timeline(conn)
     assert "**" in result and "Day" in result
+    assert "<!-- tl:d:2026-06-14 -->" in result
+
+
+def test_2472h_day_header_contains_date_anchor():
+    lines = timeline._render_2472h(
+        [
+            {
+                "sid": "s-anchor",
+                "ts": "2026-06-14T04:00:00Z",
+                "kind": "task",
+                "tl_line": "前天任务",
+                "text": "body",
+                "life_lines": None,
+            }
+        ],
+        affect_rows=[],
+        current_sid=None,
+    )
+
+    assert lines[0] == "**06-14 Day 【平淡】** <!-- tl:d:2026-06-14 -->"
 
 
 def test_2472h_manual_event_renders_with_anchor_and_deletes(
@@ -273,7 +340,7 @@ def test_2472h_manual_event_renders_with_anchor_and_deletes(
     from zoneinfo import ZoneInfo
     melb = ZoneInfo("Australia/Melbourne")
     _freeze_timeline_now(
-        monkeypatch, _dt.datetime(2026, 6, 13, 22, 50, tzinfo=melb)
+        monkeypatch, _dt.datetime(2026, 6, 14, 22, 50, tzinfo=melb)
     )
     manual_local = _dt.datetime(2026, 6, 12, 9, 0, tzinfo=melb)
     manual_utc = manual_local.astimezone(_dt.timezone.utc).strftime(
@@ -450,8 +517,8 @@ def test_life_lines_no_prefix_fallback_to_session_time(conn):
     assert sess_hhmm in result
 
 
-def test_life_lines_midnight_crossing_divider(conn):
-    """LIFE lines at 00:30 (before 6AM) cross into previous diary day — divider expected."""
+def test_life_lines_diary_only_crossing_no_divider(conn):
+    """LIFE lines crossing the diary cutoff do not force a calendar divider."""
     from zoneinfo import ZoneInfo
     melb = ZoneInfo("Australia/Melbourne")
     now_melb = _dt.datetime.now(melb)
@@ -474,8 +541,7 @@ def test_life_lines_midnight_crossing_divider(conn):
     _digest(conn, "s-midnight", ts, kind="casual", tl="夜聊", life=life)
     result = timeline.render_timeline(conn)
 
-    # At least one date divider must appear due to the 00:30 crossing
-    assert "---" in result
+    assert "---" not in result
 
 
 def test_life_line_hhmm_helper_parses_prefix():
@@ -639,8 +705,8 @@ def test_24h_first_life_line_sorts_by_own_display_time():
     assert lines == [
         "20:10 晚上聊天",
         "12:00 中午任务 <!-- tl:s-midday -->",
-        "--- 06-12 ---",
         "04:30 清晨醒来 <!-- tl:s-early-first -->",
+        "--- 06-12 ---",
         "22:00 前夜任务 <!-- tl:s-prev-evening -->",
     ]
     assert lines.count("--- 06-12 ---") == 1
@@ -716,15 +782,20 @@ def test_24h_no_tone_tag_without_affect(conn):
 
 # ── Bug 4: zone windows — no duplication, correct day ranges ──────────────────
 
-def test_zone_b_does_not_overlap_zone_a(conn):
-    """A session 25h ago must appear in zone (b), not zone (a)."""
-    _digest(conn, "s-25h", _utc(25), kind="task", tl="昨天的事")
+def test_zone_a_starts_at_yesterday_diary_start(conn, monkeypatch):
+    """Zone A starts at yesterday 06:00 Melbourne, not rolling 24h."""
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
+    _freeze_timeline_now(
+        monkeypatch, _dt.datetime(2026, 6, 16, 15, 0, tzinfo=melb)
+    )
+    ts = _dt.datetime(
+        2026, 6, 15, 7, 0, tzinfo=melb
+    ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _digest(conn, "s-zone-a-yesterday", ts, kind="task", tl="昨天早上的事")
     result = timeline.render_timeline(conn)
-    # Zone (a) is the text before the first ** day header
-    if "**" in result:
-        zone_a = result.split("**")[0]
-        assert "昨天的事" not in zone_a, "25h-old session must not appear in 24h strip"
-    assert "昨天的事" in result
+    zone_a = result.split("**")[0]
+    assert "昨天早上的事" in zone_a
 
 
 def test_zone_c_covers_five_days(conn):
