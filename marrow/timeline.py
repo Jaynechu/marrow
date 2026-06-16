@@ -10,13 +10,14 @@ Format (FINAL spec, plan 4A-3):
     - session's first line carries 【tone】
     - LIFE lines (casual) + TL line (task)
     - day crossings: --- MM-DD --- divider
-  24-72h: per-day **MM-DD Day 【tone】** + AM/PM/ND period lines, cap ~12
+  Today-1 overflow + today-2: per-day **MM-DD Day 【tone】** + AM/PM/ND periods
     - ND 00-06 belongs to PREVIOUS day
     - all sessions' TLs in period joined time-order, truncated; empty hidden
-  Day 4-7: Week 【tone ↗/↘/→】 trend + one line per day 【tone】 diary.tl_line
+    - 24h sessions exceeding cap spill here as day summaries
+  Day 3-6: Week 【tone ↗/↘/→】 trend + one line per day 【tone】 diary.tl_line
   No in-progress session line.
   Trim order: day lines → period lines (farthest day first) → 24h farthest.
-  Budget ~1100 chars.
+  Budget ~1500 chars.
 
 Tone labels reuse top_sections._tone / _vband / _aband (no duplication).
 All DB timestamps are UTC; Melbourne on render via timeutil.
@@ -648,6 +649,8 @@ def _render_day47(dates_4_7: list[_dt.date],
         day_affect = affect_rows_by_date.get(date, [])
         tone_label = _tone_from_rows(day_affect)
         dtl = diary_tl.get(date.isoformat(), "")
+        if dtl and _RENDERED_DAY_RE.match(dtl.strip().lstrip("*")):
+            dtl = ""
         anchor = _tl_anchor_date(date.isoformat())
         if dtl:
             lines.append(
@@ -697,12 +700,9 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     overflow = [d for d in digests_24h
                 if d["sid"] not in rendered_sids and d["sid"] != current_sid]
 
-    # ── zone (b): diary dates today-1, today-2, today-3 ─────────────────────
-    # Window: from diary-day-start of today-3 (06:00 local → UTC) up to t_24h
-    # plus any overflow from zone (a) cap truncation.
-    # Bug 4 fix: use diary-date boundaries, not rolling 72h.
-    day3 = today_melb - _dt.timedelta(days=3)
-    zone_b_from_utc = _day_start_utc(day3).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # ── zone (b): today-1 overflow + today-2 day summaries ────────────────
+    day2 = today_melb - _dt.timedelta(days=2)
+    zone_b_from_utc = _day_start_utc(day2).strftime("%Y-%m-%dT%H:%M:%SZ")
     digests_2472 = overflow + _query_digests_range(conn, zone_b_from_utc, t_24h)
     affect_2472 = _query_affect_range(conn, zone_b_from_utc, now_utc_iso)
     manual_2472 = _query_manual_events_range(conn, zone_b_from_utc, t_24h)
@@ -710,27 +710,26 @@ def render_timeline(conn: sqlite3.Connection) -> str:
         digests_2472, affect_2472, current_sid, manual_2472
     )
 
-    # ── zone (c): diary dates today-4 .. today-8 (five days) ────────────────
-    # Bug 4 fix: was range(3,7) → today-3..today-6; now range(4,9) → today-4..today-8.
-    dates_4_8 = [today_melb - _dt.timedelta(days=d) for d in range(4, 9)]
-    date_c_str_from = dates_4_8[-1].isoformat()   # oldest (today-8)
-    date_c_str_to   = dates_4_8[0].isoformat()    # newest (today-4)
+    # ── zone (c): diary dates today-3 .. today-6 (four days) ────────────────
+    dates_3_6 = [today_melb - _dt.timedelta(days=d) for d in range(3, 7)]
+    date_c_str_from = dates_3_6[-1].isoformat()   # oldest (today-6)
+    date_c_str_to   = dates_3_6[0].isoformat()    # newest (today-3)
 
     diary_tl = _query_diary_range(conn, date_c_str_from, date_c_str_to)
 
-    # Affect for zone (c): from diary-day-start of today-8 up to zone_b_from_utc
-    day8 = today_melb - _dt.timedelta(days=8)
-    zone_c_from_utc = _day_start_utc(day8).strftime("%Y-%m-%dT%H:%M:%SZ")
-    affect_4_8 = _query_affect_range(conn, zone_c_from_utc, zone_b_from_utc)
+    # Affect for zone (c): from diary-day-start of today-6 up to zone_b_from_utc
+    day6 = today_melb - _dt.timedelta(days=6)
+    zone_c_from_utc = _day_start_utc(day6).strftime("%Y-%m-%dT%H:%M:%SZ")
+    affect_3_6 = _query_affect_range(conn, zone_c_from_utc, zone_b_from_utc)
     affect_last_wk = _query_affect_range(conn, t_14d, t_7d)
 
     affect_by_date: dict[_dt.date, list[dict]] = {}
-    for ar in affect_4_8:
+    for ar in affect_3_6:
         d, _ = _period_diary_date(ar.get("created_at") or "")
         affect_by_date.setdefault(d, []).append(ar)
 
-    lines_47 = _render_day47(dates_4_8, affect_by_date, diary_tl,
-                             affect_4_8, affect_last_wk)
+    lines_47 = _render_day47(dates_3_6, affect_by_date, diary_tl,
+                             affect_3_6, affect_last_wk)
 
     # ── assemble + trim to budget ────────────────────────────────────────────
     all_sections = _assemble(open_lines, lines_24h, lines_2472, lines_47)

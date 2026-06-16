@@ -792,51 +792,47 @@ def test_zone_b_does_not_overlap_zone_a(conn):
     assert "昨天的事" in result
 
 
-def test_zone_c_covers_five_days(conn):
-    """Zone (c) covers today-4 through today-8 (five diary days)."""
+def test_zone_c_covers_four_days(conn):
+    """Zone (c) covers today-3 through today-6 (four diary days)."""
     from zoneinfo import ZoneInfo
     melb = ZoneInfo("Australia/Melbourne")
     now_melb = _dt.datetime.now(melb)
     today = (now_melb.date() if now_melb.hour >= 6
              else (now_melb - _dt.timedelta(days=1)).date())
 
-    # Insert diary entries for today-4 and today-8
-    day4 = today - _dt.timedelta(days=4)
-    day8 = today - _dt.timedelta(days=8)
-    conn.execute(
-        "INSERT INTO diary (date, content, tl_line) VALUES (?, 'body', ?)",
-        (day4.isoformat(), "四天前日记"),
-    )
-    conn.execute(
-        "INSERT INTO diary (date, content, tl_line) VALUES (?, 'body', ?)",
-        (day8.isoformat(), "八天前日记"),
-    )
-    conn.commit()
-    result = timeline.render_timeline(conn)
-    assert "四天前日记" in result, "today-4 diary must appear in zone (c)"
-    assert "八天前日记" in result, "today-8 diary must appear in zone (c)"
-
-
-def test_zone_b_and_c_no_day3_duplication(conn):
-    """today-3 must appear only in zone (b), not in zone (c)."""
-    from zoneinfo import ZoneInfo
-    melb = ZoneInfo("Australia/Melbourne")
-    now_melb = _dt.datetime.now(melb)
-    today = (now_melb.date() if now_melb.hour >= 6
-             else (now_melb - _dt.timedelta(days=1)).date())
     day3 = today - _dt.timedelta(days=3)
-
-    # Session 73h ago puts it in zone (b) for today-3
-    _digest(conn, "s-day3", _utc(73), kind="task", tl="三天前任务")
-    # Also add diary entry for today-3
+    day6 = today - _dt.timedelta(days=6)
     conn.execute(
         "INSERT INTO diary (date, content, tl_line) VALUES (?, 'body', ?)",
         (day3.isoformat(), "三天前日记"),
     )
+    conn.execute(
+        "INSERT INTO diary (date, content, tl_line) VALUES (?, 'body', ?)",
+        (day6.isoformat(), "六天前日记"),
+    )
     conn.commit()
     result = timeline.render_timeline(conn)
-    # today-3 diary must NOT appear (it's in zone b, not c)
-    assert "三天前日记" not in result, "today-3 diary must not appear in zone (c)"
+    assert "三天前日记" in result, "today-3 diary must appear in zone (c)"
+    assert "六天前日记" in result, "today-6 diary must appear in zone (c)"
+
+
+def test_zone_b_and_c_no_day2_duplication(conn):
+    """today-2 must appear only in zone (b), not in zone (c)."""
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
+    now_melb = _dt.datetime.now(melb)
+    today = (now_melb.date() if now_melb.hour >= 6
+             else (now_melb - _dt.timedelta(days=1)).date())
+    day2 = today - _dt.timedelta(days=2)
+
+    _digest(conn, "s-day2", _utc(49), kind="task", tl="两天前任务")
+    conn.execute(
+        "INSERT INTO diary (date, content, tl_line) VALUES (?, 'body', ?)",
+        (day2.isoformat(), "两天前日记"),
+    )
+    conn.commit()
+    result = timeline.render_timeline(conn)
+    assert "两天前日记" not in result, "today-2 diary must not appear in zone (c)"
 
 
 # ── Bug 5: tl_line pollution guard ───────────────────────────────────────────
