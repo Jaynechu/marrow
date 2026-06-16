@@ -6,7 +6,7 @@ Two outlets:
 
 Format (FINAL spec, plan 4A-3):
   > 未解: <desc> [label]  — open affect episodes, 7d expiry, top of block
-  Zone A: yesterday diary 06:00→now flat HH:MM film-strip newest→oldest, cap 25
+  Last 24h: flat HH:MM film-strip newest→oldest, cap 15
     - session's first line carries 【tone】
     - LIFE lines (casual) + TL line (task)
     - day crossings: --- MM-DD --- divider
@@ -33,8 +33,8 @@ _TZ = _config.get_tz()
 # Matches leading HH:MM in a LIFE line (e.g. "21:40 买了b5精华")
 _LIFE_TS_RE = _re.compile(r"^(\d{2}:\d{2})\s+(.*)", _re.DOTALL)
 _CUTOFF_H = 6          # 6AM local day boundary
-_BUDGET = 1800         # soft char budget
-_24H_CAP = 25          # max film-strip lines
+_BUDGET = 1300         # soft char budget
+_24H_CAP = 15          # max film-strip lines
 _2472H_CAP = 12        # max lines incl. headers for 24-72h zone
 _OPEN_EXPIRY_DAYS = 7  # open episodes older than this are hidden
 _TL_FALLBACK_CHARS = 60  # tl_line NULL → truncated body text
@@ -670,6 +670,7 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     now_utc_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Time boundaries (UTC ISO strings)
+    t_24h = (now_utc - _dt.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
     t_72h = (now_utc - _dt.timedelta(hours=72)).strftime("%Y-%m-%dT%H:%M:%SZ")
     t_7d  = (now_utc - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     t_14d = (now_utc - _dt.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -680,29 +681,26 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     now_melb = now_utc.astimezone(_TZ)
     today_melb = (now_melb if now_melb.hour >= _CUTOFF_H
                   else now_melb - _dt.timedelta(days=1)).date()
-    t_zone_a = _day_start_utc(today_melb - _dt.timedelta(days=1)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
 
     # ── open episodes ────────────────────────────────────────────────────────
     open_eps = _query_open_episodes(conn, t_7d)
     open_lines = _render_open_episodes(open_eps)
 
     # ── last 24h ─────────────────────────────────────────────────────────────
-    digests_24h = _query_digests_range(conn, t_zone_a, now_utc_iso)
-    affect_by_sid_24h = _query_affect_by_session(conn, t_zone_a, now_utc_iso)
-    manual_24h = _query_manual_events_24h(conn, t_zone_a, now_utc_iso)
+    digests_24h = _query_digests_range(conn, t_24h, now_utc_iso)
+    affect_by_sid_24h = _query_affect_by_session(conn, t_24h, now_utc_iso)
+    manual_24h = _query_manual_events_24h(conn, t_24h, now_utc_iso)
     lines_24h = _render_24h(digests_24h, current_sid, affect_by_sid_24h, manual_24h)
 
     # ── zone (b): diary dates today-1, today-2, today-3 ─────────────────────
-    # Window: from diary-day-start of today-3 (06:00 local → UTC) up to t_zone_a
+    # Window: from diary-day-start of today-3 (06:00 local → UTC) up to t_24h
     # so sessions shown in zone (a) are not repeated.
     # Bug 4 fix: use diary-date boundaries, not rolling 72h.
     day3 = today_melb - _dt.timedelta(days=3)
     zone_b_from_utc = _day_start_utc(day3).strftime("%Y-%m-%dT%H:%M:%SZ")
-    digests_2472 = _query_digests_range(conn, zone_b_from_utc, t_zone_a)
-    affect_2472 = _query_affect_range(conn, zone_b_from_utc, t_zone_a)
-    manual_2472 = _query_manual_events_range(conn, zone_b_from_utc, t_zone_a)
+    digests_2472 = _query_digests_range(conn, zone_b_from_utc, t_24h)
+    affect_2472 = _query_affect_range(conn, zone_b_from_utc, t_24h)
+    manual_2472 = _query_manual_events_range(conn, zone_b_from_utc, t_24h)
     lines_2472 = _render_2472h(
         digests_2472, affect_2472, current_sid, manual_2472
     )

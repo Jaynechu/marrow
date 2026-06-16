@@ -3,7 +3,7 @@
 Covers:
 - ND attribution (00-05 belongs to previous diary day)
 - Day dividers in 24h film-strip
-- 24h cap (25 lines)
+- 24h cap (15 lines)
 - 2472h period/day bucketing, empty period hidden
 - Day 4-7 zone + Week header
 - Trim order: day lines → period lines → 24h farthest
@@ -133,8 +133,8 @@ def test_24h_shows_life_lines_for_casual(conn):
     assert "喝了拿铁" in result
 
 
-def test_24h_cap_25_lines(conn):
-    for i in range(30):
+def test_24h_cap_15_lines(conn):
+    for i in range(20):
         _digest(conn, f"s-cap-{i}", _utc(0.5 + i * 0.05),
                 kind="task", tl=f"任务{i}", life=None)
     result = timeline.render_timeline(conn)
@@ -782,20 +782,14 @@ def test_24h_no_tone_tag_without_affect(conn):
 
 # ── Bug 4: zone windows — no duplication, correct day ranges ──────────────────
 
-def test_zone_a_starts_at_yesterday_diary_start(conn, monkeypatch):
-    """Zone A starts at yesterday 06:00 Melbourne, not rolling 24h."""
-    from zoneinfo import ZoneInfo
-    melb = ZoneInfo("Australia/Melbourne")
-    _freeze_timeline_now(
-        monkeypatch, _dt.datetime(2026, 6, 16, 15, 0, tzinfo=melb)
-    )
-    ts = _dt.datetime(
-        2026, 6, 15, 7, 0, tzinfo=melb
-    ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _digest(conn, "s-zone-a-yesterday", ts, kind="task", tl="昨天早上的事")
+def test_zone_b_does_not_overlap_zone_a(conn):
+    """A session 25h ago must appear in zone (b), not zone (a)."""
+    _digest(conn, "s-25h", _utc(25), kind="task", tl="昨天的事")
     result = timeline.render_timeline(conn)
-    zone_a = result.split("**")[0]
-    assert "昨天早上的事" in zone_a
+    if "**" in result:
+        zone_a = result.split("**")[0]
+        assert "昨天的事" not in zone_a, "25h-old session must not appear in 24h strip"
+    assert "昨天的事" in result
 
 
 def test_zone_c_covers_five_days(conn):
