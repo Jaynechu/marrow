@@ -234,6 +234,35 @@ def sticker_list_pending() -> list[dict]:
         conn.close()
 
 
+@mcp.tool()
+def alert_resolve(alert_id: int) -> dict:
+    """Resolve an alert by id. Use when sessionstart shows unresolved alerts.
+    Auto-refreshes dashboard and restarts watcher if code changed."""
+    import subprocess
+    result = subprocess.run(
+        ["mw", "resolve", "alerts", str(alert_id)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return {"ok": False, "error": result.stderr.strip() or "resolve failed"}
+    return {"ok": True, "id": alert_id}
+
+
+@mcp.tool()
+def alert_list() -> list[dict]:
+    """List unresolved alerts."""
+    conn = storage.connect(_DB)
+    try:
+        rows = conn.execute(
+            "SELECT id, severity, message, source, created_at"
+            " FROM alerts WHERE resolved = 0"
+            " ORDER BY created_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def main() -> None:
     storage.init_db(_DB).close()
     mcp.run()
