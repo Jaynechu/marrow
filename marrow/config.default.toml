@@ -2,7 +2,7 @@
 # Swap the conversation/pipeline provider by editing one chain entry below.
 
 [core]
-timezone = "Australia/Melbourne"
+timezone = "Asia/Shanghai"
 
 [paths]
 # Empty = use defaults under ~/.config/marrow/
