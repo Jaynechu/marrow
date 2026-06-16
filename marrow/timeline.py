@@ -609,7 +609,7 @@ def _render_2472_period_text(items: list[tuple[str, str, str]]) -> str:
     for _ts, text, anchor in items:
         visible = (text or "").strip()
         sep = " · " if parts else ""
-        room = 120 - visible_len - len(sep)
+        room = 150 - visible_len - len(sep)
         if room <= 0:
             if anchor:
                 deferred_anchors.append(anchor)
