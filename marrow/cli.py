@@ -633,6 +633,13 @@ def cmd_ls(args) -> int:
         return 0
 
 
+def cmd_install(args) -> int:
+    from .install import run_install, run_uninstall
+    if args.uninstall:
+        return run_uninstall()
+    return run_install(update=args.update)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="mw")
     common = argparse.ArgumentParser(add_help=False)
@@ -801,6 +808,13 @@ def build_parser() -> argparse.ArgumentParser:
     al_clear = al_sub.add_parser("clear", parents=[common],
                                  help="resolve every unresolved alert")
     al_clear.set_defaults(fn=cmd_alerts_clear)
+
+    ins = sub.add_parser("install", help="Set up marrow globally")
+    ins.add_argument("--update", action="store_true",
+                     help="Re-sync hooks/commands/plists (skip venv/config)")
+    ins.add_argument("--uninstall", action="store_true",
+                     help="Remove all global registrations")
+    ins.set_defaults(fn=cmd_install)
 
     return p
 

@@ -29,6 +29,9 @@ backup/
 # Symlink to ~/.config/marrow/handover.md (personal)
 handover.md
 
+# Decisions log lives at CC-Lab root (covers all projects, not marrow-only)
+DECISIONS.md
+
 # Pre-rewrite originals: local migration reference only, carry personal-info fragments
 archive/
 
@@ -49,3 +52,4 @@ eval-results/
 *.lock
 AGENTS.md
 .playwright-mcp/
+docs/
