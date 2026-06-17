@@ -483,6 +483,15 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
                             " VALUES ('warn','embedding_dim_mismatch',?,?,'storage.py:init_db')",
                             (_fp, _msg))
             conn.execute(_vec_table(dim, lane))
+        # Cascade vec/meta cleanup on event deletion — separate trigger
+        # so it's created after vec tables exist (events_ad only handles FTS).
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS events_ad_vec
+            AFTER DELETE ON events BEGIN
+                DELETE FROM events_vec WHERE rowid = old.id;
+                DELETE FROM events_vec_meta WHERE rowid = old.id;
+            END
+        """)
         # Schema-evolution backfill: a column added after a db already
         # exists is not applied by CREATE IF NOT EXISTS. Idempotent —
         # duplicate-column ALTER is swallowed; add a row per new column.
