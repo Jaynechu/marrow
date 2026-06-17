@@ -42,6 +42,7 @@ _MARROW_HOOKS: dict[str, list[dict]] = {
     ],
     "UserPromptSubmit": [
         {"matcher": "", "command": "{venv} -m marrow.hooks user_prompt_submit"},
+        {"matcher": "", "command": "{venv} -m marrow.hooks turn_inject"},
     ],
 }
 
