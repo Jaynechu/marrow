@@ -400,7 +400,8 @@ def _query_diary_range(conn: sqlite3.Connection,
     result: dict[str, str] = {}
     for r in rows:
         tl = (r["tl_line"] or "").strip()
-        if tl and not _RENDERED_DAY_RE.match(tl):
+        tl_bare = tl.strip("*").strip()
+        if tl_bare and not _RENDERED_DAY_RE.match(tl_bare):
             result[r["date"]] = tl
             continue
         # Fallback: truncated diary text
