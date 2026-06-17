@@ -240,7 +240,7 @@ def alert_resolve(alert_id: int) -> dict:
     Auto-refreshes dashboard and restarts watcher if code changed."""
     import subprocess
     result = subprocess.run(
-        ["mw", "resolve", "alerts", str(alert_id)],
+        ["mw", "resolve", str(alert_id)],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
