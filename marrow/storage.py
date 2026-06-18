@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS stickers (
   desc TEXT,
   source TEXT NOT NULL DEFAULT 'finder',
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  last_used TEXT
+  last_used TEXT,
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS pit (
   id INTEGER PRIMARY KEY,
@@ -529,6 +530,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v19(conn)
         _migrate_to_v20(conn)
         _migrate_to_v21(conn)
+        _migrate_to_v22(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -957,6 +959,23 @@ def _migrate_to_v21(conn: sqlite3.Connection) -> None:
         "UPDATE sessions SET created_at = last_active WHERE created_at IS NULL"
     )
     conn.execute("PRAGMA user_version=21")
+
+
+def _migrate_to_v22(conn: sqlite3.Connection) -> None:
+    """v22: stickers.updated_at for sync-loop detection of desc edits.
+    Idempotent via user_version + column check.
+    Backfills existing rows with created_at as best approximation.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 22:
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(stickers)")}
+    if "updated_at" not in cols:
+        conn.execute("ALTER TABLE stickers ADD COLUMN updated_at TEXT")
+    conn.execute(
+        "UPDATE stickers SET updated_at = created_at WHERE updated_at IS NULL"
+    )
+    conn.execute("PRAGMA user_version=22")
 
 
 def _migrate_to_v14(conn: sqlite3.Connection) -> None:

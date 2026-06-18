@@ -71,7 +71,7 @@ _SUBPAGE_DB_SOURCES: dict[str, list[tuple[str, str]]] = {
     "milestone": [("milestones", "updated_at")],
     "diary":     [("diary", "updated_at")],
     "memes":     [("memes", "created_at")],
-    "stickers":  [("stickers", "created_at")],
+    "stickers":  [("stickers", "updated_at")],
     "wallet":    [],  # no table yet
     "study":     [("tasks", "updated_at")],
     "projects":  [("tasks", "updated_at")],

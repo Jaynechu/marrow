@@ -98,8 +98,8 @@ def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> di
     thumb_dir.mkdir(parents=True, exist_ok=True)
 
     cursor = conn.execute(
-        "INSERT INTO stickers(path, sha256, phash, desc, source)"
-        " VALUES(?,?,?,?,?)",
+        "INSERT INTO stickers(path, sha256, phash, desc, source, updated_at)"
+        " VALUES(?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
         ("_pending", digest, phash, desc, source),
     )
     stk_id = cursor.lastrowid
@@ -178,7 +178,12 @@ def update_sticker(conn, sticker_id: int, desc: str) -> dict:
     row = conn.execute("SELECT id FROM stickers WHERE id = ?", (sticker_id,)).fetchone()
     if not row:
         return {"ok": False, "error": "not_found"}
-    conn.execute("UPDATE stickers SET desc = ? WHERE id = ?", (desc, sticker_id))
+    conn.execute(
+        "UPDATE stickers SET desc = ?,"
+        " updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+        " WHERE id = ?",
+        (desc, sticker_id),
+    )
     conn.commit()
     if not _patch_md_line(sticker_id, desc):
         _insert_md_line(sticker_id, desc)
@@ -260,8 +265,8 @@ def sweep_file_orphans(conn) -> list[int]:
             continue
         sha = sha256_file(str(f))
         conn.execute(
-            "INSERT INTO stickers(id, path, sha256, phash, desc, source, created_at)"
-            " VALUES(?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+            "INSERT INTO stickers(id, path, sha256, phash, desc, source, created_at, updated_at)"
+            " VALUES(?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%SZ','now'),strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
             (stk_id, str(f), sha, ph, "(pending)", "finder"),
         )
         registered.append(stk_id)
