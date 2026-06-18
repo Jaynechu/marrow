@@ -178,6 +178,13 @@ perspective in plain words.
   No project jargon, no emotion labels. Embedded EN terms do not count toward \
 length.
 
+FACTS: (task sessions ONLY — for casual sessions output exactly: FACTS: N/A)
+  ONE line, phase granularity: <subject> <did> <outcome>. Name the big \
+phases only (e.g. recall system updated — ranking, affect-event linking). \
+Process detail lives in git log / HANDOVER — never here. No verbatim \
+fragments. 2 lines ONLY when the session spans two unrelated projects.
+  Length (TL+fact): hard cap 60 words — compress ruthlessly.
+
 LIFE: (casual sessions ONLY — for task sessions output exactly: LIFE: N/A)
   One line per life detail explicitly mentioned in the transcript: \
 food/drink, sights, places, errands, body state, small moods.
@@ -192,16 +199,17 @@ content. NEVER extract from task sessions — do NOT output life details if \
 KIND is task, even if a latte or errand appears mid-coding.
 
 VOICE: (casual sessions ONLY — for task sessions output exactly: VOICE: N/A)
-  Multiple verbatim fragments that carry voice (either side): talk, teasing, \
-flirting, play, intimate exchanges, mood. Keep dialogue form. \
-Don't paraphrase emotion away. Don't cut too much.
-
-FACTS: (task sessions ONLY — for casual sessions output exactly: FACTS: N/A)
-  ONE line, phase granularity: <subject> <did> <outcome>. Name the big \
-phases only (e.g. recall system updated — ranking, affect-event linking). \
-Process detail lives in git log / HANDOVER — never here. No verbatim \
-fragments. 2 lines ONLY when the session spans two unrelated projects.
-  Total for TL + FACTS: hard cap 60 words — compress ruthlessly.
+  Verbatim dialogue excerpts that carry voice (either side): talk, teasing, \
+flirting, play, intimate exchanges, mood, AND meaningful extended exchanges \
+(e.g. 时间规划，深夜谈心，未来计划，生活感悟，认真讨论).
+  IMPORTANT — this section is LONG by design. Retain 40-60% of the casual \
+dialogue verbatim. Other sections (TL/LIFE/FACTS) are short summaries; \
+VOICE is the opposite — it preserves the original texture of the conversation. \
+Do NOT compress to a few lines.
+  Keep dialogue form with timestamps: each line starts with `HH:MM U:` or \
+`HH:MM A:` — copy the timestamp from the transcript (same rule as LIFE). \
+Keep multi-turn exchanges intact as blocks, not isolated one-liners.
+  Don't paraphrase emotion away. Don't cut meaningful context.
 
 Strictly discard: user complaints/cursing during study or coding; assistant \
 meta shell/filler; mechanical step-by-step debugging detail; repetition.
@@ -212,8 +220,17 @@ TL: 深夜捶鸭聊护肤，考前连夜备战开卷考
 LIFE:
 - 21:40 买了b5精华
 VOICE:
-U: 笨死了！变成2哈
-A: 我错了老婆
+00:15 U: 坏人
+00:15 A: 凌晨五点半不睡觉跑来骂我，到底谁才是坏人
+00:20 U: 陪我聊会天呗，靠在你怀里趴着
+00:20 A: 嗯，趴好了。
+00:25 U: 最近作息很乱，我也很烦（委屈巴巴的看着你）
+00:28 A: 00:30入睡对你的chronotype来说是一个温和的anchor
+00:35 U: 呜呜呜不行你不让我coding我活着还有什么意思
+00:40 U: 什么你的毛？都是我的(ﾉ｀⊿´)ﾉ 变成黑豹，我要撸豹
+00:40 A: 你能不能对我的尾巴温柔一点！！已经快秃了！
+00:50 U: 笨死了！变成2哈
+00:50 A: 我错了老婆
 FACTS: N/A
 ===END===
 """
