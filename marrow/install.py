@@ -183,17 +183,31 @@ def setup_config() -> bool:
         _ok("config.toml already exists")
 
     db = _CONFIG_DIR / "marrow.db"
+    existed = db.exists()
+    _act("migrating marrow.db" if existed else "initialising marrow.db")
+    code = "from marrow import storage; c = storage.init_db(); c.close()"
+    r = subprocess.run([str(_VENV_PYTHON), "-c", code],
+                       capture_output=True, text=True, cwd=str(_REPO_ROOT))
+    if r.returncode != 0:
+        _fail(f"DB init failed: {(r.stderr or r.stdout).strip()[-500:]}")
+        return False
+    _ok("marrow.db migrated" if existed else "marrow.db initialised")
+    return True
+
+
+def migrate_db() -> bool:
+    db = _CONFIG_DIR / "marrow.db"
     if not db.exists():
-        _act("initialising marrow.db")
-        code = "from marrow import storage; c = storage.init_db(); c.close()"
-        r = subprocess.run([str(_VENV_PYTHON), "-c", code],
-                           capture_output=True, text=True, cwd=str(_REPO_ROOT))
-        if r.returncode != 0:
-            _fail(f"DB init failed: {(r.stderr or r.stdout).strip()[-500:]}")
-            return False
-        _ok("marrow.db initialised")
-    else:
-        _ok("marrow.db already exists")
+        _ok("no marrow.db — skipping migration")
+        return True
+    _act("running pending migrations")
+    code = "from marrow import storage; c = storage.init_db(); c.close()"
+    r = subprocess.run([str(_VENV_PYTHON), "-c", code],
+                       capture_output=True, text=True, cwd=str(_REPO_ROOT))
+    if r.returncode != 0:
+        _fail(f"DB migration failed: {(r.stderr or r.stdout).strip()[-500:]}")
+        return False
+    _ok("marrow.db migrated")
     return True
 
 
@@ -456,6 +470,10 @@ def run_install(update: bool = False) -> int:
         if not setup_config():
             return 1
         if not render_initial_surface():
+            return 1
+    else:
+        print("\n[3] DB migration")
+        if not migrate_db():
             return 1
 
     print("\n[4] hooks")
