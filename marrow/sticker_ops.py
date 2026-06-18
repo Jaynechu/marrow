@@ -133,47 +133,6 @@ def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> di
     return {"duplicate": False, "id": stk_id, "path": str(new_path), "desc": desc}
 
 
-def _stickers_md_path() -> Path:
-    from . import config
-    return Path(config.db_pages_path()) / "stickers.md"
-
-
-def _insert_md_line(sticker_id: int, desc: str) -> bool:
-    md = _stickers_md_path()
-    if not md.exists():
-        return False
-    anchor = f"<!-- id:{sticker_id} -->"
-    new_line = f"- stk_{sticker_id:03d} {desc} {anchor}"
-    lines = md.read_text().splitlines()
-    insert_idx = None
-    for i, line in enumerate(lines):
-        m = re.search(r"<!-- id:(\d+) -->", line)
-        if m and int(m.group(1)) > sticker_id:
-            insert_idx = i
-            break
-    if insert_idx is None:
-        end = next((i for i, l in enumerate(lines) if "marrow:stickers:end" in l), len(lines))
-        insert_idx = end
-    lines.insert(insert_idx, new_line)
-    md.write_text("\n".join(lines) + "\n")
-    return True
-
-
-def _patch_md_line(sticker_id: int, desc: str) -> bool:
-    md = _stickers_md_path()
-    if not md.exists():
-        return False
-    anchor = f"<!-- id:{sticker_id} -->"
-    pattern = re.compile(
-        rf"^(- stk_\d+\s+).+?(\s*{re.escape(anchor)})$", re.MULTILINE
-    )
-    text = md.read_text()
-    new_text, n = pattern.subn(rf"\g<1>{desc} \2", text)
-    if n:
-        md.write_text(new_text)
-    return n > 0
-
-
 def update_sticker(conn, sticker_id: int, desc: str) -> dict:
     row = conn.execute("SELECT id FROM stickers WHERE id = ?", (sticker_id,)).fetchone()
     if not row:
@@ -185,23 +144,7 @@ def update_sticker(conn, sticker_id: int, desc: str) -> dict:
         (desc, sticker_id),
     )
     conn.commit()
-    if not _patch_md_line(sticker_id, desc):
-        _insert_md_line(sticker_id, desc)
     return {"ok": True, "id": sticker_id, "desc": desc}
-
-
-def _remove_md_line(sticker_id: int) -> bool:
-    md = _stickers_md_path()
-    if not md.exists():
-        return False
-    anchor = f"<!-- id:{sticker_id} -->"
-    text = md.read_text()
-    lines = text.splitlines(keepends=True)
-    new_lines = [l for l in lines if anchor not in l]
-    if len(new_lines) < len(lines):
-        md.write_text("".join(new_lines))
-        return True
-    return False
 
 
 def delete_sticker(conn, sticker_id: int) -> dict:
@@ -217,24 +160,30 @@ def delete_sticker(conn, sticker_id: int) -> dict:
     thumb = p.parent / "_thumb" / (p.stem + ".webp")
     if thumb.exists():
         thumb.unlink()
-    _remove_md_line(sticker_id)
     return {"ok": True, "id": sticker_id, "deleted_path": path}
 
 
 def sweep_orphans(conn) -> list[int]:
-    """Remove DB+md entries whose sticker file no longer exists on disk."""
+    """Remove DB entries whose sticker file no longer exists on disk."""
     rows = conn.execute("SELECT id, path FROM stickers").fetchall()
     removed = []
     for r in rows:
         if not Path(r["path"]).exists():
             conn.execute("DELETE FROM stickers WHERE id = ?", (r["id"],))
-            _remove_md_line(r["id"])
             thumb = Path(r["path"]).parent / "_thumb" / (Path(r["path"]).stem + ".webp")
             if thumb.exists():
                 thumb.unlink()
             removed.append(r["id"])
     if removed:
         conn.commit()
+        from . import config as _config
+        from .subpages import build_all_configs, write_subpage
+        folder = _config.db_pages_path()
+        state_dir = _config.db_pages_state_path()
+        cfgs = build_all_configs(conn, folder=folder, state_dir=state_dir)
+        stickers_cfg = next((c for c in cfgs if c.key == "stickers"), None)
+        if stickers_cfg:
+            write_subpage(stickers_cfg, conn)
     return removed
 
 

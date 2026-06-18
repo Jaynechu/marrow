@@ -179,13 +179,27 @@ def sticker_pick(sticker_id: int) -> dict:
         conn.close()
 
 
+def _write_stickers_subpage(conn) -> None:
+    """Render stickers.md immediately after a DB write."""
+    from .subpages import build_all_configs, write_subpage
+    folder = config.db_pages_path()
+    state_dir = config.db_pages_state_path()
+    cfgs = build_all_configs(conn, folder=folder, state_dir=state_dir)
+    stickers_cfg = next((c for c in cfgs if c.key == "stickers"), None)
+    if stickers_cfg:
+        write_subpage(stickers_cfg, conn)
+
+
 @mcp.tool()
 def sticker_ingest(image_path: str, desc: str, source: str = "wechat") -> dict:
-    """Ingest a new sticker into the catalog. Copies file, deduplicates by SHA256 + perceptual hash, generates thumbnail, writes DB. Returns the new sticker info or duplicate notice."""
+    """Ingest a new sticker image. Deduplicates by content hash, generates thumbnail, writes to DB and renders to stickers.md."""
     conn = storage.connect(_DB)
     try:
         from .sticker_ops import ingest_sticker
-        return ingest_sticker(conn, image_path, desc, source)
+        result = ingest_sticker(conn, image_path, desc, source)
+        if not result.get("duplicate"):
+            _write_stickers_subpage(conn)
+        return result
     except Exception as exc:
         from . import repo
         repo.add_alert("warn", "sticker_ingest",
@@ -199,22 +213,28 @@ def sticker_ingest(image_path: str, desc: str, source: str = "wechat") -> dict:
 
 @mcp.tool()
 def sticker_update(sticker_id: int, desc: str) -> dict:
-    """Update a sticker's description."""
+    """Update a sticker's description. Writes DB and patches stickers.md immediately."""
     conn = storage.connect(_DB)
     try:
         from .sticker_ops import update_sticker
-        return update_sticker(conn, sticker_id, desc)
+        result = update_sticker(conn, sticker_id, desc)
+        if result.get("ok"):
+            _write_stickers_subpage(conn)
+        return result
     finally:
         conn.close()
 
 
 @mcp.tool()
 def sticker_delete(sticker_id: int) -> dict:
-    """Delete a sticker from the catalog. Removes file, thumbnail, and DB row."""
+    """Delete a sticker. Removes file, thumbnail, DB row, and updates stickers.md."""
     conn = storage.connect(_DB)
     try:
         from .sticker_ops import delete_sticker
-        return delete_sticker(conn, sticker_id)
+        result = delete_sticker(conn, sticker_id)
+        if result.get("ok"):
+            _write_stickers_subpage(conn)
+        return result
     finally:
         conn.close()
 
