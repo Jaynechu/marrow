@@ -10,7 +10,8 @@ Input: list of pending stickers (id, path) from caller.
 
 Do:
 - For each sticker: Read the image file at path (Read tool supports images).
-- Write desc in format: `emotion/scene | image text | one-line visual` (CN preferred, each field optional).
+- Write desc in format: `emotion/scene | image text | one-line visual` (each field optional).
+- Language: Chinese by default. Use English ONLY when the sticker's text is in English.
 - Call mcp__marrow__sticker_update(sticker_id=<id>, desc="<desc>") to persist. This updates DB + markdown atomically.
 - Skip missing/unreadable files, note in summary.
 

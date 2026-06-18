@@ -76,15 +76,15 @@ def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> di
     src = Path(src_path).expanduser()
     digest = sha256_file(str(src))
     row = conn.execute(
-        "SELECT id FROM stickers WHERE sha256 = ? LIMIT 1", (digest,)
+        "SELECT id, path FROM stickers WHERE sha256 = ? LIMIT 1", (digest,)
     ).fetchone()
     if row:
-        return {"duplicate": True, "existing_id": row["id"]}
+        return {"duplicate": True, "existing_id": row["id"], "path": row["path"]}
 
     phash = phash_file(str(src))
     if phash:
         rows = conn.execute(
-            "SELECT id, phash FROM stickers WHERE phash IS NOT NULL"
+            "SELECT id, phash, path FROM stickers WHERE phash IS NOT NULL"
         ).fetchall()
         for existing in rows:
             dist = _hamming(phash, existing["phash"])
@@ -93,6 +93,7 @@ def ingest_sticker(conn, src_path: str, desc: str, source: str = "wechat") -> di
                     "duplicate": True,
                     "existing_id": existing["id"],
                     "near_dup": True,
+                    "path": existing["path"],
                 }
 
     stickers_dir = _resolve_stickers_dir()
@@ -180,14 +181,29 @@ def sweep_orphans(conn) -> list[int]:
     if removed:
         conn.commit()
         from . import config as _config
-        from .subpages import build_all_configs, write_subpage
-        folder = _config.db_pages_path()
-        state_dir = _config.db_pages_state_path()
-        cfgs = build_all_configs(conn, folder=folder, state_dir=state_dir)
-        stickers_cfg = next((c for c in cfgs if c.key == "stickers"), None)
-        if stickers_cfg:
-            write_subpage(stickers_cfg, conn)
+        _purge_md_lines(_config.db_pages_path(), removed)
     return removed
+
+
+def _purge_md_lines(pages_root: str, ids: list[int]) -> None:
+    """Remove anchored lines for given ids directly from stickers.md.
+
+    The inserter never deletes md content (by design), so sweep_orphans
+    must strip orphan lines itself rather than relying on write_subpage.
+    """
+    md = Path(pages_root) / "stickers.md"
+    if not md.exists():
+        return
+    import re as _re
+    text = md.read_text(encoding="utf-8")
+    id_set = set(ids)
+    new_lines = []
+    for line in text.splitlines(True):
+        m = _re.search(r"<!-- id:(\d+) -->", line)
+        if m and int(m.group(1)) in id_set:
+            continue
+        new_lines.append(line)
+    md.write_text("".join(new_lines), encoding="utf-8")
 
 
 def sweep_file_orphans(conn) -> list[int]:
