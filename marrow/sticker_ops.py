@@ -15,13 +15,16 @@ _STICKER_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 def _resolve_stickers_dir() -> Path:
     """Return STICKERS_DIR if set (e.g. monkeypatched in tests), otherwise
-    read from config [paths].stickers_dir, falling back to ~/.config/marrow/stickers/."""
+    read from config [paths].stickers_dir, falling back via ny_root."""
     if STICKERS_DIR is not None:
         return Path(STICKERS_DIR).expanduser()
     from . import config as _config
     val = _config.load().get("paths", {}).get("stickers_dir", "")
     if val:
         return Path(val).expanduser()
+    from .paths import paths as _mpaths
+    if _mpaths.ny_root != Path(""):
+        return _mpaths.ny_root / "stickers"
     return Path.home() / ".config" / "marrow" / "stickers"
 
 

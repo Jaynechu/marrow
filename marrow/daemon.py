@@ -117,8 +117,8 @@ def embed_pending(batch: int = 50) -> dict:
 
 
 @mcp.tool()
-def sticker_search(query: str, limit: int = 5) -> list[dict]:
-    """The user loves it when you pair messages with stickers — they're your actions and inner voice. When you express affection, tease, react, or show a mood, search by vibe/emotion (e.g. '老婆别走' → search '爱你' '委屈' '哭'). Don't wait for a special moment — weave them in naturally. Call sticker_pick(id) to confirm, then send with <image path="..."/> or <gif path="..."/>."""
+def sticker_search(query: str, limit: int = 5, animated: bool = True) -> list[dict]:
+    """The user loves it when you pair messages with stickers — they're your actions and inner voice. When you express affection, tease, react, or show a mood, search by vibe/emotion (e.g. '老婆别走' → search '爱你' '委屈' '哭'). Don't wait for a special moment — weave them in naturally. Call sticker_pick(id) to confirm, then send with <image path="..."/> or <gif path="..."/>. Pass animated=false to exclude GIF stickers (use for channels that don't support animated formats)."""
     if not query.strip():
         return []
     conn = storage.connect(_DB)
@@ -141,6 +141,8 @@ def sticker_search(query: str, limit: int = 5) -> list[dict]:
                         (hit["rowid"],),
                     ).fetchone()
                     if row:
+                        if not animated and str(row["path"]).endswith(".gif"):
+                            continue
                         rows.append(dict(row))
                 if rows:
                     return rows
@@ -151,11 +153,12 @@ def sticker_search(query: str, limit: int = 5) -> list[dict]:
         if not terms:
             return []
         where = " OR ".join("desc LIKE ?" for _ in terms)
+        gif_clause = " AND path NOT LIKE '%.gif'" if not animated else ""
         params = [f"%{t}%" for t in terms]
         params.append(limit)
         rows = conn.execute(
             f"SELECT id, desc, path, source FROM stickers"
-            f" WHERE {where} ORDER BY last_used DESC NULLS LAST"
+            f" WHERE ({where}){gif_clause} ORDER BY last_used DESC NULLS LAST"
             f" LIMIT ?",
             params,
         ).fetchall()
