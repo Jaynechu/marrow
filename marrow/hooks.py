@@ -506,6 +506,103 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ── git housekeep ────────────────────────────────────────────────────────────
+
+def _git_housekeep_block(
+    cwd: str | None, current_sid: str | None, conn: sqlite3.Connection
+) -> str | None:
+    """Auto-commit leftover diffs from prior sessions at session start.
+
+    Three parts joined with ' · '. Returns None if nothing to report.
+    Entire function is fail-soft — never blocks session_start.
+    """
+    try:
+        lines: list[str] = []
+
+        # Part A: ~/.claude auto-commit
+        try:
+            claude_dir = Path("~/.claude").expanduser()
+            if (claude_dir / ".git").is_dir():
+                r = subprocess.run(
+                    ["git", "-C", str(claude_dir), "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                dirty = [l for l in r.stdout.splitlines() if l.strip()]
+                if dirty:
+                    subprocess.run(
+                        ["git", "-C", str(claude_dir), "add", "-A"],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    subprocess.run(
+                        ["git", "-C", str(claude_dir), "commit",
+                         "-m", f"auto: session-start housekeep ({len(dirty)} files)"],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    lines.append(f"~/.claude: committed {len(dirty)} files")
+        except Exception:
+            pass
+
+        # Part B: project cwd uncommitted check + conditional commit
+        try:
+            if cwd and Path(cwd).is_dir():
+                r = subprocess.run(
+                    ["git", "-C", cwd, "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                dirty = [l for l in r.stdout.splitlines() if l.strip()]
+                if dirty:
+                    rows = conn.execute(
+                        "SELECT sid FROM sessions "
+                        "WHERE cwd = ? AND sid != ? "
+                        "AND last_active > datetime('now', '-15 minutes')",
+                        (cwd, current_sid or ""),
+                    ).fetchall()
+                    if rows:
+                        lines.append(
+                            f"cwd: {len(dirty)} uncommitted files, parallel session active — skipped"
+                        )
+                    else:
+                        file_names = [l[3:].strip() for l in dirty]
+                        file_list = ", ".join(file_names)
+                        if len(file_list) > 120:
+                            file_list = file_list[:117] + "..."
+                        subprocess.run(
+                            ["git", "-C", cwd, "add", "-A"],
+                            capture_output=True, text=True, timeout=5, check=False,
+                        )
+                        subprocess.run(
+                            ["git", "-C", cwd, "commit",
+                             "-m", f"auto: session-start housekeep ({len(dirty)} files)"],
+                            capture_output=True, text=True, timeout=5, check=False,
+                        )
+                        lines.append(f"cwd: committed {len(dirty)} files ({file_list})")
+        except Exception:
+            pass
+
+        # Part C: stale worktree report
+        try:
+            if cwd and Path(cwd).is_dir():
+                r = subprocess.run(
+                    ["git", "-C", cwd, "worktree", "list", "--porcelain"],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                wt_paths = [
+                    l.split(" ", 1)[1].strip()
+                    for l in r.stdout.splitlines()
+                    if l.startswith("worktree ")
+                ]
+                secondary = wt_paths[1:]  # first = primary, skip
+                if secondary:
+                    names = ", ".join(Path(p).name for p in secondary)
+                    lines.append(f"{len(secondary)} worktree(s): {names}")
+        except Exception:
+            pass
+
+        return " · ".join(lines) if lines else None
+    except Exception:
+        return None
+
+
 # ── affect heartbeat ─────────────────────────────────────────────────────────
 
 def _affect_heartbeat(conn: sqlite3.Connection) -> str | None:
@@ -639,6 +736,10 @@ def session_start() -> int:
         else:
             parts: list[str] = []
 
+            git_hk = _git_housekeep_block(cwd, sid, conn)
+            if git_hk:
+                parts.append(git_hk)
+
             # Heartbeat block goes first so it is never buried.
             heartbeat = _affect_heartbeat(conn)
             if heartbeat:
@@ -677,7 +778,7 @@ def session_start() -> int:
                     (
                         "sessions",
                         "session_start:zones",
-                        f"hb={len(heartbeat or '')} alerts={len(alert_block)}"
+                        f"git={len(git_hk or '')} hb={len(heartbeat or '')} alerts={len(alert_block)}"
                         f" tl={len(backdrop or '')} total={len(ctx)}",
                     ),
                 )
