@@ -101,6 +101,7 @@ def persona() -> dict:
         "assistant_aliases": _strlist("assistant_aliases"),
         "relationship_terms": _strlist("relationship_terms"),
         "anchor_keys": _strlist("anchor_keys"),
+        "meme_exclude_terms": _strlist("meme_exclude_terms"),
     }
 
 

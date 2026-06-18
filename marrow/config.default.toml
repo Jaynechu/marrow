@@ -156,6 +156,8 @@ assistant_aliases = []
 relationship_terms = []
 # Memes keys that never age out. Explicit list, not derived from aliases.
 anchor_keys = []
+# Terms (persona traits, animal forms, body parts) that should never enter memes.
+meme_exclude_terms = []
 
 [subpages]
 # Sub-page render order + visibility (DESIGN L43-65). Known keys:

@@ -93,6 +93,8 @@ Exclude rules
 (e.g. (你以为我是马斯克么，一个 session 跑七遍) — {user_name} was mocking, not coining a meme).
 - Public figure names (马斯克 / 特朗普) do NOT become standalone meme keys \
 unless that person themselves has become a sustained recurring meme.
+- These terms and their variants are not memes — skip entirely: {meme_exclude_terms}
+- Modifier variants of an existing key (笨X / 聪明X) do NOT get separate entries.
 
 Fields
 - key: short term / phrase / name as used.
@@ -133,9 +135,11 @@ def render_daily_cand_prompt() -> str:
     p = config.persona()
     user_terms = " / ".join(config.all_user_terms())
     asst_terms = " / ".join(config.all_assistant_terms())
+    exclude = ", ".join(p.get("meme_exclude_terms", [])) or "(none)"
     return DAILY_CAND_PROMPT.format(
         user_name=p["user_name"],
         assistant_name=p["assistant_name"],
         user_terms=user_terms,
         assistant_terms=asst_terms,
+        meme_exclude_terms=exclude,
     )
