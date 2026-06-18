@@ -212,6 +212,15 @@ def cmd_get_session_created(args) -> int:
     return 0
 
 
+def cmd_get_session_effort(args) -> int:
+    sid = (args.sid or "").strip()
+    if not sid:
+        return _fail("--sid required")
+    row = repo.get_session(sid, db=args.db)
+    print((row or {}).get("effort") or "")
+    return 0
+
+
 def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -856,6 +865,11 @@ def build_parser() -> argparse.ArgumentParser:
                           help="Print created_at for sid")
     gscr.add_argument("--sid", required=True)
     gscr.set_defaults(fn=cmd_get_session_created)
+
+    gse = sub.add_parser("get-session-effort", parents=[common],
+                         help="print the persisted effort for sid (or empty)")
+    gse.add_argument("--sid", required=True)
+    gse.set_defaults(fn=cmd_get_session_effort)
 
     # B6 recent sessions — /resume picker.
     lrs = sub.add_parser("list-recent-sessions", parents=[common],
