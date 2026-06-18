@@ -35,6 +35,31 @@ from .timeutil import utc_iso_to_local_date, utc_iso_to_local_datetime, format_r
 _RECALL_TZ = config.get_tz()
 _RECALL_CUTOFF_H = 6  # 6AM local day boundary (matches digest)
 
+_SESSION_CLAIMS_PATH = Path("~/.config/marrow/session_claims.json").expanduser()
+
+
+def _claim_session_lock(sid: str, channel: str) -> None:
+    """Write cross-channel session claim so bridges detect handoff."""
+    import json as _json, tempfile as _tf
+    p = _SESSION_CLAIMS_PATH
+    try:
+        data = _json.loads(p.read_text("utf-8")) if p.exists() else {}
+    except Exception:
+        data = {}
+    data[sid] = channel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = _tf.mkstemp(dir=str(p.parent), prefix=".slock.")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            _json.dump(data, f)
+        os.replace(tmp, str(p))
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
 
 # ── recall dedup state (per-session, hook-only) ──────────────────────────────
 
@@ -597,6 +622,7 @@ def session_start() -> int:
                         if channel == "cli" else None
                     )
                     repo.upsert_session(sid, cli_model, channel, cwd=cwd, db=db)
+                    _claim_session_lock(sid, channel)
                 except Exception:  # noqa: BLE001 — never block session_start
                     pass
 
