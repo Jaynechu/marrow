@@ -1396,11 +1396,23 @@ def reconcile_alerts(conn: sqlite3.Connection,
         except ValueError:
             continue
 
-    # Safety: zero anchors in the Alerts block means either first-render
-    # against legacy md (no anchors yet) OR user wiped the entire block.
-    # These are indistinguishable, so refuse to mass-resolve. Lumi uses
-    # `mw resolve <id>` for nuke; this path handles the per-row case.
+    has_sentinel = "<!-- alert-block-anchored -->" in block
     if not md_ids:
+        if not has_sentinel:
+            return rpt
+        db_unresolved = {r[0] for r in conn.execute(sql, params).fetchall()}
+        if not db_unresolved:
+            return rpt
+        now_iso = _now()
+        with conn:
+            for aid in db_unresolved:
+                conn.execute(
+                    "UPDATE alerts SET resolved=1, "
+                    "resolved_at=COALESCE(resolved_at, ?) "
+                    "WHERE id=? AND resolved=0",
+                    (now_iso, aid),
+                )
+                rpt.deleted += 1
         return rpt
 
     md_mtime_iso: str | None = None
