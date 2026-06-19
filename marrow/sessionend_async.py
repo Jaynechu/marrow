@@ -132,17 +132,24 @@ def _already_done(conn, sid: str) -> bool:
 
 
 def _has_mm_plus_reset(conn, sid: str) -> bool:
-    """True iff latest non-start sessionend_extract row for sid is reset:mm_plus."""
-    # Skip the 'start' row stamped at line 296; the marker is consumed once
-    # _run_extraction writes a fresh ok,user_count=N row over it.
+    """True if reset:mm_plus exists after the last ok row for this sid.
+
+    Previous implementation only checked the single latest non-start row,
+    which broke when an intermediate fail:no_events row landed between the
+    reset:mm_plus marker and the actual extraction attempt.
+    """
     row = conn.execute(
-        "SELECT summary FROM audit_log"
+        "SELECT 1 FROM audit_log"
         " WHERE action='sessionend_extract' AND target_id=?"
-        " AND summary != ?"
-        " ORDER BY id DESC LIMIT 1",
-        (sid, _SUMMARY_START),
+        " AND summary='reset:mm_plus'"
+        " AND id > COALESCE("
+        "   (SELECT MAX(id) FROM audit_log"
+        "    WHERE action='sessionend_extract' AND target_id=?"
+        "    AND summary LIKE 'ok,%'), 0)"
+        " LIMIT 1",
+        (sid, sid),
     ).fetchone()
-    return bool(row and row["summary"] == "reset:mm_plus")
+    return row is not None
 
 
 def _drop_stale_skip(conn, sid: str, threshold: int) -> bool:
