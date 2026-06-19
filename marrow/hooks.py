@@ -585,8 +585,12 @@ def _git_housekeep_block(
                         (cwd, current_sid or ""),
                     ).fetchall()
                     if rows:
+                        file_names = [l[3:].strip() for l in dirty[:15]]
+                        file_list = ", ".join(file_names)
+                        if len(file_list) > 200:
+                            file_list = file_list[:197] + "..."
                         lines.append(
-                            f"cwd: {len(dirty)} uncommitted files, parallel session active — skipped"
+                            f"cwd: {len(dirty)} uncommitted files, parallel session active — skipped\n  Dirty: {file_list}"
                         )
                     else:
                         file_names = [l[3:].strip() for l in dirty]
@@ -830,7 +834,7 @@ def session_end() -> int:
     tpath = inp.get("transcript_path")
     if not tpath:
         return 0
-    if transcript.is_headless(tpath):
+    if transcript.is_headless(tpath) and os.environ.get("MARROW_BRIDGE") != "1":
         return 0  # spawned claude -p fires SessionEnd too; not our session
 
     cwd = inp.get("cwd") or ""
@@ -1638,14 +1642,15 @@ def pretool_use() -> int:
                     pass
 
         _literal = "[Path] Use paths with /, not bare filenames."
+        _context_parts: list[str] = []
 
         def _emit(text: str) -> None:
-            # PreToolUse JSON output -> additionalContext is the only stdout form
-            # cc injects into assistant context. Plain stdout only hits transcript.
+            _context_parts.append(text)
+            full = "\n".join(_context_parts)
             print(json.dumps({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "additionalContext": text,
+                    "additionalContext": full,
                 }
             }))
 
@@ -1671,6 +1676,21 @@ def pretool_use() -> int:
                     tokens = tokens[:_i]
                     break
             tokens_no_flags = [t for t in tokens if t and not t.startswith("-")]
+            tokens_no_env = [t for t in tokens_no_flags if "=" not in t]
+            if (len(tokens_no_env) >= 2
+                    and tokens_no_env[0] == "codex"
+                    and tokens_no_env[1] == "exec"):
+                try:
+                    _r = subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    _dirty = [l for l in _r.stdout.splitlines() if l.strip()]
+                    if _dirty:
+                        _fl = "\n".join(f"  {l}" for l in _dirty[:20])
+                        _context_parts.append(f"[Codex Guard] {len(_dirty)} uncommitted files in working tree — commit or stash unrelated changes before dispatch:\n{_fl}")
+                except Exception:
+                    pass
             if tokens_no_flags and tokens_no_flags[0] in _PLACEMENT_BASH_OPS:
                 is_placement = True
                 op = tokens_no_flags[0]
