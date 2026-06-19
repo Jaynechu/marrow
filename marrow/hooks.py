@@ -1060,13 +1060,13 @@ def _handle_mm_prefix(inp: dict) -> bool:
             else:  # mm+
                 if target_sid:
                     # Force-clear any done marker so sessionend_async reruns.
-                    with conn:
-                        conn.execute(
-                            "INSERT INTO audit_log"
-                            " (target_table, target_id, action, summary)"
-                            " VALUES ('events', ?, 'sessionend_extract', 'reset:mm_plus')",
-                            (target_sid,),
-                        )
+                    conn.execute(
+                        "INSERT INTO audit_log"
+                        " (target_table, target_id, action, summary)"
+                        " VALUES ('events', ?, 'sessionend_extract', 'reset:mm_plus')",
+                        (target_sid,),
+                    )
+                    conn.commit()
                     # Last-wins: clear any prior mm- flags so session_end runs
                     # archive_events normally and sessionend_async runs the LLM
                     # pipeline. Without this, mm- would permanently win.

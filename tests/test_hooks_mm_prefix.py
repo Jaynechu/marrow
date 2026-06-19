@@ -123,6 +123,66 @@ def test_mm_plus_uuid_spawns_named_sid(env, monkeypatch, capsys):
     assert row is not None
 
 
+def test_mm_plus_reset_survives_context_manager_rollback(env, monkeypatch, capsys):
+    """reset:mm_plus is committed before later flag writers use with conn."""
+    db, tmp_path = env
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    named_sid = "7f1473ca-a8ab-4207-a8a8-57418d3a2c5b"
+    real_connect = storage.connect
+
+    class RollbackFirstContext:
+        def __init__(self, conn):
+            self._conn = conn
+            self._rollback_next = True
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            if self._rollback_next and exc_type is None:
+                self._rollback_next = False
+                self._conn.rollback()
+                return False
+            return self._conn.__exit__(exc_type, exc, tb)
+
+        def execute(self, *args, **kwargs):
+            return self._conn.execute(*args, **kwargs)
+
+        def commit(self):
+            return self._conn.commit()
+
+        def close(self):
+            return self._conn.close()
+
+    monkeypatch.setattr(
+        storage, "connect",
+        lambda path=None: RollbackFirstContext(real_connect(path)),
+    )
+    _stdin(monkeypatch, {"prompt": f"mm+ {named_sid}", "session_id": "other-sid"})
+    popen_calls = []
+    with patch("marrow.hooks.popen_detach_lazy",
+               side_effect=lambda a, log_path: popen_calls.append(a)):
+        rc = hooks.main(["user_prompt_submit"])
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+    assert any("sessionend_async" in " ".join(c) for c in popen_calls)
+
+    conn = real_connect(db)
+    try:
+        row = conn.execute(
+            "SELECT summary FROM audit_log"
+            " WHERE target_id=? AND action='sessionend_extract'"
+            " ORDER BY id DESC LIMIT 1",
+            (named_sid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["summary"] == "reset:mm_plus"
+
+
 # ── mm+ natural language → inject + no spawn ─────────────────────────────────
 
 def test_mm_plus_natural_language_injects_context(env, monkeypatch, capsys):

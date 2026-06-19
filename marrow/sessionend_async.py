@@ -333,16 +333,30 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         cfg = config.load()
+        db = config.db_path()
         global _LOCK_FD
         lock_path = config.DATA_DIR / "sessionend.lock"
         _LOCK_FD = lock_path.open("a+")
         try:
             fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            try:
+                _conn = storage.connect(db)
+                try:
+                    with _conn:
+                        _conn.execute(
+                            "INSERT INTO audit_log"
+                            " (target_table, target_id, action, summary)"
+                            " VALUES ('events', ?, 'sessionend_extract', 'skip:locked')",
+                            (sid,),
+                        )
+                finally:
+                    _conn.close()
+            except Exception:
+                pass
             return 0
 
         threshold = cfg.get("sessionend", {}).get("skip_turn_threshold", 3)
-        db = config.db_path()
         conn = storage.connect(db)
         try:
             if _already_done(conn, sid):

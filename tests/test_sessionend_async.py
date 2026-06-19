@@ -156,6 +156,24 @@ def test_sessionend_async_idempotent(db_env):
     assert len(rows) == 1  # no duplicate row added
 
 
+def test_sessionend_async_writes_skip_locked_when_flock_busy(db_env, monkeypatch):
+    """Lock contention exits 0 but leaves an audit trail for catchup visibility."""
+    db, _ = db_env
+    sid = "locked-sid"
+    from marrow import sessionend_async
+
+    def locked(*_args, **_kwargs):
+        raise BlockingIOError
+
+    monkeypatch.setattr(sessionend_async.fcntl, "flock", locked)
+    rc = sessionend_async.main(["--sid", sid])
+
+    assert rc == 0
+    rows = _audit_rows(db, sid)
+    assert len(rows) == 1
+    assert rows[0]["summary"] == "skip:locked"
+
+
 def test_sessionend_async_clears_stale_skip_when_events_grew(db_env):
     """Silent-death regression: cc fires session_end mid-flush, only a partial
     slice of events on disk → sessionend_async writes skip:short_session. Then
