@@ -838,6 +838,17 @@ def session_end() -> int:
     db = config.db_path()
     conn = storage.connect(db)
     try:
+        # Regen/rewind suppress: bridge wrote this flag before closing cc
+        # so the intermediate SessionEnd skips archive entirely.
+        if early_sid:
+            _suppress = config.DATA_DIR / f".regen_suppress_{early_sid}"
+            if _suppress.exists():
+                try:
+                    _suppress.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return 0
+
         # Worktree-session gate: cc instances launched inside a NON-primary git
         # worktree are task-isolated runs; their dialogue must not enter marrow.
         # Skip archive_events + LLM spawn entirely. Still write lifecycle:end so
