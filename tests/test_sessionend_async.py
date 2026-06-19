@@ -256,7 +256,7 @@ def test_sessionend_async_writes_fail_audit_on_exception(db_env):
     assert rc == 1
     rows = _audit_rows(db, "test-fail")
     assert rows[0]["summary"] == "start"
-    assert rows[-1]["summary"] == "fail:llm=RuntimeError"
+    assert rows[-1]["summary"] == "fail:llm=RuntimeError: boom"
 
 
 def _write_extract_row(db: str, sid: str, summary: str) -> None:

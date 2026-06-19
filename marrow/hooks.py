@@ -897,12 +897,22 @@ def session_end() -> int:
             # (fires on 6h idle, not on every /model swap). Archive runs, marker
             # written, popen suppressed. Catchup honors the bridge_owns marker
             # until a later fail row (manual fire that failed) supersedes it.
+            # Exception: mm+ explicitly requests extraction — honor it.
             if os.environ.get("MARROW_BRIDGE") == "1":
-                try:
-                    _write_manual_skip_flag(conn, sid, _STATUS_SKIP_BRIDGE_OWNS)
-                except Exception:  # noqa: BLE001
-                    pass
-                return 0
+                mm_plus = conn.execute(
+                    "SELECT 1 FROM audit_log WHERE target_id=?"
+                    " AND action='sessionend_extract'"
+                    " AND summary='reset:mm_plus' LIMIT 1",
+                    (sid,),
+                ).fetchone()
+                if not mm_plus:
+                    try:
+                        _write_manual_skip_flag(
+                            conn, sid, _STATUS_SKIP_BRIDGE_OWNS,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return 0
 
             # Idempotent gate: skip popen if events haven't grown since last ok.
             skip_spawn = False
