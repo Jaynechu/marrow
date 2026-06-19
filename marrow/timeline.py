@@ -303,13 +303,13 @@ def _query_open_episodes(conn: sqlite3.Connection,
 
 def _query_digests_range(conn: sqlite3.Connection,
                          from_utc: str, to_utc: str) -> list[dict]:
-    """session_digests whose SESSION (first event) falls in [from, to).
+    """session_digests whose SESSION (last event) falls in [from, to).
 
-    Window/sort key is the session's real start time, NOT digest write time
+    Window/sort key is the session's last event time, NOT digest write time
     (`ts`) — catchup backfills write digests hours or days late. `ts` keeps
     a wide pre-filter so the events JOIN stays cheap; backfill lag beyond
     7d falls out of the timeline anyway. Returned dicts carry `ts` = the
-    session's first event timestamp.
+    session's last event timestamp (closest to session end).
     """
     ts_floor = (
         _dt.datetime.fromisoformat(from_utc.replace("Z", "+00:00"))
@@ -317,13 +317,12 @@ def _query_digests_range(conn: sqlite3.Connection,
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = conn.execute(
         "SELECT sd.sid, sd.date, sd.text, sd.kind, sd.tl_line, sd.life_lines,"
-        " COALESCE(MIN(e.timestamp), sd.ts) AS ts"
+        " COALESCE(MAX(e.timestamp), sd.ts) AS ts"
         " FROM session_digests sd LEFT JOIN events e ON e.session_id = sd.sid"
         " WHERE sd.ts >= ? AND sd.tl_hidden = 0"
         " GROUP BY sd.sid"
-        # NB: bare `ts` in HAVING would bind to column sd.ts, not the alias.
-        " HAVING COALESCE(MIN(e.timestamp), sd.ts) >= ?"
-        " AND COALESCE(MIN(e.timestamp), sd.ts) < ?"
+        " HAVING COALESCE(MAX(e.timestamp), sd.ts) >= ?"
+        " AND COALESCE(MAX(e.timestamp), sd.ts) < ?"
         " ORDER BY 7 ASC",
         (ts_floor, from_utc, to_utc),
     ).fetchall()
@@ -484,8 +483,8 @@ def _render_24h(digests: list[dict],
 
     Casual sessions: each LIFE line is stamped with its own HH:MM (parsed
     from the leading HH:MM prefix written by the model); prefix-less lines
-    (legacy rows) fall back to session start time.  TL line uses session
-    start time.  Task sessions: single TL line at session start time.
+    (legacy rows) fall back to session end time.  TL line uses session
+    end time.  Task sessions: single TL line at session end time.
 
     Sort key and day-divider attribution use the per-line time where
     available so lines spanning 08:00-20:00 land at their own hours.
