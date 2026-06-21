@@ -302,27 +302,26 @@ def _query_open_episodes(conn: sqlite3.Connection,
 
 def _query_digests_range(conn: sqlite3.Connection,
                          from_utc: str, to_utc: str) -> list[dict]:
-    """session_digests whose SESSION start falls in [from, to).
+    """session_digests whose digest date falls in the local date range
+    derived from [from_utc, to_utc).
 
-    Window/sort key is the session's first event time — cross-day sessions
-    belong to the day they started.  `sd.ts` keeps a wide pre-filter so the
-    events JOIN stays cheap; backfill lag beyond 7d falls out anyway.
-    Returned `ts` = first event timestamp (session start).
+    sd.date is the local date assigned at sessionend — immune to cross-day
+    session spans.  MIN(e.timestamp) is kept as sort key only.
     """
-    ts_floor = (
-        _dt.datetime.fromisoformat(from_utc.replace("Z", "+00:00"))
-        - _dt.timedelta(days=7)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    from_dt = _dt.datetime.fromisoformat(from_utc.replace("Z", "+00:00"))
+    to_dt = _dt.datetime.fromisoformat(to_utc.replace("Z", "+00:00"))
+    from_local = from_dt.astimezone(_TZ).date().isoformat()
+    to_local = to_dt.astimezone(_TZ).date().isoformat()
+    ts_floor = (from_dt - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = conn.execute(
         "SELECT sd.sid, sd.date, sd.text, sd.kind, sd.tl_line, sd.life_lines,"
         " COALESCE(MIN(e.timestamp), sd.ts) AS ts"
         " FROM session_digests sd LEFT JOIN events e ON e.session_id = sd.sid"
         " WHERE sd.ts >= ? AND sd.tl_hidden = 0"
         " GROUP BY sd.sid"
-        " HAVING COALESCE(MAX(e.timestamp), sd.ts) >= ?"
-        " AND COALESCE(MAX(e.timestamp), sd.ts) < ?"
+        " HAVING sd.date >= ? AND sd.date < ?"
         " ORDER BY 7 ASC",
-        (ts_floor, from_utc, to_utc),
+        (ts_floor, from_local, to_local),
     ).fetchall()
     return [dict(r) for r in rows]
 
