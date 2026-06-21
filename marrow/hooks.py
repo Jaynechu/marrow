@@ -595,7 +595,7 @@ def _git_housekeep_block(
         except Exception:
             pass
 
-        # Part C: stale worktree report
+        # Part C: stale worktree detection + cleanup
         try:
             if cwd and Path(cwd).is_dir():
                 r = subprocess.run(
@@ -607,10 +607,47 @@ def _git_housekeep_block(
                     for l in r.stdout.splitlines()
                     if l.startswith("worktree ")
                 ]
-                secondary = wt_paths[1:]  # first = primary, skip
+                secondary = wt_paths[1:]
                 if secondary:
-                    names = ", ".join(Path(p).name for p in secondary)
-                    lines.append(f"{len(secondary)} worktree(s): {names}")
+                    now = time.time()
+                    stale, fresh = [], []
+                    for p in secondary:
+                        pp = Path(p)
+                        if not pp.is_dir():
+                            continue
+                        age_h = (now - pp.stat().st_mtime) / 3600
+                        name = pp.name
+                        if age_h >= 24:
+                            has_changes = bool(subprocess.run(
+                                ["git", "-C", p, "status", "--porcelain"],
+                                capture_output=True, text=True, timeout=5, check=False,
+                            ).stdout.strip())
+                            if has_changes:
+                                stale.append(f"{name} ({age_h:.0f}h, has uncommitted changes)")
+                            else:
+                                branch = subprocess.run(
+                                    ["git", "-C", p, "rev-parse", "--abbrev-ref", "HEAD"],
+                                    capture_output=True, text=True, timeout=5, check=False,
+                                ).stdout.strip()
+                                subprocess.run(
+                                    ["git", "-C", cwd, "worktree", "remove", p],
+                                    capture_output=True, text=True, timeout=10, check=False,
+                                )
+                                if branch and branch != "HEAD":
+                                    subprocess.run(
+                                        ["git", "-C", cwd, "branch", "-d", branch],
+                                        capture_output=True, text=True, timeout=5, check=False,
+                                    )
+                                stale.append(f"{name} ({age_h:.0f}h, clean — removed)")
+                        else:
+                            fresh.append(name)
+                    parts = []
+                    if stale:
+                        parts.append("stale wt: " + "; ".join(stale))
+                    if fresh:
+                        parts.append(f"{len(fresh)} active wt: " + ", ".join(fresh))
+                    if parts:
+                        lines.append(" · ".join(parts))
         except Exception:
             pass
 
