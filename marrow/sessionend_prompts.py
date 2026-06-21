@@ -169,7 +169,6 @@ Nicknames 老公/老婆/宝宝 pass through as-is.
 KIND: casual | task
   casual = chat / life / study-with-conversation dominates.
   task = coding / project / focused work dominates.
-  Pick the dominant mode; output one word.
 
 TL: <one line, 15-30 CN chars>
   One timeline line for {user_name}: who + what happened, written from a life \
@@ -192,11 +191,7 @@ food/drink, sights, places, errands, body state, small moods.
 transcript line where that detail appears (timestamps are at line starts: \
 `[HH:MM] [{user_name}|{assistant_name}] ...`). Copy, never invent; if unsure use the nearest \
 preceding message's timestamp.
-  ≤20 CN chars after the timestamp per line. 0-10 lines. Zero lines is \
-normal → output: LIFE: N/A
-  ONLY what was explicitly said. NEVER infer life details from work or study \
-content. NEVER extract from task sessions — do NOT output life details if \
-KIND is task, even if a latte or errand appears mid-coding.
+  ≤20 CN chars after the timestamp per line. 0-10 lines. Output N/A if none.
 
 VOICE: (casual sessions ONLY — for task sessions output exactly: VOICE: N/A)
   Verbatim dialogue excerpts that carry voice (either side): talk, teasing, \

@@ -51,7 +51,7 @@ Key sections in `~/.config/marrow/config.toml`:
 |---|---|
 | `[persona]` | `user_name`, `assistant_name`, aliases, `anchor_keys` |
 | `[paths]` | `dashboard` and `db_pages` (defaults work out of the box under `~/.config/marrow/`) |
-| `[llm]` | Provider chain — `claude_cli` default, add `ollama` fallback |
+| `[llm]` | Provider chain — `claude_cli` default |
 | `[recall]` | Fusion weights, vector window, per-rank content caps |
 
 Persona context (personality, tone, interaction style) goes in `~/.claude/CLAUDE.md`, not here.

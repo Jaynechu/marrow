@@ -139,9 +139,12 @@ class LLMClient:
 
     def _run_claude_stream(self, spec: dict, model: str, prompt: str) -> str:
         timeout = spec.get("timeout_s", 120)
+        effort = spec.get("effort")
         cmd = [_claude_bin(), "--output-format", "stream-json",
                "--input-format", "stream-json", "--verbose",
                "--model", model, *_ISOLATION]
+        if effort:
+            cmd.extend(["--effort", effort])
         msg = json.dumps({"type": "user", "message": {
             "role": "user", "content": prompt}})
         try:
@@ -205,8 +208,11 @@ class LLMClient:
         return result
 
     def _run_claude_p(self, spec: dict, model: str, prompt: str) -> str:
+        effort = spec.get("effort")
         cmd = [_claude_bin(), "-p", prompt, "--model", model,
                *_ISOLATION, "--output-format", "json"]
+        if effort:
+            cmd.extend(["--effort", effort])
         timeout = spec.get("timeout_s", 120)
         try:
             p = subprocess.Popen(
