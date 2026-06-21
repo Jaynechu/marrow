@@ -178,7 +178,7 @@ def test_24h_tone_tag_first_visible_life_line_only():
     assert overflow == []
     assert lines[0].startswith("18:00【")
     assert "<!-- tl:s-tone-life -->" in lines[0]
-    assert lines[1] == "14:00 early line"
+    assert lines[1] == "14:00 early line <!-- tl:s-tone-life -->"
 
 
 def test_24h_cap_reports_overflow_line_indexes():
@@ -668,13 +668,13 @@ def _event(conn, sid: str, ts: str, content: str = "msg") -> None:
 
 
 def test_task_digest_uses_sd_ts_not_session_start(conn):
-    # Session events are old, but task/no-LIFE digests render at sd.ts.
+    # Recently-written catchup digests with older events render in zone B.
     _event(conn, "s-old", _utc(40), "exam talk")
     _digest(conn, "s-old", _utc(1), tl="考完试凯旋")
     result = timeline.render_timeline(conn)
     assert "考完试凯旋" in result
     strip = result.split("**")[0]
-    assert "考完试凯旋" in strip
+    assert "考完试凯旋" not in strip
 
 
 def test_live_digest_stays_in_24h_strip(conn):
@@ -683,6 +683,83 @@ def test_live_digest_stays_in_24h_strip(conn):
     result = timeline.render_timeline(conn)
     assert "深夜闲聊" in result
     assert not [l for l in result.splitlines() if l.startswith("**")]
+
+
+def test_life_lines_resolve_against_event_span_midnight_crossing():
+    lines, overflow = timeline._render_24h(
+        [
+            {
+                "sid": "b2f76aa9",
+                "ts": "2026-06-21T15:48:56Z",
+                "kind": "casual",
+                "tl_line": "fallback",
+                "text": "body",
+                "life_lines": (
+                    "14:22 nap before shift\n"
+                    "14:33 leaving for shift\n"
+                    "02:39 after midnight note\n"
+                    "04:50 late snack\n"
+                    "08:59 morning wrap"
+                ),
+            }
+        ],
+        current_sid=None,
+        from_utc="2026-06-20T00:00:00Z",
+        to_utc="2026-06-22T00:00:00Z",
+        event_spans={
+            "b2f76aa9": ("2026-06-20T01:44:00Z", "2026-06-21T00:37:00Z")
+        },
+    )
+    assert overflow == []
+    assert lines == [
+        "08:59 morning wrap <!-- tl:b2f76aa9 -->",
+        "04:50 late snack <!-- tl:b2f76aa9 -->",
+        "02:39 after midnight note <!-- tl:b2f76aa9 -->",
+        "--- 06-20 ---",
+        "14:33 leaving for shift <!-- tl:b2f76aa9 -->",
+        "14:22 nap before shift <!-- tl:b2f76aa9 -->",
+    ]
+
+
+def test_life_lines_render_reconcile_anchor_on_every_line():
+    lines, overflow = timeline._render_24h(
+        [
+            {
+                "sid": "s-every-line",
+                "ts": _local_iso(2026, 6, 22, 12, 0),
+                "kind": "casual",
+                "tl_line": "fallback",
+                "text": "body",
+                "life_lines": "14:00 first\n18:00 second",
+            }
+        ],
+        current_sid=None,
+        from_utc="2026-06-21T16:30:00Z",
+        to_utc="2026-06-22T16:30:00Z",
+    )
+    assert overflow == []
+    assert all("<!-- tl:s-every-line -->" in line for line in lines)
+
+
+def test_zone_b_includes_session_by_max_event_ts(conn, monkeypatch):
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
+    _freeze_timeline_now(
+        monkeypatch,
+        _dt.datetime(2026, 6, 22, 12, 0, tzinfo=melb),
+    )
+    _event(conn, "b2f76aa9", "2026-06-21T00:37:38Z", "old span end")
+    _digest(
+        conn,
+        "b2f76aa9",
+        "2026-06-21T15:48:56Z",
+        kind="task",
+        tl="zone b summary",
+    )
+    result = timeline.render_timeline(conn)
+    assert "zone b summary" in result
+    zone_a = result.split("**", 1)[0]
+    assert "zone b summary" not in zone_a
 
 
 # ── Bug 1: sort key for LIFE lines uses real UTC, not ts[:10]+HH:MM ──────────
@@ -762,7 +839,7 @@ def test_24h_first_life_line_sorts_by_own_display_time():
     assert lines == [
         "20:10 晚上聊天 <!-- tl:s-early-first -->",
         "12:00 中午任务 <!-- tl:s-midday -->",
-        "04:30 清晨醒来",
+        "04:30 清晨醒来 <!-- tl:s-early-first -->",
         "--- 06-12 ---",
         "22:00 前夜任务 <!-- tl:s-prev-evening -->",
     ]

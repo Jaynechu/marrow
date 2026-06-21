@@ -27,10 +27,12 @@ from __future__ import annotations
 import datetime as _dt
 import re as _re
 import sqlite3
+from zoneinfo import ZoneInfo
 from .top_sections import _tone, _vband, _aband, _wmean
 from . import config as _config
 
 _TZ = _config.get_tz()
+_MELB_TZ = ZoneInfo("Australia/Melbourne")
 # Matches leading HH:MM in a LIFE line (e.g. "21:40 买了b5精华")
 _LIFE_TS_RE = _re.compile(r"^(\d{2}:\d{2})\s+(.*)", _re.DOTALL)
 _CUTOFF_H = 6          # 6AM local day boundary
@@ -316,6 +318,32 @@ def _query_digests_range(conn: sqlite3.Connection,
     return [dict(r) for r in rows]
 
 
+def _query_session_event_span(conn: sqlite3.Connection,
+                              sid: str) -> tuple[str | None, str | None]:
+    row = conn.execute(
+        "SELECT MIN(timestamp) AS t_start, MAX(timestamp) AS t_end"
+        " FROM events WHERE session_id = ?",
+        (sid,),
+    ).fetchone()
+    if row is None:
+        return None, None
+    return row["t_start"], row["t_end"]
+
+
+def _query_session_max_event_ts(conn: sqlite3.Connection,
+                                sids: list[str]) -> dict[str, str]:
+    if not sids:
+        return {}
+    placeholders = ",".join("?" for _ in sids)
+    rows = conn.execute(
+        "SELECT session_id, MAX(timestamp) AS t_end"
+        f" FROM events WHERE session_id IN ({placeholders})"
+        " GROUP BY session_id",
+        sids,
+    ).fetchall()
+    return {r["session_id"]: r["t_end"] for r in rows if r["t_end"]}
+
+
 def _query_affect_range(conn: sqlite3.Connection,
                         from_utc: str, to_utc: str) -> list[dict]:
     """Affect rows in UTC range for tone computation."""
@@ -463,10 +491,17 @@ def _render_24h(digests: list[dict],
                 affect_by_sid: dict[str, list[dict]] | None = None,
                 manual_events: list[dict] | None = None,
                 from_utc: str | None = None,
-                to_utc: str | None = None) -> tuple[list[str], list[dict]]:
+                to_utc: str | None = None,
+                event_spans: dict[str, tuple[str | None, str | None]] | None = None,
+                exclude_full_session_sids: set[str] | None = None
+                ) -> tuple[list[str], list[dict]]:
     """Flat 24h film-strip, newest first, filtered per rendered line."""
     if affect_by_sid is None:
         affect_by_sid = {}
+    if event_spans is None:
+        event_spans = {}
+    if exclude_full_session_sids is None:
+        exclude_full_session_sids = set()
 
     to_dt = _parse_utc(to_utc or _utc_iso(_dt.datetime.now(_dt.timezone.utc)))
     if to_dt is None:
@@ -497,7 +532,9 @@ def _render_24h(digests: list[dict],
             "text": text,
         })
 
-    def _life_line_window_times(item: str, context_ts: str) -> list[str]:
+    def _life_line_window_times(item: str, context_ts: str,
+                                span: tuple[str | None, str | None] | None
+                                ) -> list[str]:
         m = _LIFE_TS_RE.match(item)
         if not m:
             return [context_ts]
@@ -509,12 +546,35 @@ def _render_24h(digests: list[dict],
         context_dt = _parse_utc(context_ts)
         if context_dt is None:
             return []
-        context_date = context_dt.astimezone(_TZ).date()
+        span_start_utc = span_end_utc = None
+        if span is not None:
+            span_start_utc = _parse_utc(span[0] or "")
+            span_end_utc = _parse_utc(span[1] or "")
+        if span_start_utc is None or span_end_utc is None:
+            context_date = context_dt.astimezone(_MELB_TZ).date()
+            span_start = span_end = None
+            dates = (context_date, context_date - _dt.timedelta(days=1))
+        else:
+            span_start = span_start_utc.astimezone(_MELB_TZ)
+            span_end = span_end_utc.astimezone(_MELB_TZ)
+            days = (span_end.date() - span_start.date()).days
+            dates = tuple(span_start.date() + _dt.timedelta(days=i)
+                          for i in range(days + 1))
 
         candidates = [
-            _dt.datetime(d.year, d.month, d.day, h, mi, 0, tzinfo=_TZ)
-            for d in (context_date, context_date - _dt.timedelta(days=1))
+            _dt.datetime(d.year, d.month, d.day, h, mi, 0, tzinfo=_MELB_TZ)
+            for d in dates
         ]
+        if span_start is not None and span_end is not None:
+            in_span = [c for c in candidates if span_start <= c <= span_end]
+            if in_span:
+                candidates = in_span
+            else:
+                candidates = [min(
+                    candidates,
+                    key=lambda c: min(abs((c - span_start).total_seconds()),
+                                      abs((c - span_end).total_seconds())),
+                )]
         for candidate in candidates:
             if from_dt <= candidate.astimezone(_dt.timezone.utc) < to_dt:
                 return [_utc_iso(candidate)]
@@ -531,11 +591,15 @@ def _render_24h(digests: list[dict],
         life_items = [x.strip() for x in life_raw.splitlines() if x.strip()]
 
         if kind == "task" or not life_items:
+            if sd["sid"] in exclude_full_session_sids:
+                continue
             _add_session_line(sd, 0, ts, sess_hhmm, tl)
         else:
             for idx, item in enumerate(life_items):
                 line_hhmm, text = _life_line_hhmm(item, sess_hhmm)
-                for ts_iso in _life_line_window_times(item, ts):
+                for ts_iso in _life_line_window_times(
+                    item, ts, event_spans.get(sd["sid"])
+                ):
                     _add_session_line(sd, idx, ts_iso, line_hhmm, text)
 
     for ev in (manual_events or []):
@@ -574,14 +638,13 @@ def _render_24h(digests: list[dict],
             lines.append(f"{hhmm} {text} <!-- tl:e:{entry['event_id']} -->")
             continue
 
-        anchor = ""
         tone_tag = ""
         if sid not in anchored_sids:
             anchored_sids.add(sid)
-            anchor = f" {_tl_anchor_sid(sid)}"
             sess_affect = affect_by_sid.get(sid, [])
             if sess_affect:
                 tone_tag = f"【{_tone_from_rows(sess_affect)}】"
+        anchor = f" {_tl_anchor_sid(sid)}"
         lines.append(f"{hhmm}{tone_tag} {text}{anchor}")
 
     overflow_by_sid: dict[str, dict] = {}
@@ -727,28 +790,51 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     open_eps = _query_open_episodes(conn, t_7d)
     open_lines = _render_open_episodes(open_eps)
 
-    # ── last 24h ─────────────────────────────────────────────────────────────
-    digests_24h = _query_digests_range(conn, t_24h, now_utc_iso)
-    affect_by_sid_24h = _query_affect_by_session(conn, t_24h, now_utc_iso)
-    manual_24h = _query_manual_events_24h(conn, t_24h, now_utc_iso)
-    lines_24h, overflow_24h = _render_24h(
-        digests_24h, current_sid, affect_by_sid_24h, manual_24h,
-        from_utc=t_24h, to_utc=now_utc_iso,
-    )
-
     # ── zone (b): today-1 overflow + today-2 day summaries ────────────────
     day2 = today_melb - _dt.timedelta(days=2)
     zone_b_from_utc = _day_start_utc(day2).strftime("%Y-%m-%dT%H:%M:%SZ")
     zone_b_from_dt = _parse_utc(zone_b_from_utc)
     t_24h_dt = _parse_utc(t_24h)
+    zone_b_candidates = _query_digests_range(conn, zone_b_from_utc, now_utc_iso)
+    max_event_ts = _query_session_max_event_ts(
+        conn, [d["sid"] for d in zone_b_candidates]
+    )
     digests_2472 = [
-        d for d in _query_digests_range(conn, zone_b_from_utc, t_24h)
+        d for d in zone_b_candidates
         if (
             zone_b_from_dt is not None and t_24h_dt is not None
             and (parsed := _parse_utc(d.get("ts") or "")) is not None
             and zone_b_from_dt <= parsed < t_24h_dt
+        ) or (
+            zone_b_from_dt is not None and t_24h_dt is not None
+            and (event_parsed := _parse_utc(max_event_ts.get(d["sid"], ""))) is not None
+            and zone_b_from_dt <= event_parsed < t_24h_dt
         )
     ]
+    zone_b_event_sids = {
+        d["sid"] for d in digests_2472
+        if (
+            t_24h_dt is not None
+            and (parsed := _parse_utc(d.get("ts") or "")) is not None
+            and parsed >= t_24h_dt
+        )
+    }
+
+    # ── last 24h ─────────────────────────────────────────────────────────────
+    digests_24h = _query_digests_range(conn, t_24h, now_utc_iso)
+    event_spans_24h = {
+        d["sid"]: _query_session_event_span(conn, d["sid"])
+        for d in digests_24h
+    }
+    affect_by_sid_24h = _query_affect_by_session(conn, t_24h, now_utc_iso)
+    manual_24h = _query_manual_events_24h(conn, t_24h, now_utc_iso)
+    lines_24h, overflow_24h = _render_24h(
+        digests_24h, current_sid, affect_by_sid_24h, manual_24h,
+        from_utc=t_24h, to_utc=now_utc_iso,
+        event_spans=event_spans_24h,
+        exclude_full_session_sids=zone_b_event_sids,
+    )
+
     affect_2472 = _query_affect_range(conn, zone_b_from_utc, now_utc_iso)
     manual_2472 = _query_manual_events_range(conn, zone_b_from_utc, t_24h)
     lines_2472 = _render_2472h(
