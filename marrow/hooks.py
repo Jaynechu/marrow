@@ -578,34 +578,20 @@ def _git_housekeep_block(
                 )
                 dirty = [l for l in r.stdout.splitlines() if l.strip()]
                 if dirty:
-                    rows = conn.execute(
-                        "SELECT sid FROM sessions "
-                        "WHERE cwd = ? AND sid != ? AND ended_at IS NULL",
-                        (cwd, current_sid or ""),
-                    ).fetchall()
-                    if rows:
-                        file_names = [l[3:].strip() for l in dirty[:15]]
-                        file_list = ", ".join(file_names)
-                        if len(file_list) > 200:
-                            file_list = file_list[:197] + "..."
-                        lines.append(
-                            f"cwd: {len(dirty)} uncommitted files, parallel session active — skipped\n  Dirty: {file_list}"
-                        )
-                    else:
-                        file_names = [l[3:].strip() for l in dirty]
-                        file_list = ", ".join(file_names)
-                        if len(file_list) > 120:
-                            file_list = file_list[:117] + "..."
-                        subprocess.run(
-                            ["git", "-C", cwd, "add", "-A"],
-                            capture_output=True, text=True, timeout=5, check=False,
-                        )
-                        subprocess.run(
-                            ["git", "-C", cwd, "commit",
-                             "-m", f"auto: session-start housekeep ({len(dirty)} files)"],
-                            capture_output=True, text=True, timeout=5, check=False,
-                        )
-                        lines.append(f"cwd: committed {len(dirty)} files ({file_list})")
+                    file_names = [l[3:].strip() for l in dirty]
+                    file_list = ", ".join(file_names)
+                    if len(file_list) > 120:
+                        file_list = file_list[:117] + "..."
+                    subprocess.run(
+                        ["git", "-C", cwd, "add", "-A"],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    subprocess.run(
+                        ["git", "-C", cwd, "commit",
+                         "-m", f"auto: session-start housekeep ({len(dirty)} files)"],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    lines.append(f"cwd: committed {len(dirty)} files ({file_list})")
         except Exception:
             pass
 
