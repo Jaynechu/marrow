@@ -569,9 +569,35 @@ def _git_housekeep_block(
         except Exception:
             pass
 
-        # Part B: project cwd uncommitted check + conditional commit
+        # Part B: project cwd — commit submodules first, then top-level
         try:
             if cwd and Path(cwd).is_dir():
+                # B1: recurse into submodules and commit dirty ones
+                sm_r = subprocess.run(
+                    ["git", "-C", cwd, "submodule", "foreach", "--quiet",
+                     "echo $sm_path"],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                for sm_path in (l.strip() for l in sm_r.stdout.splitlines() if l.strip()):
+                    sm_abs = str(Path(cwd) / sm_path)
+                    sr = subprocess.run(
+                        ["git", "-C", sm_abs, "status", "--porcelain"],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    sm_dirty = [l for l in sr.stdout.splitlines() if l.strip()]
+                    if sm_dirty:
+                        subprocess.run(
+                            ["git", "-C", sm_abs, "add", "-A"],
+                            capture_output=True, text=True, timeout=5, check=False,
+                        )
+                        subprocess.run(
+                            ["git", "-C", sm_abs, "commit",
+                             "-m", f"auto: session-start housekeep ({len(sm_dirty)} files)"],
+                            capture_output=True, text=True, timeout=5, check=False,
+                        )
+                        lines.append(f"{sm_path}: committed {len(sm_dirty)} files")
+
+                # B2: top-level commit (picks up updated submodule pointers + own files)
                 r = subprocess.run(
                     ["git", "-C", cwd, "status", "--porcelain"],
                     capture_output=True, text=True, timeout=5, check=False,
