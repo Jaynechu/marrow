@@ -300,9 +300,10 @@ def _time_where(col, before, after):
 
 
 @mcp.tool()
-def clear_data(targets: list[str], before: str = "", after: str = "", last: int = 0) -> dict:
-    """Delete events, digests, affect, or timeline data from DB and refresh dashboard.
-    Use when user asks to clear/delete/remove any of these. Targets: 'events' (events+FTS+vec+tombstones), 'digests' (session_digests+FTS), 'affect', 'tl_line' (diary.tl_line only).
+def events_clear(targets: list[str], before: str = "", after: str = "", last: int = 0) -> dict:
+    """Clear/delete events from DB. Also supports digests, affect, tl_line as targets.
+    Use when user asks to delete/clear/remove events, digests, affect, or timeline data.
+    Targets: 'events' (events+FTS+vec+tombstones), 'digests' (session_digests+FTS), 'affect', 'tl_line' (diary.tl_line only).
     Optional filters (mutually exclusive): before/after (ISO datetime or YYYY-MM-DD) for time range; last (int) to delete the N most recent rows.
     Omit all filters to delete everything. Backs up DB first. Clears dashboard md block before DB delete to prevent reconcile write-back."""
     import re, shutil, subprocess
