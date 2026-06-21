@@ -453,14 +453,17 @@ def _query_manual_events_range(conn: sqlite3.Connection,
 
 
 def _query_digestless_sessions(conn: sqlite3.Connection,
-                               from_utc: str, to_utc: str) -> list[dict]:
-    """Sessions that ended in [from, to) but have no digest row yet.
+                               to_utc: str) -> list[dict]:
+    """Sessions that ended in the last 5 minutes but have no digest yet.
 
-    Returns synthetic digest dicts so _render_24h can display them with
-    a fallback title from the sessions table. Covers the race where a
-    new session renders timeline before the previous session's LLM
-    digest is committed.
+    Narrow window covers only the real race condition: a session that
+    JUST ended whose LLM digest hasn't been committed yet.  Older
+    digestless sessions are ignored (likely failed sessionend).
     """
+    cutoff = (
+        _dt.datetime.fromisoformat(to_utc.replace("Z", "+00:00"))
+        - _dt.timedelta(minutes=5)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = conn.execute(
         "SELECT s.sid, s.title, s.ended_at, s.channel"
         " FROM sessions s"
@@ -468,12 +471,12 @@ def _query_digestless_sessions(conn: sqlite3.Connection,
         " WHERE sd.sid IS NULL"
         " AND s.ended_at IS NOT NULL"
         " AND s.ended_at >= ? AND s.ended_at < ?",
-        (from_utc, to_utc),
+        (cutoff, to_utc),
     ).fetchall()
     out: list[dict] = []
     for r in rows:
         title = r["title"] or ""
-        if not title:
+        if not title or title.startswith("["):
             continue
         out.append({
             "sid": r["sid"],
@@ -738,7 +741,7 @@ def render_timeline(conn: sqlite3.Connection) -> str:
 
     # ── last 24h ─────────────────────────────────────────────────────────────
     digests_24h = _query_digests_range(conn, t_24h, now_utc_iso)
-    digestless = _query_digestless_sessions(conn, t_24h, now_utc_iso)
+    digestless = _query_digestless_sessions(conn, now_utc_iso)
     digest_sids = {d["sid"] for d in digests_24h}
     digests_24h += [d for d in digestless if d["sid"] not in digest_sids]
     affect_by_sid_24h = _query_affect_by_session(conn, t_24h, now_utc_iso)
