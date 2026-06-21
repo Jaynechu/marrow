@@ -300,11 +300,11 @@ def _time_where(col, before, after):
 
 
 @mcp.tool()
-def clear_data(targets: list[str], before: str = "", after: str = "") -> dict:
+def clear_data(targets: list[str], before: str = "", after: str = "", last: int = 0) -> dict:
     """Delete events, digests, affect, or timeline data from DB and refresh dashboard.
     Use when user asks to clear/delete/remove any of these. Targets: 'events' (events+FTS+vec+tombstones), 'digests' (session_digests+FTS), 'affect', 'tl_line' (diary.tl_line only).
-    Optional: before/after (ISO datetime or YYYY-MM-DD) to filter by time range. Omit both to delete all.
-    Backs up DB first. Clears dashboard block before DB delete to prevent reconcile write-back."""
+    Optional filters (mutually exclusive): before/after (ISO datetime or YYYY-MM-DD) for time range; last (int) to delete the N most recent rows.
+    Omit all filters to delete everything. Backs up DB first. Clears dashboard md block before DB delete to prevent reconcile write-back."""
     import re, shutil, subprocess
     from datetime import datetime, timezone
 
@@ -313,73 +313,82 @@ def clear_data(targets: list[str], before: str = "", after: str = "") -> dict:
     if bad:
         return {"ok": False, "error": f"unknown targets: {bad}. valid: {valid}"}
 
+    time_filtered = bool(before or after)
+    if time_filtered and last:
+        return {"ok": False, "error": "before/after and last are mutually exclusive"}
+
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     backup = f"/tmp/marrow-backup-purge-{ts}.db"
     shutil.copy2(str(_DB), backup)
 
-    dash = Path.home() / "Desktop" / "NY" / "dashboard.md"
-    if dash.exists():
-        text = dash.read_text(encoding="utf-8")
-        clear_tl = any(t in targets for t in ("events", "digests", "tl_line"))
-        if clear_tl:
-            text = re.sub(
-                r"(<!-- id:dashboard\.timeline -->)\n## Timeline\n.*?(?=\n<!-- id:)",
-                r"\1\n## Timeline\n_none_\n", text, flags=re.DOTALL)
-        if "affect" in targets:
-            text = re.sub(
-                r"(<!-- id:dashboard\.affect -->)\n## Affect\n.*?(?=\n<!-- marrow:top:end)",
-                r"\1\n## Affect\n### Today\n_none_\n### This Week\n_none_\n", text, flags=re.DOTALL)
-        dash.write_text(text, encoding="utf-8")
+    _ts_col = {"events": "timestamp", "digests": "ts", "affect": "created_at", "tl_line": "date"}
+    _table = {"events": "events", "digests": "session_digests", "affect": "affect", "tl_line": "diary"}
+    _pk = {"events": "id", "digests": "rowid", "affect": "id", "tl_line": "date"}
+
+    if not (time_filtered or last):
+        dash = Path.home() / "Desktop" / "NY" / "dashboard.md"
+        if dash.exists():
+            text = dash.read_text(encoding="utf-8")
+            clear_tl = any(t in targets for t in ("events", "digests", "tl_line"))
+            if clear_tl:
+                text = re.sub(
+                    r"(<!-- id:dashboard\.timeline -->)\n## Timeline\n.*?(?=\n<!-- id:)",
+                    r"\1\n## Timeline\n_none_\n", text, flags=re.DOTALL)
+            if "affect" in targets:
+                text = re.sub(
+                    r"(<!-- id:dashboard\.affect -->)\n## Affect\n.*?(?=\n<!-- marrow:top:end)",
+                    r"\1\n## Affect\n### Today\n_none_\n### This Week\n_none_\n", text, flags=re.DOTALL)
+            dash.write_text(text, encoding="utf-8")
 
     conn = storage.connect(_DB)
+    counts = {}
     try:
-        time_filtered = bool(before or after)
+        for tgt in targets:
+            tbl, col, pk = _table[tgt], _ts_col[tgt], _pk[tgt]
 
-        if "events" in targets:
-            if time_filtered:
-                where, params = _time_where("timestamp", before, after)
-                conn.execute("DELETE FROM events" + where, params)
+            if last and tgt == "tl_line":
+                conn.execute(
+                    f"UPDATE diary SET tl_line = NULL WHERE {pk} IN "
+                    f"(SELECT {pk} FROM {tbl} WHERE tl_line IS NOT NULL ORDER BY {col} DESC LIMIT ?)", [last])
+                counts[tgt] = last
+            elif last:
+                conn.execute(
+                    f"DELETE FROM {tbl} WHERE {pk} IN "
+                    f"(SELECT {pk} FROM {tbl} ORDER BY {col} DESC LIMIT ?)", [last])
+                counts[tgt] = last
+            elif time_filtered:
+                where, params = _time_where(col, before, after)
+                if tgt == "tl_line":
+                    conn.execute("UPDATE diary SET tl_line = NULL" + where, params)
+                else:
+                    conn.execute(f"DELETE FROM {tbl}" + where, params)
             else:
-                triggers = conn.execute(
-                    "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='events'"
-                ).fetchall()
-                for t in triggers:
-                    conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
-                conn.execute("DELETE FROM events")
-                conn.execute("DELETE FROM event_tombstones")
-                conn.execute("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
-                conn.execute("DELETE FROM events_vec")
-                for t in triggers:
-                    conn.execute(t["sql"])
-
-        if "digests" in targets:
-            if time_filtered:
-                where, params = _time_where("ts", before, after)
-                conn.execute("DELETE FROM session_digests" + where, params)
-            else:
-                triggers = conn.execute(
-                    "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='session_digests'"
-                ).fetchall()
-                for t in triggers:
-                    conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
-                conn.execute("DELETE FROM session_digests")
-                conn.execute("INSERT INTO session_digests_fts(session_digests_fts) VALUES('rebuild')")
-                for t in triggers:
-                    conn.execute(t["sql"])
-
-        if "affect" in targets:
-            if time_filtered:
-                where, params = _time_where("created_at", before, after)
-                conn.execute("DELETE FROM affect" + where, params)
-            else:
-                conn.execute("DELETE FROM affect")
-
-        if "tl_line" in targets:
-            if time_filtered:
-                where, params = _time_where("date", before, after)
-                conn.execute("UPDATE diary SET tl_line = NULL" + where, params)
-            else:
-                conn.execute("UPDATE diary SET tl_line = NULL")
+                if tgt == "events":
+                    triggers = conn.execute(
+                        "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='events'"
+                    ).fetchall()
+                    for t in triggers:
+                        conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
+                    conn.execute("DELETE FROM events")
+                    conn.execute("DELETE FROM event_tombstones")
+                    conn.execute("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
+                    conn.execute("DELETE FROM events_vec")
+                    for t in triggers:
+                        conn.execute(t["sql"])
+                elif tgt == "digests":
+                    triggers = conn.execute(
+                        "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='session_digests'"
+                    ).fetchall()
+                    for t in triggers:
+                        conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
+                    conn.execute("DELETE FROM session_digests")
+                    conn.execute("INSERT INTO session_digests_fts(session_digests_fts) VALUES('rebuild')")
+                    for t in triggers:
+                        conn.execute(t["sql"])
+                elif tgt == "affect":
+                    conn.execute("DELETE FROM affect")
+                elif tgt == "tl_line":
+                    conn.execute("UPDATE diary SET tl_line = NULL")
 
         conn.commit()
     finally:
@@ -391,6 +400,10 @@ def clear_data(targets: list[str], before: str = "", after: str = "") -> dict:
         result["before"] = before
     if after:
         result["after"] = after
+    if last:
+        result["last"] = last
+    if counts:
+        result["counts"] = counts
     return result
 
 
