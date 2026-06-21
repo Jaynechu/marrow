@@ -572,14 +572,13 @@ def _git_housekeep_block(
         # Part B: project cwd — commit submodules first, then top-level
         try:
             if cwd and Path(cwd).is_dir():
-                # B1: recurse into submodules and commit dirty ones
-                sm_r = subprocess.run(
-                    ["git", "-C", cwd, "submodule", "foreach", "--quiet",
-                     "echo $sm_path"],
-                    capture_output=True, text=True, timeout=5, check=False,
-                )
-                for sm_path in (l.strip() for l in sm_r.stdout.splitlines() if l.strip()):
-                    sm_abs = str(Path(cwd) / sm_path)
+                # B1: recurse into nested git repos and commit dirty ones
+                cwd_p = Path(cwd)
+                nested = [d for d in cwd_p.iterdir()
+                          if d.is_dir() and (d / ".git").exists()]
+                for sm_abs_p in nested:
+                    sm_path = sm_abs_p.name
+                    sm_abs = str(sm_abs_p)
                     sr = subprocess.run(
                         ["git", "-C", sm_abs, "status", "--porcelain"],
                         capture_output=True, text=True, timeout=5, check=False,
