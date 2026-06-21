@@ -319,8 +319,8 @@ def _query_digests_range(conn: sqlite3.Connection,
         " FROM session_digests sd LEFT JOIN events e ON e.session_id = sd.sid"
         " WHERE sd.ts >= ? AND sd.tl_hidden = 0"
         " GROUP BY sd.sid"
-        " HAVING COALESCE(MIN(e.timestamp), sd.ts) >= ?"
-        " AND COALESCE(MIN(e.timestamp), sd.ts) < ?"
+        " HAVING COALESCE(MAX(e.timestamp), sd.ts) >= ?"
+        " AND COALESCE(MAX(e.timestamp), sd.ts) < ?"
         " ORDER BY 7 ASC",
         (ts_floor, from_utc, to_utc),
     ).fetchall()
