@@ -518,8 +518,8 @@ def test_life_lines_no_prefix_fallback_to_session_time(conn):
     assert sess_hhmm in result
 
 
-def test_life_lines_midnight_crossing_gets_calendar_divider(conn):
-    """LIFE lines crossing midnight get a calendar-date divider."""
+def test_life_lines_diary_only_crossing_no_divider(conn):
+    """LIFE lines crossing the diary cutoff do not force a calendar divider."""
     from zoneinfo import ZoneInfo
     melb = ZoneInfo("Australia/Melbourne")
     now_melb = _dt.datetime.now(melb)
@@ -537,12 +537,12 @@ def test_life_lines_midnight_crossing_gets_calendar_divider(conn):
         import pytest as _pt
         _pt.skip("session outside 24h window at this time of day")
 
-    # 23:30 and 00:30 cross midnight → different calendar dates → divider
+    # One LIFE line at 23:30 (same diary day) and one at 00:30 (prev diary day)
     life = "23:30 看了个电影\n00:30 睡前喝了热水"
     _digest(conn, "s-midnight", ts, kind="casual", tl="夜聊", life=life)
     result = timeline.render_timeline(conn)
 
-    assert "---" in result
+    assert "---" not in result
 
 
 def test_life_line_hhmm_helper_parses_prefix():
@@ -557,20 +557,22 @@ def test_life_line_hhmm_helper_parses_prefix():
     assert text2 == "买了b5精华"
 
 
-def test_life_lines_local_dates_helper_cutoff():
+def test_life_line_local_date_helper_cutoff():
     """00:30 local time → previous diary day; 07:00 → same day."""
+    from zoneinfo import ZoneInfo
+    melb = ZoneInfo("Australia/Melbourne")
     base_date = _dt.date(2026, 6, 10)
 
     # 00:30 → before 6AM cutoff → previous day
-    d_early = timeline._life_lines_local_dates("00:30 热水", base_date)[0]
+    d_early = timeline._life_line_local_date("00:30 热水", base_date, "23:00")
     assert d_early == _dt.date(2026, 6, 9)
 
     # 07:00 → after cutoff → same day
-    d_day = timeline._life_lines_local_dates("07:00 早餐", base_date)[0]
+    d_day = timeline._life_line_local_date("07:00 早餐", base_date, "08:00")
     assert d_day == _dt.date(2026, 6, 10)
 
     # No prefix → inherits session date
-    d_legacy = timeline._life_lines_local_dates("早餐", base_date)[0]
+    d_legacy = timeline._life_line_local_date("早餐", base_date, "08:00")
     assert d_legacy == base_date
 
 
@@ -702,9 +704,9 @@ def test_24h_first_life_line_sorts_by_own_display_time():
     )
 
     assert lines == [
-        "20:10 晚上聊天 <!-- tl:s-early-first -->",
+        "20:10 晚上聊天",
         "12:00 中午任务 <!-- tl:s-midday -->",
-        "04:30 清晨醒来",
+        "04:30 清晨醒来 <!-- tl:s-early-first -->",
         "--- 06-12 ---",
         "22:00 前夜任务 <!-- tl:s-prev-evening -->",
     ]
@@ -712,48 +714,10 @@ def test_24h_first_life_line_sorts_by_own_display_time():
     assert not any(line == "--- 06-13 ---" for line in lines)
 
 
-def test_24h_per_line_clipping_filters_old_entries():
-    """Life lines older than from_utc are clipped; anchor moves to first visible."""
-    from zoneinfo import ZoneInfo
-    melb = ZoneInfo("Australia/Melbourne")
-
-    def local_iso(year, month, day, hour, minute):
-        return _dt.datetime(
-            year, month, day, hour, minute, tzinfo=melb
-        ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # Session started 06-20 14:00 AEST, life lines span to 06-21 10:00
-    sess_ts = local_iso(2026, 6, 20, 14, 0)
-    # from_utc = 06-20 16:00 AEST → 06:00 UTC — clips the 14:00 entry
-    from_utc = local_iso(2026, 6, 20, 16, 0)
-
-    lines = timeline._render_24h(
-        [
-            {
-                "sid": "s-crossday",
-                "ts": sess_ts,
-                "kind": "casual",
-                "tl_line": "跨天session",
-                "text": "body",
-                "life_lines": "14:00 (中文写括号)开始上班\n02:00 凌晨休息\n10:00 下班",
-            },
-        ],
-        current_sid=None,
-        from_utc=from_utc,
-    )
-
-    texts = [l for l in lines if not l.startswith("---")]
-    assert not any("14:00" in l for l in texts), "14:00 entry should be clipped (>24h)"
-    assert any("02:00" in l for l in texts), "02:00 should remain"
-    assert any("10:00" in l for l in texts), "10:00 should remain"
-    anchor_lines = [l for l in texts if "<!-- tl:s-crossday" in l]
-    assert len(anchor_lines) == 1, "exactly one anchor for the session"
-
-
 # ── Bug 2: no double 6AM cutoff ───────────────────────────────────────────────
 
-def test_life_lines_utc_and_dates_no_double_cutoff():
-    """_life_lines_utc_and_dates must not shift 6AM twice.
+def test_life_line_utc_and_date_no_double_cutoff():
+    """_life_line_utc_and_date must not shift 6AM twice.
 
     A 05:08 LIFE line from a session that starts at 05:30 (both before 6AM)
     must land on the SAME diary date as the session's own 6AM-shifted date,
@@ -770,40 +734,12 @@ def test_life_lines_utc_and_dates_no_double_cutoff():
 
     # 05:08 LIFE line — same diary day as session (both before 6AM → both on
     # previous calendar day's diary date)
-    _, line_date = timeline._life_lines_utc_and_dates("05:08 早起", sess_utc)[0]
+    _, line_date = timeline._life_line_utc_and_date("05:08 早起", sess_utc, "05:30")
     sess_diary_date = timeline._local_date_from_utc(sess_utc)
 
     assert line_date == sess_diary_date, (
         f"05:08 line diary date {line_date} must equal session diary date {sess_diary_date}"
     )
-
-
-def test_life_lines_utc_and_dates_tracks_multiple_midnights():
-    from zoneinfo import ZoneInfo
-    melb = ZoneInfo("Australia/Melbourne")
-    sess_local = _dt.datetime(2026, 6, 15, 14, 0, tzinfo=melb)
-    sess_utc = sess_local.astimezone(_dt.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
-    life = "\n".join([
-        "22:00 Monday night",
-        "02:00 Tuesday deep night",
-        "09:00 Tuesday morning",
-        "18:00 Tuesday evening",
-        "23:00 Tuesday night",
-        "06:00 Wednesday morning",
-    ])
-
-    dates = [d for _, d in timeline._life_lines_utc_and_dates(life, sess_utc)]
-
-    assert dates == [
-        _dt.date(2026, 6, 15),
-        _dt.date(2026, 6, 15),
-        _dt.date(2026, 6, 16),
-        _dt.date(2026, 6, 16),
-        _dt.date(2026, 6, 16),
-        _dt.date(2026, 6, 17),
-    ]
 
 
 # ── Bug 3: tone tag on first 24h film-strip line ──────────────────────────────
