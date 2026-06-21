@@ -286,11 +286,25 @@ def alert_list() -> list[dict]:
         conn.close()
 
 
+def _time_where(col, before, after):
+    clauses, params = [], []
+    if before:
+        clauses.append(f"{col} < ?")
+        params.append(before)
+    if after:
+        clauses.append(f"{col} >= ?")
+        params.append(after)
+    if clauses:
+        return " WHERE " + " AND ".join(clauses), params
+    return "", []
+
+
 @mcp.tool()
-def purge(targets: list[str]) -> dict:
-    """Purge DB tables and refresh dashboard. Use when user asks to clear/delete events, digests, affect, or timeline data.
-    Targets: 'events' (events+FTS+vec+tombstones), 'digests' (session_digests+FTS), 'affect', 'tl_line' (diary.tl_line only).
-    Backs up DB first. Clears dashboard block before DB to prevent reconcile write-back."""
+def clear_data(targets: list[str], before: str = "", after: str = "") -> dict:
+    """Delete events, digests, affect, or timeline data from DB and refresh dashboard.
+    Use when user asks to clear/delete/remove any of these. Targets: 'events' (events+FTS+vec+tombstones), 'digests' (session_digests+FTS), 'affect', 'tl_line' (diary.tl_line only).
+    Optional: before/after (ISO datetime or YYYY-MM-DD) to filter by time range. Omit both to delete all.
+    Backs up DB first. Clears dashboard block before DB delete to prevent reconcile write-back."""
     import re, shutil, subprocess
     from datetime import datetime, timezone
 
@@ -319,42 +333,65 @@ def purge(targets: list[str]) -> dict:
 
     conn = storage.connect(_DB)
     try:
+        time_filtered = bool(before or after)
+
         if "events" in targets:
-            triggers = conn.execute(
-                "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='events'"
-            ).fetchall()
-            for t in triggers:
-                conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
-            conn.execute("DELETE FROM events")
-            conn.execute("DELETE FROM event_tombstones")
-            conn.execute("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
-            conn.execute("DELETE FROM events_vec")
-            for t in triggers:
-                conn.execute(t["sql"])
+            if time_filtered:
+                where, params = _time_where("timestamp", before, after)
+                conn.execute("DELETE FROM events" + where, params)
+            else:
+                triggers = conn.execute(
+                    "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='events'"
+                ).fetchall()
+                for t in triggers:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
+                conn.execute("DELETE FROM events")
+                conn.execute("DELETE FROM event_tombstones")
+                conn.execute("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
+                conn.execute("DELETE FROM events_vec")
+                for t in triggers:
+                    conn.execute(t["sql"])
 
         if "digests" in targets:
-            triggers = conn.execute(
-                "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='session_digests'"
-            ).fetchall()
-            for t in triggers:
-                conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
-            conn.execute("DELETE FROM session_digests")
-            conn.execute("INSERT INTO session_digests_fts(session_digests_fts) VALUES('rebuild')")
-            for t in triggers:
-                conn.execute(t["sql"])
+            if time_filtered:
+                where, params = _time_where("ts", before, after)
+                conn.execute("DELETE FROM session_digests" + where, params)
+            else:
+                triggers = conn.execute(
+                    "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='session_digests'"
+                ).fetchall()
+                for t in triggers:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
+                conn.execute("DELETE FROM session_digests")
+                conn.execute("INSERT INTO session_digests_fts(session_digests_fts) VALUES('rebuild')")
+                for t in triggers:
+                    conn.execute(t["sql"])
 
         if "affect" in targets:
-            conn.execute("DELETE FROM affect")
+            if time_filtered:
+                where, params = _time_where("created_at", before, after)
+                conn.execute("DELETE FROM affect" + where, params)
+            else:
+                conn.execute("DELETE FROM affect")
 
         if "tl_line" in targets:
-            conn.execute("UPDATE diary SET tl_line = NULL")
+            if time_filtered:
+                where, params = _time_where("date", before, after)
+                conn.execute("UPDATE diary SET tl_line = NULL" + where, params)
+            else:
+                conn.execute("UPDATE diary SET tl_line = NULL")
 
         conn.commit()
     finally:
         conn.close()
 
     subprocess.run(["mw", "refresh", "--all"], capture_output=True, text=True)
-    return {"ok": True, "purged": targets, "backup": backup}
+    result = {"ok": True, "purged": targets, "backup": backup}
+    if before:
+        result["before"] = before
+    if after:
+        result["after"] = after
+    return result
 
 
 def main() -> None:
