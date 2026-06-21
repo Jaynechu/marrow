@@ -203,83 +203,95 @@ def _life_line_hhmm(item: str, session_hhmm: str) -> tuple[str, str]:
     return session_hhmm, item
 
 
-def _life_line_utc_and_date(item: str, session_utc_iso: str,
-                            session_hhmm: str) -> tuple[str, _dt.date]:
-    """Return (utc_iso_sort_key, diary_date) for a LIFE line.
+def _life_lines_utc_and_dates(life_lines: str,
+                              session_utc_iso: str) -> list[tuple[str, _dt.date]]:
+    """Return (utc_iso_sort_key, diary_date) for each LIFE line.
 
     Uses the session's real UTC start to derive the line's calendar datetime
     in Melbourne local time, then applies the single 6AM diary cutoff.
 
-    Midnight-crossing heuristic: if the line's HH:MM is more than 6 hours
-    earlier than the session start's local HH:MM, the line is assumed to be
-    on the NEXT calendar day (e.g. session at 23:50, line at 00:10).
+    Midnight crossings are detected by walking the LIFE lines in order and
+    incrementing the calendar day when HH:MM wraps backward.
     """
-    m = _LIFE_TS_RE.match(item)
-    if not m:
-        # No prefix: inherit session start
-        diary_date = _local_date_from_utc(session_utc_iso)
-        return session_utc_iso, diary_date
-
-    hhmm = m.group(1)
-    try:
-        h, mi = int(hhmm[:2]), int(hhmm[3:5])
-    except ValueError:
-        diary_date = _local_date_from_utc(session_utc_iso)
-        return session_utc_iso, diary_date
-
-    # Parse session start in Melbourne local
     s = (session_utc_iso or "").strip().replace("Z", "+00:00")
     try:
         sess_dt = _dt.datetime.fromisoformat(s)
     except ValueError:
-        diary_date = _local_date_from_utc(session_utc_iso)
-        return session_utc_iso, diary_date
+        session_date = _local_date_from_utc(session_utc_iso)
+        return [(session_utc_iso, session_date)
+                for item in life_lines.splitlines() if item.strip()]
     if sess_dt.tzinfo is None:
         sess_dt = sess_dt.replace(tzinfo=_dt.timezone.utc)
     sess_local = sess_dt.astimezone(_TZ)
 
-    # Build candidate on the session's CALENDAR date.
-    # Cross-day sessions: if the LIFE line's HH:MM is earlier than the
-    # session start's local HH:MM, the line happened after midnight —
-    # advance to the next calendar day.
-    cal_date = sess_local.date()
-    if h < sess_local.hour or (h == sess_local.hour and mi < sess_local.minute):
-        cal_date += _dt.timedelta(days=1)
-    candidate = _dt.datetime(cal_date.year, cal_date.month, cal_date.day,
-                             h, mi, 0, tzinfo=_TZ)
+    results: list[tuple[str, _dt.date]] = []
+    prev_hhmm: tuple[int, int] | None = None
+    day_offset = 0
+    for item in (x.strip() for x in life_lines.splitlines() if x.strip()):
+        m = _LIFE_TS_RE.match(item)
+        if not m:
+            diary_date = _local_date_from_utc(session_utc_iso)
+            results.append((session_utc_iso, diary_date))
+            continue
 
-    if candidate.hour < _CUTOFF_H:
-        diary_date = (candidate - _dt.timedelta(days=1)).date()
-    else:
-        diary_date = candidate.date()
+        hhmm = m.group(1)
+        try:
+            h, mi = int(hhmm[:2]), int(hhmm[3:5])
+        except ValueError:
+            diary_date = _local_date_from_utc(session_utc_iso)
+            results.append((session_utc_iso, diary_date))
+            continue
 
-    utc_sort = candidate.astimezone(_dt.timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ")
-    return utc_sort, diary_date
+        if prev_hhmm is not None and (h, mi) < prev_hhmm:
+            day_offset += 1
+        prev_hhmm = (h, mi)
+
+        cal_date = sess_local.date() + _dt.timedelta(days=day_offset)
+        candidate = _dt.datetime(cal_date.year, cal_date.month, cal_date.day,
+                                 h, mi, 0, tzinfo=_TZ)
+        if candidate.hour < _CUTOFF_H:
+            diary_date = (candidate - _dt.timedelta(days=1)).date()
+        else:
+            diary_date = candidate.date()
+
+        utc_sort = candidate.astimezone(_dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        results.append((utc_sort, diary_date))
+
+    return results
 
 
-def _life_line_local_date(item: str, session_date: _dt.date,
-                          session_hhmm: str) -> _dt.date:
-    """Kept for unit-test compatibility. Derives diary date from session_date
+def _life_lines_local_dates(life_lines: str,
+                            session_date: _dt.date) -> list[_dt.date]:
+    """Derive diary dates from session_date
     treated as the session's LOCAL CALENDAR date (not diary date).
-
-    For new code use _life_line_utc_and_date instead.
     """
-    m = _LIFE_TS_RE.match(item)
-    if not m:
-        return session_date
-    hhmm = m.group(1)
-    try:
-        h, mi = int(hhmm[:2]), int(hhmm[3:5])
-    except ValueError:
-        return session_date
-    # Build candidate on the given calendar date; single 6AM cutoff.
-    candidate = _dt.datetime(
-        session_date.year, session_date.month, session_date.day,
-        h, mi, 0, tzinfo=_TZ)
-    if candidate.hour < _CUTOFF_H:
-        return (candidate - _dt.timedelta(days=1)).date()
-    return candidate.date()
+    results: list[_dt.date] = []
+    prev_hhmm: tuple[int, int] | None = None
+    day_offset = 0
+    for item in (x.strip() for x in life_lines.splitlines() if x.strip()):
+        m = _LIFE_TS_RE.match(item)
+        if not m:
+            results.append(session_date)
+            continue
+        hhmm = m.group(1)
+        try:
+            h, mi = int(hhmm[:2]), int(hhmm[3:5])
+        except ValueError:
+            results.append(session_date)
+            continue
+        if prev_hhmm is not None and (h, mi) < prev_hhmm:
+            day_offset += 1
+        prev_hhmm = (h, mi)
+        cal_date = session_date + _dt.timedelta(days=day_offset)
+        candidate = _dt.datetime(
+            cal_date.year, cal_date.month, cal_date.day,
+            h, mi, 0, tzinfo=_TZ)
+        if candidate.hour < _CUTOFF_H:
+            results.append((candidate - _dt.timedelta(days=1)).date())
+        else:
+            results.append(candidate.date())
+    return results
 
 
 # ── DB queries ───────────────────────────────────────────────────────────────
@@ -519,12 +531,14 @@ def _render_24h(digests: list[dict],
             flat_entries.append((ts, sess_date, rendered, True))
         else:
             # Casual with LIFE items — one rendered line per item.
-            # Use _life_line_utc_and_date for correct UTC sort key and diary
+            # Use per-session LIFE scan for correct UTC sort key and diary
             # date (fixes Bug 1 + Bug 2: no more double 6AM shift or wrong
             # date-prefix on sort key).
-            for idx, item in enumerate(life_items):
+            line_dates = _life_lines_utc_and_dates(life_raw, ts)
+            for idx, (item, (sort_key, line_date)) in enumerate(
+                zip(life_items, line_dates)
+            ):
                 line_hhmm, text = _life_line_hhmm(item, sess_hhmm)
-                sort_key, line_date = _life_line_utc_and_date(item, ts, sess_hhmm)
                 if idx == 0:
                     # Bug 3: tone tag on first line only
                     rendered = f"{line_hhmm}{tone_tag} {text} {anchor}"
