@@ -452,6 +452,42 @@ def _query_manual_events_range(conn: sqlite3.Connection,
     return [dict(r) for r in rows]
 
 
+def _query_digestless_sessions(conn: sqlite3.Connection,
+                               from_utc: str, to_utc: str) -> list[dict]:
+    """Sessions that ended in [from, to) but have no digest row yet.
+
+    Returns synthetic digest dicts so _render_24h can display them with
+    a fallback title from the sessions table. Covers the race where a
+    new session renders timeline before the previous session's LLM
+    digest is committed.
+    """
+    rows = conn.execute(
+        "SELECT s.sid, s.title, s.ended_at, s.channel"
+        " FROM sessions s"
+        " LEFT JOIN session_digests sd ON s.sid = sd.sid"
+        " WHERE sd.sid IS NULL"
+        " AND s.ended_at IS NOT NULL"
+        " AND s.ended_at >= ? AND s.ended_at < ?",
+        (from_utc, to_utc),
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        title = r["title"] or ""
+        if not title:
+            continue
+        out.append({
+            "sid": r["sid"],
+            "ts": r["ended_at"],
+            "date": "",
+            "text": "",
+            "kind": "task",
+            "tl_line": title,
+            "life_lines": "",
+            "tl_hidden": 0,
+        })
+    return out
+
+
 def _query_current_sid(conn: sqlite3.Connection) -> str | None:
     """Latest in-progress session id (lifecycle:start with no end).
     Used to exclude the current session from timeline."""
@@ -698,6 +734,9 @@ def render_timeline(conn: sqlite3.Connection) -> str:
 
     # ── last 24h ─────────────────────────────────────────────────────────────
     digests_24h = _query_digests_range(conn, t_24h, now_utc_iso)
+    digestless = _query_digestless_sessions(conn, t_24h, now_utc_iso)
+    digest_sids = {d["sid"] for d in digests_24h}
+    digests_24h += [d for d in digestless if d["sid"] not in digest_sids]
     affect_by_sid_24h = _query_affect_by_session(conn, t_24h, now_utc_iso)
     manual_24h = _query_manual_events_24h(conn, t_24h, now_utc_iso)
     lines_24h = _render_24h(digests_24h, current_sid, affect_by_sid_24h, manual_24h,
