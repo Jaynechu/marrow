@@ -417,16 +417,6 @@ def _query_diary_range(conn: sqlite3.Connection,
         tl_bare = tl.strip("*").strip()
         if tl_bare and not _RENDERED_DAY_RE.match(tl_bare):
             result[r["date"]] = tl
-            continue
-        # Fallback: truncated diary text
-        body = (r["content"] or "").strip()
-        body = _re.sub(r"[#*`>]+", "", body)
-        body = _re.sub(r"\s+", " ", body).strip()
-        if not body:
-            continue
-        if len(body) > _TL_FALLBACK_CHARS:
-            body = body[:_TL_FALLBACK_CHARS] + "…"
-        result[r["date"]] = body
     return result
 
 
