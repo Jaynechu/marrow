@@ -347,16 +347,31 @@ def _do_delete(targets, before, after, last):
                     f"(SELECT {pk} FROM {tbl} WHERE tl_line IS NOT NULL ORDER BY {col} DESC LIMIT ?)", [last])
                 counts[tgt] = last
             elif last:
+                if tgt == "events":
+                    sids = [r[0] for r in conn.execute(
+                        f"SELECT DISTINCT session_id FROM events WHERE {pk} IN "
+                        f"(SELECT {pk} FROM events ORDER BY {col} DESC LIMIT ?)", [last]).fetchall()]
                 conn.execute(
                     f"DELETE FROM {tbl} WHERE {pk} IN "
                     f"(SELECT {pk} FROM {tbl} ORDER BY {col} DESC LIMIT ?)", [last])
+                if tgt == "events" and sids:
+                    conn.executemany(
+                        "DELETE FROM audit_log WHERE action='sessionend_extract' AND target_id=?",
+                        [(s,) for s in sids])
                 counts[tgt] = last
             elif time_filtered:
                 where, params = _time_where(col, before, after)
+                if tgt == "events":
+                    sids = [r[0] for r in conn.execute(
+                        "SELECT DISTINCT session_id FROM events" + where, params).fetchall()]
                 if tgt == "tl_line":
                     conn.execute("UPDATE diary SET tl_line = NULL" + where, params)
                 else:
                     conn.execute(f"DELETE FROM {tbl}" + where, params)
+                if tgt == "events" and sids:
+                    conn.executemany(
+                        "DELETE FROM audit_log WHERE action='sessionend_extract' AND target_id=?",
+                        [(s,) for s in sids])
             else:
                 if tgt == "events":
                     triggers = conn.execute(
