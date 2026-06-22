@@ -263,7 +263,7 @@ def write_milestone_cand(conn, raw: str, date: str,
         with conn:
             conn.execute(
                 "INSERT INTO milestones (scope, date, title, description,"
-                " source_hash) VALUES (?, ?, ?, ?, ?)",
+                " source_hash, pinned) VALUES (?, ?, ?, ?, ?, 1)",
                 (scope, m_date, title, desc, source),
             )
         n += 1
