@@ -1074,13 +1074,20 @@ def _looks_like_sid(arg: str) -> bool:
     return bool(_SID_RE.match(arg.strip())) if arg and " " not in arg else False
 
 
+_MM_ACK = {
+    "mm-": "本窗口跳过DB",
+    "mm+": "本窗口加入DB",
+    "mm!": "补跑中",
+    "mm!!": "补跑中",
+}
+
+
 def _inject_silent_ack(prefix: str) -> None:
     """Tell the LLM this prompt is a control signal."""
-    user_name = config.persona()["user_name"]
+    ack = _MM_ACK.get(prefix, prefix)
     ctx = (
         f"## {prefix} control signal\n"
-        f"{user_name} sent `{prefix}` as a marrow control signal, not chat.\n"
-        "The hook already handled it. Reply with a very short acknowledgement."
+        f"Hook handled. Reply with exactly: {ack}"
     )
     json.dump(
         {"hookSpecificOutput": {
@@ -1144,6 +1151,42 @@ def _spawn_sessionend_async(sid: str) -> None:
     )
 
 
+def _classify_skip_reason(conn: sqlite3.Connection, sid: str) -> str:
+    """Return skip reason tag for a session without successful sessionend."""
+    has_start = conn.execute(
+        "SELECT 1 FROM audit_log"
+        " WHERE action='session_lifecycle:start' AND target_id=?"
+        " LIMIT 1",
+        (sid,),
+    ).fetchone()
+    has_end = conn.execute(
+        "SELECT 1 FROM audit_log"
+        " WHERE action='session_lifecycle:end' AND target_id=?"
+        " LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if has_start and not has_end:
+        return "active"
+    block = conn.execute(
+        "SELECT summary FROM audit_log"
+        " WHERE action='session_block' AND target_id=?"
+        " ORDER BY id DESC LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if block and (block["summary"] or "") == "archive":
+        return "mm-"
+    skip = conn.execute(
+        "SELECT 1 FROM audit_log"
+        " WHERE action='sessionend_extract' AND target_id=?"
+        " AND summary LIKE 'skip:short_session%'"
+        " LIMIT 1",
+        (sid,),
+    ).fetchone()
+    if skip:
+        return "short"
+    return "miss"
+
+
 def _unrun_session_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
     rows = conn.execute(
         "WITH known AS ("
@@ -1169,7 +1212,12 @@ def _unrun_session_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict]
         " LIMIT ?",
         (limit,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["reason"] = _classify_skip_reason(conn, d["sid"])
+        result.append(d)
+    return result
 
 
 def _inject_unrun_sessions(rows: list[dict]) -> None:
@@ -1179,9 +1227,11 @@ def _inject_unrun_sessions(rows: list[dict]) -> None:
             sid = r.get("sid") or ""
             title = (r.get("title") or "").strip() or "(untitled)"
             channel = (r.get("channel") or "-").strip() or "-"
+            reason = r.get("reason") or "miss"
             last_active = (r.get("last_active") or "").strip()
             tail = f" {last_active}" if last_active else ""
-            lines.append(f"{i}. [{channel}] {title} {sid}{tail}")
+            lines.append(f"{i}. [{channel}|{reason}] {title} {sid}{tail}")
+        lines.append("Reasons: miss=漏跑 mm-=主动跳过 short=三轮以下 active=进行中")
         lines.append("Use `mm! <sid>` to run one immediately.")
     else:
         lines = ["## mm! sessions without successful sessionend", "No sessions found."]
