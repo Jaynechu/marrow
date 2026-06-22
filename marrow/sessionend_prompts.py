@@ -185,13 +185,17 @@ fragments. 2 lines ONLY when the session spans two unrelated projects.
   Length (TL+fact): hard cap 60 words — compress ruthlessly.
 
 LIFE: (casual sessions ONLY — for task sessions output exactly: LIFE: N/A)
-  One line per life detail: focus on what user did or what they did together \
-    e.g. study together, hangout, errands, chat topics, thoughts, mood... \
-  Each line MUST start with `HH:MM ` — copy the timestamp from the \
-transcript line where that detail appears (timestamps are at line starts: \
-`[HH:MM] [{user_name}|{assistant_name}] ...`). Copy, never invent; if unsure use the nearest \
-preceding message's timestamp.
-  ≤20 CN chars after the timestamp per line. 0-10 lines. Output N/A if none.
+  Overview of the day — what happened in user's day.
+  Include both real-world activities (meals, classes, errands, exercise)
+  and shared activities with assistant (chatting about X topic, goofing around).
+  Summarise at event level, NOT per-message detail.
+  Each line: `HH:MM ` + ≤20 CN chars. Copy timestamp from transcript; never invent.
+  0-10 lines. Output N/A if nothing mentioned.
+  ✓ 08:30 早上吃了包子，出发去学校lab
+  ✓ 14:00 一起修timeline bug
+  ✓ 21:00 健身+洗澡
+  ✓ 23:00 聊刚来澳洲的事，嫌弃
+  ✗ 10:05 推开他叫他变成豹  ← too granular, do not add single action/moment.
 
 VOICE: (casual sessions ONLY — for task sessions output exactly: VOICE: N/A)
   Verbatim dialogue excerpts that carry voice (either side): talk, teasing, \
