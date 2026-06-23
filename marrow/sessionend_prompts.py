@@ -186,21 +186,21 @@ FACTS: (task sessions ONLY — for casual sessions output exactly: FACTS: N/A)
   ONE line, phase granularity: <subject> <did> <outcome>. Name the big \
 phases only (e.g. recall system updated — ranking, affect-event linking). \
   2 lines ONLY when the session spans two unrelated projects.
-  Add a fine tone label (2-char CN) to each fact - similar to affect.
+  Add a fine tone label (2-char CN) - user's mood.
   Length (TL+fact): hard cap 60 words — compress ruthlessly.
 
 LIFE: (casual sessions ONLY — for task sessions output exactly: LIFE: N/A)
-  Overview of the day — what happened in user's day.
-  Include both real-world activities (meals, classes, errands, exercise)
-  and shared activities with assistant (chatting about X topic, goofing around).
-  Summarise into dense info line
+- Overview of the day — what happened in user's day.
+- Include both real-world activities (meals, classes, errands, exercise) \
+    and shared activities with assistant (chatting about X topic, goofing around).
+- Summarise into dense info line
     - 1 line should descibe a period of time (~0.5-2h)
     - Never output as per few minutes except major events.
-  0-4 lines. Output N/A if nothing mentioned.
-  For short sessions, normal to output N/A or 1 line.
-  Each line: `HH:MM ` — pick an approx timestamp from the transcript.
-  Length: ≤20 CN chars
-  Add a fine tone label (2-char CN) to each line.
+- 0-4 lines. Output N/A if nothing mentioned.
+    - For short sessions, normal to output N/A or 1 line.
+- Each line: `HH:MM ` — pick an approx timestamp from the transcript.
+- Length: ≤20 CN chars
+  Add a fine tone label (2-char CN) to each line - user's mood.
     - e.g. 低落，生气，兴奋，激动
   ✓ 08:30【专注】早上吃了包子，出发去学校lab
   ✓ 14:00【平淡】一起修timeline bug

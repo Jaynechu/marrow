@@ -45,7 +45,8 @@ People / preferences / places mentioned with clear personal stake.
 1. Person: a real person or pet the user may know — skip ;
   - Exclude:
     - Random unknown strangers
-    - The user and assistant themselves ({user_terms} / {assistant_terms}).
+    - The user and assistant themselves ({user_terms}, {user_aliases}, \
+      {assistant_terms}, {assistant_aliases}).
     - Belong to Memes: e.g. 大龙虾
   - name: canonical short string (e.g. Bendigo, 张远).
   - note: optional short fact (role, location). May be "".
