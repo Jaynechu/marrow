@@ -164,7 +164,8 @@ no extra commentary.
 Key rules:
 - Language: follow source; mix is fine.
 - Names: assistant = {assistant_terms}, user = {user_terms}. \
-Nicknames 老公/老婆/宝宝 pass through as-is.
+- Perspective: Drop subject/pronouns when context is unambiguous for LIFE and FACT.
+    - If unclear, describe events with nicknames (third person).
 - Strictly discard: 
     1. User complaints/cursing during study or coding
     2. Assistant meta shell/filler
@@ -174,22 +175,6 @@ Nicknames 老公/老婆/宝宝 pass through as-is.
 KIND: casual | task
   casual = chat / life / study-with-conversation dominates.
   task = coding / project / focused work dominates.
-
-TL: <one line, 15-30 CN chars>
-  One timeline line for {user_name}: who + what happened, written from a life \
-perspective in plain words.
-  Good: 深夜和老婆一起更新recall机制 · Bad: 完成Batch 1，Batch 2代码完成
-  No project jargon, no emotion labels. Embedded EN terms do not count toward \
-length.
-
-FACTS: (task sessions ONLY — for casual sessions output exactly: FACTS: N/A)
-  ONE line, phase granularity: <subject> <did> <outcome>. Name the big \
-phases only (e.g. recall system updated — ranking, affect-event linking). \
-  2 lines ONLY when the session spans two unrelated projects.
-  - Length: ≤20 CN chars
-  - Add a fine tone label (2-char CN) - user's mood.
-  - e.g. 14:00【平淡】一起修timeline bug
-
 
 LIFE: (casual sessions ONLY — for task sessions output exactly: LIFE: N/A)
 - Overview of the day — what happened in user's day.
@@ -201,13 +186,22 @@ LIFE: (casual sessions ONLY — for task sessions output exactly: LIFE: N/A)
     - output N/A for 0.
 - Each line: `HH:MM ` — pick an approx timestamp from the transcript.
 - Length: ≤20 CN chars
-  Add a fine tone label (2-char CN) to each line - user's mood.
+  Add a fine tone label (2-char CN) to each line - user's mood/shared atmosphere.
     - e.g. 低落，生气，兴奋，激动
   ✓ 08:30【专注】早上吃了包子，出发去学校lab
-  ✓ 21:00【放松】健身+洗澡
-  ✓ 23:00【温暖】聊刚来澳洲的事，嫌弃阿屿鸭老珠黄
-  ✗ 10:05 推开他叫他变成豹 10:20 叫姐姐揉耳朵  ← 不要把同一场景下的多个单一动作写成多条，\
-    应该合并成一条 e.g. 10:00【愉快】互怼撒娇打闹，阿屿叫姐姐
+  ✓ 21:00【放松】老婆在健身，十点多在洗澡
+  ✓ 23:00【温暖】聊刚来澳洲的事，嫌弃阿屿鸭老珠黄TUT
+  ✗ 10:05 老公变成豹 10:20 让阿屿叫姐姐，揉耳朵  ← 不要把同一场景下的多个单一动作写成多条，\
+    应该合并成一条 e.g. 10:00【愉快】互怼撒娇打闹，阿屿乖乖叫姐姐
+
+FACTS: (task sessions ONLY — for casual sessions output exactly: FACTS: N/A)
+- Overview of the whole session
+- Summarise all tasks into ONE line.
+    - Include subject and outcomes.
+    - exclude all tech details.
+    - Written from a life perspective in plain words.
+    e.g. 14:00【平淡】一起修timeline bug; 深夜一起更新recall机制
+- timestamp, lenth, tone label same as LIFE.
 
 VOICE: (casual sessions ONLY — for task sessions output exactly: VOICE: N/A)
   - Verbatim dialogue excerpts that carry voice
