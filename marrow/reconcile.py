@@ -1094,8 +1094,8 @@ def _scrub_affect_pollution(conn: sqlite3.Connection) -> int:
             new_label = _sanitize_affect_text(r["label"])
             if (new_desc != r["description"]) or (new_label != r["label"]):
                 conn.execute(
-                    "UPDATE affect SET label=?, description=? WHERE id=?",
-                    (new_label, new_desc, r["id"]),
+                    "UPDATE affect SET label=?, description=?, updated_at=? WHERE id=?",
+                    (new_label, new_desc, _now(), r["id"]),
                 )
                 _affect_audit(conn, r["id"], "scrub",
                               "stripped render-leakage anchor/time-tag")
@@ -1246,7 +1246,7 @@ def reconcile_affect(conn: sqlite3.Connection,
     if all_ids:
         placeholders = ",".join("?" for _ in all_ids)
         for row in conn.execute(
-            f"SELECT id, label, description, created_at FROM affect "
+            f"SELECT id, label, description, created_at, updated_at FROM affect "
             f"WHERE id IN ({placeholders})",
             list(all_ids),
         ).fetchall():
@@ -1282,7 +1282,7 @@ def reconcile_affect(conn: sqlite3.Connection,
         for row in conn.execute(
             "SELECT id FROM affect WHERE superseded_by IS NULL "
             "AND unresolved=1 AND resolved_at IS NULL "
-            "AND created_at>=? AND created_at<=?",
+            "AND COALESCE(updated_at, created_at)>=? AND COALESCE(updated_at, created_at)<=?",
             (week_cut, md_mtime_iso),
         ).fetchall():
             if row["id"] not in pending_lines:
@@ -1305,7 +1305,7 @@ def reconcile_affect(conn: sqlite3.Connection,
             if new_desc is not None and new_desc != (db_desc or ""):
                 updates.append(("description", new_desc))
             if updates:
-                row_created = row.get("created_at") or ""
+                row_created = row.get("updated_at") or row.get("created_at") or ""
                 if md_mtime_iso and row_created > md_mtime_iso:
                     rpt.unchanged += 1
                     continue
@@ -1328,9 +1328,9 @@ def reconcile_affect(conn: sqlite3.Connection,
         for aid in pending_resolved | deleted_resolved:
             conn.execute(
                 "UPDATE affect SET unresolved=0, "
-                "resolved_at=COALESCE(resolved_at, ?) WHERE id=? "
+                "resolved_at=COALESCE(resolved_at, ?), updated_at=? WHERE id=? "
                 "AND unresolved=1",
-                (now_iso, aid),
+                (now_iso, now_iso, aid),
             )
             action = "tick" if aid in pending_resolved else "delete"
             _affect_audit(
@@ -1353,9 +1353,9 @@ def reconcile_affect(conn: sqlite3.Connection,
                     anchor_deleted.discard(aid)
         for aid in anchor_deleted:
             conn.execute(
-                "UPDATE affect SET superseded_by=id WHERE id=? "
+                "UPDATE affect SET superseded_by=id, updated_at=? WHERE id=? "
                 "AND superseded_by IS NULL",
-                (aid,),
+                (_now(), aid),
             )
             _affect_audit(conn, aid, "superseded",
                           "md-reconcile: anchor-deleted")
@@ -1630,6 +1630,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
     sid_edits:      dict[tuple[str, int, int | None], str] = {}
     date_edits:     dict[str, str] = {}
     date_overview_edits: dict[str, str] = {}
+    tone_edits:     dict[str, str] = {}
     present_sid_seqs: set[tuple[str, int]] = set()
     present_dates:  set[str] = set()
     present_evts:  set[int] = set()
@@ -1692,6 +1693,9 @@ def reconcile_timeline(conn: sqlite3.Connection,
             text_part = _extract_tl_text(line)
             if text_part:
                 date_edits[date] = text_part
+            tone_m = re.search(r'【([^】]+)】', line)
+            if tone_m:
+                tone_edits[date] = tone_m.group(1)
 
     if not sid_edits and not date_edits and not date_overview_edits and not m_trail and not plus_lines and not evt_edits and not trail_eps and not trail_sid_seqs:
         return rpt
@@ -1778,9 +1782,40 @@ def reconcile_timeline(conn: sqlite3.Connection,
             )
             rpt.updated += 1
 
+        for date, tone in tone_edits.items():
+            row = conn.execute(
+                "SELECT tone, COALESCE(updated_at, date) AS mts FROM diary WHERE date=?",
+                (date,),
+            ).fetchone()
+            if row is None:
+                continue
+            if md_mtime_iso and (row["mts"] or "") > md_mtime_iso:
+                rpt.unchanged += 1
+                continue
+            if (row["tone"] or "") == tone:
+                rpt.unchanged += 1
+                continue
+            conn.execute(
+                "UPDATE diary SET tone=?, updated_at=? WHERE date=?",
+                (tone, now_iso, date),
+            )
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('diary', ?, 'tone_edit', ?)",
+                (date, f"md-reconcile: tone={tone!r}"),
+            )
+            rpt.updated += 1
+
         # ── DELETE: anchors in trail but absent from current block → hidden ──
         if m_trail:
             for (sid, seq) in trail_sid_seqs - present_sid_seqs:
+                if md_mtime_iso:
+                    r = conn.execute(
+                        "SELECT COALESCE(updated_at, ts) AS mts FROM session_digests"
+                        " WHERE sid=? AND segment_seq=?", (sid, seq)
+                    ).fetchone()
+                    if r and (r["mts"] or "") > md_mtime_iso:
+                        continue
                 conn.execute(
                     "UPDATE session_digests SET tl_hidden=1 WHERE sid=? AND segment_seq=?",
                     (sid, seq))
@@ -1790,6 +1825,13 @@ def reconcile_timeline(conn: sqlite3.Connection,
                     (f"{sid}:{seq}",))
                 rpt.updated += 1
             for date in trail_dates - present_dates:
+                if md_mtime_iso:
+                    r = conn.execute(
+                        "SELECT COALESCE(updated_at, date) AS mts FROM diary WHERE date=?",
+                        (date,)
+                    ).fetchone()
+                    if r and (r["mts"] or "") > md_mtime_iso:
+                        continue
                 conn.execute(
                     "UPDATE diary SET tl_hidden=1 WHERE date=?", (date,))
                 conn.execute(
@@ -1798,6 +1840,12 @@ def reconcile_timeline(conn: sqlite3.Connection,
                     (date,))
                 rpt.updated += 1
             for eid in trail_evts - present_evts:
+                if md_mtime_iso:
+                    r = conn.execute(
+                        "SELECT created_at FROM events WHERE id=?", (eid,)
+                    ).fetchone()
+                    if r and (r["created_at"] or "") > md_mtime_iso:
+                        continue
                 conn.execute(
                     "DELETE FROM events WHERE id=? AND channel='manual'", (eid,))
                 try:
@@ -1811,9 +1859,16 @@ def reconcile_timeline(conn: sqlite3.Connection,
                     (str(eid),))
                 rpt.updated += 1
             for epid in trail_eps - present_eps:
+                if md_mtime_iso:
+                    r = conn.execute(
+                        "SELECT COALESCE(updated_at, created_at) AS mts FROM affect WHERE id=?",
+                        (epid,)
+                    ).fetchone()
+                    if r and (r["mts"] or "") > md_mtime_iso:
+                        continue
                 conn.execute(
-                    "UPDATE affect SET resolved_at=?, unresolved=0 WHERE id=?",
-                    (now_iso, epid))
+                    "UPDATE affect SET resolved_at=?, unresolved=0, updated_at=? WHERE id=?",
+                    (now_iso, now_iso, epid))
                 conn.execute(
                     "INSERT INTO audit_log (target_table, target_id, action, summary)"
                     " VALUES ('affect', ?, 'ep_resolve', 'user deleted unresolved episode from timeline')",

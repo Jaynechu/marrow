@@ -1582,10 +1582,11 @@ def recall_fusion(
             if c["fts_hit"]:
                 # FTS keyword hit revives dormant: clear dormant flag
                 conn.execute(
-                    "UPDATE affect SET superseded_by=NULL "
+                    "UPDATE affect SET superseded_by=NULL, updated_at=? "
                     "WHERE event_id=? AND superseded_by IS NULL "
                     "AND importance<=2",
-                    (eid,),
+                    (datetime.datetime.now(datetime.timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"), eid),
                 )
                 # Re-read importance after revive (same row, cleared)
             else:

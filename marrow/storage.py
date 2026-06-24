@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS memes (
   pinned INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'active',
   source_hash TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS stickers (
   id INTEGER PRIMARY KEY,
@@ -162,7 +163,8 @@ CREATE TABLE IF NOT EXISTS affect (
   mention_count INTEGER NOT NULL DEFAULT 0,
   source TEXT,
   superseded_by INTEGER REFERENCES affect(id) ON DELETE SET NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY,
@@ -173,7 +175,8 @@ CREATE TABLE IF NOT EXISTS entities (
   mention_count INTEGER NOT NULL DEFAULT 0,
   source TEXT,
   superseded_by INTEGER REFERENCES entities(id) ON DELETE SET NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS events_vec_meta (
   rowid INTEGER PRIMARY KEY,
@@ -546,6 +549,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v24(conn)
         _migrate_to_v25(conn)
         _migrate_to_v26(conn)
+        _migrate_to_v27(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -1126,6 +1130,19 @@ def _migrate_to_v26(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
     conn.execute("PRAGMA user_version=26")
+
+
+def _migrate_to_v27(conn: sqlite3.Connection) -> None:
+    """v27: updated_at for entities, memes, affect."""
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 27:
+        return
+    for tbl in ("entities", "memes", "affect"):
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN updated_at TEXT")
+        except sqlite3.OperationalError:
+            pass
+    conn.execute("PRAGMA user_version=27")
 
 
 def get_latest_watermark(conn, sid):

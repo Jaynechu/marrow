@@ -193,12 +193,12 @@ def test_reconcile_tl_diary_edit(conn, dash_path):
     )
 
     rpt = reconcile_timeline(conn, dash_path)
-    assert rpt.updated == 0
     assert rpt.unchanged >= 1
     row = conn.execute(
-        "SELECT tl_line FROM diary WHERE date=?", (date,)
+        "SELECT tl_line, tone FROM diary WHERE date=?", (date,)
     ).fetchone()
     assert row["tl_line"] == "原始日记TL"  # unchanged — write-back removed
+    assert row["tone"] == "平淡"  # tone extracted from 【平淡】
 
 
 def test_reconcile_tl_diary_unknown_date(conn, dash_path):

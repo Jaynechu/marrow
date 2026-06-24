@@ -182,8 +182,8 @@ def seg_affect(conn, raw: str, sid: str, date: str) -> int:
                 ts_now = _dt.datetime.now(_dt.timezone.utc).strftime(
                     "%Y-%m-%dT%H:%M:%SZ")
                 conn.execute(
-                    "UPDATE affect SET resolved_at=? WHERE id=?",
-                    (ts_now, reconcile_ref),
+                    "UPDATE affect SET resolved_at=?, updated_at=? WHERE id=?",
+                    (ts_now, ts_now, reconcile_ref),
                 )
             if event_id is not None:
                 conn.execute(
