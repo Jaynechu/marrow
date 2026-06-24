@@ -160,7 +160,39 @@ def test_tasks_archive_gate_archives_older_row(conn, tmp_path):
     assert rpt.deleted >= 1
 
 
-# ── 3. affect UPDATE gate ─────────────────────────────────────────────────────
+# ── 3. tasks retitle gate ────────────────────────────────────────────────────
+
+
+def _task_dashboard_md(tid: int, title: str) -> str:
+    """Minimal dashboard md with one active task row and matching trail."""
+    return (
+        f"<!-- tasks-trail:{tid} -->\n"
+        f"- [ ] {title} <!-- id:{tid} -->\n"
+        f"<!-- tasks-trail-end -->\n"
+    )
+
+
+def test_tasks_retitle_gate_skips_newer_row(conn, tmp_path):
+    """Task updated after md snapshot must not have its title overwritten."""
+    cur = conn.execute(
+        "INSERT INTO tasks (category, title, status, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("Study", "DB title", "active", _past_ts(), _future_ts()),
+    )
+    conn.commit()
+    tid = cur.lastrowid
+
+    dash = tmp_path / "dashboard.md"
+    dash.write_text(_task_dashboard_md(tid, "MD stale title"))
+
+    rpt = reconcile.reconcile_tasks(conn, dash)
+
+    row = conn.execute("SELECT title FROM tasks WHERE id=?", (tid,)).fetchone()
+    assert row["title"] == "DB title", "mtime gate failed: task title was overwritten"
+    assert rpt.updated == 0
+
+
+# ── 4. affect UPDATE gate ─────────────────────────────────────────────────────
 
 def _insert_affect(conn, *, label: str, description: str, created_at: str) -> int:
     cur = conn.execute(

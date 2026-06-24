@@ -808,7 +808,7 @@ def reconcile_tasks(conn: sqlite3.Connection,
     db_rows: dict[int, dict] = {}
     if all_ids:
         for row in conn.execute(
-            f"SELECT id, status, title, next_step, created_at FROM tasks "
+            f"SELECT id, status, title, next_step, created_at, updated_at FROM tasks "
             f"WHERE id IN ({placeholders})",
             list(all_ids),
         ).fetchall():
@@ -866,6 +866,10 @@ def reconcile_tasks(conn: sqlite3.Connection,
             title_changed = bool(md_title) and md_title != db_title
             ns_changed = md_next_step != db_next_step
             if title_changed or ns_changed:
+                row_updated = row.get("updated_at") or ""
+                if md_mtime_iso and row_updated > md_mtime_iso:
+                    rpt.unchanged += 1
+                    continue
                 sets = []
                 params: list = []
                 if title_changed:
