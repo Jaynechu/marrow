@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import fcntl
 import json
 
 from marrow import config, mid_scan, storage
@@ -176,3 +177,73 @@ def test_mid_scan_prearchives_before_trigger_eval(tmp_path, monkeypatch):
     finally:
         conn.close()
     assert n == 10
+
+
+def test_pre_archive_failure_logged(tmp_path, monkeypatch):
+    db = str(tmp_path / "mid.db")
+    conn = storage.init_db(db)
+    conn.close()
+    jsonl = tmp_path / "active.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+
+    _patch_config(monkeypatch, db)
+    _freeze_now(monkeypatch)
+    monkeypatch.setattr(
+        mid_scan, "_spawn_sessionend_async", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(
+        mid_scan,
+        "transcript_clean",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    mid_scan.main([
+        "--sid", "sid-fail",
+        "--jsonl-path", str(jsonl),
+        "--channel", "wx",
+    ])
+
+    conn = storage.connect(db)
+    try:
+        row = conn.execute(
+            "SELECT action, summary FROM audit_log"
+            " WHERE target_id=? AND action='mid_scan_pre_archive_fail'",
+            ("sid-fail",),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row is not None
+    assert "RuntimeError" in row["summary"]
+    assert "boom" in row["summary"]
+
+
+def test_concurrent_lock_skips(tmp_path, monkeypatch):
+    db = str(tmp_path / "mid.db")
+    conn = storage.init_db(db)
+    conn.close()
+    jsonl = tmp_path / "active.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+
+    _patch_config(monkeypatch, db)
+    _freeze_now(monkeypatch)
+
+    lock_dir = config.DATA_DIR / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "mid_sid-lock.lock"
+
+    with open(lock_path, "w") as held_fd:
+        fcntl.flock(held_fd, fcntl.LOCK_EX)
+        calls = []
+        monkeypatch.setattr(
+            mid_scan, "_spawn_sessionend_async", lambda *a, **kw: calls.append(1)
+        )
+        rc = mid_scan.main([
+            "--sid", "sid-lock",
+            "--jsonl-path", str(jsonl),
+            "--channel", "wx",
+        ])
+        fcntl.flock(held_fd, fcntl.LOCK_UN)
+
+    assert rc == 0
+    assert calls == []
