@@ -7,13 +7,13 @@ Two outlets:
 Format (FINAL spec, plan 4A-3):
   未解: <desc> [label] <!-- tl:ep:<id> -->  — open affect episodes, 7d expiry, top of block
   Last 24h: flat HH:MM film-strip newest→oldest, cap 20
-    - LIFE lines (casual) + TL line (task)
+    - LIFE lines (casual sessions only; task sessions omitted)
     - day crossings: --- MM-DD --- divider
   Today-1 overflow + today-2: per-day **MM-DD Day 【tone】** + AM/PM/ND periods
     - ND 00-06 belongs to PREVIOUS day
-    - all sessions' TLs in period joined time-order, truncated; empty hidden
+    - all sessions' LIFE lines in period joined time-order; empty hidden
     - 24h sessions exceeding cap spill here as day summaries
-  Day 3-6: Week 【tone ↗/↘/→】 trend + one line per day 【tone】 diary.tl_line
+  Day 3-6: Week 【tone ↗/↘/→】 trend + one line per day 【tone】 diary.tone/overview
   No in-progress session line.
   Trim order: day lines → period lines (farthest day first) → 24h farthest.
   Budget ~4000 chars (safety net).
@@ -38,7 +38,6 @@ _CUTOFF_H = 6          # 6AM local day boundary
 _BUDGET = 4000         # soft char budget (safety net; zone caps control sizing)
 _24H_CAP = 20          # max film-strip lines
 _OPEN_EXPIRY_DAYS = 7  # open episodes older than this are hidden
-_TL_FALLBACK_CHARS = 60  # tl_line NULL → truncated body text
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -177,25 +176,6 @@ def _week_trend(this_week: list[dict], last_week: list[dict]) -> str:
     return f"{tone_label} {arrow}"
 
 
-# Bug 5: rendered day-line pattern written by old backfill (e.g. "06-09 Day 【平淡】")
-_RENDERED_DAY_RE = _re.compile(r"^\d{2}-\d{2}\s+Day\s+【.+】")
-
-
-def _tl_or_fallback(sd: dict) -> str:
-    """tl_line if set and not a rendered day-line artifact; else sanitised
-    truncation of legacy prose body."""
-    tl = sd.get("tl_line")
-    # Bug 5 guard: treat rendered "MM-DD Day 【tone】" strings and blank/
-    # whitespace-only values as NULL so we fall through to the body fallback.
-    if tl and tl.strip() and not _RENDERED_DAY_RE.match(tl.strip()):
-        return tl
-    body = (sd.get("text") or "").strip()
-    # Legacy prose digests carry markdown + newlines — flatten before cut.
-    body = _re.sub(r"[#*`>]+", "", body)
-    body = _re.sub(r"\s+", " ", body).strip()
-    if len(body) > _TL_FALLBACK_CHARS:
-        return body[:_TL_FALLBACK_CHARS] + "…"
-    return body
 
 
 def _tl_anchor_sid(sid: str, segment_seq: int = 0) -> str:
@@ -309,7 +289,7 @@ def _query_digests_range(conn: sqlite3.Connection,
     from_dt = _dt.datetime.fromisoformat(from_utc.replace("Z", "+00:00"))
     ts_floor = (from_dt - _dt.timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = conn.execute(
-        "SELECT sd.sid, sd.segment_seq, sd.date, sd.text, sd.kind, sd.tl_line, sd.life_lines,"
+        "SELECT sd.sid, sd.segment_seq, sd.date, sd.text, sd.kind, sd.life_lines,"
         " sd.ts AS ts"
         " FROM session_digests sd"
         " WHERE sd.ts >= ? AND sd.ts < ? AND sd.tl_hidden = 0"
@@ -567,14 +547,11 @@ def _render_24h(digests: list[dict],
         ts = sd.get("ts") or ""
         sess_hhmm = _hhmm_melb(ts)
         kind = (sd.get("kind") or "casual").lower()
-        tl = _tl_or_fallback(sd)
         life_raw = sd.get("life_lines") or ""
         life_items = [x.strip() for x in life_raw.splitlines() if x.strip()]
 
         if not life_items:
-            if sd["sid"] in exclude_full_session_sids:
-                continue
-            _add_session_line(sd, 0, ts, sess_hhmm, tl)
+            continue
         else:
             for idx, item in enumerate(life_items):
                 line_hhmm, text = _life_line_hhmm(item, sess_hhmm)

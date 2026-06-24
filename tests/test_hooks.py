@@ -229,7 +229,7 @@ def test_affect_backdrop_anchors_after_6am_rollover(env, monkeypatch, capsys):
     ts_recent = (datetime.now(timezone.utc) - timedelta(hours=2)).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        "INSERT INTO session_digests (sid, date, ts, text, kind, tl_line)"
+        "INSERT INTO session_digests (sid, date, ts, text, kind, life_lines)"
         " VALUES ('sid-test', ?, ?, 'body', 'casual', '昨晚聊了很多')",
         (ts_recent[:10], ts_recent),
     )

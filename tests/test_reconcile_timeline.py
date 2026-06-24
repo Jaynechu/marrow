@@ -605,8 +605,8 @@ def test_trail_marker_present_in_render(conn):
     # Insert 5s in the past so it falls within the 24h window (strict < now)
     ts_utc = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        "INSERT INTO session_digests (sid, date, ts, text, kind, tl_line)"
-        " VALUES ('sid-trail', ?, ?, 'body', 'casual', 'TL行')",
+        "INSERT INTO session_digests (sid, date, ts, text, kind, life_lines)"
+        " VALUES ('sid-trail', ?, ?, 'body', 'casual', '聊了些事')",
         (ts_utc[:10], ts_utc),
     )
     conn.commit()

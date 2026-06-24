@@ -463,7 +463,7 @@ DASHBOARD_BLOCK_IDS = (
 # Blocks whose user edits are absorbed into the DB by a reconcile pass before
 # render — safe to overwrite the block body with fresh DB-driven content.
 # alerts: reconcile_alerts treats a deleted bullet as `resolved=1`.
-# timeline: reconcile_timeline writes tl_line edits back to session_digests/diary.
+# timeline: reconcile_timeline tracks hidden/visible via tl_hidden flag.
 RECONCILED_BLOCK_IDS = frozenset({
     "dashboard.alerts",
     "dashboard.tasks",

@@ -333,7 +333,6 @@ def _parse_digest_block(raw: str) -> dict:
         block = raw.replace("===END===", "").strip()
 
     kind: str | None = None
-    tl_line: str | None = None
     life_parts: list[str] = []
     facts_parts: list[str] = []
     life_section = False
@@ -350,8 +349,6 @@ def _parse_digest_block(raw: str) -> dict:
             if label == "KIND":
                 cand = value.lower()
                 kind = cand if cand in _VALID_KINDS else None
-            elif label == "TL":
-                tl_line = value if value else None
             elif label == "LIFE":
                 life_section = True
                 # Inline value on the same line (e.g. "LIFE: N/A")
@@ -400,7 +397,6 @@ def _parse_digest_block(raw: str) -> dict:
     body = "\n".join(body_lines).strip()
     return {
         "kind": kind,
-        "tl_line": tl_line,
         "life_lines": life_lines,
         "body": body,
     }
