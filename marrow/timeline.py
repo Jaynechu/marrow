@@ -400,24 +400,26 @@ def _query_affect_by_session(conn: sqlite3.Connection,
     return by_sid
 
 
-def _query_diary_range(conn: sqlite3.Connection,
-                       date_from: str, date_to: str) -> dict[str, str]:
-    """diary.tl_line (or truncated text fallback) keyed by date string, for day 4-8 zone.
-
-    Rows whose tl_line matches the rendered-day-line pattern or are empty fall
-    back to truncated diary.text (same logic as _tl_or_fallback).
-    """
+def _query_diary_zone_b(conn: sqlite3.Connection,
+                        dates: list[_dt.date]) -> dict[str, dict]:
+    """diary.tone + diary.overview keyed by date string, for zone B."""
+    if not dates:
+        return {}
+    placeholders = ",".join("?" * len(dates))
     rows = conn.execute(
-        "SELECT date, tl_line, content FROM diary"
-        " WHERE date >= ? AND date <= ? AND tl_hidden = 0",
-        (date_from, date_to),
+        f"SELECT date, tone, overview FROM diary"
+        f" WHERE date IN ({placeholders}) AND tl_hidden = 0",
+        [d.isoformat() for d in dates],
     ).fetchall()
-    result: dict[str, str] = {}
+    result: dict[str, dict] = {}
     for r in rows:
-        tl = (r["tl_line"] or "").strip()
-        tl_bare = tl.strip("*").strip()
-        if tl_bare and not _RENDERED_DAY_RE.match(tl_bare):
-            result[r["date"]] = tl
+        overview = (r["overview"] or "").strip()
+        if not overview:
+            continue  # skip days with NULL overview
+        result[r["date"]] = {
+            "tone": (r["tone"] or "").strip() or "平淡",
+            "overview": overview,
+        }
     return result
 
 
@@ -432,16 +434,6 @@ def _query_manual_events_24h(conn: sqlite3.Connection,
     ).fetchall()
     return [dict(r) for r in rows]
 
-
-def _query_manual_events_range(conn: sqlite3.Connection,
-                               from_utc: str, to_utc: str) -> list[dict]:
-    rows = conn.execute(
-        "SELECT id, timestamp, content FROM events"
-        " WHERE channel='manual' AND timestamp >= ? AND timestamp < ?"
-        " ORDER BY timestamp ASC",
-        (from_utc, to_utc),
-    ).fetchall()
-    return [dict(r) for r in rows]
 
 
 def _query_current_sid(conn: sqlite3.Connection) -> str | None:
@@ -649,106 +641,30 @@ def _render_24h(digests: list[dict],
     return lines, list(overflow_by_sid.values())
 
 
-def _render_2472h(digests: list[dict],
-                  affect_rows: list[dict],
-                  current_sid: str | None,
-                  manual_events: list[dict] | None = None,
-                  overflow_24h: list[dict] | None = None) -> list[str]:
-    """Per-day headers + AM/PM/ND period lines, newest day first."""
-    from collections import defaultdict
-    buckets: dict[tuple[_dt.date, str], list[tuple[str, str, str]]] = defaultdict(list)
-    for sd in digests:
-        if sd["sid"] == current_sid:
-            continue
-        ts = sd.get("ts") or ""
-        diary_date, period = _period_diary_date(ts)
-        anchor = _tl_anchor_sid(sd["sid"], sd.get("segment_seq", 0))
-        buckets[(diary_date, period)].append((ts, _tl_or_fallback(sd), anchor))
-
-    for ev in (manual_events or []):
-        ts = ev.get("timestamp") or ""
-        diary_date, period = _period_diary_date(ts)
-        anchor = f"<!-- tl:e:{ev['id']} -->"
-        buckets[(diary_date, period)].append((ts, ev.get("content") or "", anchor))
-
-    # Bucket affect by diary_date for tone
-    affect_by_date: dict[_dt.date, list[dict]] = defaultdict(list)
-    for ar in affect_rows:
-        diary_date, _ = _period_diary_date(ar.get("created_at") or "")
-        affect_by_date[diary_date].append(ar)
-
-    # Unique dates newest→oldest
-    dates = sorted({k[0] for k in buckets}, reverse=True)
-    lines: list[str] = []
-    for date in dates:
-        tone_label = _tone_from_rows(affect_by_date.get(date, []))
-        lines.append(
-            f"**{date.strftime('%m-%d')} Day 【{tone_label}】** {_tl_anchor_date(date.isoformat())}"
-        )
-        for period in ("AM", "PM", "ND"):
-            items = sorted(buckets.get((date, period), []), key=lambda x: x[0])
-            if not items:
-                continue
-            text = _render_2472_period_text(items)
-            lines.append(f"{period} {text}")
-
-    return lines
-
-
-def _render_2472_period_text(items: list[tuple[str, str, str]]) -> str:
-    parts: list[str] = []
-    visible_len = 0
-    deferred_anchors: list[str] = []
-    for _ts, text, anchor in items:
-        visible = (text or "").strip()
-        sep = " · " if parts else ""
-        room = 250 - visible_len - len(sep)
-        if room <= 0:
-            if anchor:
-                deferred_anchors.append(anchor)
-            continue
-        if len(visible) > room:
-            visible = visible[: max(0, room - 1)] + "…"
-        piece = sep + visible
-        if anchor:
-            piece += f" {anchor}"
-        parts.append(piece)
-        visible_len += len(sep) + len(visible)
-
-    text = "".join(parts).rstrip()
-    if deferred_anchors:
-        text = f"{text} {' '.join(deferred_anchors)}".strip()
-    return text
-
-
-def _render_day47(dates_4_7: list[_dt.date],
-                  affect_rows_by_date: dict[_dt.date, list[dict]],
-                  diary_tl: dict[str, str],
-                  this_week_affect: list[dict],
-                  last_week_affect: list[dict]) -> list[str]:
-    """Week trend line + per-day 【tone】 diary.tl_line.
-    Only renders if there is actual affect or diary data for day 4-7.
+def _render_zone_b(diary_data: dict[str, dict],
+                   dates: list[_dt.date],
+                   this_week_affect: list[dict],
+                   last_week_affect: list[dict]) -> list[str]:
+    """Zone B: per-day diary overview + week trend footer.
+    Returns [] if there is no diary data (no days rendered).
     """
-    # Skip entirely if no actual data (avoids empty date stubs)
-    has_data = bool(affect_rows_by_date) or bool(diary_tl)
-    if not has_data:
+    day_lines: list[str] = []
+    for date in sorted(dates, reverse=True):
+        data = diary_data.get(date.isoformat())
+        if not data:
+            continue
+        tone = data["tone"]
+        overview = data["overview"]
+        anchor = _tl_anchor_date(date.isoformat())
+        day_lines.append(f"**{date.strftime('%m-%d')} {date.strftime('%a')} 【{tone}】** {anchor}")
+        day_lines.append(overview)
+
+    if not day_lines:
         return []
 
-    lines: list[str] = []
+    # Week trend footer
     trend = _week_trend(this_week_affect, last_week_affect)
-    lines.append(f"**Week 【{trend}】**")
-    for date in sorted(dates_4_7, reverse=True):
-        day_affect = affect_rows_by_date.get(date, [])
-        tone_label = _tone_from_rows(day_affect)
-        dtl = diary_tl.get(date.isoformat(), "")
-        anchor = _tl_anchor_date(date.isoformat())
-        if dtl:
-            lines.append(
-                f"{date.strftime('%m-%d')} Day 【{tone_label}】 {dtl} {anchor}")
-        else:
-            lines.append(
-                f"{date.strftime('%m-%d')} Day 【{tone_label}】 {anchor}")
-    return lines
+    return day_lines + ["", f"**The Week 【{trend}】**"]
 
 
 # ── main render ──────────────────────────────────────────────────────────────
@@ -771,7 +687,6 @@ def render_timeline(conn: sqlite3.Connection) -> str:
 
     # Time boundaries (UTC ISO strings)
     t_24h = (now_utc - _dt.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    t_72h = (now_utc - _dt.timedelta(hours=72)).strftime("%Y-%m-%dT%H:%M:%SZ")
     t_7d  = (now_utc - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     t_14d = (now_utc - _dt.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -785,36 +700,6 @@ def render_timeline(conn: sqlite3.Connection) -> str:
     open_eps = _query_open_episodes(conn, t_7d)
     open_lines = _render_open_episodes(open_eps)
 
-    # ── zone (b): today-1 overflow + today-2 day summaries ────────────────
-    day2 = today_melb - _dt.timedelta(days=2)
-    zone_b_from_utc = _day_start_utc(day2).strftime("%Y-%m-%dT%H:%M:%SZ")
-    zone_b_from_dt = _parse_utc(zone_b_from_utc)
-    t_24h_dt = _parse_utc(t_24h)
-    zone_b_candidates = _query_digests_range(conn, zone_b_from_utc, now_utc_iso)
-    max_event_ts = _query_session_max_event_ts(
-        conn, [d["sid"] for d in zone_b_candidates]
-    )
-    digests_2472 = [
-        d for d in zone_b_candidates
-        if (
-            zone_b_from_dt is not None and t_24h_dt is not None
-            and (parsed := _parse_utc(d.get("ts") or "")) is not None
-            and zone_b_from_dt <= parsed < t_24h_dt
-        ) or (
-            zone_b_from_dt is not None and t_24h_dt is not None
-            and (event_parsed := _parse_utc(max_event_ts.get(d["sid"], ""))) is not None
-            and zone_b_from_dt <= event_parsed < t_24h_dt
-        )
-    ]
-    zone_b_event_sids = {
-        d["sid"] for d in digests_2472
-        if (
-            t_24h_dt is not None
-            and (parsed := _parse_utc(d.get("ts") or "")) is not None
-            and parsed >= t_24h_dt
-        )
-    }
-
     # ── last 24h ─────────────────────────────────────────────────────────────
     digests_24h = _query_digests_range(conn, yesterday_start_utc_iso, now_utc_iso)
     event_spans_24h = {
@@ -822,48 +707,30 @@ def render_timeline(conn: sqlite3.Connection) -> str:
         for d in digests_24h
     }
     manual_24h = _query_manual_events_24h(conn, yesterday_start_utc_iso, now_utc_iso)
-    lines_24h, overflow_24h = _render_24h(
+    lines_24h, _overflow_24h = _render_24h(
         digests_24h, current_sid, manual_24h,
         from_utc=yesterday_start_utc_iso, to_utc=now_utc_iso,
         event_spans=event_spans_24h,
-        exclude_full_session_sids=zone_b_event_sids,
     )
 
-    affect_2472 = _query_affect_range(conn, zone_b_from_utc, now_utc_iso)
-    manual_2472 = _query_manual_events_range(conn, zone_b_from_utc, t_24h)
-    lines_2472 = _render_2472h(
-        digests_2472, affect_2472, current_sid, manual_2472,
-        overflow_24h=overflow_24h,
-    )
+    # ── zone B: diary overview for today-2 to today-4 ────────────────────────
+    zone_b_dates = [today_melb - _dt.timedelta(days=d) for d in range(2, 5)]
+    diary_data = _query_diary_zone_b(conn, zone_b_dates)
 
-    # ── zone (c): diary dates today-3 .. today-6 (four days) ────────────────
-    dates_3_6 = [today_melb - _dt.timedelta(days=d) for d in range(3, 7)]
-    date_c_str_from = dates_3_6[-1].isoformat()   # oldest (today-6)
-    date_c_str_to   = dates_3_6[0].isoformat()    # newest (today-3)
+    # Affect for week trend
+    zone_b_from_utc = _day_start_utc(zone_b_dates[-1]).strftime("%Y-%m-%dT%H:%M:%SZ")
+    this_week_affect = _query_affect_range(conn, zone_b_from_utc, now_utc_iso)
+    last_week_affect = _query_affect_range(conn, t_14d, t_7d)
 
-    diary_tl = _query_diary_range(conn, date_c_str_from, date_c_str_to)
-
-    # Affect for zone (c): from diary-day-start of today-6 up to zone_b_from_utc
-    day6 = today_melb - _dt.timedelta(days=6)
-    zone_c_from_utc = _day_start_utc(day6).strftime("%Y-%m-%dT%H:%M:%SZ")
-    affect_3_6 = _query_affect_range(conn, zone_c_from_utc, zone_b_from_utc)
-    affect_last_wk = _query_affect_range(conn, t_14d, t_7d)
-
-    affect_by_date: dict[_dt.date, list[dict]] = {}
-    for ar in affect_3_6:
-        d, _ = _period_diary_date(ar.get("created_at") or "")
-        affect_by_date.setdefault(d, []).append(ar)
-
-    lines_47 = _render_day47(dates_3_6, affect_by_date, diary_tl,
-                             affect_3_6, affect_last_wk)
+    lines_zone_b = _render_zone_b(diary_data, zone_b_dates, this_week_affect, last_week_affect)
 
     # ── assemble + trim to budget ────────────────────────────────────────────
-    all_sections = _assemble(open_lines, lines_24h, lines_2472, lines_47)
+    all_sections = _assemble(open_lines, lines_24h, lines_zone_b)
     text = "## Timeline\n" + "\n".join(all_sections) if all_sections else "## Timeline\n_none_"
 
     # Trim if over budget (visible text only — edit anchors don't count)
     if _visible_len(text) > _BUDGET:
-        text = _trim_to_budget(text, open_lines, lines_24h, lines_2472, lines_47)
+        text = _trim_to_budget(text, open_lines, lines_24h, lines_zone_b)
 
     # Append tl-rendered trail marker so reconcile knows which anchors were rendered
     trail_sids  = sorted(set(_TL_TRAIL_SID_RE.findall(text)))
@@ -884,19 +751,14 @@ def render_timeline(conn: sqlite3.Connection) -> str:
 
 def _assemble(open_lines: list[str],
               lines_24h: list[str],
-              lines_2472: list[str],
-              lines_47: list[str]) -> list[str]:
+              lines_zone_b: list[str]) -> list[str]:
     parts: list[str] = []
     parts.extend(open_lines)
     parts.extend(lines_24h)
-    if lines_2472:
+    if lines_zone_b:
         if parts:
             parts.append("")
-        parts.extend(lines_2472)
-    if lines_47:
-        if parts:
-            parts.append("")
-        parts.extend(lines_47)
+        parts.extend(lines_zone_b)
     return parts
 
 
@@ -919,35 +781,26 @@ visible_len = _visible_len
 def _trim_to_budget(text: str,
                     open_lines: list[str],
                     lines_24h: list[str],
-                    lines_2472: list[str],
-                    lines_47: list[str]) -> str:
-    """Trim order: day lines → period lines (farthest day first) → 24h farthest."""
-    # Step 1: trim day4-7 lines one at a time (farthest first = last in list)
-    l47 = list(lines_47)
-    l2472 = list(lines_2472)
+                    lines_zone_b: list[str]) -> str:
+    lzb = list(lines_zone_b)
     l24h = list(lines_24h)
 
     def _rebuild() -> str:
-        parts = _assemble(open_lines, l24h, l2472, l47)
+        parts = _assemble(open_lines, l24h, lzb)
         body = "\n".join(parts) if parts else "_none_"
         return "## Timeline\n" + body
 
-    # Trim day lines (skip the Week header at index 0)
-    while len(l47) > 1 and _visible_len(_rebuild()) > _BUDGET:
-        l47.pop()  # remove oldest day line
+    # Trim zone B lines (farthest day first = near end, skip week footer)
+    while len(lzb) > 2 and _visible_len(_rebuild()) > _BUDGET:
+        # Remove last day entry (2 lines: header + overview)
+        lzb.pop(-3)  # overview before the footer gap
+        lzb.pop(-3)  # header before the footer gap
 
-    # Remove Week header too if now just the header
-    if len(l47) == 1 and _visible_len(_rebuild()) > _BUDGET:
-        l47 = []
+    # Remove all zone B if still over
+    if lzb and _visible_len(_rebuild()) > _BUDGET:
+        lzb = []
 
-    # Trim 2472h period lines (farthest day first = lines near end)
-    while l2472 and _visible_len(_rebuild()) > _BUDGET:
-        l2472.pop()
-    # Clean up orphaned day headers
-    if l2472 and l2472[-1].startswith("**"):
-        l2472.pop()
-
-    # Trim 24h farthest lines
+    # Trim 24h farthest
     while l24h and _visible_len(_rebuild()) > _BUDGET:
         l24h.pop()
 
