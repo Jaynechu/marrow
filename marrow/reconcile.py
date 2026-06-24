@@ -1586,7 +1586,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
     block = after_h2[: next_h2.start()] if next_h2 else after_h2
 
     # Parse trail marker first — tells us what was rendered last time
-    trail_sids:  set[str] = set()
+    trail_sid_seqs: set[tuple[str, int]] = set()
     trail_dates: set[str] = set()
     trail_evts:  set[int] = set()
     trail_eps:   set[int] = set()
@@ -1595,11 +1595,15 @@ def reconcile_timeline(conn: sqlite3.Connection,
         for segment in m_trail.group("payload").split(";"):
             segment = segment.strip()
             if segment.startswith("s="):
-                trail_sids.update(
-                    x.strip().rsplit(":", 1)[0]
-                    for x in segment[2:].split(",")
-                    if x.strip()
-                )
+                for x in segment[2:].split(","):
+                    x = x.strip()
+                    if not x:
+                        continue
+                    if ":" in x:
+                        raw_sid, raw_seq = x.rsplit(":", 1)
+                        trail_sid_seqs.add((raw_sid.strip(), int(raw_seq.strip())))
+                    else:
+                        trail_sid_seqs.add((x, 0))
             elif segment.startswith("d="):
                 trail_dates.update(x.strip() for x in segment[2:].split(",") if x.strip())
             elif segment.startswith("ep="):
@@ -1607,10 +1611,10 @@ def reconcile_timeline(conn: sqlite3.Connection,
             elif segment.startswith("e="):
                 trail_evts.update(int(x.strip()) for x in segment[2:].split(",") if x.strip())
 
-    sid_edits:    dict[tuple[str, int], str] = {}
-    date_edits:   dict[str, str] = {}
-    present_sids:  set[str] = set()
-    present_dates: set[str] = set()
+    sid_edits:      dict[tuple[str, int], str] = {}
+    date_edits:     dict[str, str] = {}
+    present_sid_seqs: set[tuple[str, int]] = set()
+    present_dates:  set[str] = set()
     present_evts:  set[int] = set()
     present_eps:   set[int] = set()
     plus_lines:    list[tuple[_dt.date, bool, str]] = []
@@ -1653,7 +1657,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
         if m_sid:
             sid = m_sid.group("sid")
             seq = int(m_sid.group("seq")) if m_sid.group("seq") else 0
-            present_sids.add(sid)
+            present_sid_seqs.add((sid, seq))
             text_part = _extract_tl_text(line)
             if text_part:
                 sid_edits[(sid, seq)] = text_part
@@ -1666,7 +1670,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
             if text_part:
                 date_edits[date] = text_part
 
-    if not sid_edits and not date_edits and not m_trail and not plus_lines and not evt_edits and not trail_eps:
+    if not sid_edits and not date_edits and not m_trail and not plus_lines and not evt_edits and not trail_eps and not trail_sid_seqs:
         return rpt
 
     now_iso = _now()
@@ -1699,13 +1703,14 @@ def reconcile_timeline(conn: sqlite3.Connection,
 
         # ── DELETE: anchors in trail but absent from current block → hidden ──
         if m_trail:
-            for sid in trail_sids - present_sids:
+            for (sid, seq) in trail_sid_seqs - present_sid_seqs:
                 conn.execute(
-                    "UPDATE session_digests SET tl_hidden=1 WHERE sid=?", (sid,))
+                    "UPDATE session_digests SET tl_hidden=1 WHERE sid=? AND segment_seq=?",
+                    (sid, seq))
                 conn.execute(
                     "INSERT INTO audit_log (target_table, target_id, action, summary)"
                     " VALUES ('session_digests', ?, 'tl_delete', 'user deleted tl line')",
-                    (sid,))
+                    (f"{sid}:{seq}",))
                 rpt.updated += 1
             for date in trail_dates - present_dates:
                 conn.execute(
