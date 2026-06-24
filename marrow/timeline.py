@@ -178,7 +178,10 @@ def _week_trend(this_week: list[dict], last_week: list[dict]) -> str:
 
 
 
-def _tl_anchor_sid(sid: str, segment_seq: int = 0) -> str:
+def _tl_anchor_sid(sid: str, segment_seq: int = 0,
+                   line_index: int | None = None) -> str:
+    if line_index is not None:
+        return f"<!-- tl:{sid}:{segment_seq}:{line_index} -->"
     if segment_seq > 0:
         return f"<!-- tl:{sid}:{segment_seq} -->"
     return f"<!-- tl:{sid} -->"
@@ -583,7 +586,6 @@ def _render_24h(digests: list[dict],
     dropped = entries[_24H_CAP:]
 
     lines: list[str] = []
-    anchored_sids: set[tuple[str, int]] = set()
     for cal_date in sorted({entry["local_date"] for entry in shown}, reverse=True):
         lines.append(f"**{cal_date.strftime('%m-%d')} {cal_date.strftime('%a')}**")
         for entry in (e for e in shown if e["local_date"] == cal_date):
@@ -595,10 +597,7 @@ def _render_24h(digests: list[dict],
                 continue
 
             segment_seq = entry.get("segment_seq", 0)
-            anchor_key = (sid, segment_seq)
-            if anchor_key not in anchored_sids:
-                anchored_sids.add(anchor_key)
-            anchor = f" {_tl_anchor_sid(sid, segment_seq)}"
+            anchor = f" {_tl_anchor_sid(sid, segment_seq, line_index=entry['line_index'])}"
             if _re.match(r"^\d{2}:\d{2}[\s【]", text):
                 lines.append(f"{text}{anchor}")
             else:
