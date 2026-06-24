@@ -198,6 +198,13 @@ def _now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+def _md_mtime_iso(path) -> str | None:
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(path.stat().st_mtime))
+    except OSError:
+        return None
+
+
 def _audit(conn, mid: int | str, action: str, summary: str) -> None:
     conn.execute(
         "INSERT INTO audit_log (target_table, target_id, action, summary) "
@@ -257,7 +264,7 @@ def reconcile_milestones(conn: sqlite3.Connection,
     # writes them, dashboard renders them, Lumi promotes via pinned=1.
     db_rows = {
         r["id"]: dict(r) for r in conn.execute(
-            "SELECT id, scope, date, title, description, theme, pinned "
+            "SELECT id, scope, date, title, description, theme, pinned, updated_at "
             "FROM milestones WHERE pinned=1"
         ).fetchall()
     }
@@ -267,6 +274,8 @@ def reconcile_milestones(conn: sqlite3.Connection,
     # INSERT lands. bare_line=True means the source line was plain text (not
     # H5) and needs a full-line replacement to canonical H5 form.
     line_anchor_writes: list[tuple[int, int, bool]] = []
+
+    md_mtime_iso = _md_mtime_iso(md_path)
 
     with conn:
         # inserts + updates
@@ -286,6 +295,11 @@ def reconcile_milestones(conn: sqlite3.Connection,
                     or (cur["theme"] or None) != row["theme"]
                 )
                 if changed:
+                    row_updated = db_rows[rid].get("updated_at") or ""
+                    if md_mtime_iso and row_updated > md_mtime_iso:
+                        rpt.unchanged += 1
+                        seen.add(rid)
+                        continue
                     h = _hash(row)
                     conn.execute(
                         "UPDATE milestones SET "
@@ -345,11 +359,6 @@ def reconcile_milestones(conn: sqlite3.Connection,
                 seen.add(new_id)
 
         # deletes: db rows whose ids are not present in md
-        md_mtime_iso = (
-            _dt.datetime.fromtimestamp(md_path.stat().st_mtime,
-                                       tz=_dt.timezone.utc).isoformat()
-            if md_path.exists() else None
-        )
         for rid in list(db_rows.keys()):
             if rid in seen:
                 continue
@@ -799,11 +808,13 @@ def reconcile_tasks(conn: sqlite3.Connection,
     db_rows: dict[int, dict] = {}
     if all_ids:
         for row in conn.execute(
-            f"SELECT id, status, title, next_step FROM tasks "
+            f"SELECT id, status, title, next_step, created_at FROM tasks "
             f"WHERE id IN ({placeholders})",
             list(all_ids),
         ).fetchall():
             db_rows[row["id"]] = dict(row)
+
+    md_mtime_iso = _md_mtime_iso(dashboard_path)
 
     with conn:
         # tick / untick / title-edit anchored rows
@@ -891,6 +902,8 @@ def reconcile_tasks(conn: sqlite3.Connection,
             row = db_rows.get(tid)
             if row is None:
                 continue  # already gone
+            if md_mtime_iso and (row.get("created_at") or "") > md_mtime_iso:
+                continue
             current = row["status"]
             if current == "archived":
                 continue  # already terminal
@@ -1221,13 +1234,7 @@ def reconcile_affect(conn: sqlite3.Connection,
     # md mtime gates the "deleted-from-md → resolved" path so newly-written
     # affect rows (created after the current md snapshot) are not mistaken
     # for user deletions.
-    md_mtime_iso: str | None = None
-    try:
-        md_mtime_iso = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(dashboard_path.stat().st_mtime)
-        )
-    except OSError:
-        pass
+    md_mtime_iso = _md_mtime_iso(dashboard_path)
 
     all_ids = set(ep_segs) | set(pending_lines)
 
@@ -1235,7 +1242,7 @@ def reconcile_affect(conn: sqlite3.Connection,
     if all_ids:
         placeholders = ",".join("?" for _ in all_ids)
         for row in conn.execute(
-            f"SELECT id, label, description FROM affect "
+            f"SELECT id, label, description, created_at FROM affect "
             f"WHERE id IN ({placeholders})",
             list(all_ids),
         ).fetchall():
@@ -1294,6 +1301,10 @@ def reconcile_affect(conn: sqlite3.Connection,
             if new_desc is not None and new_desc != (db_desc or ""):
                 updates.append(("description", new_desc))
             if updates:
+                row_created = row.get("created_at") or ""
+                if md_mtime_iso and row_created > md_mtime_iso:
+                    rpt.unchanged += 1
+                    continue
                 set_clause = ", ".join(f"{c}=?" for c, _ in updates)
                 params = [v for _, v in updates] + [aid]
                 conn.execute(
@@ -1412,14 +1423,7 @@ def reconcile_alerts(conn: sqlite3.Connection,
         except ValueError:
             continue
 
-    md_mtime_iso: str | None = None
-    try:
-        md_mtime_iso = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(dashboard_path.stat().st_mtime),
-        )
-    except OSError:
-        pass
+    md_mtime_iso = _md_mtime_iso(dashboard_path)
 
     sql = "SELECT id FROM alerts WHERE resolved=0"
     params: list = []
