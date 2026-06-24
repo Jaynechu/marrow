@@ -49,6 +49,10 @@ ny chat):
 ===GITLOG===
 {git_log}
 ===END===
+- Recent timeline context (do NOT repeat — use for continuity):
+===TIMELINE===
+{timeline_context}
+===END===
 
 ═══════════════════════════════════════════
 SEGMENT A — TASK

@@ -198,7 +198,9 @@ def _tl_or_fallback(sd: dict) -> str:
     return body
 
 
-def _tl_anchor_sid(sid: str) -> str:
+def _tl_anchor_sid(sid: str, segment_seq: int = 0) -> str:
+    if segment_seq > 0:
+        return f"<!-- tl:{sid}:{segment_seq} -->"
     return f"<!-- tl:{sid} -->"
 
 
@@ -307,7 +309,7 @@ def _query_digests_range(conn: sqlite3.Connection,
     from_dt = _dt.datetime.fromisoformat(from_utc.replace("Z", "+00:00"))
     ts_floor = (from_dt - _dt.timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = conn.execute(
-        "SELECT sd.sid, sd.date, sd.text, sd.kind, sd.tl_line, sd.life_lines,"
+        "SELECT sd.sid, sd.segment_seq, sd.date, sd.text, sd.kind, sd.tl_line, sd.life_lines,"
         " sd.ts AS ts"
         " FROM session_digests sd"
         " WHERE sd.ts >= ? AND sd.ts < ? AND sd.tl_hidden = 0"
@@ -513,6 +515,7 @@ def _render_24h(digests: list[dict],
             "ts": ts_dt,
             "local_date": ts_dt.astimezone(_TZ).date(),
             "sid": sd["sid"],
+            "segment_seq": sd.get("segment_seq", 0),
             "line_index": idx,
             "hhmm": hhmm,
             "text": text,
@@ -611,7 +614,7 @@ def _render_24h(digests: list[dict],
     dropped = entries[_24H_CAP:]
 
     lines: list[str] = []
-    anchored_sids: set[str] = set()
+    anchored_sids: set[tuple[str, int]] = set()
     for cal_date in sorted({entry["local_date"] for entry in shown}, reverse=True):
         lines.append(f"--- {cal_date.strftime('%m-%d')} ---")
         for entry in (e for e in shown if e["local_date"] == cal_date):
@@ -622,9 +625,11 @@ def _render_24h(digests: list[dict],
                 lines.append(f"{hhmm} {text} <!-- tl:e:{entry['event_id']} -->")
                 continue
 
-            if sid not in anchored_sids:
-                anchored_sids.add(sid)
-            anchor = f" {_tl_anchor_sid(sid)}"
+            segment_seq = entry.get("segment_seq", 0)
+            anchor_key = (sid, segment_seq)
+            if anchor_key not in anchored_sids:
+                anchored_sids.add(anchor_key)
+            anchor = f" {_tl_anchor_sid(sid, segment_seq)}"
             if _re.match(r"^\d{2}:\d{2}[\s【]", text):
                 lines.append(f"{text}{anchor}")
             else:
@@ -657,7 +662,8 @@ def _render_2472h(digests: list[dict],
             continue
         ts = sd.get("ts") or ""
         diary_date, period = _period_diary_date(ts)
-        buckets[(diary_date, period)].append((ts, _tl_or_fallback(sd), ""))
+        anchor = _tl_anchor_sid(sd["sid"], sd.get("segment_seq", 0))
+        buckets[(diary_date, period)].append((ts, _tl_or_fallback(sd), anchor))
 
     for ev in (manual_events or []):
         ts = ev.get("timestamp") or ""

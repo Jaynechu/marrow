@@ -516,6 +516,15 @@ def _run_extraction(conn, sid: str, date: str,
     active_tasks = _load_active_tasks_for_sonnet(conn)
     since_ts = int(_dt.datetime.now(_dt.timezone.utc).timestamp()) - 24 * 3600
     git_log = _load_git_log(cwd, since_ts)
+    tl_rows = conn.execute(
+        "SELECT tl_line FROM session_digests"
+        " WHERE tl_line IS NOT NULL AND tl_hidden = 0"
+        " ORDER BY ts DESC LIMIT 3",
+    ).fetchall()
+    timeline_context = (
+        "\n".join(r["tl_line"] for r in reversed(tl_rows))
+        if tl_rows else "(none)"
+    )
 
     # ── single call: all segments (sonnet mid) ────────────────────────────────
     raw, call_err = "", None
@@ -528,6 +537,7 @@ def _run_extraction(conn, sid: str, date: str,
             body=TASK_AFFECT_DIGEST_PROMPT.format(
                 sid=sid, events=events_text,
                 active_tasks=active_tasks, git_log=git_log,
+                timeline_context=timeline_context,
                 user_name=persona["user_name"],
                 assistant_name=persona["assistant_name"],
                 user_terms=user_terms,

@@ -1464,7 +1464,7 @@ def reconcile_alerts(conn: sqlite3.Connection,
 
 _TIMELINE_H2 = "## Timeline"
 # Matches `<!-- tl:<sid> -->` (session) and `<!-- tl:d:YYYY-MM-DD -->` (diary).
-_TL_SID_RE  = re.compile(r"<!--\s*tl:(?!d:|e:|ep:)(?P<sid>\S+?)\s*-->")
+_TL_SID_RE  = re.compile(r"<!--\s*tl:(?!d:|e:|ep:)(?P<sid>[^:\s>]+)(?::(?P<seq>\d+))?\s*-->")
 _TL_DATE_RE = re.compile(r"<!--\s*tl:d:(?P<date>\d{4}-\d{2}-\d{2})\s*-->")
 # Strip anchors from a line to get the user-editable text.
 _TL_ANCHOR_RE = re.compile(r"\s*<!--\s*tl:[^>]+-->\s*$")
@@ -1596,7 +1596,11 @@ def reconcile_timeline(conn: sqlite3.Connection,
         for segment in m_trail.group("payload").split(";"):
             segment = segment.strip()
             if segment.startswith("s="):
-                trail_sids.update(x.strip() for x in segment[2:].split(",") if x.strip())
+                trail_sids.update(
+                    x.strip().rsplit(":", 1)[0]
+                    for x in segment[2:].split(",")
+                    if x.strip()
+                )
             elif segment.startswith("d="):
                 trail_dates.update(x.strip() for x in segment[2:].split(",") if x.strip())
             elif segment.startswith("ep="):
@@ -1604,7 +1608,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
             elif segment.startswith("e="):
                 trail_evts.update(int(x.strip()) for x in segment[2:].split(",") if x.strip())
 
-    sid_edits:    dict[str, str] = {}
+    sid_edits:    dict[tuple[str, int], str] = {}
     date_edits:   dict[str, str] = {}
     present_sids:  set[str] = set()
     present_dates: set[str] = set()
@@ -1649,10 +1653,11 @@ def reconcile_timeline(conn: sqlite3.Connection,
         m_sid = _TL_SID_RE.search(line)
         if m_sid:
             sid = m_sid.group("sid")
+            seq = int(m_sid.group("seq")) if m_sid.group("seq") else 0
             present_sids.add(sid)
             text_part = _extract_tl_text(line)
             if text_part:
-                sid_edits[sid] = text_part
+                sid_edits[(sid, seq)] = text_part
             continue
         m_date = _TL_DATE_RE.search(line)
         if m_date:
@@ -1668,18 +1673,20 @@ def reconcile_timeline(conn: sqlite3.Connection,
     now_iso = _now()
     with conn:
         # ── existing: session tl_line edits ──────────────────────────────────
-        for sid, new_tl in sid_edits.items():
+        for (sid, seq), new_tl in sid_edits.items():
             row = conn.execute(
-                "SELECT tl_line FROM session_digests WHERE sid = ?", (sid,)
+                "SELECT tl_line FROM session_digests WHERE sid = ? AND segment_seq = ?",
+                (sid, seq),
             ).fetchone()
             if row is None:
-                rpt.conflicts.append(f"tl:sid {sid!r} not in session_digests")
+                rpt.conflicts.append(f"tl:sid {sid!r}:{seq} not in session_digests")
                 continue
             db_tl = row["tl_line"] or ""
             if new_tl != db_tl:
                 conn.execute(
-                    "UPDATE session_digests SET tl_line = ? WHERE sid = ?",
-                    (new_tl, sid),
+                    "UPDATE session_digests SET tl_line = ?"
+                    " WHERE sid = ? AND segment_seq = ?",
+                    (new_tl, sid, seq),
                 )
                 conn.execute(
                     "INSERT INTO audit_log"

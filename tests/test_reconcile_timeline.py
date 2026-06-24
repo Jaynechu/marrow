@@ -43,12 +43,15 @@ def _now_utc() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _insert_digest(conn, sid: str, tl: str | None = "原始TL") -> str:
+def _insert_digest(
+    conn, sid: str, tl: str | None = "原始TL", segment_seq: int = 0
+) -> str:
     ts = _now_utc()
     conn.execute(
-        "INSERT INTO session_digests (sid, date, ts, text, kind, tl_line)"
-        " VALUES (?, ?, ?, 'body', 'casual', ?)",
-        (sid, ts[:10], ts, tl),
+        "INSERT INTO session_digests"
+        " (sid, segment_seq, date, ts, text, kind, tl_line)"
+        " VALUES (?, ?, ?, ?, 'body', 'casual', ?)",
+        (sid, segment_seq, ts[:10], ts, tl),
     )
     conn.commit()
     return ts
@@ -98,6 +101,47 @@ def test_reconcile_tl_session_edit(conn, dash_path):
         "SELECT tl_line FROM session_digests WHERE sid=?", (sid,)
     ).fetchone()
     assert row["tl_line"] == "用户修改的TL"
+
+
+def test_reconcile_tl_session_edit_composite_marker(conn, dash_path):
+    """Editing <!-- tl:sid:1 --> updates that session_digests segment."""
+    sid = "sid-edit-segment"
+    _insert_digest(conn, sid, tl="seq0", segment_seq=0)
+    _insert_digest(conn, sid, tl="seq1", segment_seq=1)
+    dash_path.write_text(
+        "## Timeline\n14:00 segment edit <!-- tl:sid-edit-segment:1 -->"
+    )
+
+    rpt = reconcile_timeline(conn, dash_path)
+
+    assert rpt.updated >= 1
+    rows = conn.execute(
+        "SELECT segment_seq, tl_line FROM session_digests"
+        " WHERE sid=? ORDER BY segment_seq",
+        (sid,),
+    ).fetchall()
+    assert [(r["segment_seq"], r["tl_line"]) for r in rows] == [
+        (0, "seq0"),
+        (1, "segment edit"),
+    ]
+
+
+def test_reconcile_tl_session_edit_legacy_marker_uses_seq_zero(conn, dash_path):
+    """Editing <!-- tl:sid --> remains backward-compatible with segment_seq=0."""
+    sid = "sid-edit-legacy"
+    _insert_digest(conn, sid, tl="seq0", segment_seq=0)
+    dash_path.write_text(
+        "## Timeline\n14:00 legacy edit <!-- tl:sid-edit-legacy -->"
+    )
+
+    rpt = reconcile_timeline(conn, dash_path)
+
+    assert rpt.updated >= 1
+    row = conn.execute(
+        "SELECT tl_line FROM session_digests WHERE sid=? AND segment_seq=0",
+        (sid,),
+    ).fetchone()
+    assert row["tl_line"] == "legacy edit"
 
 
 def test_reconcile_tl_session_unchanged(conn, dash_path):

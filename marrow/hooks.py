@@ -1039,17 +1039,12 @@ def session_end() -> int:
                 pass
 
             if not skip_spawn:
-                log = config.DATA_DIR / "logs" / f"sessionend_async_{sid}.log"
-                # cwd lets sessionend_async locate the repo for git_log evidence.
-                # Absent (study / ny chat) → "" → _load_git_log returns "".
                 cwd = inp.get("cwd") or ""
                 try:
-                    # _lazy variant: child opens log on first write only,
-                    # so silent paths (skip / already_done) leave no file.
-                    popen_detach_lazy(
-                        [sys.executable, "-m", "marrow.sessionend_async",
-                         "--sid", sid, "--cwd", cwd, "--log-path", str(log)],
-                        log_path=log,
+                    wm = storage.get_latest_watermark(conn, sid)
+                    after_eid = wm["last_event_id"] if wm else None
+                    _spawn_sessionend_async(
+                        sid, after_event_id=after_eid, segment_seq=0, cwd=cwd,
                     )
                 except Exception as e:  # noqa: BLE001
                     try:
@@ -1146,13 +1141,33 @@ def _pre_archive_jsonl(conn: sqlite3.Connection, tpath: str | None, channel: str
         pass
 
 
-def _spawn_sessionend_async(sid: str) -> None:
+def _spawn_sessionend_async(
+    sid: str,
+    *,
+    after_event_id: int | None = None,
+    segment_seq: int = 0,
+    cwd: str = "",
+) -> None:
     log = config.DATA_DIR / "logs" / f"sessionend_async_{sid}.log"
-    popen_detach_lazy(
-        [sys.executable, "-m", "marrow.sessionend_async",
-         "--sid", sid, "--log-path", str(log)],
-        log_path=log,
-    )
+    cmd = [
+        sys.executable, "-m", "marrow.sessionend_async",
+        "--sid", sid, "--log-path", str(log),
+    ]
+    if cwd:
+        cmd.extend(["--cwd", cwd])
+    if after_event_id is not None:
+        cmd.extend(["--after-event-id", str(after_event_id)])
+    if segment_seq != 0:
+        cmd.extend(["--segment-seq", str(segment_seq)])
+    popen_detach_lazy(cmd, log_path=log)
+
+
+def _spawn_sessionend_after_watermark(
+    conn: sqlite3.Connection, sid: str, *, cwd: str = "",
+) -> None:
+    wm = storage.get_latest_watermark(conn, sid)
+    after_eid = wm["last_event_id"] if wm else None
+    _spawn_sessionend_async(sid, after_event_id=after_eid, segment_seq=0, cwd=cwd)
 
 
 def _classify_skip_reason(conn: sqlite3.Connection, sid: str) -> str:
@@ -1319,7 +1334,11 @@ def _handle_mm_prefix(inp: dict) -> bool:
                             )
                 finally:
                     conn.close()
-                _spawn_sessionend_async(sid)
+                conn = storage.connect(config.db_path())
+                try:
+                    _spawn_sessionend_after_watermark(conn, sid)
+                finally:
+                    conn.close()
         except Exception:  # noqa: BLE001
             pass
         _inject_silent_ack("mm!!")
@@ -1373,9 +1392,9 @@ def _handle_mm_prefix(inp: dict) -> bool:
                                 " WHERE sid = ? AND (ended_at IS NULL OR ended_at = '')",
                                 (target_sid,),
                             )
+                    _spawn_sessionend_after_watermark(conn, target_sid)
                     conn.close()
                     conn = None
-                    _spawn_sessionend_async(target_sid)
         finally:
             if conn is not None:
                 conn.close()
