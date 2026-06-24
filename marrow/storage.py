@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -101,6 +101,8 @@ CREATE TABLE IF NOT EXISTS diary (
   mood TEXT,
   session_ids TEXT,
   tl_line TEXT,
+  tone TEXT,
+  overview TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
@@ -542,6 +544,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v22(conn)
         _migrate_to_v23(conn)
         _migrate_to_v24(conn)
+        _migrate_to_v25(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -1091,6 +1094,24 @@ END;
         "WHERE tl_line IS NOT NULL OR life_lines IS NOT NULL"
     )
     conn.execute("PRAGMA user_version=24")
+
+
+def _migrate_to_v25(conn: sqlite3.Connection) -> None:
+    """v25: diary.tone + diary.overview — replace tl_line with structured fields.
+
+    tone: 2-char CN mood label for the day.
+    overview: 100-150 char single-paragraph day summary.
+    tl_line remains in schema for backward compatibility (existing rows).
+    Idempotent — duplicate ALTER swallowed; user_version short-circuits.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 25:
+        return
+    for col in ("tone TEXT", "overview TEXT"):
+        try:
+            conn.execute(f"ALTER TABLE diary ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
 
 
 def get_latest_watermark(conn, sid):

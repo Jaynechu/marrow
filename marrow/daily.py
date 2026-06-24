@@ -98,30 +98,33 @@ def _assemble_material(digests: list[tuple[str, str, str]],
     return body
 
 
-def _parse_tl_line(narrative: str) -> tuple[str, str]:
-    """Extract TL_LINE from diary call output.
+def _parse_tone_overview(narrative: str) -> tuple[str, str | None, str | None]:
+    """Extract TONE and OVERVIEW from diary call output.
 
-    Returns (diary_text, tl_line). tl_line is None (as empty str) when
-    TL_LINE: marker absent or value is empty.
-    Splits on the LAST occurrence of TL_LINE: to tolerate prose that
-    accidentally echoes the keyword.
+    Returns (diary_text, tone, overview).
+    Scans from the bottom to find marker lines; everything above is diary text.
     """
     import re as _re
-    # Fullwidth colon tolerance: TL_LINE: or TL_LINE：
-    pattern = _re.compile(r"TL_LINE[：:]\s*(.+)", _re.IGNORECASE)
+    tone_pattern = _re.compile(r"TONE[：:]\s*(.+)", _re.IGNORECASE)
+    overview_pattern = _re.compile(r"OVERVIEW[：:]\s*(.+)", _re.IGNORECASE)
+
     lines = narrative.splitlines()
-    tl_line = ""
+    tone: str | None = None
+    overview: str | None = None
     diary_lines: list[str] = []
-    found = False
+
     for ln in reversed(lines):
-        m = pattern.search(ln)
-        if not found and m:
-            tl_line = m.group(1).strip()
-            found = True
+        t_match = tone_pattern.search(ln)
+        o_match = overview_pattern.search(ln)
+        if not tone and t_match:
+            tone = t_match.group(1).strip() or None
+        elif not overview and o_match:
+            overview = o_match.group(1).strip() or None
         else:
             diary_lines.append(ln)
+
     diary_text = "\n".join(reversed(diary_lines)).strip()
-    return diary_text, tl_line
+    return diary_text, tone, overview
 
 
 def _extract_candidates(conn, llm: LLMClient, date: str,
@@ -210,22 +213,22 @@ def run_day(conn, date: str, llm: LLMClient, *, db: str | None = None,
                        message=f"daily {date} sonnet call failed: {e}")
         return False
     narrative = (narrative or "").strip() or "—"
-    diary_text, tl_line = _parse_tl_line(narrative)
+    diary_text, tone, overview = _parse_tone_overview(narrative)
     diary_text = diary_text or narrative  # fallback: keep full text if parse yields empty
 
     with conn:
         conn.execute("DELETE FROM diary WHERE date = ?", (date,))
         conn.execute(
-            "INSERT INTO diary (date, content, tl_line, session_ids, updated_at) "
-            "VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
-            (date, diary_text, tl_line or None, sids),
+            "INSERT INTO diary (date, content, tone, overview, session_ids, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
+            (date, diary_text, tone, overview, sids),
         )
         conn.execute(
             "INSERT INTO audit_log (target_table, target_id, action, summary)"
             " VALUES ('diary', ?, ?, ?)",
             (date, _act, f"daily written for {date} "
                          f"(digests={len(digests)}, affect={len(affect_episodes)}"
-                         f", tl_line={'ok' if tl_line else 'missing'})"),
+                         f", tone={'ok' if tone else 'missing'})"),
         )
     return True
 

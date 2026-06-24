@@ -213,8 +213,14 @@ Happy wife, happy life.
 - LIFE_LINES: 下面是该session的生活细节行（仅casual session有）
 - AFFECT episodes: eph=高情绪/正向 epl=低情绪/负向, importance 1-5, [open]=当天未解决
 
-输出格式：先写日记正文（300-800字），结束后另起一行输出：
-TL_LINE: <25-40个中文字符的当天一句话总结，{user_name}视角，生活语言，无专业术语>
+输出格式：先写日记正文（300-800字），结束后另起两行分别输出：
+TONE: <2字中文 — {user_name}当天的主导情绪/共处氛围>
+OVERVIEW: <100-150字，单段日概要>
+  - 主语明确时省略；不明确时用昵称
+  - 自然嵌入时间锚（上午, 中午, 傍晚, 深夜）
+  - {user_name}的真实活动 + 和{assistant_name}的共同活动
+  - 从digest的LIFE和FACT总结，描述实际日程和事件
+  - 生活语言，无术语，排除技术过程和不必要细节
 
 {{date}} 的素材：
 {{digest}}
