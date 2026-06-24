@@ -65,7 +65,7 @@ def _write_jsonl(path, sid: str, *, count: int, hours_ago: float = 5) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _run_scan(tmp_path, monkeypatch, db: str, sid: str, jsonl_path: str):
+def _run_scan(monkeypatch, db: str, sid: str, jsonl_path: str):
     _patch_config(monkeypatch, db)
     _freeze_now(monkeypatch)
     calls = []
@@ -92,7 +92,7 @@ def test_mid_scan_below_floor_no_trigger(tmp_path, monkeypatch):
     jsonl = tmp_path / "empty.jsonl"
     jsonl.write_text("", encoding="utf-8")
 
-    rc, calls = _run_scan(tmp_path, monkeypatch, db, "sid-floor", str(jsonl))
+    rc, calls = _run_scan(monkeypatch, db, "sid-floor", str(jsonl))
 
     assert rc == 0
     assert calls == []
@@ -108,7 +108,7 @@ def test_mid_scan_triggers_on_time_and_turn_threshold(tmp_path, monkeypatch):
     jsonl = tmp_path / "empty.jsonl"
     jsonl.write_text("", encoding="utf-8")
 
-    rc, calls = _run_scan(tmp_path, monkeypatch, db, "sid-time", str(jsonl))
+    rc, calls = _run_scan(monkeypatch, db, "sid-time", str(jsonl))
 
     assert rc == 0
     assert calls == [(("sid-time",), {"after_event_id": None, "segment_seq": 1})]
@@ -124,7 +124,7 @@ def test_mid_scan_triggers_on_absolute_turn_threshold(tmp_path, monkeypatch):
     jsonl = tmp_path / "empty.jsonl"
     jsonl.write_text("", encoding="utf-8")
 
-    rc, calls = _run_scan(tmp_path, monkeypatch, db, "sid-abs", str(jsonl))
+    rc, calls = _run_scan(monkeypatch, db, "sid-abs", str(jsonl))
 
     assert rc == 0
     assert calls == [(("sid-abs",), {"after_event_id": None, "segment_seq": 1})]
@@ -150,7 +150,7 @@ def test_mid_scan_second_scan_uses_previous_watermark(tmp_path, monkeypatch):
     jsonl = tmp_path / "empty.jsonl"
     jsonl.write_text("", encoding="utf-8")
 
-    rc, calls = _run_scan(tmp_path, monkeypatch, db, sid, str(jsonl))
+    rc, calls = _run_scan(monkeypatch, db, sid, str(jsonl))
 
     assert rc == 0
     assert calls == [((sid,), {"after_event_id": 10, "segment_seq": 2})]
@@ -164,7 +164,7 @@ def test_mid_scan_prearchives_before_trigger_eval(tmp_path, monkeypatch):
     jsonl = tmp_path / "active.jsonl"
     _write_jsonl(jsonl, sid, count=10, hours_ago=5)
 
-    rc, calls = _run_scan(tmp_path, monkeypatch, db, sid, str(jsonl))
+    rc, calls = _run_scan(monkeypatch, db, sid, str(jsonl))
 
     assert rc == 0
     assert calls == [((sid,), {"after_event_id": None, "segment_seq": 1})]
