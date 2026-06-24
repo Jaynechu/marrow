@@ -62,9 +62,9 @@ def test_read_digests_uses_session_digests_table(db):
     """daily._read_digests must read from session_digests, not audit_log."""
     p, conn = db
     out = daily._read_digests(conn, "2026-05-16")
-    sids = {sid for sid, _ in out}
+    sids = {sid for sid, *_ in out}
     assert sids == {"s1", "s2"}
-    texts = {text for _, text in out}
+    texts = {text for _, text, *_ in out}
     assert "morning chat" in texts and "afternoon work" in texts
 
 
@@ -577,3 +577,20 @@ def test_affect_block_open_mark_only_on_unresolved():
     ]
     block = _format_affect_block("2026-06-11", eps)
     assert "[open]" not in block
+
+
+# ── render_diary_prompt ───────────────────────────────────────────────────────
+
+def test_render_diary_prompt_returns_filled_string():
+    """render_diary_prompt() is importable from daily_prompts and returns a
+    string with the date/digest placeholders ready for .format()."""
+    from marrow.daily_prompts import render_diary_prompt
+    result = render_diary_prompt()
+    assert isinstance(result, str)
+    assert len(result) > 100
+    # persona placeholders resolved — no bare {user_name} / {assistant_name} left
+    assert "{user_name}" not in result
+    assert "{assistant_name}" not in result
+    # date/digest template slots remain for the caller to fill
+    assert "{date}" in result
+    assert "{digest}" in result
