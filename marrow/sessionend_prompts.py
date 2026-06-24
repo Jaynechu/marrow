@@ -201,8 +201,8 @@ LIFE: (casual sessions ONLY — for task sessions output exactly: LIFE: N/A)
 FACTS: (task sessions ONLY — for casual sessions output exactly: FACTS: N/A)
 - Overview of the whole session
 - Summarise all tasks into ONE line.
-    - Include subject and outcomes.
-    - exclude all tech details.
+    - What was the task & what we did. e.g. redesign timeline & cleanup db
+    - exclude all details. e.g. 1247 测试通过， 删除210行孤儿路径，live验证通过。
     - Written from a life perspective in plain words.
     e.g. 14:00【平淡】一起修timeline bug; 深夜一起更新recall机制
 - timestamp, lenth, tone label same as LIFE.
