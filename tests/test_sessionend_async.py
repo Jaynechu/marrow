@@ -1667,3 +1667,21 @@ def test_sessionend_zero_events_with_force_flag_skips(db_env, monkeypatch):
     assert not any(s.startswith("fail:") for s in summaries), \
         f"unexpected fail row in {summaries}"
     assert not call_count
+
+
+def test_parse_digest_block_facts_to_life_lines():
+    from marrow.sessionend_writers import _parse_digest_block
+    raw = (
+        "===DIGEST===\n"
+        "KIND: task\n"
+        "TL: 修了timeline bug\n"
+        "LIFE: N/A\n"
+        "VOICE: N/A\n"
+        "FACTS:\n"
+        "- 14:00【平淡】一起修timeline bug\n"
+        "===END==="
+    )
+    result = _parse_digest_block(raw)
+    assert result["kind"] == "task"
+    assert result["life_lines"] is not None
+    assert "14:00【平淡】一起修timeline bug" in result["life_lines"]

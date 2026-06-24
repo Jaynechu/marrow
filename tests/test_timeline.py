@@ -176,7 +176,7 @@ def test_24h_inline_tone_text_is_not_appended_from_affect():
     )
     assert overflow == []
     assert lines == [
-        "--- 06-22 ---",
+        "**06-22 Mon**",
         "18:00 later line <!-- tl:s-tone-life -->",
         "14:00 early line <!-- tl:s-tone-life -->",
     ]
@@ -200,7 +200,7 @@ def test_24h_life_line_with_model_timestamp_not_double_prefixed():
     )
     assert overflow == []
     assert lines == [
-        "--- 06-22 ---",
+        "**06-22 Mon**",
         "01:25 【委屈】过敏难受 <!-- tl:s-double-ts -->",
     ]
     assert "01:54" not in lines[1]
@@ -223,9 +223,9 @@ def test_24h_cap_reports_overflow_line_indexes():
         from_utc="2026-06-21T14:00:00Z",
         to_utc="2026-06-22T14:00:00Z",
     )
-    content_lines = [ln for ln in lines if not ln.startswith("---")]
+    content_lines = [ln for ln in lines if not ln.startswith("**")]
     assert len(content_lines) == timeline._24H_CAP
-    assert lines[0] == "--- 06-22 ---"
+    assert lines[0] == "**06-22 Mon**"
     assert "23:00 line 23 <!-- tl:s-cap -->" in lines[1]
     assert overflow == [{"sid": "s-cap", "dropped_count": 4, "line_indexes": [3, 2, 1, 0]}]
 
@@ -257,7 +257,7 @@ def test_24h_manual_events_interleave():
     )
     assert overflow == []
     assert lines == [
-        "--- 06-22 ---",
+        "**06-22 Mon**",
         "12:00 task twelve <!-- tl:s-12 -->",
         "11:00 manual note <!-- tl:e:42 -->",
         "10:00 task ten <!-- tl:s-10 -->",
@@ -290,9 +290,9 @@ def test_24h_calendar_divider_between_local_dates():
     )
     assert overflow == []
     assert lines == [
-        "--- 06-22 ---",
+        "**06-22 Mon**",
         "00:30 early 22 <!-- tl:s-2200 -->",
-        "--- 06-21 ---",
+        "**06-21 Sun**",
         "23:30 late 21 <!-- tl:s-2130 -->",
     ]
 
@@ -627,7 +627,7 @@ def test_life_lines_calendar_crossing_get_dividers(conn):
     _digest(conn, "s-midnight", ts, kind="casual", tl="夜聊", life=life)
     result = timeline.render_timeline(conn)
 
-    assert "---" in result
+    assert "**" in result
 
 
 def test_life_line_hhmm_helper_parses_prefix():
@@ -695,7 +695,6 @@ def test_live_digest_stays_in_24h_strip(conn):
     _digest(conn, "s-new", _utc(2.5), tl="深夜闲聊")
     result = timeline.render_timeline(conn)
     assert "深夜闲聊" in result
-    assert not [l for l in result.splitlines() if l.startswith("**")]
 
 
 def test_life_lines_resolve_against_event_span_midnight_crossing():
@@ -725,11 +724,11 @@ def test_life_lines_resolve_against_event_span_midnight_crossing():
     )
     assert overflow == []
     assert lines == [
-        "--- 06-21 ---",
+        "**06-21 Sun**",
         "08:59 morning wrap <!-- tl:b2f76aa9 -->",
         "04:50 late snack <!-- tl:b2f76aa9 -->",
         "02:39 after midnight note <!-- tl:b2f76aa9 -->",
-        "--- 06-20 ---",
+        "**06-20 Sat**",
         "14:33 leaving for shift <!-- tl:b2f76aa9 -->",
         "14:22 nap before shift <!-- tl:b2f76aa9 -->",
     ]
@@ -752,7 +751,7 @@ def test_life_lines_render_reconcile_anchor_on_every_line():
         to_utc="2026-06-22T16:30:00Z",
     )
     assert overflow == []
-    content_lines = [line for line in lines if not line.startswith("---")]
+    content_lines = [line for line in lines if not line.startswith("**")]
     assert all("<!-- tl:s-every-line -->" in line for line in content_lines)
 
 
@@ -852,15 +851,15 @@ def test_24h_first_life_line_sorts_by_own_display_time():
 
     assert overflow == []
     assert lines == [
-        "--- 06-13 ---",
+        "**06-13 Sat**",
         "20:10 晚上聊天 <!-- tl:s-early-first -->",
         "12:00 中午任务 <!-- tl:s-midday -->",
         "04:30 清晨醒来 <!-- tl:s-early-first -->",
-        "--- 06-12 ---",
+        "**06-12 Fri**",
         "22:00 前夜任务 <!-- tl:s-prev-evening -->",
     ]
-    assert lines.count("--- 06-12 ---") == 1
-    assert lines.count("--- 06-13 ---") == 1
+    assert lines.count("**06-12 Fri**") == 1
+    assert lines.count("**06-13 Sat**") == 1
 
 
 # ── Bug 2: no double 6AM cutoff ───────────────────────────────────────────────
@@ -953,10 +952,11 @@ def test_zone_a_starts_at_yesterday_calendar_midnight(conn, monkeypatch):
         tl="昨天零点前",
     )
     result = timeline.render_timeline(conn)
-    if "**" in result:
-        zone_a = result.split("**")[0]
-    else:
-        zone_a = result
+    # Zone A uses **MM-DD Weekday** headers; Zone B uses **MM-DD Day 【tone】** headers.
+    # Split on the first Zone B header to isolate Zone A content.
+    import re as _re2
+    zone_b_start = _re2.search(r"\*\*\d{2}-\d{2} Day\b", result)
+    zone_a = result[:zone_b_start.start()] if zone_b_start else result
     assert "昨天零点后" in zone_a
     assert "昨天零点前" not in zone_a
 

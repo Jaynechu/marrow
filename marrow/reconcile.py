@@ -1486,7 +1486,7 @@ _TL_PLUS_RE   = re.compile(
 )
 _TL_DAY_DIVIDER_RE = re.compile(r"^-+\s*(?P<mmdd>\d{2}-\d{2})\s*-+\s*$")
 _TL_DAY_HEADER_RE = re.compile(
-    r"^\**(?P<mmdd>\d{2}-\d{2})\s+Day\b"
+    r"^\**(?P<mmdd>\d{2}-\d{2})\s+\w"
 )
 _TZ_MELB      = _MELB_TZ
 _TL_PERIOD_HOUR = {"AM": 9, "PM": 15, "ND": 21}

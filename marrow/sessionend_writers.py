@@ -335,6 +335,7 @@ def _parse_digest_block(raw: str) -> dict:
     kind: str | None = None
     tl_line: str | None = None
     life_parts: list[str] = []
+    facts_parts: list[str] = []
     life_section = False
     voice_section = False
     facts_section = False
@@ -367,6 +368,12 @@ def _parse_digest_block(raw: str) -> dict:
                 body_lines.append(line)
             elif label == "FACTS":
                 facts_section = True
+                if value.upper() == "N/A" or not value:
+                    facts_parts = []
+                else:
+                    item = value.lstrip("-").strip()
+                    if item:
+                        facts_parts.append(item)
                 body_lines.append(line)
         else:
             stripped = line.strip()
@@ -377,13 +384,18 @@ def _parse_digest_block(raw: str) -> dict:
                         life_parts.append(item)
                 body_lines.append(line)
             elif voice_section or facts_section:
+                if facts_section and stripped and stripped.upper() != "N/A":
+                    item = stripped.lstrip("-").strip()
+                    if item:
+                        facts_parts.append(item)
                 body_lines.append(line)
             elif stripped:
                 body_lines.append(line)
 
+    all_parts = life_parts or facts_parts
     life_lines: str | None = None
-    if life_parts:
-        life_lines = "\n".join(life_parts)
+    if all_parts:
+        life_lines = "\n".join(all_parts)
 
     body = "\n".join(body_lines).strip()
     return {

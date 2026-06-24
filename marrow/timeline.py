@@ -579,7 +579,7 @@ def _render_24h(digests: list[dict],
         life_raw = sd.get("life_lines") or ""
         life_items = [x.strip() for x in life_raw.splitlines() if x.strip()]
 
-        if kind == "task" or not life_items:
+        if not life_items:
             if sd["sid"] in exclude_full_session_sids:
                 continue
             _add_session_line(sd, 0, ts, sess_hhmm, tl)
@@ -616,7 +616,7 @@ def _render_24h(digests: list[dict],
     lines: list[str] = []
     anchored_sids: set[tuple[str, int]] = set()
     for cal_date in sorted({entry["local_date"] for entry in shown}, reverse=True):
-        lines.append(f"--- {cal_date.strftime('%m-%d')} ---")
+        lines.append(f"**{cal_date.strftime('%m-%d')} {cal_date.strftime('%a')}**")
         for entry in (e for e in shown if e["local_date"] == cal_date):
             hhmm = entry["hhmm"]
             text = entry["text"]
