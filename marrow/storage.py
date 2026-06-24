@@ -1107,7 +1107,7 @@ def insert_watermark(conn, sid, segment_seq, last_event_id, last_turn_idx=0):
     """Insert a new watermark row. Caller must ensure segment_seq is correct."""
     with conn:
         conn.execute(
-            "INSERT INTO session_watermarks"
+            "INSERT OR IGNORE INTO session_watermarks"
             " (sid, segment_seq, last_event_id, last_turn_idx)"
             " VALUES (?, ?, ?, ?)",
             (sid, segment_seq, last_event_id, last_turn_idx),

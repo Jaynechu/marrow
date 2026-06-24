@@ -519,7 +519,7 @@ def _run_extraction(conn, sid: str, date: str,
     tl_rows = conn.execute(
         "SELECT tl_line FROM session_digests"
         " WHERE tl_line IS NOT NULL AND tl_hidden = 0"
-        " ORDER BY ts DESC LIMIT 3",
+        " ORDER BY ts DESC, segment_seq DESC LIMIT 3",
     ).fetchall()
     timeline_context = (
         "\n".join(r["tl_line"] for r in reversed(tl_rows))
