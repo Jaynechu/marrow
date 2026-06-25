@@ -439,7 +439,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
             return _run_extraction(conn, sid, date, events_text, cfg, count,
-                                   cwd, segment_seq)
+                                   cwd, segment_seq, after_event_id)
         except Exception as e:  # noqa: BLE001
             try:
                 _write_final_audit(conn, sid, f"fail:{type(e).__name__}: {e}"[:220])
@@ -506,7 +506,8 @@ def _collect_run_failures(conn, sid: str) -> list[str]:
 
 def _run_extraction(conn, sid: str, date: str,
                     events_text: str, cfg: dict, count: int,
-                    cwd: str = "", segment_seq: int = 0) -> int:
+                    cwd: str = "", segment_seq: int = 0,
+                    after_event_id: int | None = None) -> int:
     """Single sonnet call: TASK_AFFECT_DIGEST_PROMPT emits all segments.
     dashboard + embed_pending run at tail (fail-soft).
     """
@@ -558,7 +559,8 @@ def _run_extraction(conn, sid: str, date: str,
                 lambda: seg_affect(conn, raw, sid, date))
     _run_writer(conn, sid, "digest",
                 lambda: seg_digest(conn, raw, sid, date, raw_llm=raw,
-                                   segment_seq=segment_seq),
+                                   segment_seq=segment_seq,
+                                   after_event_id=after_event_id),
                 zero_is_fail=True)
 
     # ── final audit ───────────────────────────────────────────────────────────
