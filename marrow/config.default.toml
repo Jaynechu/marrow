@@ -126,7 +126,9 @@ elapsed_hours = 4
 turn_threshold_time = 10
 turn_threshold_abs = 30
 min_hours = 2
-min_turns = 5
+min_turns = 4
+elapsed_hours_slow = 6
+turn_threshold_slow = 4
 
 [memes_dedup]
 # Cosine similarity threshold for the bge-m3 dedup check against existing

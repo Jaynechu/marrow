@@ -79,7 +79,9 @@ def main(argv: list[str] | None = None) -> int:
             turn_threshold_time = mid_cfg.get("turn_threshold_time", 10)
             turn_threshold_abs = mid_cfg.get("turn_threshold_abs", 30)
             min_hours = mid_cfg.get("min_hours", 2)
-            min_turns = mid_cfg.get("min_turns", 5)
+            min_turns = mid_cfg.get("min_turns", 4)
+            elapsed_hours_slow = mid_cfg.get("elapsed_hours_slow", 6)
+            turn_threshold_slow = mid_cfg.get("turn_threshold_slow", 4)
 
             wm = storage.get_latest_watermark(conn, sid)
             after_event_id = wm["last_event_id"] if wm else 0
@@ -122,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             triggered = (
                 (elapsed_h >= elapsed_hours and user_turns >= turn_threshold_time)
                 or (user_turns >= turn_threshold_abs and elapsed_h >= min_hours)
+                or (elapsed_h >= elapsed_hours_slow and user_turns >= turn_threshold_slow)
             )
             if not triggered:
                 return 0
