@@ -181,6 +181,47 @@ def test_mid_scan_prearchives_before_trigger_eval(tmp_path, monkeypatch):
     assert n == 10
 
 
+def test_mid_scan_lock_dir_fallback_still_prearchives(tmp_path, monkeypatch):
+    db = str(tmp_path / "mid.db")
+    sid = "sid-lock-fallback"
+    conn = storage.init_db(db)
+    conn.close()
+    jsonl = tmp_path / "active.jsonl"
+    _write_jsonl(jsonl, sid, count=10, hours_ago=5)
+    blocked_data_dir = tmp_path / "not-a-dir"
+    blocked_data_dir.write_text("", encoding="utf-8")
+
+    _patch_config(monkeypatch, db)
+    _freeze_now(monkeypatch)
+    monkeypatch.setattr(config, "DATA_DIR", blocked_data_dir)
+    monkeypatch.setattr(mid_scan.config, "DATA_DIR", blocked_data_dir)
+    monkeypatch.setattr(mid_scan.tempfile, "gettempdir", lambda: str(tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        mid_scan,
+        "_spawn_sessionend_async",
+        lambda *a, **kw: calls.append((a, kw)),
+    )
+
+    rc = mid_scan.main([
+        "--sid", sid,
+        "--jsonl-path", str(jsonl),
+        "--channel", "wx",
+    ])
+
+    assert rc == 0
+    assert calls == [((sid,), {"after_event_id": None, "segment_seq": 1})]
+    assert not (tmp_path / f"marrow_mid_{sid}.lock").exists()
+    conn = storage.connect(db)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM events WHERE session_id=?", (sid,)
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+    assert n == 10
+
+
 def test_pre_archive_failure_logged(tmp_path, monkeypatch):
     db = str(tmp_path / "mid.db")
     conn = storage.init_db(db)

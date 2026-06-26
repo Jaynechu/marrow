@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import fcntl
 import sys
+import tempfile
 from pathlib import Path
 
 from . import config, repo, storage
@@ -42,9 +43,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    lock_dir = Path(config.DATA_DIR) / "locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = lock_dir / f"mid_{sid}.lock"
+    lock_path = Path(config.DATA_DIR) / "locks" / f"mid_{sid}.lock"
+    remove_lock = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        lock_path = Path(tempfile.gettempdir()) / f"marrow_mid_{sid}.lock"
+        remove_lock = True
     lock_fd = None
     try:
         lock_fd = open(lock_path, "w")  # noqa: WPS515
@@ -153,6 +158,11 @@ def main(argv: list[str] | None = None) -> int:
         if lock_fd:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
+        if remove_lock:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
