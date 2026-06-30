@@ -62,6 +62,27 @@ def _run_cadence(args: list[str], binary: str) -> str:
         return ""
 
 
+import re
+
+_REM_LIST_RE = re.compile(r"^\[.+\]$")
+_REM_ITEM_RE = re.compile(r"^  [❗🚩⚡]*\[?\d+\]")
+
+
+def _strip_rem_notes(text: str) -> str:
+    if not text:
+        return text
+    out: list[str] = []
+    for line in text.splitlines():
+        if not line.strip():
+            if out and out[-1].strip():
+                out.append(line)
+        elif _REM_LIST_RE.match(line) or _REM_ITEM_RE.match(line):
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
 def render_daily(cadence_bin: str | None = None) -> str:
     binary = cadence_bin or _cadence_bin()
     if not os.path.isfile(binary):
@@ -74,8 +95,8 @@ def render_daily(cadence_bin: str | None = None) -> str:
     time_str = now.strftime("%H:%M")
 
     cal = _run_cadence(["cal", "read", today, "--human"], binary)
-    rem_today = _run_cadence(["rem", "read", "--today", "--human"], binary)
-    rem_overdue = _run_cadence(["rem", "read", "--overdue", "--human"], binary)
+    rem_today = _strip_rem_notes(_run_cadence(["rem", "read", "--today", "--human"], binary))
+    rem_overdue = _strip_rem_notes(_run_cadence(["rem", "read", "--overdue", "--human"], binary))
 
     if not cal and not rem_today and not rem_overdue:
         return ""
