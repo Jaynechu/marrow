@@ -69,6 +69,66 @@ _REM_ITEM_RE = re.compile(r"^  [❗🚩⚡]*\[?\d+\]")
 _NOTE_MAX_LINES = 3
 
 
+_PRIORITY_LABELS = {1: "❗", 5: "⚡"}
+_NOTE_TRIM = 3
+
+
+def _filter_rems_by_date(json_text: str, today_str: str) -> tuple[str, str]:
+    if not json_text:
+        return "", ""
+    try:
+        import json as _json
+        items = _json.loads(json_text)
+    except (ValueError, TypeError):
+        return "", ""
+
+    today_items: dict[str, list[str]] = {}
+    overdue_items: dict[str, list[str]] = {}
+
+    for r in items:
+        if r.get("completed"):
+            continue
+        due = r.get("due_date", "")
+        if not due:
+            continue
+        due_day = due[:10]
+        lst = r.get("list", "Inbox")
+        title = r.get("title", "")
+        rid = r.get("id", 0)
+        prio = r.get("priority", 0)
+        flagged = r.get("flagged", False)
+        notes = r.get("notes", "")
+
+        prefix = _PRIORITY_LABELS.get(prio, "")
+        flag = "🚩" if flagged else ""
+        line = f"  {prefix}{flag}[{rid}] {title}"
+
+        note_lines: list[str] = []
+        if notes:
+            for i, nl in enumerate(notes.splitlines()):
+                if i >= _NOTE_TRIM:
+                    note_lines.append("      ...")
+                    break
+                note_lines.append(f"      {nl}")
+
+        entry = [line] + note_lines
+
+        if due_day == today_str:
+            today_items.setdefault(lst, []).extend(entry)
+        elif due_day < today_str:
+            overdue_items.setdefault(lst, []).extend(entry)
+
+    def _render(groups: dict[str, list[str]]) -> str:
+        parts: list[str] = []
+        for lst in sorted(groups):
+            parts.append(f"[{lst}]")
+            parts.extend(groups[lst])
+            parts.append("")
+        return "\n".join(parts).rstrip()
+
+    return _render(today_items), _render(overdue_items)
+
+
 def _trim_rem_notes(text: str) -> str:
     if not text:
         return text
@@ -105,10 +165,10 @@ def render_daily(cadence_bin: str | None = None) -> str:
     time_str = now.strftime("%H:%M")
 
     cal = _run_cadence(["cal", "read", today, "--human"], binary)
-    rem_today = _trim_rem_notes(_run_cadence(["rem", "read", "--today", "--human"], binary))
-    rem_overdue = _trim_rem_notes(_run_cadence(["rem", "read", "--overdue", "--human"], binary))
+    rem_json = _run_cadence(["rem", "read", "--all"], binary)
+    rem_today_text, rem_overdue_text = _filter_rems_by_date(rem_json, today)
 
-    if not cal and not rem_today and not rem_overdue:
+    if not cal and not rem_today_text and not rem_overdue_text:
         return ""
 
     parts = [f"## Daily Schedule  {today} {day_name} | now {time_str}"]
@@ -132,10 +192,10 @@ def render_daily(cadence_bin: str | None = None) -> str:
                 i += 1
         if cleaned:
             parts.append(f"### Calendar\n" + "\n".join(cleaned))
-    if rem_today:
-        parts.append(f"### Today's Reminders\n{rem_today}")
-    if rem_overdue:
-        parts.append(f"### Overdue\n{rem_overdue}")
+    if rem_today_text:
+        parts.append(f"### Today's Reminders\n{rem_today_text}")
+    if rem_overdue_text:
+        parts.append(f"### Overdue\n{rem_overdue_text}")
 
     out = "\n\n".join(parts)
     if len(out) > 8000:
