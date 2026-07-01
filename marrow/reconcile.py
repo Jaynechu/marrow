@@ -1698,7 +1698,11 @@ def reconcile_timeline(conn: sqlite3.Connection,
             if tone_m:
                 tone_edits[date] = tone_m.group(1)
 
-    if not sid_edits and not date_edits and not date_overview_edits and not tone_edits and not m_trail and not plus_lines and not evt_edits and not trail_eps and not trail_sid_seqs:
+    if (not sid_edits and not date_edits and not date_overview_edits
+            and not tone_edits and not m_trail and not plus_lines
+            and not evt_edits and not trail_eps and not trail_sid_seqs
+            and not present_sid_seqs and not present_dates
+            and not present_evts and not present_eps):
         return rpt
 
     now_iso = _now()
@@ -1807,74 +1811,133 @@ def reconcile_timeline(conn: sqlite3.Connection,
             )
             rpt.updated += 1
 
-        # ── DELETE: anchors in trail but absent from current block → hidden ──
+        # ── DELETE: expected anchors absent from current block → hidden ──
         if m_trail:
-            for (sid, seq) in trail_sid_seqs - present_sid_seqs:
-                if md_mtime_iso:
-                    r = conn.execute(
-                        "SELECT COALESCE(updated_at, ts) AS mts FROM session_digests"
-                        " WHERE sid=? AND segment_seq=?", (sid, seq)
-                    ).fetchone()
-                    if r and (r["mts"] or "") > md_mtime_iso:
-                        continue
-                conn.execute(
-                    "UPDATE session_digests SET tl_hidden=1 WHERE sid=? AND segment_seq=?",
-                    (sid, seq))
-                conn.execute(
-                    "INSERT INTO audit_log (target_table, target_id, action, summary)"
-                    " VALUES ('session_digests', ?, 'tl_delete', 'user deleted tl line')",
-                    (f"{sid}:{seq}",))
-                rpt.updated += 1
-            for date in trail_dates - present_dates:
-                if md_mtime_iso:
-                    r = conn.execute(
-                        "SELECT COALESCE(updated_at, date) AS mts FROM diary WHERE date=?",
-                        (date,)
-                    ).fetchone()
-                    if r and (r["mts"] or "") > md_mtime_iso:
-                        continue
-                conn.execute(
-                    "UPDATE diary SET tl_hidden=1 WHERE date=?", (date,))
-                conn.execute(
-                    "INSERT INTO audit_log (target_table, target_id, action, summary)"
-                    " VALUES ('diary', ?, 'tl_delete', 'user deleted tl line')",
-                    (date,))
-                rpt.updated += 1
-            for eid in trail_evts - present_evts:
-                if md_mtime_iso:
-                    r = conn.execute(
-                        "SELECT created_at FROM events WHERE id=?", (eid,)
-                    ).fetchone()
-                    if r and (r["created_at"] or "") > md_mtime_iso:
-                        continue
-                conn.execute(
-                    "DELETE FROM events WHERE id=? AND channel='manual'", (eid,))
-                try:
-                    conn.execute("DELETE FROM events_vec WHERE rowid=?", (eid,))
-                    conn.execute("DELETE FROM events_vec_meta WHERE rowid=?", (eid,))
-                except sqlite3.OperationalError:
-                    pass
-                conn.execute(
-                    "INSERT INTO audit_log (target_table, target_id, action, summary)"
-                    " VALUES ('events', ?, 'tl_manual_delete', 'user deleted manual event')",
-                    (str(eid),))
-                rpt.updated += 1
-            for epid in trail_eps - present_eps:
-                if md_mtime_iso:
-                    r = conn.execute(
-                        "SELECT COALESCE(updated_at, created_at) AS mts FROM affect WHERE id=?",
-                        (epid,)
-                    ).fetchone()
-                    if r and (r["mts"] or "") > md_mtime_iso:
-                        continue
-                conn.execute(
-                    "UPDATE affect SET resolved_at=?, unresolved=0, updated_at=? WHERE id=?",
-                    (now_iso, now_iso, epid))
-                conn.execute(
-                    "INSERT INTO audit_log (target_table, target_id, action, summary)"
-                    " VALUES ('affect', ?, 'ep_resolve', 'user deleted unresolved episode from timeline')",
-                    (str(epid),))
-                rpt.updated += 1
+            expected_sid_seqs = trail_sid_seqs
+            expected_dates = trail_dates
+            expected_evts = trail_evts
+            expected_eps = trail_eps
+        elif present_sid_seqs or present_dates or present_evts or present_eps:
+            # Trail marker absent — reconstruct expected from DB,
+            # scoped to dates observed in the MD block.
+            expected_sid_seqs: set[tuple[str, int]] = set()
+            expected_dates: set[str] = set()
+            expected_evts: set[int] = set()
+            expected_eps: set[int] = set()
+            if present_dates:
+                ph = ",".join("?" * len(present_dates))
+                dates_vals = tuple(sorted(present_dates))
+                expected_sid_seqs = {
+                    (r["sid"], r["segment_seq"])
+                    for r in conn.execute(
+                        "SELECT sid, segment_seq FROM session_digests"
+                        f" WHERE tl_hidden=0 AND date IN ({ph})",
+                        dates_vals,
+                    ).fetchall()
+                }
+                expected_dates = {
+                    r["date"]
+                    for r in conn.execute(
+                        "SELECT date FROM diary"
+                        f" WHERE tl_hidden=0 AND date IN ({ph})",
+                        dates_vals,
+                    ).fetchall()
+                }
+                min_d, max_d = min(present_dates), max(present_dates)
+                from_utc = _dt.datetime.combine(
+                    _dt.date.fromisoformat(min_d), _dt.time.min,
+                    tzinfo=_TZ_MELB,
+                ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                to_utc = _dt.datetime.combine(
+                    _dt.date.fromisoformat(max_d) + _dt.timedelta(days=1),
+                    _dt.time.min, tzinfo=_TZ_MELB,
+                ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                expected_evts = {
+                    r["id"]
+                    for r in conn.execute(
+                        "SELECT id FROM events WHERE channel='manual'"
+                        " AND timestamp >= ? AND timestamp < ?",
+                        (from_utc, to_utc),
+                    ).fetchall()
+                }
+            expected_eps = {
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM affect WHERE unresolved=1",
+                ).fetchall()
+            }
+        else:
+            expected_sid_seqs = set()
+            expected_dates = set()
+            expected_evts = set()
+            expected_eps = set()
+
+        for (sid, seq) in expected_sid_seqs - present_sid_seqs:
+            if md_mtime_iso:
+                r = conn.execute(
+                    "SELECT COALESCE(updated_at, ts) AS mts FROM session_digests"
+                    " WHERE sid=? AND segment_seq=?", (sid, seq)
+                ).fetchone()
+                if r and (r["mts"] or "") > md_mtime_iso:
+                    continue
+            conn.execute(
+                "UPDATE session_digests SET tl_hidden=1 WHERE sid=? AND segment_seq=?",
+                (sid, seq))
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('session_digests', ?, 'tl_delete', 'user deleted tl line')",
+                (f"{sid}:{seq}",))
+            rpt.updated += 1
+        for date in expected_dates - present_dates:
+            if md_mtime_iso:
+                r = conn.execute(
+                    "SELECT COALESCE(updated_at, date) AS mts FROM diary WHERE date=?",
+                    (date,)
+                ).fetchone()
+                if r and (r["mts"] or "") > md_mtime_iso:
+                    continue
+            conn.execute(
+                "UPDATE diary SET tl_hidden=1 WHERE date=?", (date,))
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('diary', ?, 'tl_delete', 'user deleted tl line')",
+                (date,))
+            rpt.updated += 1
+        for eid in expected_evts - present_evts:
+            if md_mtime_iso:
+                r = conn.execute(
+                    "SELECT created_at FROM events WHERE id=?", (eid,)
+                ).fetchone()
+                if r and (r["created_at"] or "") > md_mtime_iso:
+                    continue
+            conn.execute(
+                "DELETE FROM events WHERE id=? AND channel='manual'", (eid,))
+            try:
+                conn.execute("DELETE FROM events_vec WHERE rowid=?", (eid,))
+                conn.execute("DELETE FROM events_vec_meta WHERE rowid=?", (eid,))
+            except sqlite3.OperationalError:
+                pass
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('events', ?, 'tl_manual_delete', 'user deleted manual event')",
+                (str(eid),))
+            rpt.updated += 1
+        for epid in expected_eps - present_eps:
+            if md_mtime_iso:
+                r = conn.execute(
+                    "SELECT COALESCE(updated_at, created_at) AS mts FROM affect WHERE id=?",
+                    (epid,)
+                ).fetchone()
+                if r and (r["mts"] or "") > md_mtime_iso:
+                    continue
+            conn.execute(
+                "UPDATE affect SET resolved_at=?, unresolved=0, updated_at=? WHERE id=?",
+                (now_iso, now_iso, epid))
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('affect', ?, 'ep_resolve', 'user deleted unresolved episode from timeline')",
+                (str(epid),))
+            rpt.updated += 1
 
         # ── ADD: lines starting with `+ ` → insert manual events ─────────────
         for day_context, explicit_day, raw_line in plus_lines:
