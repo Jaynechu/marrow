@@ -182,10 +182,3 @@ bottom = ["study", "projects", "cheatsheet"]
 hidden = []
 
 [transcript]
-# Single source of truth for the headless-spawn signal. A jsonl whose
-# assistant models are all (prefix-match) in this set is a spawned
-# `claude` worker call (prompt-lint haiku, diary haiku/sonnet), not an
-# archivable session. MUST stay synced with the models pinned in
-# marrow/llm.py tiers, marrow/diary.py, ~/.claude/hooks/prompt-lint.py
-# (guarded by tests/test_worker_models_sync.py).
-worker_models = ["claude-haiku-4-5", "claude-sonnet-5"]
