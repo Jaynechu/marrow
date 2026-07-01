@@ -1602,6 +1602,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
 
     # Parse trail marker first — tells us what was rendered last time
     trail_sid_seqs: set[tuple[str, int]] = set()
+    trail_sid_triples: set[tuple[str, int, int]] = set()
     trail_dates: set[str] = set()
     trail_evts:  set[int] = set()
     trail_eps:   set[int] = set()
@@ -1617,6 +1618,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
                     parts = x.split(":")
                     if len(parts) >= 3:
                         trail_sid_seqs.add((parts[0].strip(), int(parts[1].strip())))
+                        trail_sid_triples.add((parts[0].strip(), int(parts[1].strip()), int(parts[2].strip())))
                     elif len(parts) == 2:
                         trail_sid_seqs.add((parts[0].strip(), int(parts[1].strip())))
                     else:
@@ -1633,6 +1635,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
     date_overview_edits: dict[str, str] = {}
     tone_edits:     dict[str, str] = {}
     present_sid_seqs: set[tuple[str, int]] = set()
+    present_sid_triples: set[tuple[str, int, int]] = set()
     present_dates:  set[str] = set()
     block_dates:    set[str] = set()   # ALL dates from day-context headers
     present_evts:  set[int] = set()
@@ -1684,6 +1687,8 @@ def reconcile_timeline(conn: sqlite3.Connection,
             seq = int(m_sid.group("seq")) if m_sid.group("seq") else 0
             ln = int(m_sid.group("ln")) if m_sid.group("ln") else None
             present_sid_seqs.add((sid, seq))
+            if ln is not None:
+                present_sid_triples.add((sid, seq, ln))
             text_part = _strip_tl_date_header(_strip_tl_anchor(line))
             if text_part:
                 sid_edits[(sid, seq, ln)] = text_part
@@ -1900,6 +1905,44 @@ def reconcile_timeline(conn: sqlite3.Connection,
                 " VALUES ('session_digests', ?, 'tl_delete', 'user deleted tl line')",
                 (f"{sid}:{seq}",))
             rpt.updated += 1
+
+        # Partial deletion: individual life_lines removed while digest stays
+        if trail_sid_triples:
+            _deleted_triples = trail_sid_triples - present_sid_triples
+            _deleted_by_digest: dict[tuple[str, int], set[int]] = {}
+            for _s, _q, _ln in _deleted_triples:
+                if (_s, _q) in present_sid_seqs:
+                    _deleted_by_digest.setdefault((_s, _q), set()).add(_ln)
+            for (p_sid, p_seq), deleted_lns in _deleted_by_digest.items():
+                if md_mtime_iso:
+                    r = conn.execute(
+                        "SELECT COALESCE(updated_at, ts) AS mts FROM session_digests"
+                        " WHERE sid=? AND segment_seq=?", (p_sid, p_seq)
+                    ).fetchone()
+                    if r and (r["mts"] or "") > md_mtime_iso:
+                        continue
+                row = conn.execute(
+                    "SELECT life_lines FROM session_digests"
+                    " WHERE sid=? AND segment_seq=?", (p_sid, p_seq),
+                ).fetchone()
+                if row is None:
+                    continue
+                life = (row["life_lines"] or "").splitlines()
+                new_life = [ln_text for i, ln_text in enumerate(life)
+                            if i not in deleted_lns]
+                conn.execute(
+                    "UPDATE session_digests SET life_lines=?, updated_at=?"
+                    " WHERE sid=? AND segment_seq=?",
+                    ("\n".join(new_life), now_iso, p_sid, p_seq),
+                )
+                conn.execute(
+                    "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                    " VALUES ('session_digests', ?, 'tl_partial_delete', ?)",
+                    (f"{p_sid}:{p_seq}",
+                     f"removed line_indexes {sorted(deleted_lns)}"),
+                )
+                rpt.updated += 1
+
         for date in expected_dates - present_dates:
             if md_mtime_iso:
                 r = conn.execute(
