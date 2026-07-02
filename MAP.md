@@ -48,7 +48,12 @@ Three runtimes:
 - Digest raw log → ~/.config/marrow/logs/digest/digest-YYYY-MM-DD.log (6AM cutoff, pruned >2.5d).
 - Tail (fail-soft, alerted): `dashboard:write_dashboard` + `recall:embed_pending(batch=200)`.
 
-### 2.3 daily candidates (daily.py 07:00, for yesterday)
+### 2.3 mid_scan (mid_scan.py, bridge-called per active session)
+- Pre-archives transcript into events, then watermark-based trigger check (elapsed hours / turn thresholds) → spawns sessionend_async extraction; audit_log action=mid_scan_trigger per fire, segment_seq increments for multi-segment sessions.
+- flock serialised (lock-dir fallback /tmp, 4b0e013); pre-archive failure → audit `mid_scan_pre_archive_fail` (ce53a32).
+- Verified healthy 07-02: 11 triggers over 06-26→07-01 across tg+wx, zero pre_archive_fail post-fix.
+
+### 2.4 daily candidates (daily.py 07:00, for yesterday)
 - One sonnet call → 3 fenced blocks (entity/milestone/memes), block-isolated parse; second sonnet call → diary prose (DIARY_PROMPT in daily_prompts.py). Diary output: prose + TONE (2-char CN) + OVERVIEW (100-150 chars day summary) → diary.tone/overview columns. _read_digests includes life_lines in material. Idempotent per date unless --force; serialised by `daily_catchup:app_lock` (fcntl).
 - Ingestion gates (`candidates.py`):
   - entities: conf ≥0.8; cosine 0.85 same-kind hit → merge aliases into matched row (never blocks).
@@ -149,7 +154,7 @@ Three runtimes:
 
 ## 12. Addons
 
-- daily.py pipeline (§2.3) vs day-plan CC skill (.claude/skills/day-plan) — unrelated, share the name.
+- daily.py pipeline (§2.4) vs day-plan CC skill (.claude/skills/day-plan) — unrelated, share the name.
 - synapse-wx — own repo + MAP; talks to marrow via MARROW_BRIDGE=1 env + mw CLI + direct sqlite audit flags only.
 
 ## 13. Invariants & status
