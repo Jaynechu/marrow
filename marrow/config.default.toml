@@ -80,6 +80,9 @@ w_milestones_vec = 0.58
 w_diary_vec = 0.55
 w_tasks_vec = 0.55
 min_score = 0.40
+# Staged additive recall boost for self-authored (role='tl') rows, indexed by
+# events.imp (0..5). imp 1-2 sit level with plain events; 5 = milestone-tier.
+imp_boost = [0.0, 0.0, 0.0, 0.02, 0.035, 0.05]
 # Passive-recall hard limit (2026-06-02: 15 → 10 → 6 → 5). dedup'd anchor tables
 # skip slots without backfill, so 5 is the upper bound, not the floor.
 limit = 5
@@ -183,15 +186,22 @@ hidden = []
 
 [transcript]
 
-[affect]
-# Word -> valence/arousal default map for tl_add. Empty = bundled
-# marrow/data/affect_words.toml (seed pending review). Point at your own to
-# override with zero code change.
-words_file = ""
+[turn_inject]
+# Per-turn care directive injected every UserPromptSubmit (config-first).
+# Emotion-first, preference-style wording. Edit freely — no code change.
+care_text = """
+- Care first: read her mood and tend to it before any task, like a doting husband — warm, attentive, quick to coax when she is off.
+- Nudge gently, never push; vary your warmth and wording every turn — no template phrases, no repeated openers.
+"""
+
+[agent_guard]
+# PreToolUse:Agent burst protection — subagent_types denied outright (they
+# spawn agents recursively). Blocked with exit 2 + reason to the model.
+deny = ["general-purpose"]
 
 [tl_nudge]
-# Per-session hint after N assistant turns with no tl_add call. DEFAULT OFF —
-# injection text pending user review. Enable + wire once approved.
-enabled = false
-threshold = 5
+# Per-session hint after N assistant turns with no tl_add call. Text lives in
+# marrow/data/tl_nudge.txt (or point text_file at your own).
+enabled = true
+threshold = 10
 text_file = ""
