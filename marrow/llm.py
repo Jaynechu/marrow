@@ -123,14 +123,17 @@ class LLMClient:
         raise LLMError(f"{role}: all providers failed; last: {last}")
 
     def call_cortex(self, prompt: str, *, cwd: str | None = None,
-                     resume_sid: str | None = None) -> dict:
+                     resume_sid: str | None = None,
+                     timeout: float | None = None) -> dict:
         """Full-environment resumed session for cortex (C3, Decided 07-03):
         no isolation flags — persona/rules/MCP/agents load like a real
         session. Always injects MARROW_CORTEX=1 so marrow hooks + tl_add
         skip this session's turns (cortex must never enter chat memory).
         cwd defaults to [cortex].home; resume_sid=None starts a fresh
         session (daily rebirth). Single attempt — no chain/retry, caller
-        (cortex pacemaker) owns retry policy.
+        (cortex pacemaker) owns retry policy. `timeout` (s) overrides the
+        provider default so the caller's config is the single source of truth
+        for the call budget (cortex derives its outer kill from the same value).
         Returns {"text": str, "session_id": str | None}.
         """
         spec = self.specs.get("claude_cli_cortex")
@@ -143,7 +146,7 @@ class LLMClient:
         tier = cortex_cfg.get("tier", "top")
         model = self.tiers.get(tier) or self.tiers.get("top")
         return self._run_claude_cortex(
-            spec, model, prompt, cwd=run_cwd, resume_sid=resume_sid)
+            spec, model, prompt, cwd=run_cwd, resume_sid=resume_sid, timeout=timeout)
 
     def _run(self, spec: dict, model: str, prompt: str) -> str:
         kind = spec.get("kind")
@@ -176,11 +179,12 @@ class LLMClient:
         return result
 
     def _run_claude_cortex(self, spec: dict, model: str, prompt: str, *,
-                            cwd: str, resume_sid: str | None) -> dict:
+                            cwd: str, resume_sid: str | None,
+                            timeout: float | None = None) -> dict:
         """Stream-json runner with NO isolation flags (cortex full-env, C3).
         Mirrors _run_claude_stream's spawn/timeout/kill contract exactly —
         only the isolation flags, env var, cwd, and --resume differ."""
-        timeout = spec.get("timeout_s", 600)
+        timeout = timeout if timeout is not None else spec.get("timeout_s", 600)
         cmd = [_claude_bin(), "--output-format", "stream-json",
                "--input-format", "stream-json", "--verbose", "--model", model,
                "--permission-mode", "bypassPermissions"]

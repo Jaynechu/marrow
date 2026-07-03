@@ -355,6 +355,21 @@ def test_call_cortex_default_timeout_is_600(monkeypatch, tmp_path):
     assert captured["timeout"] == 600
 
 
+def test_call_cortex_timeout_override(monkeypatch, tmp_path):
+    """Caller-supplied timeout overrides the provider default so the cortex
+    config is the single source of truth for the call budget."""
+    c = LLMClient(CORTEX_CFG)
+    captured = {}
+
+    def fake_stream(cmd, prompt, timeout, env, cwd=None):
+        captured["timeout"] = timeout
+        return _cortex_stream_out("ok")
+
+    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
+    c.call_cortex("hello", cwd=str(tmp_path), timeout=123)
+    assert captured["timeout"] == 123
+
+
 def test_call_cortex_resume_sid_passes_resume_flag(monkeypatch, tmp_path):
     c = LLMClient(CORTEX_CFG)
     captured = {}
