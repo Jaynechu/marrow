@@ -1606,7 +1606,8 @@ def _render_hit_block(rank: int, h: dict, rank_caps: list[int]) -> list[str]:
         ctxs = h.get("_context") or [] if rank == 0 else []
         main_cap = max(40, cap - 60) if ctxs else cap
         main = content_full[:main_cap]
-        block.append(f"- {ts} {main}")
+        tag = f"[{h['source_tag']}] " if h.get("source_tag") else ""
+        block.append(f"- {ts} {tag}{main}")
         remaining = max(0, cap - len(main))
         if ctxs and remaining > 0:
             per_ctx = max(0, remaining // len(ctxs))
@@ -1675,6 +1676,22 @@ def user_prompt_submit() -> int:
                 _nudge_line = f"你怎么还不发表情包，{user_name}都等急了——翻翻 sticker_search 找个应景的发一下。"
                 _sn["last_sticker_turn"] = _sn["turn_count"]
             _save_sticker_nudge(sid, _sn)
+        except Exception:
+            pass
+
+    # tl_add nudge: fire the 10-turn (config) reminder for sids that have gone
+    # too long without recording a timeline line. Appends to any sticker nudge.
+    if sid:
+        try:
+            from . import tl_nudge as _tln
+            if _tln.enabled():
+                conn = storage.connect(config.db_path())
+                try:
+                    _tl_hint = _tln.maybe_nudge(conn, sid)
+                finally:
+                    conn.close()
+                if _tl_hint:
+                    _nudge_line = f"{_nudge_line}\n{_tl_hint}" if _nudge_line else _tl_hint
         except Exception:
             pass
 
@@ -1977,6 +1994,33 @@ def _append_recall_log(sid: str, prompt_text: str, hits: list[dict]) -> None:
 _PLACEMENT_BASH_OPS = {"mv", "cp", "rename", "mmv", "touch", "mkdir"}
 
 
+def agent_guard() -> int:
+    """PreToolUse:Agent burst protection — deny recursion-prone subagents.
+
+    Blocks any Agent dispatch whose subagent_type is in [agent_guard].deny
+    (default: general-purpose — it spawns agents out of control). Exit 2 +
+    stderr surfaces the reason to the model. Fail-soft: errors exit 0.
+    """
+    try:
+        inp = _read_input()
+        if not isinstance(inp, dict) or inp.get("tool_name") != "Agent":
+            return 0
+        ti = inp.get("tool_input") or {}
+        sub = (ti.get("subagent_type") or "general-purpose").strip()
+        deny = config.load().get("agent_guard", {}).get("deny", ["general-purpose"])
+        if sub in deny:
+            print(
+                f"[burst-guard] subagent_type={sub!r} is denied — it spawns "
+                "agents out of control. Use Explore/executor/coder or a worktree "
+                "agent with an explicit model instead.",
+                file=sys.stderr,
+            )
+            return 2
+    except Exception:
+        return 0
+    return 0
+
+
 def pretool_use() -> int:
     """PreToolUse hook: emit placement guidance for Write/Bash file ops.
 
@@ -2228,7 +2272,17 @@ def turn_inject() -> int:
     except Exception:
         pass
 
-    ctx = f"# Context — {now_str}{delta}{sched_ctx}"
+    # Absorbed global turn-inject: per-turn care directive (config-lives).
+    care_ctx = ""
+    try:
+        care = (config.load().get("turn_inject", {}) or {}).get("care_text", "")
+        care = (care or "").strip()
+        if care:
+            care_ctx = f"\n\n{care}"
+    except Exception:
+        pass
+
+    ctx = f"# Context — {now_str}{delta}{sched_ctx}{care_ctx}"
     json.dump(
         {"hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
@@ -2246,6 +2300,7 @@ _EVENTS = {
     "user_prompt_submit": user_prompt_submit,
     "turn_inject": turn_inject,
     "pretool_use": pretool_use,
+    "agent_guard": agent_guard,
 }
 
 

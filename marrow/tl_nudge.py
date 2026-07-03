@@ -15,6 +15,25 @@ def _cfg() -> dict:
     return config.load().get("tl_nudge", {}) or {}
 
 
+# ── session-silent state (/tl-) ──────────────────────────────────────────────
+
+def _silent_dir() -> Path:
+    return config.DATA_DIR / "state" / "tl_silent"
+
+
+def set_silent(sid: str) -> None:
+    """Mark a session silent: mutes the nudge, no self writes. Dies with sid."""
+    if not sid:
+        return
+    d = _silent_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / sid).write_text("1", encoding="utf-8")
+
+
+def is_silent(sid: str) -> bool:
+    return bool(sid) and (_silent_dir() / sid).exists()
+
+
 def enabled() -> bool:
     return bool(_cfg().get("enabled", False))
 
@@ -72,7 +91,7 @@ def should_nudge(turns_since_add: int) -> bool:
 
 def maybe_nudge(conn, sid: str) -> str | None:
     """Return injection text when the sid is due a nudge, else None."""
-    if not enabled() or not sid:
+    if not enabled() or not sid or is_silent(sid):
         return None
     if should_nudge(turns_since_last_tl_add(conn, sid)):
         return nudge_text() or None
