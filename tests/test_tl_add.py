@@ -50,42 +50,35 @@ def test_events_has_timerange_columns(conn):
 
 # ── tl_add write + mapping ───────────────────────────────────────────────────
 
-def test_tl_add_writes_event_and_affect_with_fk(conn):
+def test_tl_add_writes_tl_row_no_affect(conn):
     r = _add(conn)
     ev = conn.execute(
-        "SELECT channel, content, ts_start, ts_end FROM events WHERE id=?",
-        (r["event_id"],)).fetchone()
-    assert ev["channel"] == "self"
-    assert ev["content"] == "body orig"
+        "SELECT role, channel, content, imp, flag, ts_start, ts_end"
+        " FROM events WHERE id=?", (r["event_id"],)).fetchone()
+    assert ev["role"] == "tl"
+    assert ev["channel"] == "cli"  # MARROW_CHANNEL unset -> default platform
+    # affect phrase lives verbatim inside content; no affect table write.
+    assert ev["content"] == "【N 愉悦·3 | Y 委屈·2】body orig"
+    assert ev["imp"] == 3  # default = max(n_int, y_int)
+    assert ev["flag"] is None
     assert ev["ts_start"] and ev["ts_end"]
-    af = conn.execute(
-        "SELECT event_id, valence, arousal, importance, label FROM affect"
-        " WHERE event_id=?", (r["event_id"],)).fetchone()
-    assert af["event_id"] == r["event_id"]
-    # primary word = n_word 愉悦 -> 0.80/0.60 from seed map
-    assert af["valence"] == pytest.approx(0.80)
-    assert af["arousal"] == pytest.approx(0.60)
-    assert af["importance"] == 2  # default
-    assert af["label"] == "N 愉悦·3 | Y 委屈·2"
+    n_af = conn.execute("SELECT COUNT(*) c FROM affect WHERE event_id=?",
+                        (r["event_id"],)).fetchone()["c"]
+    assert n_af == 0
 
 
-def test_explicit_va_overrides_map(conn):
-    r = _add(conn, valence=0.11, arousal=0.99)
-    af = conn.execute("SELECT valence, arousal FROM affect WHERE event_id=?",
-                      (r["event_id"],)).fetchone()
-    assert af["valence"] == pytest.approx(0.11)
-    assert af["arousal"] == pytest.approx(0.99)
-
-
-def test_unknown_word_without_override_errors(conn):
-    with pytest.raises(tl_writer.TlError) as e:
-        tl_writer.tl_add(conn, _hhmm(1), "body", n_word="魑魅", sid="s")
-    assert "not in affect map" in str(e.value)
+def test_explicit_importance_sets_events_imp(conn):
+    r = _add(conn, importance=5)
+    imp = conn.execute("SELECT imp FROM events WHERE id=?",
+                       (r["event_id"],)).fetchone()["imp"]
+    assert imp == 5
 
 
 def test_validation_word_and_body_limits(conn):
+    # word cap is 8 chars now; 7-char word is valid
+    tl_writer.tl_add(conn, _hhmm(1), "b", n_word="1234567", sid="s")
     with pytest.raises(tl_writer.TlError):
-        tl_writer.tl_add(conn, _hhmm(1), "b", n_word="1234567", sid="s")
+        tl_writer.tl_add(conn, _hhmm(1), "b", n_word="123456789", sid="s")
     with pytest.raises(tl_writer.TlError):
         tl_writer.tl_add(conn, _hhmm(1), "x" * 31, n_word="愉悦", sid="s")
     with pytest.raises(tl_writer.TlError):
@@ -134,13 +127,13 @@ def test_self_edit_round_trip(conn, tmp_path):
                         .replace("愉悦·3", "温柔·4"))
     rpt = reconcile.reconcile_timeline(conn, dash)
     assert rpt.updated == 1
+    # label + body both live inside content now
     assert conn.execute("SELECT content FROM events WHERE id=?",
-                        (eid,)).fetchone()["content"] == "body edited"
-    assert conn.execute("SELECT label FROM affect WHERE event_id=?",
-                        (eid,)).fetchone()["label"] == "N 温柔·4 | Y 委屈·2"
+                        (eid,)).fetchone()["content"] == \
+        "【N 温柔·4 | Y 委屈·2】body edited"
 
 
-def test_self_delete_cascades_affect(conn, tmp_path):
+def test_self_delete(conn, tmp_path):
     r = _add(conn)
     eid = r["event_id"]
     dash = tmp_path / "dashboard.md"
@@ -148,8 +141,6 @@ def test_self_delete_cascades_affect(conn, tmp_path):
     rpt = reconcile.reconcile_timeline(conn, dash)
     assert rpt.updated == 1
     assert conn.execute("SELECT COUNT(*) c FROM events WHERE id=?",
-                        (eid,)).fetchone()["c"] == 0
-    assert conn.execute("SELECT COUNT(*) c FROM affect WHERE event_id=?",
                         (eid,)).fetchone()["c"] == 0
 
 
@@ -175,20 +166,26 @@ def test_seg_digest_suppresses_life_lines_for_self_sid(conn):
 
 # ── tl_update ────────────────────────────────────────────────────────────────
 
-def test_tl_update_changes_body_and_affect(conn):
+def test_tl_update_changes_body_and_label(conn):
     r = _add(conn, body="orig")
     tl_writer.tl_update(conn, r["event_id"], body="updated",
-                        n_word="温柔", n_intensity=5, y_word="委屈", y_intensity=1)
+                        n_word="温柔", n_intensity=5, y_word="委屈", y_intensity=1,
+                        importance=4)
+    ev = conn.execute("SELECT content, imp FROM events WHERE id=?",
+                      (r["event_id"],)).fetchone()
+    assert ev["content"] == "【N 温柔·5 | Y 委屈·1】updated"
+    assert ev["imp"] == 4
+
+
+def test_tl_update_body_only_keeps_label(conn):
+    r = _add(conn, body="orig")
+    tl_writer.tl_update(conn, r["event_id"], body="just body")
     ev = conn.execute("SELECT content FROM events WHERE id=?",
                       (r["event_id"],)).fetchone()
-    af = conn.execute("SELECT label, valence FROM affect WHERE event_id=?",
-                      (r["event_id"],)).fetchone()
-    assert ev["content"] == "updated"
-    assert af["label"] == "N 温柔·5 | Y 委屈·1"
-    assert af["valence"] == pytest.approx(0.85)  # 温柔
+    assert ev["content"] == "【N 愉悦·3 | Y 委屈·2】just body"
 
 
-def test_tl_update_rejects_non_self(conn):
+def test_tl_update_rejects_non_tl(conn):
     conn.execute("INSERT INTO events (session_id, timestamp, role, content,"
                  " channel) VALUES ('m', '2026-07-03T00:00:00Z', 'user', 'x',"
                  " 'manual')")
@@ -200,7 +197,22 @@ def test_tl_update_rejects_non_self(conn):
 
 # ── nudge ────────────────────────────────────────────────────────────────────
 
-def test_nudge_off_by_default(conn):
-    assert tl_nudge.enabled() is False
-    assert tl_nudge.maybe_nudge(conn, "sess-1") is None
-    assert tl_nudge.should_nudge(999) is False  # gated by enabled flag
+def test_nudge_on_by_default_10_turns(conn):
+    assert tl_nudge.enabled() is True
+    assert tl_nudge.threshold() == 10
+    # 10 assistant turns, no tl_add -> nudge fires
+    for _ in range(10):
+        conn.execute("INSERT INTO events (session_id, timestamp, role, content)"
+                     " VALUES ('nud', '2026-07-03T00:00:00Z', 'assistant', 'x')")
+    conn.commit()
+    assert tl_nudge.maybe_nudge(conn, "nud")
+
+
+def test_nudge_silent_session_muted(conn):
+    for _ in range(10):
+        conn.execute("INSERT INTO events (session_id, timestamp, role, content)"
+                     " VALUES ('mute', '2026-07-03T00:00:00Z', 'assistant', 'x')")
+    conn.commit()
+    tl_nudge.set_silent("mute")
+    assert tl_nudge.is_silent("mute") is True
+    assert tl_nudge.maybe_nudge(conn, "mute") is None
