@@ -144,9 +144,11 @@ class LLMClient:
             cwd or cortex_cfg.get("home") or "~/.config/marrow/cortex")
         Path(run_cwd).mkdir(parents=True, exist_ok=True)
         tier = cortex_cfg.get("tier", "top")
-        model = self.tiers.get(tier) or self.tiers.get("top")
+        model = cortex_cfg.get("model") or self.tiers.get(tier) or self.tiers.get("top")
+        effort = cortex_cfg.get("effort") or ""
         return self._run_claude_cortex(
-            spec, model, prompt, cwd=run_cwd, resume_sid=resume_sid, timeout=timeout)
+            spec, model, prompt, cwd=run_cwd, resume_sid=resume_sid,
+            timeout=timeout, effort=effort)
 
     def _run(self, spec: dict, model: str, prompt: str) -> str:
         kind = spec.get("kind")
@@ -180,14 +182,17 @@ class LLMClient:
 
     def _run_claude_cortex(self, spec: dict, model: str, prompt: str, *,
                             cwd: str, resume_sid: str | None,
-                            timeout: float | None = None) -> dict:
+                            timeout: float | None = None,
+                            effort: str = "") -> dict:
         """Stream-json runner with NO isolation flags (cortex full-env, C3).
         Mirrors _run_claude_stream's spawn/timeout/kill contract exactly —
-        only the isolation flags, env var, cwd, and --resume differ."""
+        only the isolation flags, env var, cwd, --resume, and --effort differ."""
         timeout = timeout if timeout is not None else spec.get("timeout_s", 600)
         cmd = [_claude_bin(), "--output-format", "stream-json",
                "--input-format", "stream-json", "--verbose", "--model", model,
                "--permission-mode", "bypassPermissions"]
+        if effort:
+            cmd.extend(["--effort", effort])
         if resume_sid:
             cmd.extend(["--resume", resume_sid])
         env = {**os.environ, "MARROW_CORTEX": "1"}

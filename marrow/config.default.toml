@@ -219,5 +219,9 @@ text_file = ""
 home = "~/.config/marrow/cortex"
 # Model tier (see [tiers]) for the cortex runner.
 tier = "top"
+# Explicit model id override, bypasses tier mapping. Empty = use tier.
+model = ""
+# --effort passed to the cortex CLI (low/medium/high/xhigh/max). Empty = CLI default.
+effort = ""
 # Wishlist md, pure append-only (Decided 07-03 eve). Empty = <home>/wishlist.md.
 wishlist_path = ""

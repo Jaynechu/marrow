@@ -340,6 +340,49 @@ def test_call_cortex_no_isolation_flags(monkeypatch, tmp_path):
     assert captured["cmd"][captured["cmd"].index("--permission-mode") + 1] == "bypassPermissions"
 
 
+def test_call_cortex_model_override_bypasses_tier(monkeypatch, tmp_path):
+    cfg = {**CORTEX_CFG, "cortex": {**CORTEX_CFG["cortex"],
+                                     "model": "claude-opus-4-6"}}
+    c = LLMClient(cfg)
+    captured = {}
+
+    def fake_stream(cmd, prompt, timeout, env, cwd=None):
+        captured["cmd"] = cmd
+        return _cortex_stream_out("hi there")
+
+    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
+    c.call_cortex("hello", cwd=str(tmp_path))
+    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "claude-opus-4-6"
+
+
+def test_call_cortex_effort_flag_passed_when_set(monkeypatch, tmp_path):
+    cfg = {**CORTEX_CFG, "cortex": {**CORTEX_CFG["cortex"], "effort": "medium"}}
+    c = LLMClient(cfg)
+    captured = {}
+
+    def fake_stream(cmd, prompt, timeout, env, cwd=None):
+        captured["cmd"] = cmd
+        return _cortex_stream_out("hi there")
+
+    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
+    c.call_cortex("hello", cwd=str(tmp_path))
+    assert "--effort" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--effort") + 1] == "medium"
+
+
+def test_call_cortex_effort_flag_omitted_when_empty(monkeypatch, tmp_path):
+    c = LLMClient(CORTEX_CFG)
+    captured = {}
+
+    def fake_stream(cmd, prompt, timeout, env, cwd=None):
+        captured["cmd"] = cmd
+        return _cortex_stream_out("hi there")
+
+    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
+    c.call_cortex("hello", cwd=str(tmp_path))
+    assert "--effort" not in captured["cmd"]
+
+
 def test_call_cortex_default_timeout_is_600(monkeypatch, tmp_path):
     cfg = {**CORTEX_CFG, "llm": {**CORTEX_CFG["llm"],
            "claude_cli_cortex": {"kind": "claude_cli_cortex"}}}
