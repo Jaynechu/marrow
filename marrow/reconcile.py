@@ -1583,11 +1583,10 @@ _TL_SELF_RE = re.compile(
 
 
 def _reconcile_self_edit(conn, rpt, eid, raw_text, row, now_iso) -> None:
-    """Round-trip an edited self (tl_add) line back to events + affect.
+    """Round-trip an edited self (tl_add) line back to events.content.
 
-    Parses HH:mm[-HH:mm] 【label】body. body -> events.content; label ->
-    affect.label. valence/arousal are NOT re-derived from edited words here —
-    the stored fusion V/A is preserved (tl_update remains the path for that).
+    Parses HH:mm[-HH:mm] 【label】body -> events.content = 【label】body
+    (the affect phrase lives inside content; no affect row to touch).
     """
     m = _TL_SELF_RE.match(raw_text.strip())
     if not m:
@@ -1595,32 +1594,18 @@ def _reconcile_self_edit(conn, rpt, eid, raw_text, row, now_iso) -> None:
         return
     body = (m.group("body") or "").strip()
     label = m.group("label")
-    changed = False
-    if body and body != (row["content"] or ""):
-        conn.execute("UPDATE events SET content=? WHERE id=?", (body, eid))
+    new_content = f"【{label.strip()}】{body}" if label else body
+    if new_content and new_content != (row["content"] or ""):
+        conn.execute("UPDATE events SET content=? WHERE id=?", (new_content, eid))
         try:
             conn.execute("DELETE FROM events_vec WHERE rowid=?", (eid,))
             conn.execute("DELETE FROM events_vec_meta WHERE rowid=?", (eid,))
         except sqlite3.OperationalError:
             pass
-        changed = True
-    if label is not None:
-        label = label.strip()
-        af = conn.execute(
-            "SELECT id, label FROM affect WHERE event_id=? ORDER BY id DESC LIMIT 1",
-            (eid,),
-        ).fetchone()
-        if af is not None and label != (af["label"] or ""):
-            conn.execute(
-                "UPDATE affect SET label=?, updated_at=? WHERE id=?",
-                (label, now_iso, af["id"]),
-            )
-            changed = True
-    if changed:
         conn.execute(
             "INSERT INTO audit_log (target_table, target_id, action, summary)"
             " VALUES ('events', ?, 'tl_self_edit', ?)",
-            (str(eid), f"md-reconcile: body={body[:40]!r}"))
+            (str(eid), f"md-reconcile: {new_content[:40]!r}"))
         rpt.updated += 1
     else:
         rpt.unchanged += 1
@@ -1923,7 +1908,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
                     r["id"]
                     for r in conn.execute(
                         "SELECT id FROM events"
-                        " WHERE channel IN ('manual','self')"
+                        " WHERE (channel='manual' OR role='tl')"
                         " AND timestamp >= ? AND timestamp < ?",
                         (from_utc, to_utc),
                     ).fetchall()
@@ -2011,25 +1996,22 @@ def reconcile_timeline(conn: sqlite3.Connection,
             rpt.updated += 1
         for eid in expected_evts - present_evts:
             erow = conn.execute(
-                "SELECT channel, created_at FROM events WHERE id=?", (eid,)
+                "SELECT channel, role, created_at FROM events WHERE id=?", (eid,)
             ).fetchone()
-            if erow is None or erow["channel"] not in ("manual", "self"):
+            is_self = erow is not None and erow["role"] == "tl"
+            if erow is None or not (is_self or erow["channel"] == "manual"):
                 continue
             if md_mtime_iso and (erow["created_at"] or "") > md_mtime_iso:
                 continue
-            # Self rows carry a linked affect row — remove it first (FK is
-            # ON DELETE SET NULL, so it would otherwise orphan).
-            if erow["channel"] == "self":
-                conn.execute("DELETE FROM affect WHERE event_id=?", (eid,))
             conn.execute(
-                "DELETE FROM events WHERE id=? AND channel IN ('manual','self')",
+                "DELETE FROM events WHERE id=? AND (channel='manual' OR role='tl')",
                 (eid,))
             try:
                 conn.execute("DELETE FROM events_vec WHERE rowid=?", (eid,))
                 conn.execute("DELETE FROM events_vec_meta WHERE rowid=?", (eid,))
             except sqlite3.OperationalError:
                 pass
-            _action = "tl_self_delete" if erow["channel"] == "self" else "tl_manual_delete"
+            _action = "tl_self_delete" if is_self else "tl_manual_delete"
             conn.execute(
                 "INSERT INTO audit_log (target_table, target_id, action, summary)"
                 " VALUES ('events', ?, ?, 'user deleted timeline event')",
@@ -2082,12 +2064,12 @@ def reconcile_timeline(conn: sqlite3.Connection,
         # ── EDIT: event content (manual + self rows) ──────────────────────────
         for eid, raw_text in evt_edits.items():
             row = conn.execute(
-                "SELECT content, channel FROM events WHERE id=?", (eid,)
+                "SELECT content, channel, role FROM events WHERE id=?", (eid,)
             ).fetchone()
             if row is None:
                 rpt.conflicts.append(f"tl:e:{eid} not in events")
                 continue
-            if row["channel"] == "self":
+            if row["role"] == "tl":
                 _reconcile_self_edit(conn, rpt, eid, raw_text, row, now_iso)
                 continue
             if row["channel"] != "manual":

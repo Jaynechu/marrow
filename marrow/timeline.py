@@ -421,18 +421,17 @@ def _query_manual_events_24h(conn: sqlite3.Connection,
 
 def _query_self_rows_24h(conn: sqlite3.Connection,
                          from_utc: str, to_utc: str) -> list[dict]:
-    """Self timeline rows (channel='self', tl_add) in the 24h window.
+    """Self timeline rows (role='tl', tl_add) in the 24h window.
 
-    Joins the linked affect row for the two-sided label. Returns one dict per
-    row with a pre-composed display line (HH:mm[-HH:mm] 【label】body).
+    content already carries the 【label】body phrase verbatim; the range prefix
+    is composed from ts_start/ts_end. Returns one dict per row with a
+    pre-composed display line (HH:mm[-HH:mm] 【label】body).
     """
     rows = conn.execute(
         "SELECT e.id AS id, e.ts_start AS ts_start, e.ts_end AS ts_end,"
-        " e.timestamp AS ts, e.content AS body,"
-        " (SELECT label FROM affect WHERE event_id = e.id"
-        "  ORDER BY id DESC LIMIT 1) AS label"
+        " e.timestamp AS ts, e.content AS body"
         " FROM events e"
-        " WHERE e.channel='self' AND e.timestamp >= ? AND e.timestamp < ?"
+        " WHERE e.role='tl' AND e.timestamp >= ? AND e.timestamp < ?"
         " ORDER BY e.timestamp ASC",
         (from_utc, to_utc),
     ).fetchall()
@@ -442,14 +441,12 @@ def _query_self_rows_24h(conn: sqlite3.Connection,
         hhmm = _hhmm_melb(ts_start)
         end = r["ts_end"]
         rng = f"{hhmm}-{_hhmm_melb(end)}" if end else hhmm
-        label = r["label"] or ""
         body = (r["body"] or "").strip()
-        seg = f"【{label}】" if label else ""
         out.append({
             "id": r["id"],
             "ts": ts_start,
             "hhmm": hhmm,
-            "composed": f"{rng} {seg}{body}".rstrip(),
+            "composed": f"{rng} {body}".rstrip(),
         })
     return out
 
@@ -498,8 +495,8 @@ def _render_24h(digests: list[dict],
                 ) -> tuple[list[str], list[dict]]:
     """Flat 24h film-strip, newest first, filtered per rendered line.
 
-    self_rows (channel='self', tl_add) render PRIMARY with a tl:e anchor and
-    the 【N word·n | Y word·n】 format; life_lines are the history fallback.
+    self_rows (role='tl', tl_add) render PRIMARY with a tl:e anchor and
+    the 【N word·i | Y word·i】 format; life_lines are the history fallback.
     """
     if event_spans is None:
         event_spans = {}

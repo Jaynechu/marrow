@@ -99,10 +99,10 @@ def _match_event_hint(conn, hint: str | None, sid: str) -> int | None:
 
 
 def _sid_has_self_rows(conn, sid: str) -> bool:
-    """Coexistence gate: a sid that authored tl_add rows (channel='self') owns
+    """Coexistence gate: a sid that authored tl_add rows (role='tl') owns
     its timeline block — the sessionend affect/life_lines writers stand down."""
     row = conn.execute(
-        "SELECT 1 FROM events WHERE session_id=? AND channel='self' LIMIT 1",
+        "SELECT 1 FROM events WHERE session_id=? AND role='tl' LIMIT 1",
         (sid,),
     ).fetchone()
     return row is not None
