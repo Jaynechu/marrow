@@ -17,6 +17,8 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
@@ -75,6 +77,48 @@ def _kill_group(pgid: int, sig: int) -> None:
         pass
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _cortex_stream_timer():
+    """Env-driven stream-event timing probe for cortex wakes (wake latency
+    diagnosis). Returns a callback appending one line per notable stage to
+    CORTEX_WAKE_TIMING_LOG, or None when cortex did not request it. Best-effort:
+    never raises into the stream loop. spawned -> first_event isolates claude
+    CLI startup cost (MCP/env load) before the first token."""
+    path = os.environ.get("CORTEX_WAKE_TIMING_LOG")
+    if not path:
+        return None
+    path = os.path.expanduser(path)
+    wake_id = os.environ.get("CORTEX_WAKE_ID", "?")
+    origin = time.monotonic()
+    seen: set[str] = set()
+
+    def _emit(ev: dict, mono: float) -> None:
+        try:
+            etype = ev.get("type", "?")
+            if etype == "__spawned__":
+                label = "spawned"
+            elif "first" not in seen:
+                seen.add("first")
+                label = "first_event"
+            else:
+                sub = ev.get("subtype")
+                key = f"{etype}/{sub}" if sub else etype
+                if key in seen:
+                    return
+                seen.add(key)
+                label = f"ev.{key}"
+            ms = (mono - origin) * 1000.0
+            with open(path, "a") as f:
+                f.write(f"{_utcnow_iso()} wake={wake_id} stream.{label} +{ms:.0f}ms\n")
+        except Exception:
+            pass
+
+    return _emit
+
+
 class LLMClient:
     def __init__(self, cfg: dict | None = None, on_alert=None):
         self.cfg = cfg or config.load()
@@ -124,7 +168,8 @@ class LLMClient:
 
     def call_cortex(self, prompt: str, *, cwd: str | None = None,
                      resume_sid: str | None = None,
-                     timeout: float | None = None) -> dict:
+                     timeout: float | None = None,
+                     max_tokens: int | None = None) -> dict:
         """Full-environment resumed session for cortex (C3, Decided 07-03):
         no isolation flags — persona/rules/MCP/agents load like a real
         session. Always injects MARROW_CORTEX=1 so marrow hooks + tl_add
@@ -134,7 +179,10 @@ class LLMClient:
         (cortex pacemaker) owns retry policy. `timeout` (s) overrides the
         provider default so the caller's config is the single source of truth
         for the call budget (cortex derives its outer kill from the same value).
-        Returns {"text": str, "session_id": str | None}.
+        `max_tokens` (>0) caps the per-wake token spend: accumulated mid-stream,
+        breach terminates the subprocess and returns capped=True so the caller
+        rebirths. Returns {"text": str, "session_id": str | None} (+ capped /
+        total_tokens when a cap is active).
         """
         spec = self.specs.get("claude_cli_cortex")
         if not spec:
@@ -148,7 +196,7 @@ class LLMClient:
         effort = cortex_cfg.get("effort") or ""
         return self._run_claude_cortex(
             spec, model, prompt, cwd=run_cwd, resume_sid=resume_sid,
-            timeout=timeout, effort=effort)
+            timeout=timeout, effort=effort, max_tokens=max_tokens)
 
     def _run(self, spec: dict, model: str, prompt: str) -> str:
         kind = spec.get("kind")
@@ -183,10 +231,14 @@ class LLMClient:
     def _run_claude_cortex(self, spec: dict, model: str, prompt: str, *,
                             cwd: str, resume_sid: str | None,
                             timeout: float | None = None,
-                            effort: str = "") -> dict:
+                            effort: str = "",
+                            max_tokens: int | None = None) -> dict:
         """Stream-json runner with NO isolation flags (cortex full-env, C3).
         Mirrors _run_claude_stream's spawn/timeout/kill contract exactly —
-        only the isolation flags, env var, cwd, --resume, and --effort differ."""
+        only the isolation flags, env var, cwd, --resume, and --effort differ.
+        When max_tokens>0, accumulates per-wake usage mid-stream and terminates
+        cleanly on breach (capped=True). Env-driven stream-event timing is
+        attached best-effort for wake-latency diagnosis."""
         timeout = timeout if timeout is not None else spec.get("timeout_s", 600)
         cmd = [_claude_bin(), "--output-format", "stream-json",
                "--input-format", "stream-json", "--verbose", "--model", model,
@@ -196,19 +248,88 @@ class LLMClient:
         if resume_sid:
             cmd.extend(["--resume", resume_sid])
         env = {**os.environ, "MARROW_CORTEX": "1"}
-        raw = self._stream_subprocess(cmd, prompt, timeout, env, cwd=cwd)
+        on_event = _cortex_stream_timer()
+        cap_active = bool(max_tokens and max_tokens > 0)
+        extra: dict = {}
+        if on_event is not None:
+            extra["on_event"] = on_event
+        sink = None
+        if cap_active:
+            sink = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0,
+                    "total": 0, "capped": False}
+            extra["max_tokens"] = max_tokens
+            extra["usage_sink"] = sink
+        raw = self._stream_subprocess(cmd, prompt, timeout, env, cwd=cwd, **extra)
+        if sink is not None and sink["capped"]:
+            self._log_usage(self._sink_usage(sink), model, "stream-json")
+            self._log_cortex_cap(sink["total"], max_tokens, model)
+            return {"text": "", "session_id": None, "capped": True,
+                    "total_tokens": sink["total"]}
         text = self._parse_claude(raw, "stream-json")
         session_id = self._extract_session_id(raw)
+        if sink is not None:
+            usage = self._sink_usage(sink) if sink["total"] \
+                else self._extract_usage(raw, "stream-json")
+            self._log_usage(usage, model, "stream-json")
+            return {"text": text, "session_id": session_id,
+                    "total_tokens": sink["total"]}
         self._log_usage(self._extract_usage(raw, "stream-json"), model, "stream-json")
         return {"text": text, "session_id": session_id}
 
     @staticmethod
+    def _add_event_usage(sink: dict, ev: dict) -> None:
+        """Fold one stream-json event's turn usage into the running per-wake
+        sink. Only assistant events carry message.usage; the trailing result
+        event and tool-result events add 0 (no double count). Sums the same
+        four fields the audit token-meter sums."""
+        msg = ev.get("message")
+        usage = msg.get("usage") if isinstance(msg, dict) else None
+        if not isinstance(usage, dict):
+            return
+        i = usage.get("input_tokens") or 0
+        o = usage.get("output_tokens") or 0
+        cr = usage.get("cache_read_input_tokens") or 0
+        cw = usage.get("cache_creation_input_tokens") or 0
+        sink["in"] += i
+        sink["out"] += o
+        sink["cache_read"] += cr
+        sink["cache_write"] += cw
+        sink["total"] += i + o + cr + cw
+
+    @staticmethod
+    def _sink_usage(sink: dict) -> dict:
+        return {"input_tokens": sink["in"], "output_tokens": sink["out"],
+                "cache_read_input_tokens": sink["cache_read"],
+                "cache_creation_input_tokens": sink["cache_write"]}
+
+    def _log_cortex_cap(self, total: int, cap: int, model: str) -> None:
+        """One audit line marking a per-wake token-cap breach. Best-effort."""
+        try:
+            conn = storage.connect()
+            with conn:
+                conn.execute(
+                    "INSERT INTO audit_log (target_table, action, summary)"
+                    " VALUES (?, ?, ?)",
+                    ("llm_usage", "llm_cortex_cap",
+                     f"model={model} capped total={total} cap={cap}"),
+                )
+            conn.close()
+        except Exception:
+            pass
+
+    @staticmethod
     def _stream_subprocess(cmd: list[str], prompt: str, timeout: float,
-                            env: dict, cwd: str | None = None) -> str:
+                            env: dict, cwd: str | None = None,
+                            on_event=None, max_tokens: int | None = None,
+                            usage_sink: dict | None = None) -> str:
         """Spawn `cmd`, pipe one user message in via stdin, read stdout
         stream-json events until `result`. Process-group kill on timeout
         (SIGKILL) and on normal exit (SIGTERM->SIGKILL ladder) so claude's
-        spawned descendants never leak. Returns the raw joined stdout lines."""
+        spawned descendants never leak. Returns the raw joined stdout lines.
+        `on_event(ev, mono)` (optional) receives every parsed event plus a
+        synthetic {"type":"__spawned__"} right after Popen for latency probes.
+        `max_tokens`+`usage_sink` (optional) accumulate per-event usage and
+        break the stream cleanly on breach (sink['capped']=True)."""
         msg = json.dumps({"type": "user", "message": {
             "role": "user", "content": prompt}})
         try:
@@ -223,6 +344,8 @@ class LLMClient:
         except ProcessLookupError:
             pgid = p.pid
         stdout_pipe = p.stdout
+        if on_event is not None:
+            on_event({"type": "__spawned__"}, time.monotonic())
 
         _timed_out = [False]
 
@@ -250,6 +373,13 @@ class LLMClient:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if on_event is not None:
+                    on_event(ev, time.monotonic())
+                if max_tokens is not None and usage_sink is not None:
+                    LLMClient._add_event_usage(usage_sink, ev)
+                    if usage_sink["total"] >= max_tokens:
+                        usage_sink["capped"] = True
+                        break
                 if ev.get("type") == "result":
                     break
         finally:

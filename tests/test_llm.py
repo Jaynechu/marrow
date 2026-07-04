@@ -490,3 +490,106 @@ def test_log_usage_db_failure_does_not_raise(monkeypatch):
     monkeypatch.setattr("marrow.llm.storage.connect",
                         lambda path=None: (_ for _ in ()).throw(OSError("db gone")))
     c._log_usage({"input_tokens": 1}, "m", "json")  # must not raise
+
+
+# --- Cortex per-wake token cap (accumulator + breach) ---
+
+def _new_sink():
+    return {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0,
+            "total": 0, "capped": False}
+
+
+def _assistant(**usage):
+    return {"type": "assistant", "message": {"usage": usage}}
+
+
+def test_add_event_usage_sums_four_fields():
+    sink = _new_sink()
+    LLMClient._add_event_usage(sink, _assistant(
+        input_tokens=100, output_tokens=50,
+        cache_read_input_tokens=10, cache_creation_input_tokens=5))
+    assert sink["total"] == 165
+    assert (sink["in"], sink["out"], sink["cache_read"], sink["cache_write"]) \
+        == (100, 50, 10, 5)
+
+
+def test_add_event_usage_ignores_non_assistant_no_double_count():
+    sink = _new_sink()
+    LLMClient._add_event_usage(sink, _assistant(output_tokens=100))
+    # result event: top-level usage, no message.usage -> must not add
+    LLMClient._add_event_usage(sink, {"type": "result", "usage": {"input_tokens": 999}})
+    # tool-result / user event -> no usage -> must not add
+    LLMClient._add_event_usage(sink, {"type": "user", "message": {"content": "x"}})
+    assert sink["total"] == 100
+
+
+def test_add_event_usage_breach_across_turns():
+    sink = _new_sink()
+    cap = 150
+    breached = False
+    for ev in (_assistant(output_tokens=60), _assistant(output_tokens=60),
+               _assistant(output_tokens=60)):
+        LLMClient._add_event_usage(sink, ev)
+        if sink["total"] >= cap:
+            breached = True
+            break
+    assert breached and sink["total"] == 180  # stops on the third turn
+
+
+def test_sink_usage_maps_to_audit_fields():
+    sink = {"in": 1, "out": 2, "cache_read": 3, "cache_write": 4,
+            "total": 10, "capped": False}
+    assert LLMClient._sink_usage(sink) == {
+        "input_tokens": 1, "output_tokens": 2,
+        "cache_read_input_tokens": 3, "cache_creation_input_tokens": 4}
+
+
+def test_run_claude_cortex_cap_breach_returns_capped(monkeypatch, tmp_path):
+    c = LLMClient(CORTEX_CFG)
+    monkeypatch.setattr(c, "_log_usage", lambda *a, **k: None)
+    cap_rows = []
+    monkeypatch.setattr(c, "_log_cortex_cap",
+                        lambda total, cap, model: cap_rows.append((total, cap)))
+
+    def fake_stream(cmd, prompt, timeout, env, cwd=None,
+                    on_event=None, max_tokens=None, usage_sink=None):
+        LLMClient._add_event_usage(usage_sink, _assistant(output_tokens=max_tokens))
+        if usage_sink["total"] >= max_tokens:
+            usage_sink["capped"] = True
+        return ""  # killed mid-stream, no result event
+
+    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
+    out = c.call_cortex("hi", cwd=str(tmp_path), max_tokens=1000)
+    assert out["capped"] is True
+    assert out["session_id"] is None
+    assert out["total_tokens"] == 1000
+    assert cap_rows == [(1000, 1000)]
+
+
+def test_run_claude_cortex_cap_active_reports_total(monkeypatch, tmp_path):
+    c = LLMClient(CORTEX_CFG)
+    monkeypatch.setattr(c, "_log_usage", lambda *a, **k: None)
+
+    def fake_stream(cmd, prompt, timeout, env, cwd=None,
+                    on_event=None, max_tokens=None, usage_sink=None):
+        LLMClient._add_event_usage(
+            usage_sink, _assistant(input_tokens=100, output_tokens=50))
+        return _cortex_stream_out("done")
+
+    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
+    out = c.call_cortex("hi", cwd=str(tmp_path), max_tokens=1000)
+    assert out["text"] == "done"
+    assert out["session_id"] == "sess-abc"
+    assert out["total_tokens"] == 150
+
+
+def test_call_cortex_cap_zero_disables_and_keeps_plain_shape(monkeypatch, tmp_path):
+    # max_tokens=0 -> cap inactive -> legacy return shape (no total_tokens)
+    c = LLMClient(CORTEX_CFG)
+
+    def fake_stream(cmd, prompt, timeout, env, cwd=None):
+        return _cortex_stream_out("ok")
+
+    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
+    out = c.call_cortex("hi", cwd=str(tmp_path), max_tokens=0)
+    assert out == {"text": "ok", "session_id": "sess-abc"}
