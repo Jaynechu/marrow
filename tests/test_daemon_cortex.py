@@ -76,6 +76,17 @@ def test_wish_add_requires_text(env, tmp_path, monkeypatch):
     assert not home.exists() or not (home / "wishlist.md").exists()
 
 
+def test_recall_blocked_under_marrow_cortex(env, monkeypatch):
+    """C3 guard (HANDOVER queue item 2): cortex's resumed session loads MCP
+    tools full-env (no isolation, MAP §6) — the recall tool must hard-block
+    same as tl_add/tl_update, matching "cortex gets its own bulletin, never
+    chat memory" (hooks.py user_prompt_submit already no-ops the passive
+    hook path; this covers the active MCP-tool-call path)."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    with pytest.raises(RuntimeError, match="cortex"):
+        daemon.recall("anything")
+
+
 def test_wish_add_uses_explicit_wishlist_path(env, tmp_path, monkeypatch):
     target = tmp_path / "somewhere" / "my-wishes.md"
     monkeypatch.setattr(config, "load", lambda: {

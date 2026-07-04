@@ -108,6 +108,11 @@ event_context_window = 1
 # entry are stripped from the query before FTS + vec. Populate after reviewing
 # data collection results from the parallel stopword agent.
 stopwords = []
+# Per-project recall-off (C3 groundwork, HANDOVER queue item 2): session cwd
+# starting with any entry skips recall injection entirely (hooks.py
+# user_prompt_submit, checked before query construction). Empty = no opt-out.
+# No user-facing command yet — hand-edit this list (parked).
+exclude_cwds = []
 
 [recall.buckets]
 # cwd -> recall bucket (substring match, case-insensitive). same-bucket

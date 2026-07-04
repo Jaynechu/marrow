@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -79,6 +80,80 @@ def _kill_group(pgid: int, sig: int) -> None:
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_CAMEL_RE = re.compile(r"(?<!^)(?=[A-Z])")
+
+
+def _snake(name: str) -> str:
+    return _CAMEL_RE.sub("_", name).lower()
+
+
+def _write_kv_rows(rows: list[tuple[str, str]]) -> None:
+    """Upsert (key, value) pairs into ct_rate_limit, latest-wins. Best-effort,
+    never raises."""
+    if not rows:
+        return
+    try:
+        conn = storage.connect()
+        with conn:
+            conn.executemany(
+                "INSERT INTO ct_rate_limit (key, value, updated_at)"
+                " VALUES (?, ?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET"
+                " value=excluded.value, updated_at=excluded.updated_at",
+                [(k, v, _utcnow_iso()) for k, v in rows],
+            )
+        conn.close()
+    except Exception:
+        pass
+
+
+def _snapshot_rate_limit(ev: dict) -> None:
+    """Flatten one `rate_limit_event` stream frame into `ct_rate_limit` kv
+    rows. Live-verified shape (07-04 direct CLI probe): top-level
+    type=="rate_limit_event", payload nested under "rate_limit_info" —
+    fields seen: status ("allowed"), resetsAt (unix epoch seconds),
+    rateLimitType ("five_hour" only, ever), overageStatus,
+    overageResetsAt, isUsingOverage. No requestId on this frame (no dedupe
+    needed) — latest frame always wins.
+
+    NOTE (verified, not assumed): this stream frame carries NO utilization
+    percentage — only status + reset timestamp. `five_hour_pct` /
+    `seven_day_pct` (cortex bulletin contract keys) have no source here;
+    percentages only exist via the separate OAuth /api/oauth/usage HTTP
+    endpoint (see synapse_core/usage.py), which this task's scope
+    (stream-json parsing) does not call. Those two keys are simply never
+    written — reader renders "no data" for them tolerantly per contract.
+    `*_reset_at` is written (converted to UTC ISO) whenever resetsAt is
+    numeric; extra raw fields ride along under their own snake_case keys
+    for forward visibility. Best-effort, never raises into the stream loop.
+    """
+    if ev.get("type") != "rate_limit_event":
+        return
+    info = ev.get("rate_limit_info")
+    if not isinstance(info, dict):
+        return
+    rtype = info.get("rateLimitType")
+    prefix = _snake(str(rtype)) if rtype else "unknown"
+    rows: list[tuple[str, str]] = []
+    for k, v in info.items():
+        if k == "rateLimitType":
+            continue
+        if k == "resetsAt" and isinstance(v, (int, float)) and not isinstance(v, bool):
+            iso = datetime.fromtimestamp(v, tz=timezone.utc).isoformat()
+            rows.append((f"{prefix}_reset_at", iso))
+            continue
+        rows.append((f"{prefix}_{_snake(k)}", str(v)))
+    _write_kv_rows(rows)
+
+
+def _snapshot_window_tokens(window: int) -> None:
+    """Snapshot the current per-wake context window size (same figure the
+    cap logic compares against, see _add_event_usage) as ct_rate_limit's
+    `window_tokens` key — cortex bulletin's 5th contract field. Written
+    from the already-computed cap-tracking sink, no new computation."""
+    _write_kv_rows([("window_tokens", str(window))])
 
 
 def _cortex_stream_timer():
@@ -271,6 +346,7 @@ class LLMClient:
             self._log_usage(self._sink_usage(sink), model, "stream-json",
                              window=sink["window"])
             self._log_cortex_cap(sink, max_tokens, model)
+            _snapshot_window_tokens(sink["window"])
             return {"text": "", "session_id": None, "capped": True,
                     "total_tokens": sink["window"]}
         text = self._parse_claude(raw, "stream-json")
@@ -282,6 +358,7 @@ class LLMClient:
             else:
                 self._log_usage(self._extract_usage(raw, "stream-json"),
                                  model, "stream-json")
+            _snapshot_window_tokens(sink["window"])
             return {"text": text, "session_id": session_id,
                     "total_tokens": sink["window"]}
         self._log_usage(self._extract_usage(raw, "stream-json"), model, "stream-json")
@@ -424,6 +501,8 @@ class LLMClient:
                     continue
                 if on_event is not None:
                     on_event(ev, time.monotonic())
+                if ev.get("type") == "rate_limit_event":
+                    _snapshot_rate_limit(ev)
                 if max_tokens is not None and usage_sink is not None:
                     LLMClient._add_event_usage(usage_sink, ev)
                     if usage_sink["window"] >= max_tokens:

@@ -406,6 +406,36 @@ def test_user_prompt_submit_explicit_disable(env, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_user_prompt_submit_exclude_cwds_match_noop(env, monkeypatch, capsys):
+    """[recall].exclude_cwds (C3 groundwork, HANDOVER queue item 2): session
+    cwd starting with a listed prefix skips recall injection entirely."""
+    base_cfg = config.load()
+    base_cfg.setdefault("recall", {})["vector"] = True
+    base_cfg["recall"]["exclude_cwds"] = ["/Users/Gabrielle/private-project"]
+    monkeypatch.setattr(config, "load", lambda: base_cfg)
+    _stdin(monkeypatch, {"prompt": "hello", "session_id": "s1",
+                         "cwd": "/Users/Gabrielle/private-project/sub"})
+    rc = hooks.main(["user_prompt_submit"])
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_user_prompt_submit_exclude_cwds_no_match_proceeds(env, monkeypatch, capsys):
+    """A cwd not matching any exclude_cwds prefix is unaffected (falls
+    through to the normal gate/config checks below, not a forced hit)."""
+    base_cfg = config.load()
+    base_cfg.setdefault("recall", {})["vector"] = False  # isolate this gate
+    base_cfg["recall"]["exclude_cwds"] = ["/Users/Gabrielle/private-project"]
+    monkeypatch.setattr(config, "load", lambda: base_cfg)
+    _stdin(monkeypatch, {"prompt": "hello", "session_id": "s1",
+                         "cwd": "/Users/Gabrielle/CC-Lab/marrow"})
+    rc = hooks.main(["user_prompt_submit"])
+    assert rc == 0
+    # vector=false still no-ops downstream, but for a DIFFERENT reason —
+    # confirms the exclude_cwds branch didn't consume it (no output either way).
+    assert capsys.readouterr().out == ""
+
+
 def _force_vector_on(monkeypatch, min_score: float = 0.30):
     base_cfg = config.load()
     base_cfg.setdefault("recall", {})["vector"] = True

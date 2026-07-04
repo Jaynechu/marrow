@@ -6,6 +6,7 @@ land in alerts.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -36,6 +37,13 @@ def recall(
     Set context=True to attach ±1 adjacent same-session turns to each event row.
     since/until: Melbourne-local YYYY-MM-DD day strings for time-lane filtering.
     Diary: recall(query="diary", since="date", until="date")."""
+    # C3 guard: cortex's resumed session loads MCP tools full-env (no
+    # isolation, see MAP §6) so it COULD call this tool directly, unlike
+    # the passive hook-injection path which already no-ops (hooks.py
+    # user_prompt_submit). Matches tl_add/tl_update's hard block — cortex
+    # gets its own bulletin, never chat memory (MAP §1.2 "total invisibility").
+    if os.environ.get("MARROW_CORTEX"):
+        raise RuntimeError("recall unavailable in a cortex session (MARROW_CORTEX=1)")
     from .timecue import melb_day_range
     since_utc: str | None = None
     until_utc: str | None = None

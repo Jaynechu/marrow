@@ -212,6 +212,170 @@ def test_stream_subprocess_dedupes_repeated_requestid_lines(tmp_path):
     assert sink["window"] == 25734
 
 
+# --- rate_limit_event -> ct_rate_limit kv snapshot (HANDOVER queue item 2) ---
+# Cortex bulletin (bulletin.py, cortex commit 9ee25e5) reads exactly:
+# five_hour_pct, five_hour_reset_at, seven_day_pct, seven_day_reset_at,
+# window_tokens. rate_limit_event carries NO percentage (verified 07-04
+# live probe: status/resetsAt/rateLimitType/overageStatus/overageResetsAt/
+# isUsingOverage only) — *_pct keys are never written from this source,
+# only *_reset_at (+ extra raw fields under their own snake_case keys).
+# window_tokens comes from the cap-tracking sink, not this event.
+
+def _kv(db_connect, key):
+    row = db_connect.execute(
+        "SELECT value FROM ct_rate_limit WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def test_snapshot_rate_limit_writes_reset_at_and_extra_fields(tmp_path, monkeypatch):
+    from marrow import storage as stor
+
+    db = str(tmp_path / "test.db")
+    _real_connect = stor.connect
+    stor.init_db(db)
+    monkeypatch.setattr("marrow.llm.storage.connect",
+                        lambda path=None: _real_connect(db))
+
+    # Live-verified shape (07-04 probe): top-level type=="rate_limit_event",
+    # payload nested under "rate_limit_info".
+    ev = {"type": "rate_limit_event", "rate_limit_info": {
+        "status": "allowed", "resetsAt": 1783150800,
+        "rateLimitType": "five_hour", "overageStatus": "allowed",
+        "overageResetsAt": 1785542400, "isUsingOverage": False,
+    }, "uuid": "x", "session_id": "y"}
+    from marrow.llm import _snapshot_rate_limit
+    _snapshot_rate_limit(ev)
+
+    read_conn = _real_connect(db)
+    assert _kv(read_conn, "five_hour_reset_at") == "2026-07-04T07:40:00+00:00"
+    assert _kv(read_conn, "five_hour_status") == "allowed"
+    assert _kv(read_conn, "five_hour_is_using_overage") == "False"
+    assert _kv(read_conn, "five_hour_pct") is None  # never available, omitted
+    read_conn.close()
+
+
+def test_snapshot_rate_limit_latest_wins_on_repeat(tmp_path, monkeypatch):
+    from marrow import storage as stor
+
+    db = str(tmp_path / "test.db")
+    _real_connect = stor.connect
+    stor.init_db(db)
+    monkeypatch.setattr("marrow.llm.storage.connect",
+                        lambda path=None: _real_connect(db))
+    from marrow.llm import _snapshot_rate_limit
+
+    _snapshot_rate_limit({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "allowed", "rateLimitType": "five_hour"}})
+    _snapshot_rate_limit({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "rejected", "rateLimitType": "five_hour"}})
+
+    read_conn = _real_connect(db)
+    rows = read_conn.execute(
+        "SELECT value FROM ct_rate_limit WHERE key='five_hour_status'").fetchall()
+    read_conn.close()
+    assert len(rows) == 1  # overwrite, not append
+    assert rows[0]["value"] == "rejected"
+
+
+def test_snapshot_rate_limit_ignores_non_rate_limit_events(tmp_path, monkeypatch):
+    from marrow import storage as stor
+
+    db = str(tmp_path / "test.db")
+    _real_connect = stor.connect
+    stor.init_db(db)
+    monkeypatch.setattr("marrow.llm.storage.connect",
+                        lambda path=None: _real_connect(db))
+    from marrow.llm import _snapshot_rate_limit
+
+    _snapshot_rate_limit({"type": "assistant", "message": {"usage": {}}})
+    read_conn = _real_connect(db)
+    n = read_conn.execute("SELECT COUNT(*) c FROM ct_rate_limit").fetchone()["c"]
+    read_conn.close()
+    assert n == 0
+
+
+def test_snapshot_rate_limit_missing_info_is_noop(tmp_path, monkeypatch):
+    from marrow import storage as stor
+
+    db = str(tmp_path / "test.db")
+    _real_connect = stor.connect
+    stor.init_db(db)
+    monkeypatch.setattr("marrow.llm.storage.connect",
+                        lambda path=None: _real_connect(db))
+    from marrow.llm import _snapshot_rate_limit
+
+    _snapshot_rate_limit({"type": "rate_limit_event"})  # malformed, no payload
+    read_conn = _real_connect(db)
+    n = read_conn.execute("SELECT COUNT(*) c FROM ct_rate_limit").fetchone()["c"]
+    read_conn.close()
+    assert n == 0
+
+
+def test_stream_subprocess_snapshots_rate_limit_event(tmp_path, monkeypatch):
+    """End-to-end: _stream_subprocess's own event loop (not a direct
+    _snapshot_rate_limit call) picks up a real rate_limit_event frame."""
+    from marrow import storage as stor
+
+    db = str(tmp_path / "test.db")
+    _real_connect = stor.connect
+    stor.init_db(db)
+    monkeypatch.setattr("marrow.llm.storage.connect",
+                        lambda path=None: _real_connect(db))
+
+    events = [{"type": "rate_limit_event", "rate_limit_info": {
+        "status": "allowed", "rateLimitType": "five_hour"}}]
+    bin_ = _fake_claude_usage_stream(tmp_path, events)
+    LLMClient._stream_subprocess([bin_], "hi", 10, dict(os.environ))
+
+    read_conn = _real_connect(db)
+    assert _kv(read_conn, "five_hour_status") == "allowed"
+    read_conn.close()
+
+
+def test_snapshot_window_tokens_writes_contract_key(tmp_path, monkeypatch):
+    from marrow import storage as stor
+
+    db = str(tmp_path / "test.db")
+    _real_connect = stor.connect
+    stor.init_db(db)
+    monkeypatch.setattr("marrow.llm.storage.connect",
+                        lambda path=None: _real_connect(db))
+    from marrow.llm import _snapshot_window_tokens
+
+    _snapshot_window_tokens(25734)
+    read_conn = _real_connect(db)
+    assert _kv(read_conn, "window_tokens") == "25734"
+    read_conn.close()
+
+
+def test_run_claude_cortex_snapshots_window_tokens(monkeypatch, tmp_path):
+    """_run_claude_cortex writes window_tokens from the cap sink on a
+    normal (non-capped) completion, reusing the already-computed figure."""
+    from marrow import storage as stor
+
+    db = str(tmp_path / "test.db")
+    _real_connect = stor.connect
+    stor.init_db(db)
+    monkeypatch.setattr("marrow.llm.storage.connect",
+                        lambda path=None: _real_connect(db))
+
+    turn_usage = {"input_tokens": 100, "output_tokens": 20,
+                  "cache_read_input_tokens": 5000, "cache_creation_input_tokens": 0}
+    events = [{"type": "assistant", "requestId": "r1",
+               "message": {"usage": turn_usage}}]
+    bin_ = _fake_claude_usage_stream(tmp_path, events, result="hi")
+    monkeypatch.setattr("marrow.llm._claude_bin", lambda: bin_)
+    c = LLMClient({"llm": {"claude_cli_cortex": {"kind": "claude_cli", "timeout_s": 5}},
+                   "tiers": {}, "cortex": {}})
+    out = c._run_claude_cortex(
+        {"kind": "claude_cli", "timeout_s": 5}, "m", "hi",
+        cwd=str(tmp_path), resume_sid=None, max_tokens=150000)
+    assert out.get("capped") is not True
+    read_conn = _real_connect(db)
+    assert _kv(read_conn, "window_tokens") == "5100"
+    read_conn.close()
+
+
 # --- Refusal sentinel tests (P0) ---
 
 def test_refusal_stop_reason_raises_json():
