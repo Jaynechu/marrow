@@ -179,10 +179,12 @@ class LLMClient:
         (cortex pacemaker) owns retry policy. `timeout` (s) overrides the
         provider default so the caller's config is the single source of truth
         for the call budget (cortex derives its outer kill from the same value).
-        `max_tokens` (>0) caps the per-wake token spend: accumulated mid-stream,
-        breach terminates the subprocess and returns capped=True so the caller
-        rebirths. Returns {"text": str, "session_id": str | None} (+ capped /
-        total_tokens when a cap is active).
+        `max_tokens` (>0) caps the per-wake *newly-processed* token spend
+        (input+output+cache_write; cache_read is excluded so a resumed
+        session's cache replay never counts against the cap): accumulated
+        mid-stream, breach terminates the subprocess and returns capped=True
+        so the caller rebirths. Returns {"text": str, "session_id": str |
+        None} (+ capped / total_tokens when a cap is active).
         """
         spec = self.specs.get("claude_cli_cortex")
         if not spec:
@@ -256,15 +258,15 @@ class LLMClient:
         sink = None
         if cap_active:
             sink = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0,
-                    "total": 0, "capped": False}
+                    "counted": 0, "total": 0, "capped": False}
             extra["max_tokens"] = max_tokens
             extra["usage_sink"] = sink
         raw = self._stream_subprocess(cmd, prompt, timeout, env, cwd=cwd, **extra)
         if sink is not None and sink["capped"]:
             self._log_usage(self._sink_usage(sink), model, "stream-json")
-            self._log_cortex_cap(sink["total"], max_tokens, model)
+            self._log_cortex_cap(sink, max_tokens, model)
             return {"text": "", "session_id": None, "capped": True,
-                    "total_tokens": sink["total"]}
+                    "total_tokens": sink["counted"]}
         text = self._parse_claude(raw, "stream-json")
         session_id = self._extract_session_id(raw)
         if sink is not None:
@@ -272,7 +274,7 @@ class LLMClient:
                 else self._extract_usage(raw, "stream-json")
             self._log_usage(usage, model, "stream-json")
             return {"text": text, "session_id": session_id,
-                    "total_tokens": sink["total"]}
+                    "total_tokens": sink["counted"]}
         self._log_usage(self._extract_usage(raw, "stream-json"), model, "stream-json")
         return {"text": text, "session_id": session_id}
 
@@ -280,8 +282,10 @@ class LLMClient:
     def _add_event_usage(sink: dict, ev: dict) -> None:
         """Fold one stream-json event's turn usage into the running per-wake
         sink. Only assistant events carry message.usage; the trailing result
-        event and tool-result events add 0 (no double count). Sums the same
-        four fields the audit token-meter sums."""
+        event and tool-result events add 0 (no double count). `counted` is
+        the cap-comparable figure (input+output+cache_write — newly-processed
+        tokens only); `total` keeps the raw four-field sum (incl. cache_read)
+        for audit reporting, matching the shape of the plain-usage log line."""
         msg = ev.get("message")
         usage = msg.get("usage") if isinstance(msg, dict) else None
         if not isinstance(usage, dict):
@@ -294,6 +298,7 @@ class LLMClient:
         sink["out"] += o
         sink["cache_read"] += cr
         sink["cache_write"] += cw
+        sink["counted"] += i + o + cw
         sink["total"] += i + o + cr + cw
 
     @staticmethod
@@ -302,8 +307,11 @@ class LLMClient:
                 "cache_read_input_tokens": sink["cache_read"],
                 "cache_creation_input_tokens": sink["cache_write"]}
 
-    def _log_cortex_cap(self, total: int, cap: int, model: str) -> None:
-        """One audit line marking a per-wake token-cap breach. Best-effort."""
+    def _log_cortex_cap(self, sink: dict, cap: int, model: str) -> None:
+        """One audit line marking a per-wake token-cap breach. Reports the
+        cap-comparable counted total alongside the raw four usage fields
+        (matches the llm_call_cost breakdown) so a breach is auditable
+        without ambiguity about what tripped it. Best-effort."""
         try:
             conn = storage.connect()
             with conn:
@@ -311,7 +319,10 @@ class LLMClient:
                     "INSERT INTO audit_log (target_table, action, summary)"
                     " VALUES (?, ?, ?)",
                     ("llm_usage", "llm_cortex_cap",
-                     f"model={model} capped total={total} cap={cap}"),
+                     f"model={model} capped counted={sink['counted']} cap={cap} "
+                     f"raw(in={sink['in']} out={sink['out']} "
+                     f"cache_read={sink['cache_read']} cache_write={sink['cache_write']} "
+                     f"total={sink['total']})"),
                 )
             conn.close()
         except Exception:
@@ -329,7 +340,10 @@ class LLMClient:
         `on_event(ev, mono)` (optional) receives every parsed event plus a
         synthetic {"type":"__spawned__"} right after Popen for latency probes.
         `max_tokens`+`usage_sink` (optional) accumulate per-event usage and
-        break the stream cleanly on breach (sink['capped']=True)."""
+        break the stream cleanly on breach (sink['capped']=True). Breach
+        compares against sink['counted'] (input+output+cache_write) only —
+        cache_read is excluded since a resumed session's first turn can
+        replay >100k cached tokens without any new processing."""
         msg = json.dumps({"type": "user", "message": {
             "role": "user", "content": prompt}})
         try:
@@ -377,7 +391,7 @@ class LLMClient:
                     on_event(ev, time.monotonic())
                 if max_tokens is not None and usage_sink is not None:
                     LLMClient._add_event_usage(usage_sink, ev)
-                    if usage_sink["total"] >= max_tokens:
+                    if usage_sink["counted"] >= max_tokens:
                         usage_sink["capped"] = True
                         break
                 if ev.get("type") == "result":

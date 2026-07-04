@@ -167,6 +167,37 @@ def test_stream_timeout_kills_process_group(tmp_path, monkeypatch):
     assert _wait_dead(gc), f"orphan grandchild {gc} survived stream timeout"
 
 
+def _fake_claude_usage_stream(tmp_path, usage: dict, result="ok"):
+    """A claude stand-in that emits one assistant usage event then a
+    result event, for exercising the real (unmocked) _stream_subprocess
+    cap-accumulation loop end-to-end."""
+    ev1 = json.dumps({"type": "assistant", "message": {"usage": usage}})
+    ev2 = json.dumps({"type": "result", "result": result, "is_error": False})
+    s = tmp_path / "fake_claude_usage"
+    s.write_text(f"#!/usr/bin/env python3\nprint({ev1!r})\nprint({ev2!r})\n")
+    s.chmod(0o755)
+    return str(s)
+
+
+def test_stream_subprocess_cache_heavy_first_turn_does_not_breach(tmp_path):
+    """Regression (07-04 live incident, audit row in=16 out=97
+    cache_read=74049 cache_write=77643): the real breach comparison in
+    _stream_subprocess must key off counted (input+output+cache_write),
+    not the raw four-field total, or every cortex full-env wake's cache
+    replay trips the cap on turn 1."""
+    bin_ = _fake_claude_usage_stream(tmp_path, {
+        "input_tokens": 16, "output_tokens": 97,
+        "cache_read_input_tokens": 74049, "cache_creation_input_tokens": 77643,
+    })
+    sink = {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0,
+            "counted": 0, "total": 0, "capped": False}
+    LLMClient._stream_subprocess(
+        [bin_], "hi", 10, dict(os.environ), max_tokens=150000, usage_sink=sink)
+    assert sink["capped"] is False
+    assert sink["counted"] == 77756
+    assert sink["total"] == 151805
+
+
 # --- Refusal sentinel tests (P0) ---
 
 def test_refusal_stop_reason_raises_json():
@@ -496,7 +527,7 @@ def test_log_usage_db_failure_does_not_raise(monkeypatch):
 
 def _new_sink():
     return {"in": 0, "out": 0, "cache_read": 0, "cache_write": 0,
-            "total": 0, "capped": False}
+            "counted": 0, "total": 0, "capped": False}
 
 
 def _assistant(**usage):
@@ -509,6 +540,7 @@ def test_add_event_usage_sums_four_fields():
         input_tokens=100, output_tokens=50,
         cache_read_input_tokens=10, cache_creation_input_tokens=5))
     assert sink["total"] == 165
+    assert sink["counted"] == 155  # in+out+cache_write, cache_read excluded
     assert (sink["in"], sink["out"], sink["cache_read"], sink["cache_write"]) \
         == (100, 50, 10, 5)
 
@@ -521,6 +553,7 @@ def test_add_event_usage_ignores_non_assistant_no_double_count():
     # tool-result / user event -> no usage -> must not add
     LLMClient._add_event_usage(sink, {"type": "user", "message": {"content": "x"}})
     assert sink["total"] == 100
+    assert sink["counted"] == 100
 
 
 def test_add_event_usage_breach_across_turns():
@@ -530,15 +563,29 @@ def test_add_event_usage_breach_across_turns():
     for ev in (_assistant(output_tokens=60), _assistant(output_tokens=60),
                _assistant(output_tokens=60)):
         LLMClient._add_event_usage(sink, ev)
-        if sink["total"] >= cap:
+        if sink["counted"] >= cap:
             breached = True
             break
-    assert breached and sink["total"] == 180  # stops on the third turn
+    assert breached and sink["counted"] == 180  # stops on the third turn
+
+
+def test_add_event_usage_cache_heavy_first_turn_not_counted():
+    """Regression (07-04 live incident): a cortex full-env wake's first
+    turn can replay ~150k of cache traffic in one message. `counted` (the
+    cap-comparable figure) must exclude cache_read entirely — only
+    input+output+cache_write are newly-processed."""
+    sink = _new_sink()
+    LLMClient._add_event_usage(sink, _assistant(
+        input_tokens=16, output_tokens=97,
+        cache_read_input_tokens=74049, cache_creation_input_tokens=77643))
+    assert sink["counted"] == 77756
+    assert sink["total"] == 151805
+    assert sink["counted"] < 150000 < sink["total"]  # old bug tripped on total
 
 
 def test_sink_usage_maps_to_audit_fields():
     sink = {"in": 1, "out": 2, "cache_read": 3, "cache_write": 4,
-            "total": 10, "capped": False}
+            "counted": 6, "total": 10, "capped": False}
     assert LLMClient._sink_usage(sink) == {
         "input_tokens": 1, "output_tokens": 2,
         "cache_read_input_tokens": 3, "cache_creation_input_tokens": 4}
@@ -549,12 +596,12 @@ def test_run_claude_cortex_cap_breach_returns_capped(monkeypatch, tmp_path):
     monkeypatch.setattr(c, "_log_usage", lambda *a, **k: None)
     cap_rows = []
     monkeypatch.setattr(c, "_log_cortex_cap",
-                        lambda total, cap, model: cap_rows.append((total, cap)))
+                        lambda sink, cap, model: cap_rows.append((sink["counted"], cap)))
 
     def fake_stream(cmd, prompt, timeout, env, cwd=None,
                     on_event=None, max_tokens=None, usage_sink=None):
         LLMClient._add_event_usage(usage_sink, _assistant(output_tokens=max_tokens))
-        if usage_sink["total"] >= max_tokens:
+        if usage_sink["counted"] >= max_tokens:
             usage_sink["capped"] = True
         return ""  # killed mid-stream, no result event
 
