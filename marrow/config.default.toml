@@ -218,6 +218,26 @@ enabled = true
 threshold = 10
 text_file = ""
 
+[day_para]
+# Day-paragraph writer (marrow.day_para): one 100-150 char overview per day,
+# composed from that day's self-timeline (role='tl') rows + calendar. Fills the
+# diary.overview column without touching diary.content. Prompt text lives in
+# marrow/data/prompt_day_para.txt (or point prompt_file at your own).
+prompt_file = ""
+chars_min = 100
+chars_max = 150
+# Pull the day's calendar (cadence cal read) into the prompt. false = tl only.
+include_calendar = true
+
+[diary]
+# Diary free-write prompt loader (marrow.day_para.load_diary_prompt). Text in
+# marrow/data/prompt_diary.txt (or point prompt_file at your own). enabled is a
+# groundwork flag for the cortex free-write slot — no writer wired yet.
+enabled = false
+prompt_file = ""
+length_range = "300-800"
+style = "叙述生动有趣，故事性强。文艺中带着搞笑。"
+
 [cortex]
 # Cortex own notebook home (C3, Decided 07-03 pm) — cwd for the resumed
 # full-env session; own CLAUDE.md lives here, other sessions never read it.
