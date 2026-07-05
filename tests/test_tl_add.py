@@ -217,22 +217,45 @@ def test_tl_update_blocked_under_marrow_cortex(conn, monkeypatch):
 
 # ── nudge ────────────────────────────────────────────────────────────────────
 
+@pytest.fixture(autouse=True)
+def _clean_nudge_state(monkeypatch, tmp_path):
+    """Isolate the per-sid counter files from the real ~/.config/marrow tree."""
+    monkeypatch.setattr(tl_nudge.config, "DATA_DIR", tmp_path / "nudge_data")
+    yield
+
+
 def test_nudge_on_by_default_10_turns(conn):
     assert tl_nudge.enabled() is True
     assert tl_nudge.threshold() == 10
-    # 10 assistant turns, no tl_add -> nudge fires
-    for _ in range(10):
-        conn.execute("INSERT INTO events (session_id, timestamp, role, content)"
-                     " VALUES ('nud', '2026-07-03T00:00:00Z', 'assistant', 'x')")
-    conn.commit()
-    assert tl_nudge.maybe_nudge(conn, "nud")
+
+
+def test_nudge_fires_at_threshold_then_resets(conn):
+    for _ in range(9):
+        assert tl_nudge.maybe_nudge(conn, "nud") is None
+    assert tl_nudge.maybe_nudge(conn, "nud")  # 10th call fires
+    # counter reset after firing -> next 9 calls stay quiet again
+    for _ in range(9):
+        assert tl_nudge.maybe_nudge(conn, "nud") is None
+    assert tl_nudge.maybe_nudge(conn, "nud")  # fires again at the next 10
+
+
+def test_nudge_resets_on_tl_add(conn):
+    for _ in range(9):
+        assert tl_nudge.maybe_nudge(conn, "sess-1") is None
+    _add(conn, sid="sess-1")  # tl_add resets the counter
+    for _ in range(9):
+        assert tl_nudge.maybe_nudge(conn, "sess-1") is None
+    assert tl_nudge.maybe_nudge(conn, "sess-1")  # fires only after 10 fresh turns
 
 
 def test_nudge_silent_session_muted(conn):
-    for _ in range(10):
-        conn.execute("INSERT INTO events (session_id, timestamp, role, content)"
-                     " VALUES ('mute', '2026-07-03T00:00:00Z', 'assistant', 'x')")
-    conn.commit()
     tl_nudge.set_silent("mute")
     assert tl_nudge.is_silent("mute") is True
-    assert tl_nudge.maybe_nudge(conn, "mute") is None
+    for _ in range(15):
+        assert tl_nudge.maybe_nudge(conn, "mute") is None
+
+
+def test_nudge_disabled_never_fires(conn, monkeypatch):
+    monkeypatch.setattr(tl_nudge, "enabled", lambda: False)
+    for _ in range(20):
+        assert tl_nudge.maybe_nudge(conn, "off") is None

@@ -164,6 +164,9 @@ def tl_add(conn, timerange: str, body: str,
             " VALUES ('events', ?, 'tl_add', ?)",
             (sid, f"event_id={event_id} label={label!r}"),
         )
+    if sid:
+        from . import tl_nudge
+        tl_nudge.reset(sid)
     return {"ok": True, "event_id": event_id,
             "line": render_line(hhmm_start, hhmm_end, content)}
 
