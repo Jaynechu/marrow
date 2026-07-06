@@ -925,15 +925,15 @@ def dim(
 ) -> dict | list[dict]:
     """Call for subpage edits (only 3 for now) - read/write/delete.
     - kind: person, pref, place, meme, milestone.
+      - Entity (profile subpage): person, pref(偏好), place.
     - 'upsert': when recall misses something that clearly exists, or a hit
       shows stale/inaccurate info.
       - Fields: name, fact, date(milestone), aliases(entities optional)
-      - Entities: person, preference, place
       - Memes: type=paw/fact/news/event/others (paw+fact=personal/couple;
         other 3=public)
       - Milestones: scope=us/me
     - 'query': by kind and/or name — verify a write landed, get ids.
-    - 'delete': by id (query first); removes DB row + md line + tombstone."""
+    - 'delete': by kind + id; query by name first if either unknown. Removes DB row + md line + tombstone."""
     if action not in _DIM_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_DIM_ACTIONS)}"}
     if action == "upsert":
