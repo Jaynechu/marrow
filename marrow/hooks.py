@@ -30,7 +30,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from . import config, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach, popen_detach_lazy
-from .timeutil import utc_iso_to_local_date, utc_iso_to_local_datetime, format_recall_ts
+from .timeutil import (
+    utc_iso_to_local_date,
+    utc_iso_to_local_datetime,
+    format_recall_ts,
+    reltime_short,
+)
 
 _RECALL_TZ = config.get_tz()
 _RECALL_CUTOFF_H = 6  # 6AM local day boundary (matches digest)
@@ -1600,6 +1605,70 @@ def _apply_rel_cutoff(hits: list[dict], rel_cutoff: float) -> list[dict]:
     return [h for h in hits if (h.get("score") or 0.0) >= cutoff]
 
 
+# Per-kind id prefix for recall heads (event -> ev, memes -> me, etc.).
+_KIND_ABBREV = {
+    "event": "ev", "memes": "me", "milestone": "ms",
+    "entity": "en", "diary": "d", "task": "t",
+}
+
+
+def _meme_date(ts: str) -> str:
+    """Meme creation date as 'MM-DD' (Melbourne local), or 'YYYY' if >1y old.
+    Empty on missing/unparseable timestamp."""
+    if not ts:
+        return ""
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        local = dt.astimezone(config.get_tz())
+        if (now - dt).total_seconds() >= 365 * 86400:
+            return local.strftime("%Y")
+        return local.strftime("%m-%d")
+    except Exception:
+        return ""
+
+
+def _milestone_date(ts: str) -> str:
+    """Milestone date with the T00:00 junk stripped. Keeps calendar precision:
+    'YYYY' / 'YYYY-MM' / 'YYYY-MM-DD' (whatever the stored date carried).
+    The date is a calendar value, not an instant — no tz conversion."""
+    if not ts:
+        return ""
+    return ts.split("T", 1)[0]
+
+
+def _recall_head(h: dict) -> str:
+    """Shared recall-row head: '<time-label> <abbrev>#<id>' (content appended
+    by the caller as ': <content>'). Kept identical across the injection
+    renderer and the recall log so both read the same.
+      event     -> [<channel> <reltime>] ev#<id>   (channel fallback: cli)
+      memes     -> [<MM-DD|YYYY>] me#<id>
+      milestone -> [<YYYY[-MM[-DD]]>] ms#<id>       (never T00:00)
+      entity    -> en#<id>                          (no time)
+      diary     -> [<format_recall_ts>] d#<id>      (existing time handling)
+      task      -> [<format_recall_ts>] t#<id>
+    """
+    kind = h.get("kind") or "event"
+    ref = f"{_KIND_ABBREV.get(kind, kind)}#{h.get('id', '?')}"
+    if kind == "event":
+        ch = (h.get("channel") or "cli").strip() or "cli"
+        rt = reltime_short(h.get("timestamp") or "")
+        return f"[{ch} {rt}] {ref}" if rt else f"[{ch}] {ref}"
+    if kind == "memes":
+        d = _meme_date(h.get("timestamp") or "")
+        return f"[{d}] {ref}" if d else ref
+    if kind == "milestone":
+        d = _milestone_date(h.get("timestamp") or "")
+        return f"[{d}] {ref}" if d else ref
+    if kind == "entity":
+        return ref
+    # diary / task — keep existing format_recall_ts handling.
+    ts = format_recall_ts(h.get("timestamp") or "")
+    return f"{ts} {ref}" if ts else ref
+
+
 def _render_hit_block(rank: int, h: dict, rank_caps: list[int]) -> list[str]:
     """Return the markdown lines for one recall hit at the given rank.
 
@@ -1609,17 +1678,16 @@ def _render_hit_block(rank: int, h: dict, rank_caps: list[int]) -> list[str]:
     """
     cap = rank_caps[rank] if rank < len(rank_caps) else rank_caps[-1]
     block: list[str] = []
-    ts = format_recall_ts(h.get("timestamp") or "")
+    head = _recall_head(h)
     kind = h.get("kind") or "event"
     content_full = (h.get("content") or "").replace("\n", " ")
     if kind in _TABLE_KINDS:
-        block.append(f"- {ts} {content_full[:cap]}")
+        block.append(f"- {head}: {content_full[:cap]}")
     else:
         ctxs = h.get("_context") or [] if rank == 0 else []
         main_cap = max(40, cap - 60) if ctxs else cap
         main = content_full[:main_cap]
-        tag = f"[{h['source_tag']}] " if h.get("source_tag") else ""
-        block.append(f"- {ts} {tag}{main}")
+        block.append(f"- {head}: {main}")
         remaining = max(0, cap - len(main))
         if ctxs and remaining > 0:
             per_ctx = max(0, remaining // len(ctxs))
@@ -1693,7 +1761,7 @@ def user_prompt_submit() -> int:
             _sn["turn_count"] = _sn.get("turn_count", 0) + 1
             if _sn["turn_count"] - _sn.get("last_sticker_turn", 0) >= 10:
                 user_name = config.persona()["user_name"]
-                _nudge_line = f"你怎么还不发表情包，{user_name}都等急了——翻翻 sticker_search 找个应景的发一下。"
+                _nudge_line = f"你怎么还不发表情包，{user_name}都等急了——翻翻 sticker(action=search) 找个应景的发一下。"
                 _sn["last_sticker_turn"] = _sn["turn_count"]
             _save_sticker_nudge(sid, _sn)
         except Exception:
@@ -1992,17 +2060,13 @@ def _append_recall_log(sid: str, prompt_text: str, hits: list[dict]) -> None:
     parts.append("")
     for h in hits:
         kind = h.get("kind") or "event"
-        hid = h.get("id", "?")
         score = h.get("score", 0.0)
-        when = format_recall_ts(h.get("timestamp") or "")
         content = _strip_wx_time_prefix((h.get("content") or "").replace("\n", " "))
         # Mirror injection-side shaping: anchor tables ship full content
         # (rows are short + dense); only event hits get the 120-char cap.
         snip = content if kind in _TABLE_KINDS else content[:120]
-        head = f"- `{kind}#{hid}` score={score:.2f}"
-        if when:
-            head += f" {when}"
-        parts.append(f"{head} — {snip}")
+        # Same head as the injection renderer; score kept as a debug suffix.
+        parts.append(f"- {_recall_head(h)}: {snip} · score={score:.2f}")
         for c in h.get("_context", []) or []:
             arrow = "↑prev" if c.get("rel") == "prev" else "↓next"
             cs = _strip_wx_time_prefix((c.get("content") or "").replace("\n", " "))[:80]
@@ -2344,6 +2408,90 @@ def _backup_guard_deny(inp: dict) -> str | None:
         return None
 
 
+# ── git revert-type guard (PreToolUse) — held for authorship check ────────────
+# Distinct from the backup guard: revert-type git ops discard work, so the
+# risk is WHOSE work. Decision is "ask" (surface to the user), not a silent
+# deny — the model must first verify the diff's authorship. Worktree/agent
+# cleanup (branch -D teardown etc.) is exempt (tier-S scoping).
+_GIT_REVERT_DEFAULT_PATTERNS = [
+    r"\bgit\s+reset\s+--hard\b",
+    r"\bgit\s+checkout\s+(?:-[^\s-]+\s+)*--\s+\S",  # git checkout -- <path>
+    r"\bgit\s+restore\b",                            # worktree discard
+    r"\bgit\s+clean\s+-\w*f",                        # -f / -fd
+    r"\bgit\s+branch\s+-\w*D\w*\b",
+    r"\bgit\s+stash\s+(?:drop|clear)\b",
+    r"\bgit\s+revert\b[^\n]*--no-edit\b",
+]
+
+_GIT_REVERT_MSG = (
+    "Git revert-type op held — verify the diff's authorship first. Changes "
+    "from other sessions or the user's own edits are NOT yours to revert. "
+    "Confirm what each affected file/commit contains and who wrote it "
+    "(git log / status / diff), then proceed only if it's your own change."
+)
+
+
+def _git_revert_matches(cmd: str) -> bool:
+    """True if *cmd* contains a git revert-type op per config patterns.
+    `git restore --staged` alone (unstage only, no worktree discard) is safe."""
+    if not cmd:
+        return False
+    pats = (config.load().get("hooks", {}) or {}).get(
+        "git_revert_patterns"
+    ) or _GIT_REVERT_DEFAULT_PATTERNS
+    # No IGNORECASE: `git branch -D` (force) must stay distinct from the safe
+    # lowercase `-d` (git refuses unmerged deletes itself). git verbs/flags are
+    # lowercase in practice, so case-sensitive matching loses nothing.
+    restore_safe = bool(
+        _re.search(r"\bgit\s+restore\b", cmd)
+        and _re.search(r"--staged\b", cmd)
+        and not _re.search(r"(--worktree\b|\s-W\b)", cmd)
+    )
+    for p in pats:
+        try:
+            if not _re.search(p, cmd):
+                continue
+        except _re.error:
+            continue
+        if restore_safe and "restore" in p:
+            continue  # safe unstage-only restore — don't hold on this pattern
+        return True
+    return False
+
+
+def _git_revert_guard(inp: dict) -> str | None:
+    """Git revert-type authorship gate.
+
+    Returns the 'ask' reason string to hold the call; "" when a git-revert op
+    matched but it's worktree/agent cleanup (allow silently, skip the backup
+    deny gate); None when it isn't a git-revert op at all (fall through).
+    Config: [hooks].git_revert_guard (default true) + git_revert_patterns.
+    Fail-open: any error returns None."""
+    try:
+        if not isinstance(inp, dict) or inp.get("tool_name") != "Bash":
+            return None
+        hooks_cfg = config.load().get("hooks", {}) or {}
+        if not hooks_cfg.get("git_revert_guard", True):
+            return None
+        cmd = (inp.get("tool_input") or {}).get("command", "") or ""
+        if not isinstance(cmd, str) or not _git_revert_matches(cmd):
+            return None
+        # Tier-S scoping: worktree/agent cleanup teardown stays allowed. Use
+        # the same `/.claude/worktrees/` path-substring test as the backup
+        # guard's tier-S (`_bg_is_whitelisted_path`); also honour a live
+        # worktree-session detection when the cwd resolves.
+        cwd = inp.get("cwd") or ""
+        if (
+            "/.claude/worktrees/" in cwd
+            or "/.claude/worktrees/" in cmd
+            or _is_worktree_session(cwd)
+        ):
+            return ""
+        return hooks_cfg.get("git_revert_guard_message") or _GIT_REVERT_MSG
+    except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+        return None
+
+
 def agent_guard() -> int:
     """PreToolUse:Agent burst protection — deny recursion-prone subagents.
 
@@ -2383,21 +2531,43 @@ def pretool_use() -> int:
         tool = inp.get("tool_name", "")
         ti = inp.get("tool_input", {})
 
-        # Opportunistic backup-ish command stamp — always on, independent of
-        # whether this particular call is itself flagged.
+        # Git revert-type authorship gate — held via "ask" (user confirms
+        # whose diff is being discarded). "" (worktree-exempt) only skips the
+        # ASK below — the backup deny gate still runs, because the exemption
+        # test is a cheap substring match on the whole command and a compound
+        # `git checkout -- .claude/worktrees/x && rm -rf ~/y` must not ride an
+        # unrelated rm through unexamined. Genuine worktree cleanup stays
+        # unblocked via the backup guard's OWN tier-S whitelist, which is the
+        # right layer to own that decision. None = not a git-revert op at all
+        # (fall through, both gates apply normally).
+        git_revert: str | None = None
         try:
-            _bg_note_backup(inp)
+            git_revert = _git_revert_guard(inp)
         except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
-            pass
+            git_revert = None
+        if git_revert:
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": git_revert,
+                }
+            }))
+            return 0
 
         # Tier 3 — deny dangerous ops before anything else, unless a backup
         # landed within the window. Short-circuits placement/atlas guidance;
-        # the tool call itself is what needs gating.
+        # the tool call itself is what needs gating. Only a genuinely matched
+        # git-revert op (non-empty ask reason) owns the decision and skips
+        # this gate — "" (worktree-exempt) and None (no match) both fall
+        # through so a compound command's OTHER destructive segment still
+        # gets examined.
         deny_reason: str | None = None
-        try:
-            deny_reason = _backup_guard_deny(inp)
-        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
-            deny_reason = None
+        if not git_revert:
+            try:
+                deny_reason = _backup_guard_deny(inp)
+            except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+                deny_reason = None
         if deny_reason:
             print(json.dumps({
                 "hookSpecificOutput": {
@@ -2408,7 +2578,22 @@ def pretool_use() -> int:
             }))
             return 0
 
-        if tool == "sticker_pick":
+        # Opportunistic backup-ish command stamp — AFTER the deny gate, so the
+        # command under evaluation can never satisfy its own gate (a compound
+        # `cp db /backup/ && rm -rf X` was stamping last_backup_ts before its
+        # own tier-3 check ran). Denied calls return above and never stamp, so
+        # a denied+backup-looking command can't unlock its own retry either.
+        # A true fix stamps only after the backup SUCCEEDS (PostToolUse), but
+        # PostToolUse is not routed to this module — this is the best guarantee
+        # achievable within the currently-registered PreToolUse event.
+        try:
+            _bg_note_backup(inp)
+        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+            pass
+
+        if tool == "mcp__marrow__sticker" and str(
+            (ti or {}).get("action", "")
+        ).strip().lower() == "pick":
             sid = inp.get("session_id") if isinstance(inp, dict) else None
             if sid:
                 try:

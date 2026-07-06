@@ -1206,7 +1206,8 @@ def _migrate_to_v29(conn: sqlite3.Connection) -> None:
 
 def _migrate_to_v30(conn: sqlite3.Connection) -> None:
     """v30: goals table (C1/C3, Decided 07-03 eve) — key/value/unit pairs set
-    via goal_set MCP, read via goal_list. No history, latest value only."""
+    via goal(action=set) MCP, read via goal(action=list). No history, latest
+    value only."""
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 30:
         return
@@ -1242,7 +1243,7 @@ CREATE TABLE IF NOT EXISTS ct_rate_limit (
 def _migrate_to_v32(conn: sqlite3.Connection) -> None:
     """v32: ct_first_tick table (C4, First tick 07-04) — an executing session
     self-marks a cortex-nagged item as seen/handled so other sessions and later
-    wakes stop repeat-nagging. Writer = first_tick MCP tool; reader = cortex
+    wakes stop repeat-nagging. Writer = first(action=tick) MCP tool; reader = cortex
     (latest mark per item, no history)."""
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 32:

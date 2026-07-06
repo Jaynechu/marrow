@@ -137,7 +137,7 @@ def match_entity(conn, kind: str, name: str, aliases_list: list[str],
     """Return the id of an active entity in `kind` matching `name`/aliases, or
     None. Two-stage gate: alias/name overlap, then cosine top-match on same-kind
     names (bge-m3). Missing embedder → warn + name-only result. Sole matcher for
-    both daily candidate ingest and the entity_upsert MCP tool.
+    both daily candidate ingest and the dim(action=upsert) MCP tool.
     """
     hit_id = _alias_dedup_lookup(conn, kind, name, aliases_list)
     if hit_id is not None:

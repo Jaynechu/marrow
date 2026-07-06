@@ -274,3 +274,20 @@ backup_guard_intercept = true
 backup_guard_window_min = 15
 backup_guard_message = "Always back up (DB / commit) or archive files before destructive actions (delete, bulk modify) — never rm -rf without clear instruction."
 backup_guard_deny_message = "Destructive op blocked — back up the target first (DB copy / file copy / git commit), then rerun. Backups are remembered for 15 min. If no backup makes sense here, ask the user."
+
+# Git revert-type guard — held via PreToolUse permissionDecision "ask" (the
+# user confirms whose diff is being discarded). Owns the decision for the
+# matched git ops, so they bypass the backup deny gate. Worktree/agent cleanup
+# (branch -D teardown etc.) is exempt. `git restore --staged` alone (unstage
+# only) is treated as safe. Set git_revert_guard=false to disable.
+git_revert_guard = true
+git_revert_patterns = [
+    "\\bgit\\s+reset\\s+--hard\\b",
+    "\\bgit\\s+checkout\\s+(?:-[^\\s-]+\\s+)*--\\s+\\S",
+    "\\bgit\\s+restore\\b",
+    "\\bgit\\s+clean\\s+-\\w*f",
+    "\\bgit\\s+branch\\s+-\\w*D\\w*\\b",
+    "\\bgit\\s+stash\\s+(?:drop|clear)\\b",
+    "\\bgit\\s+revert\\b[^\\n]*--no-edit\\b",
+]
+git_revert_guard_message = "Git revert-type op held — verify the diff's authorship first. Changes from other sessions or the user's own edits are NOT yours to revert. Confirm what each affected file/commit contains and who wrote it (git log / status / diff), then proceed only if it's your own change."

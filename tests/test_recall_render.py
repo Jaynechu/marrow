@@ -178,22 +178,22 @@ class TestRenderHitBlock:
         block = _render_hit_block(0, h, self._caps)
         # The main bullet line content should be ≤300 chars (cap for rank 0).
         main_line = block[0]
-        # Extract content after the timestamp label
-        content_part = main_line.split("] ", 1)[-1] if "]" in main_line else main_line
+        # Extract content after the "<head>: " marker
+        content_part = main_line.split(": ", 1)[-1]
         assert len(content_part) <= 300
 
     def test_rank1_cap_120(self):
         h = _hit(0.9, content=self._long_content(500))
         block = _render_hit_block(1, h, self._caps)
         main_line = block[0]
-        content_part = main_line.split("] ", 1)[-1] if "]" in main_line else main_line
+        content_part = main_line.split(": ", 1)[-1]
         assert len(content_part) <= 120
 
     def test_rank3_cap_40(self):
         h = _hit(0.7, content=self._long_content(200))
         block = _render_hit_block(3, h, self._caps)
         main_line = block[0]
-        content_part = main_line.split("] ", 1)[-1] if "]" in main_line else main_line
+        content_part = main_line.split(": ", 1)[-1]
         assert len(content_part) <= 40
 
     def test_rank_beyond_list_uses_last(self):
@@ -202,7 +202,7 @@ class TestRenderHitBlock:
         block = _render_hit_block(10, h, self._caps)
         # Should not raise; content capped at 40
         main_line = block[0]
-        content_part = main_line.split("] ", 1)[-1] if "]" in main_line else main_line
+        content_part = main_line.split(": ", 1)[-1]
         assert len(content_part) <= 40
 
     def test_anchor_truncated_no_context(self):
@@ -210,7 +210,7 @@ class TestRenderHitBlock:
         block = _render_hit_block(0, h, self._caps)
         # Anchor rows: exactly 1 line, no context bullets.
         assert len(block) == 1
-        content_part = block[0].split("] ", 1)[-1] if "]" in block[0] else block[0]
+        content_part = block[0].split(": ", 1)[-1]
         assert len(content_part) <= 300
 
     def test_rank0_event_context_included(self):
@@ -256,8 +256,55 @@ def test_render_rank_beyond_list_uses_last_cap():
          "timestamp": _ts(60), "role": "user"}
     block = _render_hit_block(10, h, caps)
     main_line = block[0]
-    content_part = main_line.split("] ", 1)[-1] if "]" in main_line else main_line
+    content_part = main_line.split(": ", 1)[-1]
     assert len(content_part) <= 40
+
+
+# ── per-kind recall head format ──────────────────────────────────────────────
+
+_CAPS = [300, 120, 120, 40, 40]
+
+
+def test_head_event_channel_and_id():
+    h = {**_hit(1.0, content="hello"), "channel": "wx"}
+    line = _render_hit_block(0, h, _CAPS)[0]
+    assert line.startswith("- [wx ")
+    assert "] ev#1: hello" in line
+
+
+def test_head_event_channel_fallback_cli():
+    h = _hit(1.0, content="hi")  # channel None
+    line = _render_hit_block(0, h, _CAPS)[0]
+    assert line.startswith("- [cli ")
+    assert "ev#1: hi" in line
+
+
+def test_head_milestone_strips_t00():
+    h = {**_hit(0.8, content="grad", kind="milestone"),
+         "timestamp": "2013-03-15T00:00:00Z"}
+    line = _render_hit_block(0, h, _CAPS)[0]
+    assert "T00:00" not in line
+    assert line == "- [2013-03-15] ms#1: grad"
+
+
+def test_head_milestone_year_only():
+    h = {**_hit(0.8, content="born", kind="milestone"),
+         "timestamp": "2013T00:00:00Z"}
+    line = _render_hit_block(0, h, _CAPS)[0]
+    assert line == "- [2013] ms#1: born"
+
+
+def test_head_entity_no_time():
+    h = {**_hit(0.8, content="Melbourne", kind="entity"),
+         "timestamp": "2026-01-01T00:00:00Z"}
+    line = _render_hit_block(0, h, _CAPS)[0]
+    assert line == "- en#1: Melbourne"
+
+
+def test_head_meme_empty_ts_no_bracket():
+    h = {**_hit(0.8, content="梗: 内容", kind="memes"), "timestamp": ""}
+    line = _render_hit_block(0, h, _CAPS)[0]
+    assert line == "- me#1: 梗: 内容"
 
 
 # ── mcp recall context param plumbing ────────────────────────────────────────

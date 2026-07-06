@@ -911,11 +911,14 @@ def test_backup_guard_tier3_git_push_force_denies(env, monkeypatch, capsys):
     assert _BG_DENY_MSG in out["permissionDecisionReason"]
 
 
-def test_backup_guard_tier3_git_branch_cap_d_denies(env, monkeypatch, capsys):
+def test_git_branch_cap_d_now_asks_for_authorship(env, monkeypatch, capsys):
+    # branch -D is a git revert-type op: held via "ask" (authorship), owned by
+    # the git-revert guard which runs before the backup deny gate.
     rc = _pretool(monkeypatch, "Bash", {"command": "git branch -D old-feature"})
     assert rc == 0
     out = _out(capsys)["hookSpecificOutput"]
-    assert out["permissionDecision"] == "deny"
+    assert out["permissionDecision"] == "ask"
+    assert "authorship" in out["permissionDecisionReason"]
 
 
 def test_backup_guard_tier3_settings_json_edit_denies(env, monkeypatch, capsys):
@@ -999,3 +1002,112 @@ def test_backup_guard_fail_open_malformed_input(env, monkeypatch, capsys):
                          "tool_input": "not-a-dict"})
     rc = hooks.main(["pretool_use"])
     assert rc == 0
+
+
+# -- Task 2: backup-stamp can't unlock its own gate (compound command) ---------
+
+def test_backup_guard_compound_backup_and_destructive_still_denies(
+    env, monkeypatch, capsys
+):
+    """`cp db /backup/ && rm -rf ~/x` used to stamp last_backup_ts BEFORE its
+    own tier-3 check ran, unlocking itself. The stamp now runs after the deny
+    gate, so this single call is still denied — and a denied call returns
+    before stamping, so a retry stays denied too."""
+    cmd = "cp ~/Documents/x ~/backup/x && rm -rf ~/Documents/x"
+    rc = _pretool(monkeypatch, "Bash", {"command": cmd})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    # Retry the exact same command — must still deny (no self-stamp leaked).
+    rc2 = _pretool(monkeypatch, "Bash", {"command": cmd})
+    assert rc2 == 0
+    out2 = _out(capsys)["hookSpecificOutput"]
+    assert out2["permissionDecision"] == "deny"
+
+
+def test_backup_guard_separate_backup_then_destructive_allows(
+    env, monkeypatch, capsys
+):
+    """A standalone backup command stamps (after its own allow), so the next
+    destructive call is allowed within the window — the intended path."""
+    rc_bak = _pretool(monkeypatch, "Bash",
+                      {"command": "cp -r ~/Documents/x /tmp/backup_x"})
+    assert rc_bak == 0
+    capsys.readouterr()
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf ~/Documents/x"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert "permissionDecision" not in out
+
+
+# -- Task 4: git revert-type authorship guard ("ask") -------------------------
+
+def test_git_revert_reset_hard_asks(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "git reset --hard HEAD~1"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
+    assert "authorship" in out["permissionDecisionReason"]
+
+
+def test_git_revert_checkout_file_discard_asks(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git checkout -- marrow/hooks.py"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
+
+
+def test_git_revert_restore_worktree_asks(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "git restore marrow/hooks.py"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
+
+
+def test_git_revert_restore_staged_only_is_safe(env, monkeypatch, capsys):
+    # Unstage-only restore (no worktree discard) must NOT be held.
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git restore --staged marrow/hooks.py"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert "permissionDecision" not in out
+
+
+def test_git_revert_clean_f_asks(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "git clean -fd"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
+
+
+def test_git_revert_normal_git_commands_pass(env, monkeypatch, capsys):
+    for cmd in ("git status", "git log --oneline", "git diff HEAD",
+                "git commit -m wip", "git push origin main"):
+        rc = _pretool(monkeypatch, "Bash", {"command": cmd})
+        assert rc == 0
+        out = _out(capsys)["hookSpecificOutput"]
+        assert out.get("permissionDecision") != "ask", cmd
+
+
+def test_git_revert_worktree_cleanup_exempt(env, monkeypatch, capsys):
+    # branch -D whose cwd is a worktree = agent teardown → allowed silently.
+    _stdin(monkeypatch, {
+        "session_id": "s1", "tool_name": "Bash",
+        "cwd": "/Users/x/.claude/worktrees/agent-abc/marrow",
+        "tool_input": {"command": "git branch -D agent-abc"},
+    })
+    rc = hooks.main(["pretool_use"])
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out.get("permissionDecision") != "ask"
+
+
+def test_git_revert_disabled_via_config(env, monkeypatch, capsys):
+    base_cfg = config.load()
+    base_cfg.setdefault("hooks", {})["git_revert_guard"] = False
+    monkeypatch.setattr(config, "load", lambda: base_cfg)
+    rc = _pretool(monkeypatch, "Bash", {"command": "git reset --hard HEAD~1"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out.get("permissionDecision") != "ask"
