@@ -120,6 +120,19 @@ def test_tl_query_by_match(env):
     assert "千层" in out["matches"][0]["line"]
 
 
+def test_tl_query_match_percent_is_literal(env):
+    """A bare '%' in the match string must only hit content containing a
+    literal '%' — unescaped, LIKE would treat it as a wildcard matching
+    every row and silently broaden the match (a wrong-row hazard for the
+    update/clear paths that share this same resolver)."""
+    eid = _insert_tl(env, "50% off coupon", ts="2026-07-05T05:00:00Z")
+    _insert_tl(env, "totally unrelated row", ts="2026-07-05T06:00:00Z")
+    out = daemon.tl("query", match="%")
+    assert out["ok"] is True
+    assert len(out["matches"]) == 1
+    assert out["matches"][0]["event_id"] == eid
+
+
 def test_tl_query_by_date_respects_melb_day(env):
     _insert_tl(env, "day five", ts="2026-07-05T05:00:00Z")
     _insert_tl(env, "day six", ts="2026-07-06T05:00:00Z")
