@@ -272,5 +272,5 @@ wishlist_path = ""
 backup_guard = true
 backup_guard_intercept = true
 backup_guard_window_min = 15
-backup_guard_message = "Always back up / archive the DB / file / commit before you do anything destructive — bulk modify, move, delete."
+backup_guard_message = "Always back up (DB / commit) or archive files before destructive actions (delete, bulk modify) — never rm -rf without clear instruction."
 backup_guard_deny_message = "Destructive op blocked — back up the target first (DB copy / file copy / git commit), then rerun. Backups are remembered for 15 min. If no backup makes sense here, ask the user."
