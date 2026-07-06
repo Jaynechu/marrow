@@ -2142,6 +2142,22 @@ def _bg_is_whitelisted_path(p: str) -> bool:
     return False
 
 
+def _bg_resolve_for_whitelist(p: str, cwd: str) -> str:
+    """Resolve a relative positional path against the hook-provided cwd,
+    purely for the whitelist test (no filesystem access, no realpath — the
+    hook must stay fast and side-effect free). Absolute paths, `~`-paths, and
+    wildcard-only tokens (glob chars present) are returned unchanged — a glob
+    can't be joined meaningfully and is handled by its own broad-path logic.
+    If cwd is empty/missing, the raw (relative) path is returned unchanged —
+    it will not match the whitelist, which is today's (safe-side) behavior."""
+    pp = (p or "").strip().strip("'\"")
+    if not pp or not cwd:
+        return p
+    if pp.startswith("/") or pp.startswith("~") or any(ch in pp for ch in "*?["):
+        return p
+    return os.path.normpath(os.path.join(cwd, pp))
+
+
 def _bg_raw_segments(cmd: str) -> list[str]:
     """Ordered raw (untokenized) shell segments, split on &&/||/;/|/&. Used
     for segment-ordered backup/destructive checks — position, not just
@@ -2164,10 +2180,17 @@ def _bg_bash_segments(cmd: str) -> list[list[str]]:
     return out
 
 
-def _bg_rm_segment(tokens: list[str]) -> str | None:
+def _bg_rm_segment(tokens: list[str], cwd: str = "") -> str | None:
     """Classify a single `rm` segment: 'deny' (recursive on a non-whitelisted
     path, or a *.db target), 'remind' (non-recursive on a non-whitelisted
-    non-db path), or None (whitelisted / not rm)."""
+    non-db path), or None (whitelisted / not rm).
+
+    `cwd` (from the hook's `cwd` input, may be empty) is joined onto relative
+    positional paths ONLY for the whitelist test below — the raw token still
+    drives the .db-suffix and recursive-flag checks (blast-radius signal is
+    about what the user/model typed, not the resolved path; a relative path
+    resolved into /Users/... is not "broad" just because it resolved there —
+    see _bg_resolve_for_whitelist)."""
     if not tokens or tokens[0] != "rm":
         return None
     args = tokens[1:]
@@ -2175,7 +2198,10 @@ def _bg_rm_segment(tokens: list[str]) -> str | None:
     positional = [t for t in args if not t.startswith("-")]
     if not positional:
         return None
-    non_wl = [p for p in positional if not _bg_is_whitelisted_path(p)]
+    non_wl = [
+        p for p in positional
+        if not _bg_is_whitelisted_path(_bg_resolve_for_whitelist(p, cwd))
+    ]
     if not non_wl:
         return None  # all whitelisted — silent
     if any((p or "").strip().strip("'\"").endswith(".db") for p in non_wl):
@@ -2231,9 +2257,15 @@ def _bg_has_backup(cmd: str) -> bool:
     return bool(cmd) and bool(_BG_BACKUP_CMD_RE.search(cmd))
 
 
-def _bg_bash_category(cmd: str) -> str | None:
+def _bg_bash_category(cmd: str, cwd: str = "") -> str | None:
     """'deny', 'remind', or None for a Bash command. Stateless and
     intercept-agnostic.
+
+    `cwd` is the hook-provided working directory (may be empty) — it is only
+    used to resolve relative positional paths for the whitelist test inside
+    _bg_rm_segment (see there). No attempt is made to emulate `cd` across
+    shell segments (e.g. `cd X && rm -rf Y` — out of scope); the single
+    hook-provided cwd is used as-is for every segment.
 
     The escape hatch is segment-ORDERED, not whole-string: a backup action
     (cp/rsync/tar/git commit/git stash push/.backup) only satisfies it when it
@@ -2262,7 +2294,7 @@ def _bg_bash_category(cmd: str) -> str | None:
         if backup_idx is None and _bg_has_backup(seg):
             backup_idx = i
         if destructive_idx is None and (
-            _bg_rm_segment(toks) == "deny" or _bg_sqlite_db_destruction(seg)
+            _bg_rm_segment(toks, cwd) == "deny" or _bg_sqlite_db_destruction(seg)
         ):
             destructive_idx = i
 
@@ -2274,7 +2306,7 @@ def _bg_bash_category(cmd: str) -> str | None:
     # No deny-tier match anywhere — compute the reminder tier as before.
     remind = False
     for toks in seg_tokens:
-        if _bg_rm_segment(toks) == "remind":
+        if _bg_rm_segment(toks, cwd) == "remind":
             remind = True
         if _bg_bulk_modify_segment(toks):
             remind = True
@@ -2300,12 +2332,12 @@ def _bg_mcp_destructive(tool_name: str, tool_input: dict) -> bool:
     return False
 
 
-def _bg_category(tool_name: str, tool_input: dict) -> str | None:
+def _bg_category(tool_name: str, tool_input: dict, cwd: str = "") -> str | None:
     """Return 'deny' / 'remind' / None. Write/Edit are no longer guarded
     (a write requires a prior read, so it is recoverable)."""
     ti = tool_input or {}
     if tool_name == "Bash":
-        return _bg_bash_category(ti.get("command", "") or "")
+        return _bg_bash_category(ti.get("command", "") or "", cwd)
     if tool_name and tool_name not in ("Bash", "Write", "Edit"):
         if _bg_mcp_destructive(tool_name, ti):
             return "remind"
@@ -2326,7 +2358,8 @@ def _backup_guard_deny(inp: dict) -> str | None:
             return None
         tool_name = inp.get("tool_name", "") or ""
         ti = inp.get("tool_input", {}) or {}
-        if _bg_category(tool_name, ti) != "deny":
+        cwd = inp.get("cwd") or ""
+        if _bg_category(tool_name, ti, cwd) != "deny":
             return None
         return hooks_cfg.get("backup_guard_deny_message") or _BG_DENY_MSG
     except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
@@ -2348,7 +2381,8 @@ def _backup_guard_line(inp: dict) -> str | None:
             return None
         tool_name = inp.get("tool_name", "") or ""
         ti = inp.get("tool_input", {}) or {}
-        cat = _bg_category(tool_name, ti)
+        cwd = inp.get("cwd") or ""
+        cat = _bg_category(tool_name, ti, cwd)
         if cat == "deny" and not hooks_cfg.get("backup_guard_intercept", True):
             cat = "remind"  # downgraded — no deny gate, surface the reminder
         if cat != "remind":

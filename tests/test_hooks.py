@@ -783,9 +783,11 @@ _BG_DENY_MSG = "bulk deletion with no backup"
 _MV_DST = str(_Path.home() / "CC-Lab" / "marrow" / "_bg_test_dst")
 
 
-def _pretool(monkeypatch, tool_name, tool_input, sid="s1"):
-    _stdin(monkeypatch, {"session_id": sid, "tool_name": tool_name,
-                         "tool_input": tool_input})
+def _pretool(monkeypatch, tool_name, tool_input, sid="s1", cwd=None):
+    payload = {"session_id": sid, "tool_name": tool_name, "tool_input": tool_input}
+    if cwd is not None:
+        payload["cwd"] = cwd
+    _stdin(monkeypatch, payload)
     return hooks.main(["pretool_use"])
 
 
@@ -950,6 +952,47 @@ def test_backup_guard_recursive_rm_no_backup_denies(env, monkeypatch, capsys):
 def test_backup_guard_recursive_rm_relative_no_backup_denies(env, monkeypatch, capsys):
     # Any non-whitelisted path (relative too) with recursive rm → deny.
     rc = _pretool(monkeypatch, "Bash", {"command": "rm -r build/output"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+
+
+# -- Relative path + cwd resolution (whitelist test only) ---------------------
+
+def test_backup_guard_relative_rm_rf_cwd_in_scratchpad_silent(env, monkeypatch, capsys):
+    # Bug fix: `cd <scratchpad> && rm -rf ask-demo` was denied even though cwd
+    # resolves inside the whitelisted scratchpad zone.
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf ask-demo"},
+                  cwd="/private/tmp/claude-501/proj/scratchpad")
+    assert rc == 0
+    out = _hook_out(capsys)
+    assert "permissionDecision" not in out
+    assert _BG_MSG not in out.get("additionalContext", "")
+
+
+def test_backup_guard_relative_rm_rf_cwd_outside_whitelist_denies(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf ask-demo"},
+                  cwd="/Users/Gabrielle/Documents")
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+
+
+def test_backup_guard_relative_rm_single_file_cwd_whitelisted_silent(env, monkeypatch, capsys):
+    # Non-recursive relative rm with a whitelisted cwd → fully silent (no
+    # reminder either — the resolved path IS whitelisted).
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm ask-demo.txt"},
+                  cwd="/private/tmp/claude-501/proj/scratchpad")
+    assert rc == 0
+    out = _hook_out(capsys)
+    assert "permissionDecision" not in out
+    assert _BG_MSG not in out.get("additionalContext", "")
+
+
+def test_backup_guard_relative_rm_rf_missing_cwd_denies(env, monkeypatch, capsys):
+    # No cwd provided at all (not just empty) + relative recursive rm →
+    # unchanged today's behavior: treated as non-whitelisted, deny.
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf ask-demo"})
     assert rc == 0
     out = _out(capsys)["hookSpecificOutput"]
     assert out["permissionDecision"] == "deny"
