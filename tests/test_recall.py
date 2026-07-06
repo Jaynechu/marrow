@@ -257,6 +257,59 @@ def test_recall_fusion_score_above_min(db):
     assert results[0]["score"] >= 0.0
 
 
+# ── recall_fusion — since/until window ────────────────────────────────────────
+
+def _make_window_events(db):
+    _make_event(db, "marrow window alpha", session_id="w1",
+                timestamp="2026-05-19T01:00:00Z")
+    _make_event(db, "marrow window beta", session_id="w2",
+                timestamp="2026-05-21T01:00:00Z")
+    _make_event(db, "marrow window gamma", session_id="w3",
+                timestamp="2026-05-23T01:00:00Z")
+
+
+def test_recall_fusion_since_only_filters(db):
+    _make_window_events(db)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(
+            db, "marrow window", since="2026-05-20T00:00:00Z", min_score=0.0,
+        )
+    contents = {r["content"] for r in results}
+    assert contents == {"marrow window beta", "marrow window gamma"}
+
+
+def test_recall_fusion_until_only_filters(db):
+    _make_window_events(db)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(
+            db, "marrow window", until="2026-05-20T00:00:00Z", min_score=0.0,
+        )
+    contents = {r["content"] for r in results}
+    assert contents == {"marrow window alpha"}
+
+
+def test_recall_fusion_since_and_until_range(db):
+    _make_window_events(db)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(
+            db, "marrow window",
+            since="2026-05-20T00:00:00Z", until="2026-05-22T00:00:00Z",
+            min_score=0.0,
+        )
+    contents = {r["content"] for r in results}
+    assert contents == {"marrow window beta"}
+
+
+def test_recall_fusion_no_window_returns_all(db):
+    _make_window_events(db)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(db, "marrow window", min_score=0.0)
+    contents = {r["content"] for r in results}
+    assert contents == {
+        "marrow window alpha", "marrow window beta", "marrow window gamma",
+    }
+
+
 def test_recall_fusion_budget_truncation(db):
     _make_event(db, "x" * 3000, timestamp="2026-05-19T01:00:00Z")
     _make_event(db, "x" * 3000, session_id="s2", timestamp="2026-05-19T01:01:00Z")

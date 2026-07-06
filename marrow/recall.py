@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -30,6 +31,8 @@ from tokenizers import Tokenizer
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
 
 
 # ── embedder singleton ────────────────────────────────────────────────────────
@@ -1042,7 +1045,8 @@ def _fts_lane_hits(
         return []
     try:
         return conn.execute(sql, (fts_q, k)).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("FTS lane query failed (sql=%r, fts_q=%r): %s", sql, fts_q, exc)
         return []
 
 
@@ -1240,25 +1244,24 @@ def recall_fusion(
 
     # ── FTS candidates ────────────────────────────────────────────────────────
     fts_q = '"' + q.replace('"', '""') + '"'
-    if since and until:
-        fts_rows = conn.execute(
-            "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
-            "e.compressed, e.imp AS imp, s.cwd AS session_cwd, rank AS fts_rank "
-            "FROM events_fts f JOIN events e ON e.id = f.rowid "
-            "LEFT JOIN sessions s ON s.sid = e.session_id "
-            "WHERE events_fts MATCH ? AND e.timestamp >= ? AND e.timestamp < ? "
-            "ORDER BY rank LIMIT ?",
-            (fts_q, since, until, limit * 3),
-        ).fetchall()
-    else:
-        fts_rows = conn.execute(
-            "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
-            "e.compressed, e.imp AS imp, s.cwd AS session_cwd, rank AS fts_rank "
-            "FROM events_fts f JOIN events e ON e.id = f.rowid "
-            "LEFT JOIN sessions s ON s.sid = e.session_id "
-            "WHERE events_fts MATCH ? ORDER BY rank LIMIT ?",
-            (fts_q, limit * 3),
-        ).fetchall()
+    _fts_where = ["events_fts MATCH ?"]
+    _fts_params: list = [fts_q]
+    if since:
+        _fts_where.append("e.timestamp >= ?")
+        _fts_params.append(since)
+    if until:
+        _fts_where.append("e.timestamp < ?")
+        _fts_params.append(until)
+    _fts_params.append(limit * 3)
+    fts_rows = conn.execute(
+        "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
+        "e.compressed, e.imp AS imp, s.cwd AS session_cwd, rank AS fts_rank "
+        "FROM events_fts f JOIN events e ON e.id = f.rowid "
+        "LEFT JOIN sessions s ON s.sid = e.session_id "
+        "WHERE " + " AND ".join(_fts_where) + " "
+        "ORDER BY rank LIMIT ?",
+        _fts_params,
+    ).fetchall()
 
     # ── vec candidates ────────────────────────────────────────────────────────
     vec_rows: list[sqlite3.Row] = []
@@ -1268,7 +1271,7 @@ def recall_fusion(
         # When a time window is active, fetch a larger candidate set and filter
         # in Python. sqlite-vec KNN (MATCH+k=) cannot reliably apply arbitrary
         # WHERE predicates on the joined table inside the virtual-table scan.
-        vec_k = limit * 6 if (since and until) else limit * 3
+        vec_k = limit * 6 if (since or until) else limit * 3
         all_vec_rows = conn.execute(
             "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
             "e.compressed, e.imp AS imp, s.cwd AS session_cwd, v.distance "
@@ -1278,9 +1281,13 @@ def recall_fusion(
             "ORDER BY v.distance",
             (qblob, vec_k),
         ).fetchall()
-        if since and until:
-            vec_rows = [r for r in all_vec_rows
-                        if r["timestamp"] and r["timestamp"] >= since and r["timestamp"] < until]
+        if since or until:
+            vec_rows = [
+                r for r in all_vec_rows
+                if r["timestamp"]
+                and (not since or r["timestamp"] >= since)
+                and (not until or r["timestamp"] < until)
+            ]
         else:
             vec_rows = all_vec_rows
 
@@ -1458,31 +1465,35 @@ def recall_fusion(
 
     # Diary: vec-only lane (no kw scan for long-form prose). Build candidates
     # gated by _VEC_ONLY_FLOOR; scored with w_diary_vec, no bm25/recency.
-    # When a time window is active, collect the Melbourne-local dates it spans
-    # and filter diary rows to those dates only.
-    _diary_dates: set[str] | None = None
-    if since and until:
+    # When a time window is active (since and/or until), convert to
+    # Melbourne-local dates and filter diary rows to that range.
+    _diary_since_date: str | None = None
+    _diary_until_date: str | None = None
+    _diary_window_error = False
+    if since or until:
         from .timeutil import utc_iso_to_local_date as _u2d
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         try:
-            _s = _dt.fromisoformat(since.replace("Z", "+00:00"))
-            _e = _dt.fromisoformat(until.replace("Z", "+00:00"))
-            _diary_dates = set()
-            _cur = _s
-            while _cur <= _e:
-                _diary_dates.add(_u2d(_cur.strftime("%Y-%m-%dT%H:%M:%SZ")))
-                _cur += _td(days=1)
+            if since:
+                _diary_since_date = _u2d(since)
+            if until:
+                _diary_until_date = _u2d(until)
         except Exception:
-            _diary_dates = None
+            _diary_window_error = True
 
     diary_cands: list[dict] = []
-    if _diary_dates is not None:
+    if (since or until) and not _diary_window_error:
         # Date window present — direct SELECT, bypass vec floor.
-        _ph = ",".join("?" * len(_diary_dates))
+        _dwhere = ["COALESCE(content,'') NOT IN ('','—')"]
+        _dparams: list = []
+        if _diary_since_date:
+            _dwhere.append("date >= ?")
+            _dparams.append(_diary_since_date)
+        if _diary_until_date:
+            _dwhere.append("date <= ?")
+            _dparams.append(_diary_until_date)
         for row in conn.execute(
-            f"SELECT rowid, date, content FROM diary "
-            f"WHERE date IN ({_ph}) AND COALESCE(content,'') NOT IN ('','—')",
-            list(_diary_dates),
+            f"SELECT rowid, date, content FROM diary WHERE {' AND '.join(_dwhere)}",
+            _dparams,
         ).fetchall():
             ts = row["date"] + "T00:00:00Z" if row["date"] else ""
             diary_cands.append({
