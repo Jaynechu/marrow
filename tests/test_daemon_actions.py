@@ -1,6 +1,6 @@
 """Action-dispatch coverage for the 12-tool MCP surface rebuild (07-06):
 tl clear, dim upsert/query/delete (all kinds), sticker/sticker_admin/alert
-dispatch validation, event_clear filters, first_tick untick/list.
+dispatch validation, event_clear filters, first untick/list.
 """
 from __future__ import annotations
 
@@ -104,14 +104,14 @@ def test_tl_unknown_action(env):
 
 def test_dim_upsert_meme_create_and_update(env):
     out = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="loving nickname",
-                      meme_type="paw", context="from a joke")
+                      meme_type="paw")
     assert out["ok"] is True
     assert out["action"] == "create"
     mid = out["id"]
     conn = storage.connect(env)
     try:
         row = conn.execute(
-            "SELECT type, key, value, context, pinned, updated_at FROM memes"
+            "SELECT type, key, value, pinned, updated_at FROM memes"
             " WHERE id=?", (mid,)).fetchone()
     finally:
         conn.close()
@@ -342,11 +342,11 @@ def test_alert_resolve_requires_id(env):
     assert out["ok"] is False
 
 
-# ── first_tick untick/list ─────────────────────────────────────────────────────
+# ── first untick/list ────────────────────────────────────────────────────────
 
-def test_first_tick_untick_removes_row(env):
-    daemon.first_tick("tick", item="gym-reminder", note="x", sid="s1")
-    out = daemon.first_tick("untick", item="gym-reminder")
+def test_first_untick_removes_row(env):
+    daemon.first("tick", item="gym-reminder", note="x", sid="s1")
+    out = daemon.first("untick", item="gym-reminder")
     assert out == {"ok": True, "item": "gym-reminder"}
     conn = storage.connect(env)
     try:
@@ -355,21 +355,61 @@ def test_first_tick_untick_removes_row(env):
         conn.close()
 
 
-def test_first_tick_untick_missing_item_reports_false(env):
-    out = daemon.first_tick("untick", item="nope")
+def test_first_untick_missing_item_reports_false(env):
+    out = daemon.first("untick", item="nope")
     assert out == {"ok": False, "item": "nope"}
 
 
-def test_first_tick_list_shows_acks(env):
-    daemon.first_tick("tick", item="a", note="n1", sid="s1")
-    daemon.first_tick("tick", item="b", note="n2", sid="s2")
-    rows = daemon.first_tick("list")
+def test_first_list_shows_acks(env):
+    daemon.first("tick", item="a", note="n1", sid="s1")
+    daemon.first("tick", item="b", note="n2", sid="s2")
+    rows = daemon.first("list")
     assert {r["item"] for r in rows} == {"a", "b"}
 
 
-def test_first_tick_unknown_action(env):
-    out = daemon.first_tick("bogus")
+def test_first_unknown_action(env):
+    out = daemon.first("bogus")
     assert out["ok"] is False
+
+
+def test_first_tick_rejects_bad_status(env):
+    out = daemon.first("tick", item="x", note="n", sid="s1", status="bogus")
+    assert out["ok"] is False
+
+
+def test_first_tick_status_tried_stored(env):
+    daemon.first("tick", item="x", note="blocked", sid="s1", status="tried")
+    conn = storage.connect(env)
+    try:
+        row = conn.execute(
+            "SELECT status FROM ct_first_tick WHERE item='x'").fetchone()
+    finally:
+        conn.close()
+    assert row["status"] == "tried"
+
+
+# ── tl silence enforcement ───────────────────────────────────────────────────
+
+def test_tl_silence_removed_from_actions():
+    assert "silence" not in daemon._TL_ACTIONS
+
+
+def test_tl_add_refuses_when_silenced(env, monkeypatch):
+    from marrow import tl_nudge
+    monkeypatch.setattr(tl_nudge, "is_silent", lambda sid: True)
+    out = daemon.tl("add", timerange="10:00", body="test", n_word="calm")
+    assert out == {"ok": False, "silenced": True,
+                   "error": "session is silenced (/tl-)"}
+    assert _event_count(env) == 0
+
+
+def test_tl_update_refuses_when_silenced(env, monkeypatch):
+    from marrow import tl_nudge
+    eid = _insert_tl(env, "row one")
+    monkeypatch.setattr(tl_nudge, "is_silent", lambda sid: True)
+    out = daemon.tl("update", event_id=eid, body="edited")
+    assert out == {"ok": False, "silenced": True,
+                   "error": "session is silenced (/tl-)"}
 
 
 # ── event_clear ──────────────────────────────────────────────────────────────

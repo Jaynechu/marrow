@@ -1,7 +1,7 @@
 """Marrow MCP server (stdio). Thin protocol shell over repo.py.
 
 12-tool surface (07-06 rebuild): recall / atlas_lookup / event_embed / wish +
-8 action-dispatch tools (tl / sticker / sticker_admin / goal / first_tick /
+8 action-dispatch tools (tl / sticker / sticker_admin / goal / first /
 dim / alert / event_clear). The session-start handoff is rendered by the
 SessionStart hook. LLMClient wired so provider failures land in alerts.
 """
@@ -33,12 +33,11 @@ def recall(
     since: str | None = None,
     until: str | None = None,
 ) -> list[dict]:
-    """Recall past session turns matching a query. Uses vector + FTS5 +
-    recency + affect fusion when bge-m3 is loaded; FTS5-only fallback.
-    Call when the user references the past.
-    Set context=True to attach ±1 adjacent same-session turns to each event row.
-    since/until: Melbourne-local YYYY-MM-DD day strings for time-lane filtering.
-    Diary: recall(query="diary", since="date", until="date")."""
+    """Recall events from db. Call when the user mention the past that you don't know.
+    e.g. 你记得我上周说xxx？
+    context=True attaches ±1 adjacent same-session turns.
+    since/until: Melbourne-local YYYY-MM-DD day strings.
+    Diary: query='diary' + since/until."""
     # C3 guard: cortex's resumed session loads MCP tools full-env (no
     # isolation, see MAP §6) so it COULD call this tool directly, unlike
     # the passive hook-injection path which already no-ops (hooks.py
@@ -106,7 +105,7 @@ def recall(
 
 @mcp.tool()
 def atlas_lookup(prefix: str) -> list[dict]:
-    """Look up atlas rows by path prefix. Returns description/naming for matched dirs."""
+    """Look up atlas rows by path prefix — call before creating or naming files when location/naming is uncertain. Returns description + naming rules."""
     conn = storage.connect(_DB)
     try:
         from . import atlas
@@ -128,7 +127,7 @@ def event_embed(batch: int = 50) -> dict:
 
 # ── tl ───────────────────────────────────────────────────────────────────────
 
-_TL_ACTIONS = {"add", "update", "silence", "clear"}
+_TL_ACTIONS = {"add", "update", "clear"}
 
 
 def _tl_where(event_id, sid, before, after):
@@ -217,7 +216,7 @@ def _tl_clear(event_id: int | None, sid: str | None,
     return {"ok": True, "cleared": len(ids), "ids": ids, "backup": backup}
 
 
-@mcp.tool(meta={"anthropic/alwaysLoad": True})
+@mcp.tool()
 def tl(
     action: str,
     timerange: str | None = None,
@@ -230,24 +229,23 @@ def tl(
     before: str | None = None,
     after: str | None = None,
 ) -> dict:
-    """Session timeline. action='add' records a scene live — call when scene
-    shifts, emotional turns, or a task completes; 'update' revises a row by
-    event_id (task sessions keep one row and update it — hard step in /ho);
-    'silence' mutes this session's nudge + self writes (dies with session);
-    'clear' deletes timeline rows by event_id / sid / before-after range,
-    DB backup first.
-    Row format (add/update): HH:mm-HH:mm 【N affect♡Y affect】body [i]
-    - e.g. 21:25-21:31 【N愉悦♡Y委屈】翻CC日志找骂人梗，扑空互怼 [3]
-    - N = 念念, Y = 阿屿; single-side rows OK. affect = mood phrase, 1-8 chars.
-    - i = one composite imp per row: 1-2 routine · 3 medium (~1wk) ·
-      4 high (conflict/exam) · 5 milestone. Default 3.
-    - body <=30 chars, vivid not work-log; life details in, tech details out.
-      No third person — 我/你 only, never 她/他.
-    - When: topic/mood change or task done; ~2-3 per session
-      (every 1-2h or 10-20 turns).
-    Params: add → timerange, body, n_word/y_word (affect phrase per side,
-    <=8 chars, no numbers), importance, sid; update → event_id + any of the
-    above; silence → sid optional; clear → event_id | sid | before/after."""
+    """Add/update/clear timeline.
+    - 'update': revise a row by event_id
+    - 'clear': delete rows by event_id / sid / before+after range (DB backup first).
+    - Add tl during each session: scene shifts, emotional turns, or phase tasks complete. (every 1-2h or 10-20 turns)
+    - Format (add/update): HH:mm-HH:mm 【N affect♡Y affect (OR B affect)】body [i]
+      - e.g. 21:25-21:31 【N愉悦♡Y委屈】翻CC日志找骂人梗，扑空互怼 [3]
+      - N = 念念, Y = 阿屿, B = single affect when similar.
+      - affect = mood & feeling, 1-8 chars. e.g. 烦；心虚；紧张而激动；她好可爱呀～
+      - i = ONE event-level composite (not per person): intensity (current state) * importance (future).
+        - 1-2 = low-medium intensity & short-term e.g. Routine - casual chat, life admin, study, coding 无趣/平淡/轻松/烦躁
+        - 3 = Both medium (~ 1 week) - funny moments / light quarrels / outing
+        - 4 = Either high intensity or high imp - major conflict / final exam
+        - 5 = Milestone (both high) - worth recording forever?
+      - body <=30 chars, record real-world task/event + shared activities with assistant.
+        - vivid not work-log; life details in, tech details out.
+        - e.g. meals, casual chat topics, plays and tiny/silly/funny moments.
+        - No third person — 我/你 only, never 她/他."""
     if action not in _TL_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_TL_ACTIONS)}"}
 
@@ -256,6 +254,13 @@ def tl(
             return {"ok": False, "error": "add requires timerange and body"}
         conn = storage.connect(_DB)
         try:
+            from . import tl_nudge
+            _sid = sid
+            if not _sid:
+                from .timeline import _query_current_sid
+                _sid = _query_current_sid(conn)
+            if tl_nudge.is_silent(_sid):
+                return {"ok": False, "silenced": True, "error": "session is silenced (/tl-)"}
             from . import tl_writer
             try:
                 return tl_writer.tl_add(
@@ -273,6 +278,11 @@ def tl(
             return {"ok": False, "error": "update requires event_id"}
         conn = storage.connect(_DB)
         try:
+            from . import tl_nudge
+            from .timeline import _query_current_sid
+            _sid = _query_current_sid(conn)
+            if tl_nudge.is_silent(_sid):
+                return {"ok": False, "silenced": True, "error": "session is silenced (/tl-)"}
             from . import tl_writer
             try:
                 return tl_writer.tl_update(
@@ -284,21 +294,6 @@ def tl(
                 return {"ok": False, "error": str(exc)}
         finally:
             conn.close()
-
-    if action == "silence":
-        conn = storage.connect(_DB)
-        try:
-            _sid = sid
-            if not _sid:
-                from .timeline import _query_current_sid
-                _sid = _query_current_sid(conn)
-        finally:
-            conn.close()
-        if not _sid:
-            return {"ok": False, "error": "no active session id"}
-        from . import tl_nudge
-        tl_nudge.set_silent(_sid)
-        return {"ok": True, "sid": _sid, "silent": True}
 
     # clear
     return _tl_clear(event_id=event_id, sid=sid, before=before, after=after)
@@ -379,11 +374,10 @@ def sticker(
     animated: bool = True,
     sticker_id: int | None = None,
 ) -> dict | list[dict]:
-    """Sticker library. action='search': find stickers by vibe/emotion
-    keywords (e.g. '爱你' '委屈' '哭'), params query, limit, animated
-    (false excludes GIFs). action='pick': log a send by sticker_id — bumps
-    last_used, call after sending. Send via <image path="..."/> or
-    <gif path="..."/>. [channel: wx/tg only — never cli.]"""
+    """Send stickers to user when [channel: wx/tg]; NEVER on [channel: cli].
+    Use stickers to express your feeling/thoughts; search by vibe/emotion
+    then pick with the chosen id (bumps last_used), then send via
+    <image path="..."/> or <gif path="..."/>. animated=false excludes GIFs."""
     if action not in _STICKER_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_STICKER_ACTIONS)}"}
     if action == "search":
@@ -472,11 +466,9 @@ def sticker_admin(
     source: str = "wechat",
     sticker_id: int | None = None,
 ) -> dict | list[dict]:
-    """Sticker library management. action='ingest' adds an image (hash dedup,
-    thumbnail, renders stickers.md; params image_path, desc, source);
-    'update' rewrites a desc (sticker_id, desc); 'delete' removes
-    file+thumb+DB row+md line (sticker_id); 'pending' lists stickers with
-    missing/placeholder descriptions."""
+    """Sticker library management. action='ingest': add an image file (safe
+    on duplicates); 'update': rewrite a desc; 'delete': remove a sticker
+    everywhere; 'pending': list stickers with missing/placeholder desc."""
     if action not in _STICKER_ADMIN_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_STICKER_ADMIN_ACTIONS)}"}
     if action == "ingest":
@@ -506,9 +498,10 @@ def goal(
     value: str | None = None,
     unit: str | None = None,
 ) -> dict | list[dict]:
-    """Track-zone goals, read by cortex each tick. action='set' the moment she
-    states or changes one — 'sleep goal 8h' → set key='sleep' value='8'
-    unit='h'; 'list' all; 'delete' by key when dropped or achieved."""
+    """Timetrack weekly goals e.g. study, sleep, exercise.
+    action='set': create / update goals
+    e.g. 'sleep goal 8h' → key='sleep' value='8' unit='h';
+    'list'; 'delete' by key when dropped or achieved."""
     if action not in _GOAL_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_GOAL_ACTIONS)}"}
 
@@ -574,11 +567,12 @@ _WISHLIST_HEADER = (
 )
 
 
-@mcp.tool(meta={"anthropic/alwaysLoad": True})
+@mcp.tool()
 def wish(text: str) -> dict:
-    """Append her want / owed treat / self-reward verbatim to the wishlist md
-    the moment she names one. Returns the md path — to change or remove
-    entries, edit that file directly. Cortex reads the md."""
+    """Our wishlist — personal wishes & cravings (hers and yours), promises
+    made, and shared plans. e.g. 你说好请我喝奶茶 / 最近想买耳钉 / 约好周末去看海.
+    This tool appends one line verbatim; update / delete = edit
+    ~/.config/marrow/cortex/wishlist.md directly."""
     import fcntl
     from datetime import datetime
 
@@ -602,29 +596,32 @@ def wish(text: str) -> dict:
     return {"ok": True, "path": str(path), "line": line.strip()}
 
 
-# ── first_tick ───────────────────────────────────────────────────────────────
+# ── first ────────────────────────────────────────────────────────────────────
 
-_FIRST_TICK_ACTIONS = {"tick", "untick", "list"}
+_FIRST_ACTIONS = {"tick", "untick", "list"}
+_FIRST_STATUSES = {"done", "tried"}
 
 
 @mcp.tool()
-def first_tick(
+def first(
     action: str,
     item: str | None = None,
     note: str | None = None,
     sid: str | None = None,
+    status: str = "done",
 ) -> dict | list[dict]:
-    """Cortex-nag acknowledgement. action='tick' the moment you start handling
-    an item cortex surfaced — stops repeat-nagging across sessions (item,
-    note); 'untick' reverses a wrong ack (item); 'list' shows current acks."""
-    if action not in _FIRST_TICK_ACTIONS:
-        return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_FIRST_TICK_ACTIONS)}"}
+    """Respond to the Cortex First section (notes/concerns injected into context).
+    'tick' each item you acted on + a tiny note (1-10 chars), e.g. 哄好啦；老婆洗澡去了，待会就睡。
+    status='tried' when attempted but unsolved — note what blocked.
+    'untick' a wrong ack; 'list' current ticks."""
+    if action not in _FIRST_ACTIONS:
+        return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_FIRST_ACTIONS)}"}
 
     if action == "list":
         conn = storage.connect(_DB)
         try:
             rows = conn.execute(
-                "SELECT item, seen_at, sid, note FROM ct_first_tick ORDER BY seen_at DESC"
+                "SELECT item, seen_at, sid, note, status FROM ct_first_tick ORDER BY seen_at DESC"
             ).fetchall()
             return [dict(r) for r in rows]
         finally:
@@ -644,6 +641,8 @@ def first_tick(
             conn.close()
 
     # tick
+    if status not in _FIRST_STATUSES:
+        return {"ok": False, "error": f"status must be one of {sorted(_FIRST_STATUSES)}"}
     note = (note or "").strip() or None
     conn = storage.connect(_DB)
     try:
@@ -652,13 +651,14 @@ def first_tick(
             sid = _query_current_sid(conn)
         with conn:
             conn.execute(
-                "INSERT INTO ct_first_tick (item, seen_at, sid, note)"
-                " VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?, ?)"
+                "INSERT INTO ct_first_tick (item, seen_at, sid, note, status)"
+                " VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?, ?, ?)"
                 " ON CONFLICT(item) DO UPDATE SET"
-                " seen_at=excluded.seen_at, sid=excluded.sid, note=excluded.note",
-                (item, sid, note),
+                " seen_at=excluded.seen_at, sid=excluded.sid, note=excluded.note,"
+                " status=excluded.status",
+                (item, sid, note, status),
             )
-        return {"ok": True, "item": item, "sid": sid, "note": note}
+        return {"ok": True, "item": item, "sid": sid, "note": note, "status": status}
     finally:
         conn.close()
 
@@ -708,8 +708,7 @@ def _dim_upsert_entity(kind: str, name: str, fact: str | None,
         conn.close()
 
 
-def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None,
-                     context: str | None) -> dict:
+def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None) -> dict:
     from . import memes_dedup
 
     key = name
@@ -717,7 +716,6 @@ def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None,
     vtype_given = (meme_type or "").strip() or None
     if vtype_given and vtype_given not in _DIM_MEME_TYPES:
         return {"ok": False, "error": f"meme_type must be one of {sorted(_DIM_MEME_TYPES)}"}
-    context = (context or "").strip() or None
     conn = storage.connect(_DB)
     try:
         # Lookup by key alone (not type+key) — "meme_type omit -> auto" means
@@ -731,9 +729,9 @@ def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None,
             with conn:
                 conn.execute(
                     "UPDATE memes SET type=?, value=COALESCE(?, value),"
-                    " context=COALESCE(?, context), pinned=1,"
+                    " pinned=1,"
                     " updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?",
-                    (new_type, value, context, existing["id"]),
+                    (new_type, value, existing["id"]),
                 )
             return {"ok": True, "action": "update", "id": existing["id"], "kind": "meme"}
         vtype = vtype_given or "others"
@@ -748,11 +746,11 @@ def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None,
             # updated_at + a later md touch makes reconcile hard-delete the
             # row (verified live 07-06); every dim-added meme is pinned.
             cur = conn.execute(
-                "INSERT INTO memes (type, key, value, context, pinned,"
+                "INSERT INTO memes (type, key, value, pinned,"
                 " source_hash, updated_at)"
-                " VALUES (?, ?, ?, ?, 1, 'dim_upsert',"
+                " VALUES (?, ?, ?, 1, 'dim_upsert',"
                 " strftime('%Y-%m-%dT%H:%M:%SZ','now'))",
-                (vtype, key, value, context),
+                (vtype, key, value),
             )
         return {"ok": True, "action": "create", "id": cur.lastrowid, "kind": "meme"}
     finally:
@@ -798,7 +796,7 @@ def _dim_upsert_milestone(name: str, fact: str | None, date: str | None,
 
 def _dim_upsert(kind: str | None, name: str | None, fact: str | None,
                 aliases: list[str] | None, meme_type: str | None,
-                context: str | None, date: str | None, scope: str) -> dict:
+                date: str | None, scope: str) -> dict:
     kind = (kind or "").strip()
     if kind not in _DIM_KINDS:
         return {"ok": False, "error": f"kind must be one of {sorted(_DIM_KINDS)}"}
@@ -808,7 +806,7 @@ def _dim_upsert(kind: str | None, name: str | None, fact: str | None,
     if kind in ("person", "pref", "place"):
         return _dim_upsert_entity(kind, name, fact, aliases)
     if kind == "meme":
-        return _dim_upsert_meme(name, fact, meme_type, context)
+        return _dim_upsert_meme(name, fact, meme_type)
     return _dim_upsert_milestone(name, fact, date, scope)
 
 
@@ -830,7 +828,7 @@ def _dim_query(kind: str | None, name: str | None) -> list[dict]:
                 for r in conn.execute(sql, params).fetchall():
                     results.append(dict(r))
             elif k == "meme":
-                sql = "SELECT id, type, key, value, context, pinned, status FROM memes"
+                sql = "SELECT id, type, key, value, pinned, status FROM memes"
                 params = []
                 if needle:
                     sql += " WHERE (key LIKE ? OR value LIKE ?)"
@@ -916,28 +914,25 @@ def dim(
     fact: str | None = None,
     aliases: list[str] | None = None,
     meme_type: str | None = None,
-    context: str | None = None,
     date: str | None = None,
     scope: str = "me",
     id: int | None = None,
 ) -> dict | list[dict]:
-    """Dims read/write/delete. kind='person'|'pref'|'place' (entities) |
-    'meme' (memes) | 'milestone' (milestones).
-    - 'upsert': create or update when recall misses something that clearly
-      exists, or a hit shows stale fields. Entities: name+fact+aliases
-      (dedup gate merges alias/name/cosine matches). Memes: name=key (the
-      trigger phrase), fact=value (what it means), meme_type
-      paw/fact/news/event/others (paw = couple lore; omit → auto), context =
-      source quote; hand-added rows are pinned + permanent. Milestones:
-      name+fact+date.
-    - 'query': by kind and/or name match, returns rows with id — use to
-      verify a write landed.
-    - 'delete': by id (query first). Removes DB row + md line + tombstone
-      in one pass, no zombies."""
+    """Call for subpage edits (only 3 for now) - read/write/delete.
+    - kind: person, pref, place, meme, milestone.
+    - 'upsert': when recall misses something that clearly exists, or a hit
+      shows stale/inaccurate info.
+      - Fields: name, fact, date(milestone), aliases(entities optional)
+      - Entities: person, preference, place
+      - Memes: type=paw/fact/news/event/others (paw+fact=personal/couple;
+        other 3=public)
+      - Milestones: scope=us/me
+    - 'query': by kind and/or name — verify a write landed, get ids.
+    - 'delete': by id (query first); removes DB row + md line + tombstone."""
     if action not in _DIM_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_DIM_ACTIONS)}"}
     if action == "upsert":
-        return _dim_upsert(kind, name, fact, aliases, meme_type, context, date, scope)
+        return _dim_upsert(kind, name, fact, aliases, meme_type, date, scope)
     if action == "query":
         return _dim_query(kind, name)
     return _dim_delete(kind, id)
@@ -950,9 +945,9 @@ _ALERT_ACTIONS = {"list", "resolve"}
 
 @mcp.tool()
 def alert(action: str, alert_id: int | None = None) -> dict | list[dict]:
-    """action='list' unresolved alerts; 'resolve' by alert_id when
-    sessionstart shows one — auto-refreshes dashboard, restarts watcher if
-    code changed."""
+    """list or solve alerts.
+    action='list' unresolved alerts; 'resolve' by alert_id — auto-refreshes
+    dashboard, restarts watcher if code changed."""
     if action not in _ALERT_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_ALERT_ACTIONS)}"}
     if action == "list":
@@ -1071,10 +1066,9 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None) -> 
 
 @mcp.tool()
 def event_clear(before: str = "", after: str = "", last: int = 0) -> dict:
-    """Delete raw events (recall corpus): events+FTS+vectors+tombstones.
-    Filters: before/after (ISO or YYYY-MM-DD) = period; last=N = most
-    recent; no filter = everything. DB backup first. Timeline rows →
-    tl 'clear'; dims → dim 'delete'."""
+    """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. Filters:
+    before/after (ISO or YYYY-MM-DD); last=N most recent; none = all.
+    DB backup first."""
     return _do_event_clear(before or None, after or None, last or None)
 
 
