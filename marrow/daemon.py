@@ -290,10 +290,9 @@ def tl(
       YYYY-MM-DD) -> [{event_id, line}]. Use it to look up an event_id.
     - 'update'/'clear': address a row by event_id, OR by match (+optional date)
       when you don't have the id. e.g. update match='千层' date='2026-07-05'.
-      Exactly one hit -> executes; several hits -> returns the candidate list
-      without changing anything (refine, or pass event_id); zero hits -> error.
     - 'clear': delete rows by event_id / match / sid / before+after range (DB backup first).
     - Add tl during each session: scene shifts, emotional turns, or phase tasks complete. (every 1-2h or 10-20 turns)
+        - For daily coding/study, record 1 tl each session - update if no major change
     - Format (add/update): HH:mm-HH:mm 【N affect♡Y affect (OR B affect)】body [i]
       - e.g. 21:25-21:31 【N愉悦♡Y委屈】翻CC日志找骂人梗，扑空互怼 [3]
       - N = 念念, Y = 阿屿, B = single affect when similar.
