@@ -29,7 +29,7 @@ Three runtimes:
 
 ### 1.2 Hooks registry (all in marrow/hooks.py)
 
-- SessionStart `hooks:session_start` — injects affect heartbeat (events-but-no-affect gap day in last 7d) + `timeline:render_timeline` (06/11; see §3). Hardcap 6000 chars. Does NOT inject tasks/alerts. Spawns sessionstart_catchup detached. Writes lifecycle:start marker (ppid+started_at).
+- SessionStart `hooks:session_start` — injects affect heartbeat (events-but-no-affect gap day in last 7d) + `timeline:render_timeline` (06/11; see §3) + static hint line (dims via mcp `dim`, goals via `goal`, 07-06). Hardcap 6000 chars. Does NOT inject tasks/alerts. Spawns sessionstart_catchup detached. Writes lifecycle:start marker (ppid+started_at).
 - SessionEnd `hooks:session_end` — transcript.clean → repo:archive_events (idempotent by source_hash) → lifecycle:end commits BEFORE popen → idempotent spawn gate (skip popen when user_count ≤ last ok,user_count=N) → popen_detach_lazy sessionend_async. MARROW_BRIDGE=1 suppresses popen (bridge owns timing).
 - UserPromptSubmit `hooks:user_prompt_submit` — mm-/mm+ control prefixes + recall fusion injection (params §3). Per-session recall_seen dedup state under DATA_DIR/state/recall_seen/<sid>.json (wiped at start+end). Second registered hook same event: `hooks:turn_inject` — time+delta-since-last-reply stamp (skipped when MARROW_CHANNEL=wx, bridge injects its own), schedule.check_and_inject, and the config-first per-turn care directive (`[turn_inject].care_text`, absorbed from the old global turn-inject.sh 07-03 eve).
 - PreToolUse `hooks:pretool_use` — Write/Bash placement ops get atlas ancestor-chain guidance (desc + naming_hint); others get a literal path reminder. Matcher=Agent → `hooks:agent_guard` — denies any Agent dispatch whose subagent_type is in `[agent_guard].deny` (default `["general-purpose"]`, burst-recursion protection); exit 2 + stderr reason, fail-soft (any error → exit 0).
@@ -87,7 +87,7 @@ Three runtimes:
 ### 4.1 schema (storage.py, v30)
 - Migrations `storage:init_db` _migrate_to_v2…v30 idempotent, PRAGMA user_version guarded; v5/v7/v8/v9 are empty sentinels; v18 = tl_hidden on session_digests + diary; v19 = stickers C2 schema (path/sha256/phash/desc/source/last_used); v25 = diary tone/overview + session_digests.updated_at; v27 = entities/memes/affect updated_at; v29 = events +imp INTEGER (recall boost/retire/milestone SQL) +flag TEXT (cortex management marks, open vocab), backfills channel='self' rows to role='tl' (§2.5); v30 = goals table (key PK, value, unit, updated_at — latest value only, no history), set via goal_set/read via goal_list MCP (§6).
 - Connection: journal_mode=DELETE (deliberate — DECISIONS.md, APFS SIGBUS; never WAL) · busy_timeout 30s · sqlite-vec loaded per conn. Rule: never open a second conn to the same DB inside a write txn.
-- Tables: events (recall_count/last_recalled_at v16; never aged) · tasks (active→archived on 30d no-mention) · milestones (pinned exempt) · memes (pinned=0 + last_seen>90d → DELETE; v27: +updated_at) · stickers · pit · diary (date PK, DELETE+INSERT rewrite; v17: +tl_line; v25: +tone +overview) · goose_bites (schema history only) · alerts · audit_log · affect (superseded_by NULL = live; affect_live view; v27: +updated_at) · entities (entities_live view; v27: +updated_at) · session_digests (v17: +kind/tl_line/life_lines; sid PK, date, text, ts; v26: +updated_at) · md_index (block hash + tombstone_at) · memes_reject_log · atlas · 6×*_vec + *_vec_meta.
+- Tables: events (recall_count/last_recalled_at v16; never aged) · tasks (active→archived on 30d no-mention) · milestones (pinned exempt) · memes (permanent, no aging; v27: +updated_at) · stickers · pit · diary (date PK, DELETE+INSERT rewrite; v17: +tl_line; v25: +tone +overview) · goose_bites (schema history only) · alerts · audit_log · affect (superseded_by NULL = live; affect_live view; v27: +updated_at) · entities (entities_live view; v27: +updated_at) · session_digests (v17: +kind/tl_line/life_lines; sid PK, date, text, ts; v26: +updated_at) · md_index (block hash + tombstone_at) · memes_reject_log · atlas · 6×*_vec + *_vec_meta.
 
 ### 4.2 embedding (recall.py)
 - bge-m3 ONNX CPU singleton, 1024d, CLS-pool L2-norm, max_length 512. `recall:embed_pending` iterates 6 lanes (events/memes/entities/milestones/diary/tasks), batch 50/lane, so events backlog can't starve others; diary lane sweeps orphaned vec rows (rowid reuse after DELETE+INSERT).
@@ -160,7 +160,6 @@ Three runtimes:
 
 ## 10. Aging (weekly, one txn, alerts flushed in finally)
 
-- memes: pinned=0 + last_seen<90d → DELETE (NULL last_seen kept).
 - tasks: active, 0 FTS title hits in events 30d → archived.
 - milestone_added alerts: >7d → resolved (auto-confirm).
 - md_index tombstones >30d → DELETE.

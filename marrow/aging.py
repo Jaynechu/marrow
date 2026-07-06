@@ -1,27 +1,22 @@
-"""Weekly maintenance: memes decay, task auto-archive, milestone auto-confirm.
+"""Weekly maintenance: task auto-archive, milestone auto-confirm, vec eviction.
 
 No LLM. Triggered by deploy/mw-aging.plist (Sun 12:00 local).
 
-Memes aging under v2 type enum (Lumi 2026-05-25):
-- Entry gate already enforces ≥3/7d for meme/news/event (candidates.py).
-- Anything in memes is by definition active — no promote/dormant pass.
-- paw / fact land pinned=1 → never aged.
-- meme / news / event / others land pinned=0 → 90d after last_seen → DELETE.
+Memes are permanent — no aging/DELETE pass (Lumi 2026-07-06).
 
 Passes (single txn):
-1. retire_memes — last_seen > 90d AND pinned=0 → DELETE.
-2. archive_tasks — status='active' AND 0 mentions in events over last 30d
+1. archive_tasks — status='active' AND 0 mentions in events over last 30d
    → status = 'archived'.
-3. confirm_milestone_alerts — alerts.type='milestone_added' AND created_at
+2. confirm_milestone_alerts — alerts.type='milestone_added' AND created_at
    > 7d ago AND resolved=0 → set resolved=1, resolved_at=now.
-4. prune_md_index_tombstones — DELETE md_index rows whose tombstone_at is
+3. prune_md_index_tombstones — DELETE md_index rows whose tombstone_at is
    older than 30 days. Stops the table accumulating dead rows from blocks
    the user permanently removed.
-5. prune_projects_worktrees — delete every ~/.claude/projects/<slug>
+4. prune_projects_worktrees — delete every ~/.claude/projects/<slug>
    directory whose name contains "worktrees". cc auto-cleans jsonl 30d+
    but leaves the slug shells; worktree sessions are task-isolated and
    not part of the user's continuous memory, so the whole shell goes.
-6. evict_vec_window — DELETE events_vec + events_vec_meta rows whose
+5. evict_vec_window — DELETE events_vec + events_vec_meta rows whose
    events.timestamp is older than vec_window_days (config). Exempt rows:
    affect-linked (importance>=3) or recall_count>0. Safety caps abort the
    pass if eviction would exceed 25% of vec rows or 10000 rows. Backup
@@ -45,21 +40,6 @@ from . import config, repo, storage
 def _fts_phrase(q: str) -> str:
     # Mirror repo._fts_query: phrase match, FTS5-safe (trigram tokenizer).
     return '"' + q.replace('"', '""').strip() + '"'
-
-
-def retire_memes(conn: sqlite3.Connection) -> int:
-    """last_seen > 90d AND pinned=0 → DELETE.
-
-    Rows with NULL last_seen are skipped (never seen → not yet decayable).
-    Pinned rows (paw / fact) are skipped — they never age.
-    """
-    cur = conn.execute(
-        "DELETE FROM memes "
-        "WHERE pinned = 0 "
-        "AND last_seen IS NOT NULL "
-        "AND last_seen < strftime('%Y-%m-%dT%H:%M:%SZ','now', '-90 days')"
-    )
-    return cur.rowcount or 0
 
 
 def archive_tasks(conn: sqlite3.Connection) -> int:
@@ -345,7 +325,6 @@ def main(argv: list[str] | None = None) -> None:
     vec: dict = {}
     try:
         with conn:
-            retired = retire_memes(conn)
             archived = archive_tasks(conn)
             confirmed = confirm_milestone_alerts(conn)
             tombs = prune_md_index_tombstones(conn)
@@ -362,7 +341,7 @@ def main(argv: list[str] | None = None) -> None:
                 "INSERT INTO audit_log "
                 "(target_table, target_id, action, summary) "
                 "VALUES ('aging', NULL, 'weekly', ?)",
-                (f"retired={retired} archived={archived} "
+                (f"archived={archived} "
                  f"confirmed={confirmed} "
                  f"tombs={tombs} wtshells={wtshells} "
                  f"vec_evicted={vec['evicted']} vec_exempted={vec['exempted']} "
@@ -377,7 +356,7 @@ def main(argv: list[str] | None = None) -> None:
                  f"window_days={window_days} dry_run={dry_run}",),
             )
         sys.stderr.write(
-            f"[aging] retired={retired} archived={archived} "
+            f"[aging] archived={archived} "
             f"confirmed={confirmed} "
             f"tombs={tombs} wtshells={wtshells} "
             f"vec_evicted={vec['evicted']} vec_exempted={vec['exempted']} "
