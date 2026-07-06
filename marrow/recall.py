@@ -1176,6 +1176,27 @@ def _entity_candidates(
 
 # ── fusion retrieval ──────────────────────────────────────────────────────────
 
+_EVENTS_FTS_TERM_CAP = 16
+
+
+def _events_fts_query(q: str) -> str:
+    """Build events-lane FTS5 OR query from `q`.
+
+    Unlike dims lanes (raw _fts_terms -> _fts_query), the events table is
+    ~100k rows with some very long rows, so generic CJK windows (function
+    chars only) are dropped and the term list is capped. The full query is
+    also kept as one quoted phrase member so rows containing it verbatim get
+    the bm25 contiguous-phrase boost.
+    """
+    terms = [t for t in _fts_terms(q) if t.isascii() or not any(c in _CJK_FUNC_CHARS for c in t)]
+    terms = terms[:_EVENTS_FTS_TERM_CAP]
+    members = ['"' + t.replace('"', '""') + '"' for t in terms]
+    qs = q.strip()
+    if len(qs) >= 3:
+        members.insert(0, '"' + qs.replace('"', '""') + '"')
+    return " OR ".join(members)
+
+
 def recall_fusion(
     conn: sqlite3.Connection,
     query: str,
@@ -1243,25 +1264,28 @@ def recall_fusion(
     cur_bucket = _cwd_bucket(current_cwd, bucket_rules)
 
     # ── FTS candidates ────────────────────────────────────────────────────────
-    fts_q = '"' + q.replace('"', '""') + '"'
-    _fts_where = ["events_fts MATCH ?"]
-    _fts_params: list = [fts_q]
-    if since:
-        _fts_where.append("e.timestamp >= ?")
-        _fts_params.append(since)
-    if until:
-        _fts_where.append("e.timestamp < ?")
-        _fts_params.append(until)
-    _fts_params.append(limit * 3)
-    fts_rows = conn.execute(
-        "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
-        "e.compressed, e.imp AS imp, s.cwd AS session_cwd, rank AS fts_rank "
-        "FROM events_fts f JOIN events e ON e.id = f.rowid "
-        "LEFT JOIN sessions s ON s.sid = e.session_id "
-        "WHERE " + " AND ".join(_fts_where) + " "
-        "ORDER BY rank LIMIT ?",
-        _fts_params,
-    ).fetchall()
+    fts_q = _events_fts_query(q)
+    if fts_q:
+        _fts_where = ["events_fts MATCH ?"]
+        _fts_params: list = [fts_q]
+        if since:
+            _fts_where.append("e.timestamp >= ?")
+            _fts_params.append(since)
+        if until:
+            _fts_where.append("e.timestamp < ?")
+            _fts_params.append(until)
+        _fts_params.append(limit * 3)
+        fts_rows = conn.execute(
+            "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
+            "e.compressed, e.imp AS imp, s.cwd AS session_cwd, rank AS fts_rank "
+            "FROM events_fts f JOIN events e ON e.id = f.rowid "
+            "LEFT JOIN sessions s ON s.sid = e.session_id "
+            "WHERE " + " AND ".join(_fts_where) + " "
+            "ORDER BY rank LIMIT ?",
+            _fts_params,
+        ).fetchall()
+    else:
+        fts_rows = []
 
     # ── vec candidates ────────────────────────────────────────────────────────
     vec_rows: list[sqlite3.Row] = []
