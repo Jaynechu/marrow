@@ -1,0 +1,424 @@
+"""Action-dispatch coverage for the 12-tool MCP surface rebuild (07-06):
+tl clear, dim upsert/query/delete (all kinds), sticker/sticker_admin/alert
+dispatch validation, event_clear filters, first_tick untick/list.
+"""
+from __future__ import annotations
+
+import pytest
+
+from marrow import config, daemon, storage
+
+
+@pytest.fixture()
+def env(tmp_path, monkeypatch):
+    db = str(tmp_path / "t.db")
+    storage.init_db(db).close()
+    monkeypatch.setattr(daemon, "_DB", db)
+    monkeypatch.setattr(config, "db_path", lambda: db)
+    monkeypatch.setattr(daemon.subprocess, "run", lambda *a, **k: None)
+    return db
+
+
+def _insert_tl(db, body, sid="s1", ts=None):
+    conn = storage.connect(db)
+    try:
+        ts = ts or "2026-07-01T00:00:00Z"
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content,"
+                " channel, imp) VALUES (?, ?, 'tl', ?, 'cli', 3)",
+                (sid, ts, body),
+            )
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def _event_count(db):
+    conn = storage.connect(db)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    finally:
+        conn.close()
+
+
+# ── tl clear ─────────────────────────────────────────────────────────────────
+
+def test_tl_clear_by_event_id(env):
+    eid = _insert_tl(env, "row one")
+    _insert_tl(env, "row two")
+    out = daemon.tl("clear", event_id=eid)
+    assert out["ok"] is True
+    assert out["cleared"] == 1
+    assert _event_count(env) == 1
+
+
+def test_tl_clear_by_sid(env):
+    _insert_tl(env, "a", sid="sess-x")
+    _insert_tl(env, "b", sid="sess-x")
+    _insert_tl(env, "c", sid="sess-y")
+    out = daemon.tl("clear", sid="sess-x")
+    assert out["cleared"] == 2
+    assert _event_count(env) == 1
+
+
+def test_tl_clear_by_range(env):
+    _insert_tl(env, "old", ts="2026-06-01T00:00:00Z")
+    _insert_tl(env, "new", ts="2026-07-01T00:00:00Z")
+    out = daemon.tl("clear", before="2026-06-15T00:00:00Z")
+    assert out["cleared"] == 1
+    assert _event_count(env) == 1
+
+
+def test_tl_clear_requires_selector(env):
+    out = daemon.tl("clear")
+    assert out["ok"] is False
+
+
+def test_tl_clear_rejects_multiple_selectors(env):
+    out = daemon.tl("clear", event_id=1, sid="x")
+    assert out["ok"] is False
+
+
+def test_tl_clear_ignores_non_tl_rows(env):
+    conn = storage.connect(env)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content,"
+                " channel) VALUES ('m', '2026-07-01T00:00:00Z', 'user',"
+                " 'not tl', 'manual')")
+    finally:
+        conn.close()
+    out = daemon.tl("clear", before="2026-08-01T00:00:00Z")
+    assert out["cleared"] == 0
+    assert _event_count(env) == 1
+
+
+def test_tl_unknown_action(env):
+    out = daemon.tl("bogus")
+    assert out["ok"] is False
+
+
+# ── dim: entities already covered in test_daemon_entity_upsert.py ────────────
+
+def test_dim_upsert_meme_create_and_update(env):
+    out = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="loving nickname",
+                      meme_type="paw", context="from a joke")
+    assert out["ok"] is True
+    assert out["action"] == "create"
+    mid = out["id"]
+    conn = storage.connect(env)
+    try:
+        row = conn.execute(
+            "SELECT type, key, value, context, pinned, updated_at FROM memes"
+            " WHERE id=?", (mid,)).fetchone()
+    finally:
+        conn.close()
+    assert row["type"] == "paw"
+    assert row["key"] == "绿茶豹"
+    assert row["pinned"] == 1
+    assert row["updated_at"] is not None  # explicit UTC stamp, never NULL
+
+    out2 = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="updated meaning")
+    assert out2["action"] == "update"
+    assert out2["id"] == mid
+
+
+def test_dim_upsert_meme_rejects_bad_type(env):
+    out = daemon.dim("upsert", kind="meme", name="x", meme_type="bogus")
+    assert out["ok"] is False
+
+
+def test_dim_upsert_meme_string_dedup_against_milestone(env):
+    daemon.dim("upsert", kind="milestone", name="毕业", date="2026-01-01")
+    out = daemon.dim("upsert", kind="meme", name="毕业", fact="dup of milestone")
+    assert out["ok"] is False
+    assert "dedup" in out["error"]
+
+
+def test_dim_upsert_milestone_create_and_update(env):
+    out = daemon.dim("upsert", kind="milestone", name="搬家", fact="moved to Clayton",
+                      date="2026-02-01")
+    assert out["ok"] is True
+    assert out["action"] == "create"
+    mid = out["id"]
+    out2 = daemon.dim("upsert", kind="milestone", name="搬家", date="2026-02-01",
+                      fact="updated desc")
+    assert out2["action"] == "update"
+    assert out2["id"] == mid
+    conn = storage.connect(env)
+    try:
+        row = conn.execute("SELECT description, pinned, scope FROM milestones"
+                           " WHERE id=?", (mid,)).fetchone()
+    finally:
+        conn.close()
+    assert row["description"] == "updated desc"
+    assert row["pinned"] == 1
+    assert row["scope"] == "me"  # default scope, see report ambiguity note
+
+
+def test_dim_upsert_milestone_requires_valid_date(env):
+    out = daemon.dim("upsert", kind="milestone", name="x", date="not-a-date")
+    assert out["ok"] is False
+
+
+def test_dim_upsert_unknown_kind(env):
+    out = daemon.dim("upsert", kind="gadget", name="x")
+    assert out["ok"] is False
+
+
+def test_dim_query_by_kind_and_name(env):
+    daemon.dim("upsert", kind="person", name="王医生", fact="ED consultant")
+    daemon.dim("upsert", kind="meme", name="绿茶豹", fact="nickname")
+    daemon.dim("upsert", kind="milestone", name="搬家", date="2026-02-01")
+
+    people = daemon.dim("query", kind="person")
+    assert len(people) == 1
+    assert people[0]["name"] == "王医生"
+
+    memes = daemon.dim("query", kind="meme", name="绿茶")
+    assert len(memes) == 1
+    assert memes[0]["name"] == "绿茶豹"
+
+    milestones = daemon.dim("query", kind="milestone")
+    assert len(milestones) == 1
+    assert milestones[0]["name"] == "搬家"
+
+    everything = daemon.dim("query", name="搬家")
+    assert any(r["kind"] == "milestone" for r in everything)
+
+
+def test_dim_delete_entity_removes_row_md_and_tombstone(env, tmp_path, monkeypatch):
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    monkeypatch.setattr(config, "db_pages_path", lambda: str(pages))
+    out = daemon.dim("upsert", kind="person", name="王医生", fact="ED consultant")
+    pid = out["id"]
+    (pages / "profile.md").write_text(
+        f"## Person\n\n- [person] **王医生** — ED consultant <!-- id:{pid} -->\n",
+        encoding="utf-8",
+    )
+    del_out = daemon.dim("delete", kind="person", id=pid)
+    assert del_out == {"ok": True, "kind": "person", "id": pid, "deleted": True}
+    conn = storage.connect(env)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM entities WHERE id=?",
+                            (pid,)).fetchone()[0] == 0
+        tomb = conn.execute(
+            "SELECT tombstone_at FROM md_index WHERE block_id=?", (str(pid),)
+        ).fetchone()
+        assert tomb is not None and tomb["tombstone_at"] is not None
+    finally:
+        conn.close()
+    md = (pages / "profile.md").read_text(encoding="utf-8")
+    assert "王医生" not in md
+
+
+def test_dim_delete_milestone_removes_two_line_block(env, tmp_path, monkeypatch):
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    monkeypatch.setattr(config, "db_pages_path", lambda: str(pages))
+    out = daemon.dim("upsert", kind="milestone", name="搬家", fact="moved",
+                      date="2026-02-01")
+    mid = out["id"]
+    (pages / "milestone.md").write_text(
+        f"##### [2026-02-01] 搬家\nmoved <!-- id:{mid} -->\n\n"
+        "##### [2026-03-01] other\nother <!-- id:999 -->\n",
+        encoding="utf-8",
+    )
+    del_out = daemon.dim("delete", kind="milestone", id=mid)
+    assert del_out["ok"] is True
+    md = (pages / "milestone.md").read_text(encoding="utf-8")
+    assert "搬家" not in md
+    assert "other" in md  # sibling block untouched
+
+
+def test_dim_delete_not_found(env):
+    out = daemon.dim("delete", kind="meme", id=99999)
+    assert out["ok"] is False
+
+
+def test_dim_delete_requires_id(env):
+    out = daemon.dim("delete", kind="meme")
+    assert out["ok"] is False
+
+
+def test_dim_unknown_action(env):
+    out = daemon.dim("bogus", kind="person", name="x")
+    assert out["ok"] is False
+
+
+# ── sticker / sticker_admin dispatch ──────────────────────────────────────────
+
+def test_sticker_unknown_action(env):
+    out = daemon.sticker("bogus")
+    assert out["ok"] is False
+
+
+def test_sticker_search_empty_query_returns_empty_list(env):
+    assert daemon.sticker("search", query="") == []
+
+
+def test_sticker_pick_requires_id(env):
+    out = daemon.sticker("pick")
+    assert out["ok"] is False
+
+
+def test_sticker_pick_updates_last_used(env):
+    conn = storage.connect(env)
+    try:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO stickers (path, sha256, desc, source)"
+                " VALUES ('/x.png', 'abc', 'happy', 'wechat')")
+        sid = cur.lastrowid
+    finally:
+        conn.close()
+    out = daemon.sticker("pick", sticker_id=sid)
+    assert out == {"ok": True, "id": sid}
+
+
+def test_sticker_admin_unknown_action(env):
+    out = daemon.sticker_admin("bogus")
+    assert out["ok"] is False
+
+
+def test_sticker_admin_pending_lists_missing_desc(env):
+    conn = storage.connect(env)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO stickers (path, sha256, desc, source)"
+                " VALUES ('/x.png', 'abc', '(pending)', 'wechat')")
+    finally:
+        conn.close()
+    rows = daemon.sticker_admin("pending")
+    assert len(rows) == 1
+    assert rows[0]["desc"] == "(pending)"
+
+
+def test_sticker_admin_update_requires_fields(env):
+    out = daemon.sticker_admin("update")
+    assert out["ok"] is False
+
+
+def test_sticker_admin_delete_requires_id(env):
+    out = daemon.sticker_admin("delete")
+    assert out["ok"] is False
+
+
+def test_sticker_admin_ingest_requires_fields(env):
+    out = daemon.sticker_admin("ingest")
+    assert out["ok"] is False
+
+
+# ── alert dispatch ─────────────────────────────────────────────────────────────
+
+def test_alert_unknown_action(env):
+    out = daemon.alert("bogus")
+    assert out["ok"] is False
+
+
+def test_alert_list_unresolved_only(env):
+    conn = storage.connect(env)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO alerts (severity, type, message, resolved)"
+                " VALUES ('warn', 'x', 'open one', 0)")
+            conn.execute(
+                "INSERT INTO alerts (severity, type, message, resolved)"
+                " VALUES ('warn', 'y', 'resolved one', 1)")
+    finally:
+        conn.close()
+    rows = daemon.alert("list")
+    assert len(rows) == 1
+    assert rows[0]["message"] == "open one"
+
+
+def test_alert_resolve_requires_id(env):
+    out = daemon.alert("resolve")
+    assert out["ok"] is False
+
+
+# ── first_tick untick/list ─────────────────────────────────────────────────────
+
+def test_first_tick_untick_removes_row(env):
+    daemon.first_tick("tick", item="gym-reminder", note="x", sid="s1")
+    out = daemon.first_tick("untick", item="gym-reminder")
+    assert out == {"ok": True, "item": "gym-reminder"}
+    conn = storage.connect(env)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM ct_first_tick").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_first_tick_untick_missing_item_reports_false(env):
+    out = daemon.first_tick("untick", item="nope")
+    assert out == {"ok": False, "item": "nope"}
+
+
+def test_first_tick_list_shows_acks(env):
+    daemon.first_tick("tick", item="a", note="n1", sid="s1")
+    daemon.first_tick("tick", item="b", note="n2", sid="s2")
+    rows = daemon.first_tick("list")
+    assert {r["item"] for r in rows} == {"a", "b"}
+
+
+def test_first_tick_unknown_action(env):
+    out = daemon.first_tick("bogus")
+    assert out["ok"] is False
+
+
+# ── event_clear ──────────────────────────────────────────────────────────────
+
+def _insert_event(db, ts, content="x"):
+    conn = storage.connect(db)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content,"
+                " channel) VALUES ('s', ?, 'user', ?, 'cli')", (ts, content))
+    finally:
+        conn.close()
+
+
+def test_event_clear_no_filter_wipes_everything(env):
+    _insert_event(env, "2026-06-01T00:00:00Z")
+    _insert_event(env, "2026-07-01T00:00:00Z")
+    out = daemon.event_clear()
+    assert out["ok"] is True
+    assert out["purged"] == ["events"]
+    assert _event_count(env) == 0
+
+
+def test_event_clear_before_after_range(env):
+    _insert_event(env, "2026-06-01T00:00:00Z")
+    _insert_event(env, "2026-07-01T00:00:00Z")
+    out = daemon.event_clear(before="2026-06-15")
+    assert out["ok"] is True
+    assert _event_count(env) == 1
+
+
+def test_event_clear_last_n(env):
+    _insert_event(env, "2026-06-01T00:00:00Z")
+    _insert_event(env, "2026-07-01T00:00:00Z")
+    out = daemon.event_clear(last=1)
+    assert out["counts"]["events"] == 1
+    assert _event_count(env) == 1
+
+
+def test_event_clear_before_and_last_mutually_exclusive(env):
+    out = daemon.event_clear(before="2026-06-15", last=1)
+    assert out["ok"] is False
+
+
+def test_event_clear_backs_up_db_first(env, tmp_path):
+    _insert_event(env, "2026-06-01T00:00:00Z")
+    out = daemon.event_clear()
+    assert out["backup"].startswith("/tmp/marrow-backup-purge-")
+    import os
+    assert os.path.exists(out["backup"])
+    os.remove(out["backup"])

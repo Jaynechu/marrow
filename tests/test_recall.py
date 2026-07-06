@@ -592,17 +592,17 @@ def test_fetch_event_context_disabled_when_n_zero(db):
 
 # ── daemon tools ──────────────────────────────────────────────────────────────
 
-def test_daemon_embed_pending_callable():
+def test_daemon_event_embed_callable():
     import marrow.daemon as daemon
-    assert callable(daemon.embed_pending)
+    assert callable(daemon.event_embed)
 
 
-def test_daemon_embed_pending_returns_dict(tmp_path, monkeypatch):
+def test_daemon_event_embed_returns_dict(tmp_path, monkeypatch):
     import marrow.daemon as daemon
     p = str(tmp_path / "d.db")
     storage.init_db(p).close()
     monkeypatch.setattr(daemon, "_DB", p)
     with patch.object(rm, "_ensure_embedder", return_value=None):
-        result = daemon.embed_pending()
+        result = daemon.event_embed()
     assert isinstance(result, dict)
     assert "embedded" in result

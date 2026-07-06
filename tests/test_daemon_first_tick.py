@@ -1,5 +1,6 @@
 """first_tick MCP tool (C4 First tick) — session self-marks a nagged item
-seen/handled so repeat-nagging stops. Marks land in ct_first_tick."""
+seen/handled so repeat-nagging stops. Marks land in ct_first_tick.
+untick/list actions covered in test_daemon_actions.py."""
 from __future__ import annotations
 
 import pytest
@@ -28,7 +29,8 @@ def _read(db, item):
 
 
 def test_mark_records_row(env):
-    out = daemon.first_tick("gym-reminder", note="already at Clayton gym", sid="s1")
+    out = daemon.first_tick("tick", item="gym-reminder",
+                            note="already at Clayton gym", sid="s1")
     assert out == {"ok": True, "item": "gym-reminder", "sid": "s1",
                    "note": "already at Clayton gym"}
     row = _read(env, "gym-reminder")
@@ -38,8 +40,8 @@ def test_mark_records_row(env):
 
 
 def test_latest_call_wins(env):
-    daemon.first_tick("item-x", note="starting", sid="s1")
-    daemon.first_tick("item-x", note="handled", sid="s2")
+    daemon.first_tick("tick", item="item-x", note="starting", sid="s1")
+    daemon.first_tick("tick", item="item-x", note="handled", sid="s2")
     row = _read(env, "item-x")
     assert row["sid"] == "s2"
     assert row["note"] == "handled"
@@ -52,7 +54,7 @@ def test_latest_call_wins(env):
 
 
 def test_reject_empty_item(env):
-    out = daemon.first_tick("   ")
+    out = daemon.first_tick("tick", item="   ")
     assert out["ok"] is False
     conn = storage.connect(env)
     try:
@@ -62,6 +64,6 @@ def test_reject_empty_item(env):
 
 
 def test_default_sid_falls_back_gracefully(env):
-    out = daemon.first_tick("no-session-item")
+    out = daemon.first_tick("tick", item="no-session-item")
     assert out["ok"] is True
     assert out["sid"] is None  # no active session in a fresh test DB
