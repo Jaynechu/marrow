@@ -946,14 +946,29 @@ def reconcile_diary(conn: sqlite3.Connection,
 
 def reconcile_stickers(conn: sqlite3.Connection,
                        md_path: Path) -> ReconcileReport:
-    """UPDATE sticker desc on edit; DELETE absent rows."""
+    """UPDATE sticker desc on edit; DELETE absent rows.
+
+    A DB-row delete also orphans the image + thumbnail on disk (sweep_orphans
+    only prunes rows for missing files, never the reverse), so snapshot paths
+    before the sync and unlink files for any row the reconcile removed.
+    """
     from . import subpage_specs
+    from .sticker_ops import _unlink_sticker_files
     spec = subpage_specs.build_stickers_spec(str(Path(md_path).parent))
-    return reconcile_inserter_sync(
+    before = {r[0]: r[1] for r in conn.execute(
+        "SELECT id, path FROM stickers").fetchall()}
+    rpt = reconcile_inserter_sync(
         conn, spec, md_path, "stickers",
         editable_cols=["desc"],
         soft_delete=False,
     )
+    if rpt.deleted:
+        survivors = {r[0] for r in conn.execute(
+            "SELECT id FROM stickers").fetchall()}
+        for sid, path in before.items():
+            if sid not in survivors and path:
+                _unlink_sticker_files(path)
+    return rpt
 
 
 def reconcile_wallet(conn: sqlite3.Connection,

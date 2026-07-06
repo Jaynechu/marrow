@@ -1525,7 +1525,15 @@ def recall_fusion(
             if since:
                 _diary_since_date = _u2d(since)
             if until:
-                _diary_until_date = _u2d(until)
+                # `until` is the EXCLUSIVE end boundary (start of the Melbourne
+                # day AFTER the requested until-day, see timecue.melb_day_range).
+                # Converting it straight to a local date yields until+1 and the
+                # `date <= ?` filter then leaks the following day. Step back 1s
+                # so a since==until window returns only that single day.
+                _u_dt = datetime.datetime.fromisoformat(
+                    until.replace("Z", "+00:00")) - datetime.timedelta(seconds=1)
+                _diary_until_date = _u2d(
+                    _u_dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
         except Exception:
             _diary_window_error = True
 

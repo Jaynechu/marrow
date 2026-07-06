@@ -151,6 +151,16 @@ def update_sticker(conn, sticker_id: int, desc: str) -> dict:
     return {"ok": True, "id": sticker_id, "desc": desc}
 
 
+def _unlink_sticker_files(path: str) -> None:
+    """Remove a sticker's image + thumbnail from disk (missing-safe)."""
+    p = Path(path)
+    if p.exists():
+        p.unlink()
+    thumb = p.parent / "_thumb" / (p.stem + ".webp")
+    if thumb.exists():
+        thumb.unlink()
+
+
 def delete_sticker(conn, sticker_id: int) -> dict:
     row = conn.execute("SELECT path FROM stickers WHERE id = ?", (sticker_id,)).fetchone()
     if not row:
@@ -158,12 +168,7 @@ def delete_sticker(conn, sticker_id: int) -> dict:
     path = row["path"]
     conn.execute("DELETE FROM stickers WHERE id = ?", (sticker_id,))
     conn.commit()
-    p = Path(path)
-    if p.exists():
-        p.unlink()
-    thumb = p.parent / "_thumb" / (p.stem + ".webp")
-    if thumb.exists():
-        thumb.unlink()
+    _unlink_sticker_files(path)
     return {"ok": True, "id": sticker_id, "deleted_path": path}
 
 
