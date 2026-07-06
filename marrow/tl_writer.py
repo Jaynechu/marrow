@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import re
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 _MELB = ZoneInfo("Australia/Melbourne")
@@ -224,6 +225,10 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
             " VALUES ('events', ?, 'tl_update', ?)",
             (ev["session_id"], f"event_id={event_id}"),
         )
+    from .timeline import _hhmm_melb
+    hhmm_start = _hhmm_melb(ts_start)
+    hhmm_end = _hhmm_melb(ts_end) if ts_end else None
+    _sync_dashboard_line(event_id, hhmm_start, hhmm_end, new_content)
     return {"ok": True, "event_id": event_id}
 
 
@@ -232,3 +237,31 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
 def render_line(hhmm_start: str, hhmm_end: str | None, content: str) -> str:
     rng = f"{hhmm_start}-{hhmm_end}" if hhmm_end else hhmm_start
     return f"{rng} {content}"
+
+
+# ── dashboard sync (md must mirror DB or reconcile reverts the edit) ─────────
+
+def _dashboard_path() -> Path:
+    return Path.home() / "Desktop" / "NY" / "dashboard.md"
+
+
+def _sync_dashboard_line(event_id: int, hhmm_start: str, hhmm_end: str | None,
+                          content: str) -> bool:
+    """Rewrite the dashboard.md line anchored `<!-- tl:e:<event_id> -->` so it
+    matches the just-written DB content. Without this, the resident md->DB
+    reconcile (_reconcile_self_edit) treats the stale md line as a user edit
+    and reverts the update within seconds. No-op if the row isn't rendered
+    yet (anchor absent) — the next render will pick up the DB content."""
+    dash = _dashboard_path()
+    if not dash.exists():
+        return False
+    anchor = f"<!-- tl:e:{event_id} -->"
+    new_line = f"{render_line(hhmm_start, hhmm_end, content)} {anchor}"
+    lines = dash.read_text(encoding="utf-8").splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.rstrip("\n").endswith(anchor):
+            eol = "\n" if line.endswith("\n") else ""
+            lines[i] = new_line + eol
+            dash.write_text("".join(lines), encoding="utf-8")
+            return True
+    return False
