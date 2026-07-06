@@ -25,7 +25,7 @@ llm = LLMClient(
 )
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def recall(
     query: str,
     limit: int = 10,
@@ -103,7 +103,7 @@ def recall(
     return rows
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def atlas_lookup(prefix: str) -> list[dict]:
     """Look up atlas rows by path prefix — call before creating or naming files when location/naming is uncertain. Returns description + naming rules."""
     conn = storage.connect(_DB)
@@ -114,7 +114,7 @@ def atlas_lookup(prefix: str) -> list[dict]:
         conn.close()
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def event_embed(batch: int = 50) -> dict:
     """Embed unvectorized events (write-time backfill). Returns count written."""
     conn = storage.connect(_DB)
@@ -216,7 +216,7 @@ def _tl_clear(event_id: int | None, sid: str | None,
     return {"ok": True, "cleared": len(ids), "ids": ids, "backup": backup}
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def tl(
     action: str,
     timerange: str | None = None,
@@ -366,7 +366,7 @@ def _sticker_pick(sticker_id: int) -> dict:
         conn.close()
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def sticker(
     action: str,
     query: str | None = None,
@@ -458,7 +458,7 @@ def _sticker_list_pending() -> list[dict]:
         conn.close()
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def sticker_admin(
     action: str,
     image_path: str | None = None,
@@ -491,7 +491,7 @@ def sticker_admin(
 _GOAL_ACTIONS = {"set", "list", "delete"}
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def goal(
     action: str,
     key: str | None = None,
@@ -567,7 +567,7 @@ _WISHLIST_HEADER = (
 )
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def wish(text: str) -> dict:
     """Our wishlist — personal wishes & cravings (hers and yours), promises
     made, and shared plans. e.g. 你说好请我喝奶茶 / 最近想买耳钉 / 约好周末去看海.
@@ -602,7 +602,7 @@ _FIRST_ACTIONS = {"tick", "untick", "list"}
 _FIRST_STATUSES = {"done", "tried"}
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def first(
     action: str,
     item: str | None = None,
@@ -906,7 +906,7 @@ def _dim_delete(kind: str | None, item_id: int | None) -> dict:
     return {"ok": True, "kind": kind, "id": item_id, "deleted": True}
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def dim(
     action: str,
     kind: str | None = None,
@@ -943,7 +943,7 @@ def dim(
 _ALERT_ACTIONS = {"list", "resolve"}
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def alert(action: str, alert_id: int | None = None) -> dict | list[dict]:
     """list or solve alerts.
     action='list' unresolved alerts; 'resolve' by alert_id — auto-refreshes
@@ -1064,7 +1064,7 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None) -> 
     return result
 
 
-@mcp.tool()
+@mcp.tool(meta={"anthropic/alwaysLoad": True})
 def event_clear(before: str = "", after: str = "", last: int = 0) -> dict:
     """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. Filters:
     before/after (ISO or YYYY-MM-DD); last=N most recent; none = all.
