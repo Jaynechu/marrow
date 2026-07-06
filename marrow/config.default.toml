@@ -252,28 +252,30 @@ effort = ""
 wishlist_path = ""
 
 [hooks]
-# PreToolUse backup guard — three tiers.
-# Tier S (silent): rm/mv scoped to tmp/scratchpad/worktrees, read-only git
-#   (incl. `git branch -d` — git refuses unmerged deletes itself).
-# Tier 2 (reminder): bulk mv, rm -r on a relative (cwd-scoped) path,
-#   DELETE FROM without WHERE, mcp__marrow__ clear/delete calls, git stash
-#   drop/clear. additionalContext reminder, fires at most ONCE per session
-#   TOTAL (not per category).
-# Tier 3 (backup-state gate): rm -rf/-r on an absolute or home path, git push
-#   --force, git reset --hard, git branch -D, git clean -f,
-#   git checkout -- ., DROP TABLE, TRUNCATE, edits to ~/.claude.json /
-#   settings*.json / mcp*.json / .obsidian paths. Any Bash command that looks
-#   like a backup step (cp/rsync/tar/git commit/git stash push/.backup)
-#   stamps a timestamp; a tier-3 op is allowed silently iff a backup landed
-#   within backup_guard_window_min, otherwise it's denied via PreToolUse
-#   permissionDecision "deny" (model-facing, never escalates to the user).
-#   Set backup_guard_intercept=false to downgrade tier-3 items to tier-2
-#   reminders instead.
+# PreToolUse backup guard — stateless, two tiers (no state, no dedup).
+# Silent: rm/mv/sed scoped to tmp/scratchpad/worktrees; a destructive command
+#   that chains a backup action (cp/rsync/tar/git commit/git stash push/
+#   .backup) in the SAME command; any git op (owned by the guards below).
+# Reminder (additionalContext, fires EVERY matching call): any rm on a
+#   non-whitelisted path (non-recursive), bulk mv/sed -i with wildcard sources
+#   to a non-whitelisted dest, DELETE FROM without WHERE, mcp__marrow__
+#   clear/delete calls.
+# Deny (PreToolUse permissionDecision "deny", model-facing): recursive rm on a
+#   non-whitelisted path, rm of a *.db file outside the whitelist, or a sqlite3
+#   command destroying a *.db (DROP TABLE / TRUNCATE / DELETE FROM w/o WHERE) —
+#   unless the SAME command carries a backup action. Set
+#   backup_guard_intercept=false to downgrade deny items to reminders instead.
 backup_guard = true
 backup_guard_intercept = true
-backup_guard_window_min = 15
-backup_guard_message = "Always back up (DB / commit) or archive files before destructive actions (delete, bulk modify) — never rm -rf without clear instruction."
-backup_guard_deny_message = "Destructive op blocked — back up the target first (DB copy / file copy / git commit), then rerun. Backups are remembered for 15 min. If no backup makes sense here, ask the user."
+backup_guard_message = "Warning: back up code/db OR archive docs before anything destructive — delete, bulk modify, import/export.\n- Bypass only if the user explicitly said to delete/modify THIS now.\n- If unsure, stop and ask — never assume the user doesn't need/want it."
+backup_guard_deny_message = "BLOCKED — bulk deletion with no backup. This target is not in git/tmp: once deleted it is gone. Chain a backup into the SAME command and rerun, e.g. `tar -czf /tmp/bak.tgz <target> && rm -rf <target>` (db: `cp` first). Even if the user ordered the deletion, back up anyway — it costs one command. Do NOT work around this guard with alternative delete commands."
+
+# Git force-push guard — hard deny (PreToolUse "deny"), no escape hatch, no
+# worktree exemption. Tokenized per shell segment so a flag inside a quoted
+# commit message cannot false-positive. Set git_force_push_guard=false to
+# disable.
+git_force_push_guard = true
+git_force_push_guard_message = "BLOCKED — force push rewrites remote history and can permanently destroy commits. Never force push. If the remote rejected your push, stop and report to the user."
 
 # Git revert-type guard — held via PreToolUse permissionDecision "ask" (the
 # user confirms whose diff is being discarded). Owns the decision for the
@@ -290,5 +292,6 @@ git_revert_patterns = [
     "\\bgit\\s+stash\\s+(?:drop|clear)\\b",
     "\\bgit\\s+revert\\b[^\\n]*--no-edit\\b",
     "\\bgit\\s+switch\\b[^\\n]*--discard-changes\\b",
+    "\\bgit\\s+worktree\\s+remove\\b",
 ]
-git_revert_guard_message = "Git revert-type op held — verify the diff's authorship first. Changes from other sessions or the user's own edits are NOT yours to revert. Confirm what each affected file/commit contains and who wrote it (git log / status / diff), then proceed only if it's your own change."
+git_revert_guard_message = "🤡 狗男人又要销毁你git里的东西了，是否同意？"
