@@ -6,20 +6,29 @@ Exact indexes and which columns get embedded stay build-time, widened per phase.
 from __future__ import annotations
 
 import re
+import shutil
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 37
+
+# Tables whose id must never be reused (freed-id-reuse disease family): a plain
+# INTEGER PRIMARY KEY hands a deleted id back to the next INSERT, and side-tables
+# keyed by that id (events_vec_meta, md_index tombstones, ...) then poison the
+# newborn row. AUTOINCREMENT keeps ids strictly increasing forever. _TABLES
+# seeds new installs correct; _migrate_to_v36 rebuilds existing DBs.
+_AUTOINC_TABLES = ("events", "entities", "memes", "milestones", "stickers")
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
 _TABLES = """
 CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
   timestamp TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -52,7 +61,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE TABLE IF NOT EXISTS milestones (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   scope TEXT NOT NULL,
   date TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -64,7 +73,7 @@ CREATE TABLE IF NOT EXISTS milestones (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE TABLE IF NOT EXISTS memes (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,
   key TEXT NOT NULL,
   value TEXT,
@@ -77,7 +86,7 @@ CREATE TABLE IF NOT EXISTS memes (
   updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS stickers (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   path TEXT NOT NULL,
   sha256 TEXT,
   phash TEXT,
@@ -168,7 +177,7 @@ CREATE TABLE IF NOT EXISTS affect (
   updated_at TEXT
 );
 CREATE TABLE IF NOT EXISTS entities (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
   name TEXT NOT NULL,
   fact TEXT,
@@ -558,6 +567,8 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v33(conn)
         _migrate_to_v34(conn)
         _migrate_to_v35(conn)
+        _migrate_to_v36(conn)
+        _migrate_to_v37(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -1345,6 +1356,190 @@ def _migrate_to_v35(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM memes_vec")
     conn.execute("DELETE FROM memes_vec_meta")
     conn.execute("PRAGMA user_version=35")
+
+
+def _backup_db_file(conn: sqlite3.Connection, tag: str) -> None:
+    """Best-effort copy of the live DB file to /tmp before a bulk rebuild.
+
+    init_db runs every migration inside one transaction, so a raised error
+    already rolls the whole thing back (SQLite atomicity). This extra copy
+    defends against a committed-but-wrong logic bug. In-memory / tempfile
+    DBs (path empty) are skipped. Failure never aborts the migration.
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchall()
+        main = next((r[2] for r in row if r[1] == "main"), None)
+        if not main or main == ":memory:" or not Path(main).exists():
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dst = Path("/tmp") / f"marrow-{tag}-{stamp}.db.bak"
+        shutil.copy2(main, dst)
+    except Exception:
+        pass
+
+
+def _rebuild_autoincrement(conn: sqlite3.Connection, table: str) -> bool:
+    """Rebuild `table` so its INTEGER PRIMARY KEY becomes AUTOINCREMENT.
+
+    Preserves ids (so rowid-coupled vec/fts stay valid), recreates every
+    dependent trigger + index verbatim, and seeds sqlite_sequence to max(id).
+    Returns True if a rebuild happened, False if already AUTOINCREMENT.
+
+    FK caveat: with foreign_keys ON (and we cannot toggle it mid-transaction),
+    DROP TABLE fires an implicit DELETE that runs ON DELETE SET NULL on any
+    child FK. Callers snapshot + restore those columns around this call.
+    """
+    orig = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    if orig is None:
+        return False
+    if "AUTOINCREMENT" in orig[0].upper():
+        return False
+    new_sql = re.sub(
+        rf'CREATE TABLE (IF NOT EXISTS )?"?{re.escape(table)}"?',
+        f'CREATE TABLE "{table}_new"', orig[0], count=1,
+    )
+    new_sql = re.sub(
+        r"INTEGER PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT",
+        new_sql, count=1,
+    )
+    cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+    collist = ", ".join(f'"{c}"' for c in cols)
+    # Dependent triggers + indexes (skip auto-indexes: sql IS NULL). FTS/vec
+    # twins live under their own tbl_name, so they are NOT captured here and
+    # stay untouched (rowids preserved).
+    deps = [
+        r[0] for r in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name=?"
+            " AND type IN ('trigger','index') AND sql IS NOT NULL AND name != ?",
+            (table, table),
+        ).fetchall()
+    ]
+    conn.execute(new_sql)
+    conn.execute(
+        f"INSERT INTO {table}_new ({collist}) SELECT {collist} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f'ALTER TABLE "{table}_new" RENAME TO "{table}"')
+    for d in deps:
+        conn.execute(d)
+    conn.execute("DELETE FROM sqlite_sequence WHERE name=?", (table,))
+    conn.execute(
+        "INSERT INTO sqlite_sequence(name, seq)"
+        f" SELECT ?, COALESCE(MAX(id),0) FROM {table}",
+        (table,),
+    )
+    return True
+
+
+def _migrate_to_v36(conn: sqlite3.Connection) -> None:
+    """v36: migrate the id-reuse-prone tables to INTEGER PRIMARY KEY
+    AUTOINCREMENT (events / entities / memes / milestones / stickers).
+
+    Root cause of a 3-outbreak disease family: plain INTEGER PK reuses a
+    freed id after DELETE, and side-tables keyed by that id (events_vec_meta,
+    md_index tombstones) then poison the reused id. AUTOINCREMENT stops reuse
+    at the source.
+
+    Rebuild preserves ids + recreates triggers/indexes verbatim; the vec/fts
+    twins are rowid-coupled and left in place. The only FKs into this set are
+    affect.event_id and entities.superseded_by (both ON DELETE SET NULL);
+    since DROP TABLE fires those under foreign_keys ON, snapshot + restore.
+    Idempotent — already-AUTOINCREMENT tables short-circuit; user_version gate.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 36:
+        return
+    # Nothing to do if every target is already AUTOINCREMENT (fresh install).
+    pending = [
+        t for t in _AUTOINC_TABLES
+        if (row := conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (t,)
+        ).fetchone()) is not None and "AUTOINCREMENT" not in row[0].upper()
+    ]
+    if not pending:
+        conn.execute("PRAGMA user_version=36")
+        return
+    _backup_db_file(conn, "v36-autoinc")
+    # Snapshot the two child FK columns that DROP TABLE would SET NULL.
+    affect_map = conn.execute(
+        "SELECT id, event_id FROM affect WHERE event_id IS NOT NULL"
+    ).fetchall()
+    ent_map = conn.execute(
+        "SELECT id, superseded_by FROM entities WHERE superseded_by IS NOT NULL"
+    ).fetchall()
+    # legacy_alter_table ON: the RENAME must NOT rewrite/validate other objects.
+    # Views (entities_live/affect_live) and FKs reference these tables by name;
+    # a modern RENAME re-parses them mid-rebuild (table momentarily absent) and
+    # errors, or rewrites "entities" -> "entities_new". Legacy mode leaves all
+    # references as literal text so they resolve once the rename completes.
+    conn.execute("PRAGMA legacy_alter_table=ON")
+    try:
+        for t in _AUTOINC_TABLES:
+            _rebuild_autoincrement(conn, t)
+    finally:
+        conn.execute("PRAGMA legacy_alter_table=OFF")
+    # Restore FK columns (ids were preserved, so the values are still valid).
+    for r in affect_map:
+        conn.execute(
+            "UPDATE affect SET event_id=? WHERE id=?", (r[1], r[0]))
+    for r in ent_map:
+        conn.execute(
+            "UPDATE entities SET superseded_by=? WHERE id=?", (r[1], r[0]))
+    conn.execute("PRAGMA user_version=36")
+
+
+def _canon_md_path(path: str) -> str:
+    """Canonical md_index key = expanded + symlink-resolved absolute path.
+
+    The inserter/daemon key md_index by the config symlink path
+    (~/.config/marrow/db-pages/...) while the watcher keys by the resolved
+    real path (~/Desktop/NY/db-pages/...); the same block lands twice and a
+    tombstone on one lane silently blocks rendering on the other. Resolving
+    to one canonical form collapses the split. Best-effort — a broken path
+    falls back to itself.
+    """
+    try:
+        return str(Path(path).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return path
+
+
+def _migrate_to_v37(conn: sqlite3.Connection) -> None:
+    """v37: collapse the md_index path-key split (symlink vs resolved real
+    path) onto one canonical form and merge the duplicate rows it created.
+
+    Pairs with the MdIndex path choke point (marrow/md_index.py) that keeps
+    every future write canonical. On collision, the most-recently-observed
+    row wins (max last_seen_at) so the merged tombstone reflects latest fs
+    truth. Idempotent — canon of an already-canon path is identity; a second
+    run finds no collisions. user_version gate runs it once.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 37:
+        return
+    rows = conn.execute(
+        "SELECT path, block_id, content_hash, last_seen_at, tombstone_at"
+        " FROM md_index"
+    ).fetchall()
+    best: dict[tuple[str, str], tuple] = {}
+    for r in rows:
+        canon = _canon_md_path(r[0])
+        key = (canon, r[1])
+        prev = best.get(key)
+        # Most-recently-observed row wins the merge (latest fs truth).
+        if prev is None or (r[3] or "") >= (prev[3] or ""):
+            best[key] = (canon, r[1], r[2], r[3], r[4])
+    if rows:
+        conn.execute("DELETE FROM md_index")
+        conn.executemany(
+            "INSERT INTO md_index"
+            " (path, block_id, content_hash, last_seen_at, tombstone_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            list(best.values()),
+        )
+    conn.execute("PRAGMA user_version=37")
 
 
 def get_latest_watermark(conn, sid):

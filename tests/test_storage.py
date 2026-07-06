@@ -490,7 +490,7 @@ def test_v35_clears_stale_memes_vec_even_if_already_at_v33(tmp_path):
             "SELECT COUNT(*) FROM memes_vec_meta"
         ).fetchone()[0] == 0
         assert (conn.execute("PRAGMA user_version").fetchone()[0]
-                == storage.SCHEMA_VERSION == 35)
+                == storage.SCHEMA_VERSION)
     finally:
         conn.close()
 
@@ -500,7 +500,8 @@ def test_v35_clears_stale_memes_vec_even_if_already_at_v33(tmp_path):
         assert conn.execute(
             "SELECT COUNT(*) FROM memes_vec"
         ).fetchone()[0] == 0
-        assert (conn.execute("PRAGMA user_version").fetchone()[0] == 35)
+        assert (conn.execute("PRAGMA user_version").fetchone()[0]
+                == storage.SCHEMA_VERSION)
     finally:
         conn.close()
 
