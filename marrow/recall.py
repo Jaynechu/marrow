@@ -405,9 +405,33 @@ def _embed_pending_lane(
     rows = conn.execute(cfg["pending_sql"], (batch,)).fetchall()
     if not rows:
         return 0
-    ids = [r["id"] for r in rows]
     _media_tag = re.compile(r'\s*<(?:image|file)\s+path="[^"]*?"[^>]*>\s*')
-    texts = [_media_tag.sub(" ", r["text"] or "").strip() for r in rows]
+    if lane == "events":
+        # Events lane only — mirror the consumption-point shaping recall
+        # already applies to row content before it reaches the user
+        # (recall_fusion row passthrough, recall.py ~line 1817): strip the
+        # wx time-anchor prefix and bare [sticker: ...] marker lines, so the
+        # embedded vector matches what recall actually surfaces. Other lanes
+        # (memes/entities/...) don't carry bridge markers.
+        _time_prefix = re.compile(r"^\[time:[^\]]+\]\s*")
+        _sticker_line = re.compile(r"^\[sticker:[^\]\n]*\]\n?", re.M)
+
+        def _shape(text: str) -> str:
+            t = _time_prefix.sub("", text or "")
+            return _sticker_line.sub("", t)
+    else:
+        def _shape(text: str) -> str:
+            return text or ""
+    pairs = [(r["id"], _media_tag.sub(" ", _shape(r["text"])).strip())
+             for r in rows]
+    # Guard: if shaping strips a row down to empty, skip embedding it — leave
+    # it for the whole-row junk logic (transcript._is_harness_row / repair
+    # script). Should not happen post-repair (bare marker rows are junk-
+    # dropped there), but never write an empty-text vector.
+    ids = [i for i, t in pairs if t]
+    texts = [t for i, t in pairs if t]
+    if not texts:
+        return 0
     _CHUNK = 50
     chunks = [texts[i:i + _CHUNK] for i in range(0, len(texts), _CHUNK)]
     vecs = np.concatenate([emb.embed(c) for c in chunks], axis=0)
