@@ -145,6 +145,11 @@ def event_embed(batch: int = 50) -> dict:
 _TL_ACTIONS = {"add", "update", "clear", "query"}
 
 
+def _like_escape(s: str) -> str:
+    """Escape LIKE wildcards so user text matches literally, not as a pattern."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _tl_resolve(conn, match: str | None, date: str | None) -> list[dict]:
     """Find role='tl' rows by content substring (`match`) and/or Melbourne-local
     day (`date`, YYYY-MM-DD). Returns [{event_id, line}] rendered with Melbourne
@@ -152,8 +157,8 @@ def _tl_resolve(conn, match: str | None, date: str | None) -> list[dict]:
     clauses = ["role='tl'"]
     params: list = []
     if match:
-        clauses.append("content LIKE ?")
-        params.append(f"%{match}%")
+        clauses.append("content LIKE ? ESCAPE '\\'")
+        params.append(f"%{_like_escape(match)}%")
     if date:
         from .timecue import melb_day_range
         since_utc, until_utc = melb_day_range(date)  # ValueError on bad date
