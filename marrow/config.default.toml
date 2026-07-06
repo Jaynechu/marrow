@@ -250,3 +250,11 @@ model = ""
 effort = ""
 # Wishlist md, pure append-only (Decided 07-03 eve). Empty = <home>/wishlist.md.
 wishlist_path = ""
+
+[hooks]
+# PreToolUse backup-first reminder — fires once per session per category when
+# a Bash/Write/Edit/MCP tool call looks bulk or destructive (rm -rf, git reset
+# --hard, DROP TABLE, settings.json edits, mcp__marrow__ clear/delete). Never
+# blocks — additionalContext reminder only.
+backup_guard = true
+backup_guard_message = "Bulk/destructive op detected — back up the target first (DB copy, file copy, or git commit), and double-check scope before proceeding."

@@ -2014,6 +2014,138 @@ def _append_recall_log(sid: str, prompt_text: str, hits: list[dict]) -> None:
 _PLACEMENT_BASH_OPS = {"mv", "cp", "rename", "mmv", "touch", "mkdir"}
 
 
+# ── backup-first guard (PreToolUse) ──────────────────────────────────────────
+# Non-blocking reminder for bulk/destructive tool calls, injected via the same
+# additionalContext channel the path hints use. Fires at most once per
+# session per category; state lives under DATA_DIR/state/backup_guard/,
+# mirroring the recall_seen / sticker_nudge per-sid json pattern.
+
+_BG_RM_RE = _re.compile(r"\brm\b[^\n;|&]*-\w*r", _re.IGNORECASE)
+_BG_GIT_RESET_RE = _re.compile(r"\bgit\s+reset\s+--hard\b", _re.IGNORECASE)
+_BG_GIT_CLEAN_RE = _re.compile(r"\bgit\s+clean\s+-\w*f", _re.IGNORECASE)
+_BG_GIT_BRANCH_D_RE = _re.compile(r"\bgit\s+branch\s+-D\b", _re.IGNORECASE)
+_BG_GIT_PUSH_FORCE_RE = _re.compile(r"\bgit\s+push\b[^\n;|&]*(--force\b|-f\b)", _re.IGNORECASE)
+_BG_GIT_CHECKOUT_DOT_RE = _re.compile(r"\bgit\s+checkout\s+--\s+\.", _re.IGNORECASE)
+_BG_GIT_STASH_RE = _re.compile(r"\bgit\s+stash\s+(drop|clear)\b", _re.IGNORECASE)
+_BG_SQL_DROP_RE = _re.compile(r"\bdrop\s+table\b", _re.IGNORECASE)
+_BG_SQL_TRUNCATE_RE = _re.compile(r"\btruncate\b", _re.IGNORECASE)
+_BG_MV_GLOB_RE = _re.compile(r"\bmv\b[^\n;|&]*\*")
+
+_BG_BASH_RES = (
+    _BG_RM_RE, _BG_GIT_RESET_RE, _BG_GIT_CLEAN_RE, _BG_GIT_BRANCH_D_RE,
+    _BG_GIT_PUSH_FORCE_RE, _BG_GIT_CHECKOUT_DOT_RE, _BG_GIT_STASH_RE,
+    _BG_SQL_DROP_RE, _BG_SQL_TRUNCATE_RE, _BG_MV_GLOB_RE,
+)
+
+# Write/Edit targets: ~/.claude.json, any settings*.json under .claude/,
+# any .obsidian/ path, any mcp*.json config.
+_BG_CONFIG_PATH_RE = _re.compile(
+    r"(\.claude\.json$)"
+    r"|(\.claude/[^\n]*settings[^/\n]*\.json$)"
+    r"|(\.obsidian/)"
+    r"|((^|/)mcp[^/\n]*\.json$)",
+    _re.IGNORECASE,
+)
+
+
+def _bg_bash_destructive(cmd: str) -> bool:
+    if not cmd:
+        return False
+    if any(r.search(cmd) for r in _BG_BASH_RES):
+        return True
+    # DELETE FROM ... without a WHERE on the same line.
+    for line in cmd.splitlines():
+        low = f" {line.lower()} "
+        if "delete from" in low and " where " not in low:
+            return True
+    return False
+
+
+def _bg_mcp_destructive(tool_name: str, tool_input: dict) -> bool:
+    name = (tool_name or "").lower()
+    if "db_clear" in name or "event_clear" in name:
+        return True
+    if "sticker" in name and "delete" in name:
+        return True
+    if name.startswith("mcp__marrow__"):
+        action = str((tool_input or {}).get("action", "")).strip().lower()
+        if action in {"clear", "delete"}:
+            return True
+    return False
+
+
+def _backup_guard_category(tool_name: str, tool_input: dict) -> str | None:
+    """Return the dedup category for a matching bulk/destructive call, else None."""
+    ti = tool_input or {}
+    if tool_name == "Bash":
+        if _bg_bash_destructive(ti.get("command", "") or ""):
+            return "bash_destructive"
+    elif tool_name in ("Write", "Edit"):
+        if _BG_CONFIG_PATH_RE.search(ti.get("file_path", "") or ""):
+            return "config_edit"
+    elif tool_name and tool_name not in ("Bash", "Write", "Edit"):
+        if _bg_mcp_destructive(tool_name, ti):
+            return "mcp_destructive"
+    return None
+
+
+def _backup_guard_state_path(sid: str) -> Path:
+    return config.DATA_DIR / "state" / "backup_guard" / f"{sid}.json"
+
+
+def _load_backup_guard_fired(sid: str) -> set[str]:
+    if not sid:
+        return set()
+    try:
+        data = json.loads(_backup_guard_state_path(sid).read_text())
+        return set(data) if isinstance(data, list) else set()
+    except Exception:
+        return set()
+
+
+def _mark_backup_guard_fired(sid: str, category: str) -> None:
+    if not sid:
+        return
+    p = _backup_guard_state_path(sid)
+    try:
+        fired = _load_backup_guard_fired(sid)
+        fired.add(category)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(sorted(fired)))
+    except Exception:
+        pass
+
+
+def _backup_guard_line(inp: dict) -> str | None:
+    """Return the backup-first reminder text if *inp* is a bulk/destructive
+    tool call not yet reminded this session, else None.
+
+    Config-gated via [hooks].backup_guard (default enabled). Fail-open: any
+    exception returns None so the guard never breaks the hook."""
+    try:
+        if not isinstance(inp, dict):
+            return None
+        hooks_cfg = config.load().get("hooks", {}) or {}
+        if not hooks_cfg.get("backup_guard", True):
+            return None
+        tool_name = inp.get("tool_name", "") or ""
+        ti = inp.get("tool_input", {}) or {}
+        category = _backup_guard_category(tool_name, ti)
+        if not category:
+            return None
+        sid = (inp.get("session_id") or "").strip()
+        if category in _load_backup_guard_fired(sid):
+            return None
+        _mark_backup_guard_fired(sid, category)
+        return hooks_cfg.get("backup_guard_message") or (
+            "Bulk/destructive op detected — back up the target first "
+            "(DB copy, file copy, or git commit), and double-check scope "
+            "before proceeding."
+        )
+    except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+        return None
+
+
 def agent_guard() -> int:
     """PreToolUse:Agent burst protection — deny recursion-prone subagents.
 
@@ -2065,11 +2197,18 @@ def pretool_use() -> int:
 
         _literal = "[Path] Use paths with /, not bare filenames."
 
+        guard_line: str | None = None
+        try:
+            guard_line = _backup_guard_line(inp)
+        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+            guard_line = None
+
         def _emit(text: str) -> None:
+            payload = f"{guard_line}\n\n{text}" if guard_line else text
             print(json.dumps({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "additionalContext": text,
+                    "additionalContext": payload,
                 }
             }))
 

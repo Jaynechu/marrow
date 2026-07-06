@@ -767,3 +767,78 @@ def test_session_end_fires_popen_when_events_grew(env, monkeypatch, tmp_path):
     assert rc == 0
     async_calls = [c for c in popen_calls if "sessionend_async" in " ".join(c)]
     assert len(async_calls) == 1, "popen_detach must be called when events grew"
+
+
+# ── pretool_use backup-first guard ────────────────────────────────────────────
+
+_BG_MSG = "Bulk/destructive op detected"
+
+
+def _pretool(monkeypatch, tool_name, tool_input, sid="s1"):
+    _stdin(monkeypatch, {"session_id": sid, "tool_name": tool_name,
+                         "tool_input": tool_input})
+    return hooks.main(["pretool_use"])
+
+
+def test_backup_guard_rm_rf_triggers(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf /tmp/foo"})
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG in ctx
+
+
+def test_backup_guard_rm_single_file_no_trigger(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm /tmp/foo.txt"})
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG not in ctx
+
+
+def test_backup_guard_git_reset_hard_triggers(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "git reset --hard origin/main"})
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG in ctx
+
+
+def test_backup_guard_git_status_no_trigger(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "git status"})
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG not in ctx
+
+
+def test_backup_guard_settings_json_edit_triggers(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Edit",
+                  {"file_path": "/Users/x/.claude/settings.json", "old_string": "a",
+                   "new_string": "b"})
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG in ctx
+
+
+def test_backup_guard_event_clear_triggers(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "mcp__marrow__event_clear", {})
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG in ctx
+
+
+def test_backup_guard_dedup_once_per_session(env, monkeypatch, capsys):
+    _pretool(monkeypatch, "Bash", {"command": "rm -rf /tmp/foo"})
+    first = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG in first
+
+    _pretool(monkeypatch, "Bash", {"command": "rm -rf /tmp/bar"})
+    second = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG not in second, "same category must not re-fire within a session"
+
+
+def test_backup_guard_disabled_via_config(env, monkeypatch, capsys):
+    base_cfg = config.load()
+    base_cfg.setdefault("hooks", {})["backup_guard"] = False
+    monkeypatch.setattr(config, "load", lambda: base_cfg)
+    rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf /tmp/foo"})
+    assert rc == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert _BG_MSG not in ctx
