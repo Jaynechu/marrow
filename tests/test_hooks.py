@@ -1090,8 +1090,15 @@ def test_git_revert_normal_git_commands_pass(env, monkeypatch, capsys):
         assert out.get("permissionDecision") != "ask", cmd
 
 
-def test_git_revert_worktree_cleanup_exempt(env, monkeypatch, capsys):
-    # branch -D whose cwd is a worktree = agent teardown → allowed silently.
+def test_git_revert_worktree_cleanup_skips_ask_not_deny(env, monkeypatch, capsys):
+    """branch -D whose cwd is a worktree = agent teardown → the git-revert
+    "ask" is skipped (worktree exemption), but the call still falls through
+    to the backup-guard tier-3 deny gate — `git branch -D` has no path-based
+    tier-S exemption there (only rm/mv do), so with no recent backup stamped
+    it's denied, not silently allowed. This is intentional after the
+    substring-bypass fix: the "" exemption only owns the ASK decision, never
+    skips the deny gate, so a compound command's other segment can't ride
+    through unexamined."""
     _stdin(monkeypatch, {
         "session_id": "s1", "tool_name": "Bash",
         "cwd": "/Users/x/.claude/worktrees/agent-abc/marrow",
@@ -1100,7 +1107,24 @@ def test_git_revert_worktree_cleanup_exempt(env, monkeypatch, capsys):
     rc = hooks.main(["pretool_use"])
     assert rc == 0
     out = _out(capsys)["hookSpecificOutput"]
-    assert out.get("permissionDecision") != "ask"
+    assert out.get("permissionDecision") == "deny"
+
+
+def test_git_revert_worktree_substring_compound_bypass_still_denies(
+    env, monkeypatch, capsys
+):
+    """Verified-gap regression test: a compound command where the git-revert
+    segment's exemption text happens to substring-match `.claude/worktrees/`
+    (matching the worktree-cleanup exemption) must NOT let an unrelated
+    `rm -rf` on a non-whitelisted path ride through unexamined. The "" exempt
+    result must only ever skip the ASK, never the tier-3 backup deny."""
+    cmd = ("git checkout -- /Users/x/.claude/worktrees/agent-abc/f "
+           "&& rm -rf ~/Documents/y")
+    rc = _pretool(monkeypatch, "Bash", {"command": cmd})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out.get("permissionDecision") == "deny"
+    assert "permissionDecisionReason" in out
 
 
 def test_git_revert_disabled_via_config(env, monkeypatch, capsys):
