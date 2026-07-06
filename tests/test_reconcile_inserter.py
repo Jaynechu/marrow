@@ -555,6 +555,55 @@ def test_memes_insert_unmappable_section_conflict(tmp_path):
     assert len(rpt.conflicts) == 1
 
 
+def test_memes_insert_type_mismatched_section_absorbed(tmp_path):
+    """[meme] tag under ## Personal is absorbed with type='meme', not skipped."""
+    db_path = _db(tmp_path)
+    conn = _conn(db_path)
+
+    md = tmp_path / "memes.md"
+    md.write_text(
+        "## Personal\n"
+        "- [meme] **X** → v\n",
+        encoding="utf-8",
+    )
+
+    rpt = reconcile_memes(conn, md)
+    row = conn.execute(
+        "SELECT type, key, value FROM memes WHERE key='X'"
+    ).fetchone()
+    conn.close()
+
+    assert rpt.inserted == 1
+    assert len(rpt.conflicts) == 0
+    assert row is not None
+    assert row["type"] == "meme"
+    assert row["value"] == "v"
+
+
+def test_memes_insert_garbage_tag_falls_back_to_section_default(tmp_path):
+    """Unrecognised [type] tag falls back to the section default type."""
+    db_path = _db(tmp_path)
+    conn = _conn(db_path)
+
+    md = tmp_path / "memes.md"
+    md.write_text(
+        "## Personal\n"
+        "- [nonsense] **Y** → v\n"
+        "## Public\n"
+        "- [nonsense] **Z** → v\n",
+        encoding="utf-8",
+    )
+
+    rpt = reconcile_memes(conn, md)
+    row_y = conn.execute("SELECT type FROM memes WHERE key='Y'").fetchone()
+    row_z = conn.execute("SELECT type FROM memes WHERE key='Z'").fetchone()
+    conn.close()
+
+    assert rpt.inserted == 2
+    assert row_y["type"] == "fact"
+    assert row_z["type"] == "others"
+
+
 def test_memes_insert_idempotent(tmp_path):
     """Second reconcile after anchor write-back is a full no-op."""
     db_path = _db(tmp_path)

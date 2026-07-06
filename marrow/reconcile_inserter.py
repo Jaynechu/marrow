@@ -42,6 +42,8 @@ _PROFILE_UNANCHORED_RE = re.compile(
     r"(?:\s+—\s+(?P<fact>.+?))?"
     r"\s*$"
 )
+# Recognised meme [type] tags (subpage_specs.py section/order source of truth).
+_MEME_TYPE_WHITELIST = frozenset({"paw", "fact", "meme", "news", "event", "others"})
 
 
 # Separators accepted in hand-typed rows, longest first so `——` never
@@ -503,16 +505,14 @@ def _insert_memes(
 
     Unanchored lines matching the meme row format are inserted into DB.
     type is read directly from the line's [type] bracket (already in
-    parse_row output). Section heading ("Personal" / "Public") is used
-    only to validate consistency:
-      Personal → type must be in _MEME_PERSONAL (paw, fact)
-      Public   → type must NOT be in _MEME_PERSONAL
-    If inconsistent, add to conflicts and skip.
+    parse_row output). Section heading ("Personal" / "Public") is only used
+    as a fallback default when the tag itself isn't a recognised meme type —
+    a recognised tag is trusted even if it's under the "wrong" section;
+    force_sort_consistency relocates it on the next render, so no
+    hand-written line is ever silently skipped.
     Dedup: same type+key with status='active' already present → skip.
     Hand-typed rows get pinned=1, status='active'.
     """
-    from .subpage_specs import _MEME_PERSONAL
-    _personal_types: frozenset[str] = frozenset(_MEME_PERSONAL)
     _valid_sections = {"Personal", "Public"}
 
     if not md_path.exists():
@@ -583,23 +583,19 @@ def _insert_memes(
         if not meme_type:
             rpt.conflicts.append(f"memes insert: missing type — {line[:60]}")
             continue
-        # Section consistency check.
         if cur_section not in _valid_sections:
             rpt.conflicts.append(
                 f"memes insert: unmappable section '{cur_section}' — {line[:60]}"
             )
             continue
-        is_personal = meme_type in _personal_types
-        if cur_section == "Personal" and not is_personal:
-            rpt.conflicts.append(
-                f"memes insert: type '{meme_type}' under Personal section — {line[:60]}"
-            )
-            continue
-        if cur_section == "Public" and is_personal:
-            rpt.conflicts.append(
-                f"memes insert: personal type '{meme_type}' under Public section — {line[:60]}"
-            )
-            continue
+        # Trust the [type] tag itself when it's a recognised meme type, even
+        # if it doesn't match its current (valid) section — force_sort_
+        # consistency relocates the row to the right section on the next
+        # render. Only fall back to the section default when the tag isn't
+        # a recognised meme type at all.
+        if meme_type not in _MEME_TYPE_WHITELIST:
+            meme_type = "fact" if cur_section == "Personal" else "others"
+            parsed = dict(parsed, type=meme_type)
         candidates.append((idx, parsed))
 
     if not candidates:

@@ -483,10 +483,14 @@ def write_memes_cand(conn, raw: str, source: str = "daily",
                 "%Y-%m-%dT%H:%M:%SZ")
             with conn:
                 new_pinned = 1 if (existing["pinned"] or pinned) else 0
+                # updated_at is NOT touched here — a re-mention with no
+                # content change is not a content change. It only moves
+                # when type/key/value/context actually change (elsewhere),
+                # so reconcile's DB-wins check doesn't clobber hand md edits.
                 conn.execute(
                     "UPDATE memes SET use_count=use_count+1, last_seen=?,"
-                    " pinned=?, updated_at=? WHERE id=?",
-                    (ts_now, new_pinned, ts_now, existing["id"]),
+                    " pinned=? WHERE id=?",
+                    (ts_now, new_pinned, existing["id"]),
                 )
             n += 1
             continue
