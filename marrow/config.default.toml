@@ -283,11 +283,12 @@ backup_guard_deny_message = "Destructive op blocked — back up the target first
 git_revert_guard = true
 git_revert_patterns = [
     "\\bgit\\s+reset\\s+--hard\\b",
-    "\\bgit\\s+checkout\\s+(?:-[^\\s-]+\\s+)*--\\s+\\S",
+    "\\bgit\\s+checkout\\s+(?:\\S+\\s+)*?--\\s+\\S",
     "\\bgit\\s+restore\\b",
     "\\bgit\\s+clean\\s+-\\w*f",
     "\\bgit\\s+branch\\s+-\\w*D\\w*\\b",
     "\\bgit\\s+stash\\s+(?:drop|clear)\\b",
     "\\bgit\\s+revert\\b[^\\n]*--no-edit\\b",
+    "\\bgit\\s+switch\\b[^\\n]*--discard-changes\\b",
 ]
 git_revert_guard_message = "Git revert-type op held — verify the diff's authorship first. Changes from other sessions or the user's own edits are NOT yours to revert. Confirm what each affected file/commit contains and who wrote it (git log / status / diff), then proceed only if it's your own change."

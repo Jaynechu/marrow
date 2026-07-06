@@ -453,6 +453,58 @@ def test_v33_noop_when_already_migrated_leaves_vectors_alone(tmp_path):
         conn.close()
 
 
+def test_v35_clears_stale_memes_vec_even_if_already_at_v33(tmp_path):
+    """Codex review find (07-06): _migrate_to_v33's DELETE only ran for
+    installs that crossed the v33 boundary live. Any DB already at v33+
+    under the pre-fix code (context column already dropped, so the v33
+    "context in cols" gate never re-fires) kept stale/poisoned memes_vec
+    rows forever. v35 re-runs the clear unconditionally, once, for every DB
+    regardless of migration history."""
+    p = str(tmp_path / "t.db")
+    conn = storage.init_db(p)
+    mid = conn.execute(
+        "INSERT INTO memes(type,key,value) VALUES('fact','k','v')"
+    ).lastrowid
+    import struct
+    blob = struct.pack("1024f", *([0.1] * 1024))
+    conn.execute(
+        "INSERT INTO memes_vec(rowid, embedding) VALUES (?, ?)", (mid, blob)
+    )
+    conn.execute(
+        "INSERT INTO memes_vec_meta(rowid, embedder_id, dim)"
+        " VALUES (?, 'bge-m3', 1024)", (mid,)
+    )
+    # Simulate a DB that already migrated to v33 under the pre-fix code —
+    # the memes_vec rows above are stale/poisoned leftovers that survived
+    # because _migrate_to_v33 short-circuits at v>=33.
+    conn.execute("PRAGMA user_version=33")
+    conn.commit()
+    conn.close()
+
+    conn = storage.init_db(p)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memes_vec"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memes_vec_meta"
+        ).fetchone()[0] == 0
+        assert (conn.execute("PRAGMA user_version").fetchone()[0]
+                == storage.SCHEMA_VERSION == 35)
+    finally:
+        conn.close()
+
+    # Second open — idempotent no-op, nothing left to clear.
+    conn = storage.init_db(p)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memes_vec"
+        ).fetchone()[0] == 0
+        assert (conn.execute("PRAGMA user_version").fetchone()[0] == 35)
+    finally:
+        conn.close()
+
+
 def test_v34_ct_first_tick_status_default_done(db):
     assert "status" in _cols(db, "ct_first_tick")
     db.execute(

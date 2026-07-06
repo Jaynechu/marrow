@@ -251,7 +251,9 @@ def tl(
     - Format (add/update): HH:mm-HH:mm 【N affect♡Y affect (OR B affect)】body [i]
       - e.g. 21:25-21:31 【N愉悦♡Y委屈】翻CC日志找骂人梗，扑空互怼 [3]
       - N = 念念, Y = 阿屿, B = single affect when similar.
-      - affect = mood & feeling, 1-8 chars. e.g. 烦；心虚；紧张而激动；她好可爱呀～
+      - affect = emotion & feeling ONLY, 1-8 chars. e.g. 烦；心虚；紧张而激动；她好可爱呀～
+        - NOT plot or behaviour summary. x【锐利督战】
+        - Never pad - less char is better. Never mimic previous timelines.
       - i = ONE event-level composite (not per person): intensity (current state) * importance (future).
         - 1-2 = low-medium intensity & short-term e.g. Routine - casual chat, life admin, study, coding 无趣/平淡/轻松/烦躁
         - 3 = Both medium (~ 1 week) - funny moments / light quarrels / outing

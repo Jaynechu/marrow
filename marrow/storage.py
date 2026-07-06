@@ -13,7 +13,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 # Phase 1 first-class tables + Phase 2 affect/entities (DECISIONS Phase 2).
 # The retired emotions/people/preferences/dir placeholders stay absent.
@@ -557,6 +557,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v32(conn)
         _migrate_to_v33(conn)
         _migrate_to_v34(conn)
+        _migrate_to_v35(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -1322,6 +1323,28 @@ def _migrate_to_v34(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         pass
     conn.execute("PRAGMA user_version=34")
+
+
+def _migrate_to_v35(conn: sqlite3.Connection) -> None:
+    """v35: unconditional one-time memes-lane vec cleanup (codex review find,
+    07-06). _migrate_to_v33's DELETE FROM memes_vec/memes_vec_meta only ran
+    for installs that crossed the v33 boundary live — any DB that had already
+    reached v33+ under the pre-fix code (e.g. via a fresh init_db that set
+    user_version straight to 33/34, or a DB migrated before this cleanup
+    existed) never got the clear and can carry stale/poisoned meme vectors
+    forever. This migration re-runs the same DELETEs unconditionally so every
+    DB gets swept exactly once regardless of migration history.
+
+    Idempotent — DELETE with no matching rows is a no-op; user_version
+    short-circuits on second open. embed_pending's memes lane repopulates any
+    cleared rows on its next run (self-heals).
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 35:
+        return
+    conn.execute("DELETE FROM memes_vec")
+    conn.execute("DELETE FROM memes_vec_meta")
+    conn.execute("PRAGMA user_version=35")
 
 
 def get_latest_watermark(conn, sid):

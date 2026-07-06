@@ -2415,12 +2415,17 @@ def _backup_guard_deny(inp: dict) -> str | None:
 # cleanup (branch -D teardown etc.) is exempt (tier-S scoping).
 _GIT_REVERT_DEFAULT_PATTERNS = [
     r"\bgit\s+reset\s+--hard\b",
-    r"\bgit\s+checkout\s+(?:-[^\s-]+\s+)*--\s+\S",  # git checkout -- <path>
+    # git checkout [<flags>|<tree-ish>]* -- <path> — an optional revision
+    # token (HEAD, a commit, a branch name — no leading dash) and/or flags
+    # may precede `--`. `git checkout <branch>` with no `--` (plain branch
+    # switch) is intentionally left unmatched.
+    r"\bgit\s+checkout\s+(?:\S+\s+)*?--\s+\S",
     r"\bgit\s+restore\b",                            # worktree discard
     r"\bgit\s+clean\s+-\w*f",                        # -f / -fd
     r"\bgit\s+branch\s+-\w*D\w*\b",
     r"\bgit\s+stash\s+(?:drop|clear)\b",
     r"\bgit\s+revert\b[^\n]*--no-edit\b",
+    r"\bgit\s+switch\b[^\n]*--discard-changes\b",
 ]
 
 _GIT_REVERT_MSG = (
@@ -2431,31 +2436,51 @@ _GIT_REVERT_MSG = (
 )
 
 
-def _git_revert_matches(cmd: str) -> bool:
-    """True if *cmd* contains a git revert-type op per config patterns.
-    `git restore --staged` alone (unstage only, no worktree discard) is safe."""
-    if not cmd:
-        return False
-    pats = (config.load().get("hooks", {}) or {}).get(
-        "git_revert_patterns"
-    ) or _GIT_REVERT_DEFAULT_PATTERNS
+# Split on shell control operators (&&, ||, ;, |, &, newline) so pattern
+# matching is evaluated PER SEGMENT — a safe segment (`git restore --staged
+# a`) can never launder an unsafe one later in the same compound command
+# (`git restore --staged a && git restore b`). Not a full shell parser
+# (simple split — this guard is fail-open assist), mirrors the backup
+# guard's `_BG_SHELL_SEP_RE` with newline added per review.
+_GIT_REVERT_SEP_RE = _re.compile(r"&&|\|\||[;&|]|\n")
+
+
+def _git_revert_segment_matches(seg: str, pats: list) -> bool:
+    """True if one shell segment contains a git revert-type op.
+    `git restore --staged` alone (unstage only, no worktree discard) is safe
+    — evaluated within this segment only, never command-wide."""
     # No IGNORECASE: `git branch -D` (force) must stay distinct from the safe
     # lowercase `-d` (git refuses unmerged deletes itself). git verbs/flags are
     # lowercase in practice, so case-sensitive matching loses nothing.
     restore_safe = bool(
-        _re.search(r"\bgit\s+restore\b", cmd)
-        and _re.search(r"--staged\b", cmd)
-        and not _re.search(r"(--worktree\b|\s-W\b)", cmd)
+        _re.search(r"\bgit\s+restore\b", seg)
+        and _re.search(r"--staged\b", seg)
+        and not _re.search(r"(--worktree\b|\s-W\b)", seg)
     )
     for p in pats:
         try:
-            if not _re.search(p, cmd):
+            if not _re.search(p, seg):
                 continue
         except _re.error:
             continue
         if restore_safe and "restore" in p:
             continue  # safe unstage-only restore — don't hold on this pattern
         return True
+    return False
+
+
+def _git_revert_matches(cmd: str) -> bool:
+    """True if any shell segment of *cmd* contains a git revert-type op per
+    config patterns."""
+    if not cmd:
+        return False
+    pats = (config.load().get("hooks", {}) or {}).get(
+        "git_revert_patterns"
+    ) or _GIT_REVERT_DEFAULT_PATTERNS
+    for seg in _GIT_REVERT_SEP_RE.split(cmd):
+        seg = seg.strip()
+        if seg and _git_revert_segment_matches(seg, pats):
+            return True
     return False
 
 

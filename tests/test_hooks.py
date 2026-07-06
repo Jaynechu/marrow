@@ -1058,6 +1058,28 @@ def test_git_revert_checkout_file_discard_asks(env, monkeypatch, capsys):
     assert out["permissionDecision"] == "ask"
 
 
+def test_git_revert_checkout_treeish_before_dashdash_asks(env, monkeypatch, capsys):
+    # Codex review find: `git checkout HEAD -- f` / `<commit> -- f` were
+    # missed by the old pattern (only bare `-flag`s were allowed before `--`).
+    for cmd in ("git checkout HEAD -- marrow/hooks.py",
+                "git checkout deadbeef1 -- marrow/hooks.py"):
+        rc = _pretool(monkeypatch, "Bash", {"command": cmd})
+        assert rc == 0
+        out = _out(capsys)["hookSpecificOutput"]
+        assert out["permissionDecision"] == "ask", cmd
+
+
+def test_git_revert_checkout_branch_switch_no_dashdash_not_held(
+    env, monkeypatch, capsys
+):
+    # Plain branch switch (no `--`) is not a discard — must stay unmatched.
+    for cmd in ("git checkout some-branch", "git checkout -b newbranch"):
+        rc = _pretool(monkeypatch, "Bash", {"command": cmd})
+        assert rc == 0
+        out = _out(capsys)["hookSpecificOutput"]
+        assert out.get("permissionDecision") != "ask", cmd
+
+
 def test_git_revert_restore_worktree_asks(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash", {"command": "git restore marrow/hooks.py"})
     assert rc == 0
@@ -1076,6 +1098,36 @@ def test_git_revert_restore_staged_only_is_safe(env, monkeypatch, capsys):
 
 def test_git_revert_clean_f_asks(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash", {"command": "git clean -fd"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
+
+
+# -- per-segment evaluation: a safe segment can't launder an unsafe one -------
+
+def test_git_revert_compound_restore_staged_then_unsafe_restore_asks(
+    env, monkeypatch, capsys
+):
+    # Codex review find: restore_safe used to be command-wide, so the safe
+    # first segment (`--staged`) exempted the WHOLE command, letting the
+    # second (worktree-discard) restore ride through unheld.
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git restore --staged a && git restore b"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
+
+
+def test_git_revert_restore_staged_alone_still_passes(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash", {"command": "git restore --staged a"})
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert "permissionDecision" not in out
+
+
+def test_git_revert_compound_status_then_reset_hard_asks(env, monkeypatch, capsys):
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git status && git reset --hard"})
     assert rc == 0
     out = _out(capsys)["hookSpecificOutput"]
     assert out["permissionDecision"] == "ask"
