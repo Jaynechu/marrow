@@ -15,7 +15,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 # Tables whose id must never be reused (freed-id-reuse disease family): a plain
 # INTEGER PRIMARY KEY hands a deleted id back to the next INSERT, and side-tables
@@ -569,6 +569,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v35(conn)
         _migrate_to_v36(conn)
         _migrate_to_v37(conn)
+        _migrate_to_v38(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -1547,6 +1548,58 @@ def _migrate_to_v37(conn: sqlite3.Connection) -> None:
             list(best.values()),
         )
     conn.execute("PRAGMA user_version=37")
+
+
+# AUTOINCREMENT tables whose subpage inserter uses str(id) as block_id (see
+# subpage_specs.py). events has no subpage; diary/wallet block_ids aren't
+# plain table ids — both excluded.
+_AUTOINC_MDPAGE = {
+    "entities": "profile.md",
+    "memes": "memes.md",
+    "milestones": "milestone.md",
+    "stickers": "stickers.md",
+}
+
+
+def _migrate_to_v38(conn: sqlite3.Connection) -> None:
+    """v38: correct sqlite_sequence for installs that ran v36 with a gap.
+
+    v36 seeded sqlite_sequence to max(id) of each table *at rebuild time*.
+    But rows created-then-deleted BEFORE v36 leave their id free while
+    md_index still holds a (live or tombstoned) row for it — a post-v36
+    INSERT can then reuse that higher id, and write_subpage_inserter's
+    "no resurrection" branch silently skips appending the md line (ghost
+    row: in DB, never rendered). Bumping seq to the highest block_id ever
+    observed for that page closes the gap. No-op when there is no gap.
+    Idempotent — user_version gate; re-run finds seq already at the max.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 38:
+        return
+    for table, page in _AUTOINC_MDPAGE.items():
+        cur = conn.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name=?", (table,)
+        ).fetchone()
+        cur_seq = cur[0] if cur else 0
+        md_max = conn.execute(
+            "SELECT MAX(CAST(block_id AS INTEGER)) FROM md_index"
+            " WHERE path LIKE ? AND block_id GLOB '[0-9]*'"
+            " AND block_id NOT GLOB '*[^0-9]*'",
+            (f"%/{page}",),
+        ).fetchone()[0] or 0
+        if md_max <= cur_seq:
+            continue
+        if cur is None:
+            conn.execute(
+                "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+                (table, md_max),
+            )
+        else:
+            conn.execute(
+                "UPDATE sqlite_sequence SET seq=? WHERE name=?",
+                (md_max, table),
+            )
+    conn.execute("PRAGMA user_version=38")
 
 
 def get_latest_watermark(conn, sid):

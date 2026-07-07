@@ -99,7 +99,8 @@ def test_fresh_install_all_targets_autoincrement(tmp_path):
                 "SELECT sql FROM sqlite_master WHERE name=?", (t,)
             ).fetchone()[0]
             assert "AUTOINCREMENT" in sql.upper(), t
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 37
+        assert (conn.execute("PRAGMA user_version").fetchone()[0]
+                == storage.SCHEMA_VERSION)
     finally:
         conn.close()
 
