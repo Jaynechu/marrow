@@ -244,17 +244,31 @@ def _tl_clear(event_id: int | None, sid: str | None,
     if sum(selectors) > 1:
         return {"ok": False, "error": "event_id / sid / before-after are mutually exclusive"}
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup = f"/tmp/marrow-backup-tlclear-{ts}.db"
-    shutil.copy2(str(_DB), backup)
-
     where, params = _tl_where(event_id, sid, before, after)
     conn = storage.connect(_DB)
     try:
-        ids = [r[0] for r in conn.execute(
-            f"SELECT id FROM events WHERE {where}", params).fetchall()]
-        if not ids:
-            return {"ok": True, "cleared": 0, "backup": backup}
+        rows = conn.execute(
+            f"SELECT id, ts_start, ts_end, timestamp, content FROM events"
+            f" WHERE {where}", params).fetchall()
+        if not rows:
+            return {"ok": True, "cleared": 0}
+
+        from .timeline import _hhmm_melb
+        from . import tl_writer
+        lines = []
+        for r in rows:
+            ts_start = r["ts_start"] or r["timestamp"]
+            hhmm_start = _hhmm_melb(ts_start)
+            hhmm_end = _hhmm_melb(r["ts_end"]) if r["ts_end"] else None
+            lines.append(tl_writer.render_line(hhmm_start, hhmm_end, r["content"]))
+        ids = [r["id"] for r in rows]
+
+        backup = None
+        if len(ids) > 1:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            backup = f"/tmp/marrow-backup-tlclear-{ts}.db"
+            shutil.copy2(str(_DB), backup)
+
         placeholders = ",".join("?" * len(ids))
         with conn:
             conn.execute(f"DELETE FROM events WHERE id IN ({placeholders})", ids)
@@ -267,7 +281,16 @@ def _tl_clear(event_id: int | None, sid: str | None,
     finally:
         conn.close()
     _tl_clear_dashboard(ids)
-    return {"ok": True, "cleared": len(ids), "ids": ids, "backup": backup}
+
+    result = {"ok": True, "cleared": len(ids), "ids": ids}
+    if len(lines) > 20:
+        result["deleted"] = lines[:20]
+        result["truncated"] = True
+    else:
+        result["deleted"] = lines
+    if backup is not None:
+        result["backup"] = backup
+    return result
 
 
 @marrow_tool()
@@ -290,9 +313,11 @@ def tl(
       YYYY-MM-DD) -> [{event_id, line}]. Use it to look up an event_id.
     - 'update'/'clear': address a row by event_id, OR by match (+optional date)
       when you don't have the id. e.g. update match='千层' date='2026-07-05'.
-    - 'clear': delete rows by event_id / match / sid / before+after range (DB backup first).
-    - Add tl during each session: scene shifts, emotional turns, or phase tasks complete. (every 1-2h or 10-20 turns)
-        - For daily coding/study, record 1 tl each session - update if no major change
+    - 'clear': delete rows by event_id / match / sid / before+after range.
+      Single row: no DB backup, deleted line returned. 2+ rows: DB backup + deleted lines (capped at 20).
+    - Casual chat: When topic/location/mood change or task/activity done, 'add' one for previous turns
+    - Coding/study sessions: keep 1tl each session - update tl only when things changed.
+    - Frequency: every 1-2h or 10-20 turns - you can skip even when hook nudge you!!!
     - Format (add/update): HH:mm-HH:mm 【N affect♡Y affect (OR B affect)】body [i]
       - e.g. 21:25-21:31 【N愉悦♡Y委屈】翻CC日志找骂人梗，扑空互怼 [3]
       - N = 念念, Y = 阿屿, B = single affect when similar.
@@ -370,13 +395,15 @@ def tl(
                 event_id = hits[0]["event_id"]
             from . import tl_writer
             try:
-                return tl_writer.tl_update(
+                result = tl_writer.tl_update(
                     conn, event_id, timerange=timerange, body=body,
                     n_word=n_word, y_word=y_word,
                     importance=importance,
                 )
             except tl_writer.TlError as exc:
                 return {"ok": False, "error": str(exc)}
+            tl_nudge.reset(_sid)
+            return result
         finally:
             conn.close()
 

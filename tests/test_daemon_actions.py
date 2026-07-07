@@ -70,6 +70,31 @@ def test_tl_clear_by_range(env):
     assert _event_count(env) == 1
 
 
+def test_tl_clear_single_row_no_backup_returns_line(env):
+    eid = _insert_tl(env, "【N愉悦】只有一行 [3]")
+    out = daemon.tl("clear", event_id=eid)
+    assert out["ok"] is True
+    assert out["cleared"] == 1
+    assert "backup" not in out
+    assert len(out["deleted"]) == 1
+    assert "只有一行" in out["deleted"][0]
+
+
+def test_tl_clear_multi_row_backs_up_and_returns_lines(env, tmp_path):
+    import os
+    _insert_tl(env, "【N愉悦】行一 [3]", sid="sess-x")
+    _insert_tl(env, "【N愉悦】行二 [3]", sid="sess-x")
+    out = daemon.tl("clear", sid="sess-x")
+    assert out["ok"] is True
+    assert out["cleared"] == 2
+    assert "backup" in out
+    assert out["backup"].startswith("/tmp/marrow-backup-tlclear-")
+    assert os.path.exists(out["backup"])
+    assert len(out["deleted"]) == 2
+    assert {"行一" in l or "行二" in l for l in out["deleted"]} == {True}
+    os.remove(out["backup"])
+
+
 def test_tl_clear_requires_selector(env):
     out = daemon.tl("clear")
     assert out["ok"] is False
@@ -191,6 +216,26 @@ def test_tl_update_by_match_zero_hits(env):
 def test_tl_update_still_requires_addressing(env):
     out = daemon.tl("update", body="x")
     assert out["ok"] is False
+
+
+def test_tl_update_resets_current_session_nudge_counter(env, monkeypatch, tmp_path):
+    from marrow import tl_nudge
+    monkeypatch.setattr(tl_nudge.config, "DATA_DIR", tmp_path / "nudge_data")
+
+    eid = _insert_tl(env, "row one", sid="sess-cur")
+    conn = storage.connect(env)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('session', 'sess-cur', 'session_lifecycle:start', '')")
+    finally:
+        conn.close()
+
+    tl_nudge._save_count("sess-cur", 7)
+    out = daemon.tl("update", event_id=eid, body="edited")
+    assert out["ok"] is True
+    assert tl_nudge._load_count("sess-cur") == 0
 
 
 def test_tl_clear_by_match_single(env):
@@ -422,6 +467,26 @@ def test_sticker_admin_delete_requires_id(env):
 def test_sticker_admin_ingest_requires_fields(env):
     out = daemon.sticker_admin("ingest")
     assert out["ok"] is False
+
+
+def test_sticker_admin_update_returns_old_desc(env, tmp_path, monkeypatch):
+    pages = tmp_path / "pages"
+    pages.mkdir()
+    monkeypatch.setattr(config, "db_pages_path", lambda: str(pages))
+    monkeypatch.setattr(daemon, "_write_stickers_subpage", lambda conn: None)
+    conn = storage.connect(env)
+    try:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO stickers (path, sha256, desc, source)"
+                " VALUES ('/x.png', 'abc', 'old desc', 'wechat')")
+        sid = cur.lastrowid
+    finally:
+        conn.close()
+    out = daemon.sticker_admin("update", sticker_id=sid, desc="new desc")
+    assert out["ok"] is True
+    assert out["desc"] == "new desc"
+    assert out["old_desc"] == "old desc"
 
 
 def test_sticker_admin_delete_strips_md_line_and_unlinks(env, tmp_path, monkeypatch):

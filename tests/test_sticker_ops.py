@@ -81,7 +81,7 @@ def test_update_sticker_success(db, tmp_path, monkeypatch):
 
     out = sticker_ops.update_sticker(db, result["id"], "new desc")
 
-    assert out == {"ok": True, "id": result["id"], "desc": "new desc"}
+    assert out == {"ok": True, "id": result["id"], "desc": "new desc", "old_desc": "old desc"}
     row = db.execute("SELECT desc FROM stickers WHERE id = ?", (result["id"],)).fetchone()
     assert row["desc"] == "new desc"
 
@@ -106,7 +106,9 @@ def test_delete_sticker_success(db, tmp_path, monkeypatch):
 
     out = sticker_ops.delete_sticker(db, result["id"])
 
-    assert out == {"ok": True, "id": result["id"], "deleted_path": str(sticker_file)}
+    assert out == {"ok": True, "id": result["id"], "desc": "a sticker",
+                    "deleted_path": str(sticker_file)}
+    # trashed, not hard-deleted: gone from the original location either way
     assert not sticker_file.exists()
     assert not thumb_file.exists()
     assert db.execute("SELECT id FROM stickers WHERE id = ?", (result["id"],)).fetchone() is None
