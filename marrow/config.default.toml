@@ -313,4 +313,11 @@ git_revert_guard_message = "🤡 狗男人又要乱搞你git里的东西了，�
 # Session-start housekeep (~/.claude only): if the auto-commit would delete
 # one of these top-level files, the commit is skipped, an alert is raised,
 # and the working tree is left dirty for a human to decide.
-housekeep_protected_files = ["CLAUDE.md", "settings.json"]
+housekeep_protected_files = [
+    "CLAUDE.md", "settings.json", "keybindings.json", "statusline.py",
+    "output-styles/ny.md",
+]
+
+# ~/.claude.json mcpServers snapshot: rolling backups kept in
+# ~/.config/marrow/backups/claude-json/, newest N retained.
+claude_json_snapshot_keep = 10

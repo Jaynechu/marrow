@@ -19,9 +19,11 @@ resume detection: session_start fires on cc resume with same sid; if skip row ex
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re as _re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -590,7 +592,10 @@ def _now_utc() -> datetime:
 # ── git housekeep ────────────────────────────────────────────────────────────
 
 # Files whose deletion must never be auto-committed away silently (Part A only).
-_HOUSEKEEP_PROTECTED_DEFAULT = ["CLAUDE.md", "settings.json"]
+_HOUSEKEEP_PROTECTED_DEFAULT = [
+    "CLAUDE.md", "settings.json", "keybindings.json", "statusline.py",
+    "output-styles/ny.md",
+]
 
 
 def _housekeep_protected_files() -> list[str]:
@@ -832,6 +837,84 @@ def _git_housekeep_block(
         return None
 
 
+# ── ~/.claude.json mcpServers snapshot ───────────────────────────────────────
+
+_CLAUDE_JSON_SNAPSHOT_KEEP_DEFAULT = 10
+
+
+def _claude_json_snapshot_keep() -> int:
+    try:
+        return int(config.load().get("hooks", {}).get(
+            "claude_json_snapshot_keep", _CLAUDE_JSON_SNAPSHOT_KEEP_DEFAULT
+        ))
+    except Exception:
+        return _CLAUDE_JSON_SNAPSHOT_KEEP_DEFAULT
+
+
+def _claude_json_snapshot_block() -> str | None:
+    """Fail-soft rolling backup of ~/.claude.json's mcpServers block. Never
+    blocks session_start; on parse failure raises an alert instead of
+    snapshotting the corrupt file.
+    """
+    try:
+        src = Path.home() / ".claude.json"
+        if not src.exists():
+            return None
+
+        try:
+            raw = src.read_text()
+        except Exception:
+            return None
+
+        try:
+            data = json.loads(raw)
+        except Exception:
+            repo.add_alert(
+                "warn", "claude_json_corrupt", "claude_json_corrupt",
+                source="hooks.py",
+                message="~/.claude.json failed to parse as JSON — snapshot skipped",
+                db=config.db_path(),
+            )
+            return "claude.json: ⚠️ corrupt JSON, snapshot skipped"
+
+        mcp_hash = hashlib.sha256(
+            json.dumps(data.get("mcpServers", {}), sort_keys=True).encode()
+        ).hexdigest()
+
+        snap_dir = Path(config.DATA_DIR) / "backups" / "claude-json"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(snap_dir.glob("claude-json-*.json"))
+
+        if existing:
+            newest = existing[-1]
+            try:
+                newest_data = json.loads(newest.read_text())
+                newest_hash = hashlib.sha256(
+                    json.dumps(newest_data.get("mcpServers", {}), sort_keys=True).encode()
+                ).hexdigest()
+            except Exception:
+                newest_hash = None
+            if newest_hash == mcp_hash:
+                return None
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = snap_dir / f"claude-json-{stamp}.json"
+        shutil.copy2(src, dest)
+
+        keep = _claude_json_snapshot_keep()
+        all_snaps = sorted(snap_dir.glob("claude-json-*.json"))
+        if keep > 0:
+            for stale in all_snaps[:-keep]:
+                try:
+                    stale.unlink()
+                except Exception:
+                    pass
+
+        return "claude.json: snapshot saved (mcpServers changed)"
+    except Exception:
+        return None
+
+
 # ── affect heartbeat ─────────────────────────────────────────────────────────
 
 def _affect_heartbeat(conn: sqlite3.Connection) -> str | None:
@@ -979,6 +1062,10 @@ def session_start() -> int:
             git_hk = _git_housekeep_block(cwd, sid, conn)
             if git_hk:
                 parts.append(git_hk)
+
+            cj_snap = _claude_json_snapshot_block()
+            if cj_snap:
+                parts.append(cj_snap)
 
             # Heartbeat block goes first so it is never buried.
             heartbeat = _affect_heartbeat(conn)
