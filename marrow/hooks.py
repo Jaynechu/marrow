@@ -589,6 +589,85 @@ def _now_utc() -> datetime:
 
 # ── git housekeep ────────────────────────────────────────────────────────────
 
+# Files whose deletion must never be auto-committed away silently (Part A only).
+_HOUSEKEEP_PROTECTED_DEFAULT = ["CLAUDE.md", "settings.json"]
+
+
+def _housekeep_protected_files() -> list[str]:
+    try:
+        return config.load().get("hooks", {}).get(
+            "housekeep_protected_files", _HOUSEKEEP_PROTECTED_DEFAULT
+        )
+    except Exception:
+        return _HOUSEKEEP_PROTECTED_DEFAULT
+
+
+def _categorize_porcelain(lines: list[str]) -> dict[str, list[str]]:
+    """Bucket `git status --porcelain` lines into deleted/renamed/added/modified.
+
+    XY status codes: 'R'/'C' = rename/copy (own bucket, path keeps the
+    'old -> new' arrow); 'D' = deleted; '?' or 'A' = added; everything else
+    (M, T, U, ...) = modified.
+    """
+    cats: dict[str, list[str]] = {
+        "deleted": [], "renamed": [], "added": [], "modified": [],
+    }
+    for line in lines:
+        if not line.strip():
+            continue
+        xy, path = line[:2], line[3:].strip()
+        if "R" in xy or "C" in xy:
+            cats["renamed"].append(path)
+        elif "D" in xy:
+            cats["deleted"].append(path)
+        elif "?" in xy or "A" in xy:
+            cats["added"].append(path)
+        else:
+            cats["modified"].append(path)
+    return cats
+
+
+def _build_housekeep_commit_msg(cats: dict[str, list[str]], total: int) -> str:
+    """Subject line stays `auto: session-start housekeep (N files)`; body
+    lists files by category, deleted first and never truncated. Body caps
+    at ~2000 chars overall (added/modified may truncate, deleted never does).
+    """
+    subject = f"auto: session-start housekeep ({total} files)"
+    body_lines: list[str] = []
+    running = 0
+    if cats["deleted"]:
+        line = "deleted: " + ", ".join(cats["deleted"])
+        body_lines.append(line)
+        running += len(line)
+    for key in ("renamed", "added", "modified"):
+        items = cats[key]
+        if not items:
+            continue
+        line = f"{key}: " + ", ".join(items)
+        if running + len(line) > 2000:
+            remaining = 2000 - running
+            if remaining <= len(key) + 2:
+                continue
+            line = line[:remaining - 1] + "…"
+        body_lines.append(line)
+        running += len(line)
+    if not body_lines:
+        return subject
+    return subject + "\n\n" + "\n".join(body_lines)
+
+
+def _build_housekeep_report_line(label: str, cats: dict[str, list[str]], total: int) -> str:
+    line = f"{label}: committed {total} files"
+    deleted = cats["deleted"]
+    if not deleted:
+        return line
+    joined = ", ".join(deleted)
+    if len(joined) > 120:
+        joined = joined[:117] + "…"
+        return f"{line} ⚠️ {len(deleted)} deleted: {joined}"
+    return f"{line} ⚠️ deleted: {joined}"
+
+
 def _git_housekeep_block(
     cwd: str | None, current_sid: str | None, conn: sqlite3.Connection
 ) -> str | None:
@@ -610,16 +689,36 @@ def _git_housekeep_block(
                 )
                 dirty = [l for l in r.stdout.splitlines() if l.strip()]
                 if dirty:
-                    subprocess.run(
-                        ["git", "-C", str(claude_dir), "add", "-A"],
-                        capture_output=True, text=True, timeout=5, check=False,
-                    )
-                    subprocess.run(
-                        ["git", "-C", str(claude_dir), "commit",
-                         "-m", f"auto: session-start housekeep ({len(dirty)} files)"],
-                        capture_output=True, text=True, timeout=5, check=False,
-                    )
-                    lines.append(f"~/.claude: committed {len(dirty)} files")
+                    cats = _categorize_porcelain(dirty)
+                    protected = _housekeep_protected_files()
+                    blocked = [p for p in cats["deleted"] if p in protected]
+                    if blocked:
+                        repo.add_alert(
+                            "warn", "git_housekeep_protected_delete",
+                            f"claude:{','.join(sorted(blocked))}",
+                            source="hooks.py",
+                            message=(
+                                "~/.claude session-start housekeep would delete "
+                                f"protected file(s): {', '.join(blocked)} — "
+                                "commit skipped, working tree left dirty"
+                            ),
+                            db=config.db_path(),
+                        )
+                        lines.append(
+                            f"~/.claude: ⚠️ SKIPPED — protected file(s) "
+                            f"deleted: {', '.join(blocked)} (resolve manually)"
+                        )
+                    else:
+                        subprocess.run(
+                            ["git", "-C", str(claude_dir), "add", "-A"],
+                            capture_output=True, text=True, timeout=5, check=False,
+                        )
+                        subprocess.run(
+                            ["git", "-C", str(claude_dir), "commit",
+                             "-m", _build_housekeep_commit_msg(cats, len(dirty))],
+                            capture_output=True, text=True, timeout=5, check=False,
+                        )
+                        lines.append(_build_housekeep_report_line("~/.claude", cats, len(dirty)))
         except Exception:
             pass
 
@@ -639,16 +738,17 @@ def _git_housekeep_block(
                     )
                     sm_dirty = [l for l in sr.stdout.splitlines() if l.strip()]
                     if sm_dirty:
+                        sm_cats = _categorize_porcelain(sm_dirty)
                         subprocess.run(
                             ["git", "-C", sm_abs, "add", "-A"],
                             capture_output=True, text=True, timeout=5, check=False,
                         )
                         subprocess.run(
                             ["git", "-C", sm_abs, "commit",
-                             "-m", f"auto: session-start housekeep ({len(sm_dirty)} files)"],
+                             "-m", _build_housekeep_commit_msg(sm_cats, len(sm_dirty))],
                             capture_output=True, text=True, timeout=5, check=False,
                         )
-                        lines.append(f"{sm_path}: committed {len(sm_dirty)} files")
+                        lines.append(_build_housekeep_report_line(sm_path, sm_cats, len(sm_dirty)))
 
                 # B2: top-level commit (picks up updated submodule pointers + own files)
                 r = subprocess.run(
@@ -657,20 +757,17 @@ def _git_housekeep_block(
                 )
                 dirty = [l for l in r.stdout.splitlines() if l.strip()]
                 if dirty:
-                    file_names = [l[3:].strip() for l in dirty]
-                    file_list = ", ".join(file_names)
-                    if len(file_list) > 120:
-                        file_list = file_list[:117] + "..."
+                    cats = _categorize_porcelain(dirty)
                     subprocess.run(
                         ["git", "-C", cwd, "add", "-A"],
                         capture_output=True, text=True, timeout=5, check=False,
                     )
                     subprocess.run(
                         ["git", "-C", cwd, "commit",
-                         "-m", f"auto: session-start housekeep ({len(dirty)} files)"],
+                         "-m", _build_housekeep_commit_msg(cats, len(dirty))],
                         capture_output=True, text=True, timeout=5, check=False,
                     )
-                    lines.append(f"cwd: committed {len(dirty)} files ({file_list})")
+                    lines.append(_build_housekeep_report_line("cwd", cats, len(dirty)))
         except Exception:
             pass
 
