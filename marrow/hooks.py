@@ -881,7 +881,7 @@ def _claude_json_snapshot_block() -> str | None:
             json.dumps(data.get("mcpServers", {}), sort_keys=True).encode()
         ).hexdigest()
 
-        snap_dir = Path(config.DATA_DIR) / "backups" / "claude-json"
+        snap_dir = Path(config.DATA_DIR) / "backup" / "claude-json"
         snap_dir.mkdir(parents=True, exist_ok=True)
         existing = sorted(snap_dir.glob("claude-json-*.json"))
 
@@ -3167,6 +3167,47 @@ def _kickout_context(channel: str, now: datetime) -> str:
     return ""
 
 
+def _window_tokens_from_transcript(tpath: str) -> int:
+    """Context-window occupancy = the last assistant message's usage totals
+    (input + cache read + cache creation + output) in the session jsonl. Mirrors
+    cortex.transcript.window_tokens. 0 on any missing/unreadable transcript."""
+    if not tpath:
+        return 0
+    try:
+        lines = open(tpath, encoding="utf-8").read().splitlines()
+    except OSError:
+        return 0
+    total = 0
+    for line in lines:
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        msg = o.get("message")
+        u = msg.get("usage") if isinstance(msg, dict) else None
+        if u:
+            total = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
+                     + u.get("cache_creation_input_tokens", 0) + u.get("output_tokens", 0))
+    return total
+
+
+def _cortex_rotate_context(tpath: str) -> str:
+    """Soft-rotate warning, cortex window only (MARROW_CORTEX=1). Empty for
+    normal sessions, below threshold, or with the text blanked out."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return ""
+    cr = config.load().get("cortex_rotate", {}) or {}
+    text = (cr.get("warn_text") or "").strip()
+    if not text:
+        return ""
+    warn = int(cr.get("warn_tokens", 120_000) or 0)
+    if warn <= 0:
+        return ""
+    if _window_tokens_from_transcript(tpath) >= warn:
+        return text
+    return ""
+
+
 def turn_inject() -> int:
     """Inject current time + delta since last reply, plus the B8 kickout
     nudge (config [kickout]).
@@ -3247,7 +3288,9 @@ def turn_inject() -> int:
         pass
 
     kickout_full = f"\n\n{kickout_ctx}" if kickout_ctx else ""
-    ctx = f"# Context — {now_str}{delta}{sched_ctx}{care_ctx}{kickout_full}"
+    rotate_ctx = _cortex_rotate_context(tpath)
+    rotate_full = f"\n\n{rotate_ctx}" if rotate_ctx else ""
+    ctx = f"# Context — {now_str}{delta}{sched_ctx}{care_ctx}{kickout_full}{rotate_full}"
     json.dump(
         {"hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

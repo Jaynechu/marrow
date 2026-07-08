@@ -223,6 +223,14 @@ im_quiet_start = "23:00"
 im_quiet_end = "06:00"
 im_quiet_text = ""
 
+[cortex_rotate]
+# Rotate warning for the cortex window only (MARROW_CORTEX=1). When the session
+# window tokens reach warn_tokens, turn_inject appends a one-line nudge telling
+# cortex to wrap up, write its 碎碎念, and /clear (soft rotate, ahead of the
+# 150k fuse). Normal sessions never see this. Empty text = inert.
+warn_tokens = 120000
+warn_text = "Window is filling up — wrap up this turn, write your 碎碎念 (handoff), then /clear to rotate into a fresh window."
+
 [agent_guard]
 # PreToolUse:Agent burst protection — subagent_types denied outright (they
 # spawn agents recursively). Blocked with exit 2 + reason to the model.
