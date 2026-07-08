@@ -81,20 +81,22 @@ def test_kickout_cli_wind_down_window(monkeypatch, capsys):
     _freeze_melb(monkeypatch, 21, 45)
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     monkeypatch.delenv("MARROW_CHANNEL", raising=False)
+    monkeypatch.setattr(hooks, "_kickout_context", lambda channel, now: "9点半啦-test")
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/x/a.jsonl"})
     hooks.turn_inject()
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "9点半啦" in ctx
+    assert "9点半啦-test" in ctx
 
 
 def test_kickout_cli_leave_window(monkeypatch, capsys):
     _freeze_melb(monkeypatch, 22, 30)
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     monkeypatch.delenv("MARROW_CHANNEL", raising=False)
+    monkeypatch.setattr(hooks, "_kickout_context", lambda channel, now: "该回卧室了-test")
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/x/a.jsonl"})
     hooks.turn_inject()
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "该回卧室了" in ctx
+    assert "该回卧室了-test" in ctx
 
 
 def test_kickout_cli_daytime_no_nudge(monkeypatch, capsys):
@@ -114,18 +116,20 @@ def test_kickout_cortex_immune(monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CHANNEL", "ct")
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/x/a.jsonl"})
     hooks.turn_inject()
-    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "9点半啦" not in ctx
+    # cortex short-circuits _kickout_context before it even reads config —
+    # verify directly rather than via injected ctx (defaults ship text-empty).
+    assert hooks._kickout_context("ct", hooks.datetime.now(config.get_tz())) == ""
 
 
 def test_kickout_wx_quiet_window(monkeypatch, capsys):
     _freeze_melb(monkeypatch, 23, 30)
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     monkeypatch.setenv("MARROW_CHANNEL", "wx")
+    monkeypatch.setattr(hooks, "_kickout_context", lambda channel, now: "老婆该睡了-test")
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/x/a.jsonl"})
     hooks.turn_inject()
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "老婆该睡了" in ctx
+    assert "老婆该睡了-test" in ctx
 
 
 def test_kickout_wx_evening_no_nudge(monkeypatch, capsys):
@@ -136,6 +140,19 @@ def test_kickout_wx_evening_no_nudge(monkeypatch, capsys):
     hooks.turn_inject()
     captured = capsys.readouterr().out
     assert captured == ""  # wx skips the time stamp too; no kickout in this window
+
+
+def test_kickout_inert_when_text_empty(monkeypatch, capsys):
+    """Default [kickout] texts ship empty (persona-separation) — window match
+    with no configured text must not inject anything."""
+    _freeze_melb(monkeypatch, 21, 45)
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    monkeypatch.delenv("MARROW_CHANNEL", raising=False)
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/x/a.jsonl"})
+    hooks.turn_inject()
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "kickout" not in ctx.lower()
+    assert hooks._kickout_context("cli", hooks.datetime.now(config.get_tz())) == ""
 
 
 # ── agent_guard: burst protection ────────────────────────────────────────────
