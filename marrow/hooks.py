@@ -3362,8 +3362,11 @@ def _usage_threshold_context(sid: str, tpath: str) -> str:
             last = 0
         if tier <= last:
             return ""
+        line = usage.threshold_line(main_occ, agent_net)
+        if not line:
+            return ""
         state_file.write_text(str(tier))
-        return usage.threshold_line(main_occ, agent_net)
+        return line
     except Exception:
         return ""
 

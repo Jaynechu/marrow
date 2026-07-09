@@ -139,6 +139,40 @@ def test_threshold_inject_quiet_cache_hit_turn_does_not_deflate(tmp_path, monkey
     assert "Net Session Token: main 131k agent 0k" in _ctx(capsys)
 
 
+def test_threshold_inject_db_failure_still_renders_and_advances_watermark(
+        tmp_path, monkeypatch, capsys):
+    """A kv/DB read failure must degrade to the main/agent segment (no DB
+    needed for those) instead of losing the tier silently."""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(usage, "read_kv", lambda: (_ for _ in ()).throw(RuntimeError("db busy")))
+    jl = tmp_path / "s.jsonl"
+    jl.write_text(_assistant(input_=1000, cache_read=110_000,
+                              cache_creation=8000, output=1000))
+    _stdin(monkeypatch, {"session_id": "sb", "transcript_path": str(jl)})
+    assert hooks.main(["turn_inject"]) == 0
+    ctx = _ctx(capsys)
+    assert "Net Session Token: main 120k agent 0k" in ctx
+    state_file = tmp_path / "state" / "usage_watermark" / "sb"
+    assert state_file.read_text().strip() == "100000"
+
+
+def test_threshold_inject_render_failure_does_not_advance_watermark(
+        tmp_path, monkeypatch, capsys):
+    """If rendering itself raises (or yields nothing), the watermark must not
+    be burned — the tier should still be available next turn."""
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(usage, "threshold_line",
+                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("render fail")))
+    jl = tmp_path / "s.jsonl"
+    jl.write_text(_assistant(input_=1000, cache_read=110_000,
+                              cache_creation=8000, output=1000))
+    _stdin(monkeypatch, {"session_id": "sc", "transcript_path": str(jl)})
+    assert hooks.main(["turn_inject"]) == 0
+    assert "Net Session Token" not in _ctx(capsys)
+    state_file = tmp_path / "state" / "usage_watermark" / "sc"
+    assert not state_file.exists()
+
+
 def test_threshold_inject_agent_tokens_do_not_trigger(tmp_path, monkeypatch, capsys):
     """Agent tokens don't occupy the main window, so a large agent_net with
     main occupancy below threshold_start must NOT fire — the tier/watermark math

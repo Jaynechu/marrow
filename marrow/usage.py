@@ -148,9 +148,16 @@ def threshold_line(main_occupancy: int, agent_net: int, kv: dict | None = None) 
     `main` is WINDOW OCCUPANCY (statusline `total` / rotate-fuse metric), not
     cumulative net-spend — the label kept its plan-approved wording. `agent` is
     cumulative subagent_tokens, always live-computed. 5h/7d segments render
-    straight from the kv."""
-    kv = read_kv() if kv is None else kv
-    segs = _plan_used_segments(kv, with_cdx=False)
+    straight from the kv. main/agent are transcript-derived (no DB needed), so
+    a kv/DB read failure degrades to a line with just that segment rather than
+    raising — the caller (turn_inject watermark) must not lose the tier on a
+    DB hiccup."""
+    segs: list[str] = []
+    try:
+        kv = read_kv() if kv is None else kv
+        segs = _plan_used_segments(kv, with_cdx=False)
+    except Exception:
+        segs = []
     net_seg = f"Net Session Token: main {main_occupancy // 1000}k agent {agent_net // 1000}k"
     segs.append(net_seg)
     return "Plan Used: " + " | ".join(segs)
