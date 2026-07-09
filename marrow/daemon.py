@@ -1288,8 +1288,8 @@ def wait(minutes: float) -> dict:
 
 @cortex_tool()
 def say() -> dict:
-    """Quiet attention ping to her (no focus steal) — call once BEFORE speaking
-    in-window; unsaid = silent activity. Then just say your words in the window."""
+    """Urgent only: quiet notification ping for her attention (no focus steal).
+    Normal in-window talk needs no say — she reads when free."""
     return _run_cortex_module("cortex.say")
 
 
