@@ -1002,6 +1002,7 @@ def session_start() -> int:
         # Subagent (Task tool dispatch) — task-isolated like worktree;
         # no personal memory / no /resume tracking.
         is_subagent = bool(tpath and "/tasks/" in tpath)
+        is_resume = False
         if sid:
             # Fresh window or resume — drop prior recall dedup state either way
             # (cheap; resume re-shows seen rows once, acceptable).
@@ -1089,6 +1090,22 @@ def session_start() -> int:
             backdrop = _timeline_mod.render_timeline(conn, inject_cap=_timeline_mod._INJECT_CAP)
             if backdrop:
                 parts.append(backdrop)
+
+            # Usage block (all sessions self-aware) — off the collector kv.
+            try:
+                from . import usage as _usage
+                ulines = _usage.sessionstart_lines()
+                if ulines:
+                    parts.append("\n".join(ulines))
+            except Exception:
+                pass
+
+            # Cortex handoff (碎碎念): fresh window only (new process = fresh;
+            # a resume skips). Injected here, not in the wakeup note.
+            if os.environ.get("MARROW_CORTEX") and not is_resume:
+                hd = _cortex_handoff_block()
+                if hd:
+                    parts.append(hd)
 
             try:
                 from . import schedule as _sched
@@ -2920,6 +2937,20 @@ def pretool_use() -> int:
             })
             return 0
 
+        # Cortex lie_down handoff gate — deny a rotate/full-window lie_down until
+        # the 碎碎念 (handoff) is written this window. Plain lie_down passes.
+        lie_down_deny: str | None = None
+        try:
+            lie_down_deny = _cortex_lie_down_deny(inp)
+        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+            lie_down_deny = None
+        if lie_down_deny:
+            _emit_hso({
+                "permissionDecision": "deny",
+                "permissionDecisionReason": lie_down_deny,
+            })
+            return 0
+
         # Deny tier — block dangerous ops (recursive delete / db destruction
         # with no same-command backup). Short-circuits placement/atlas guidance;
         # the tool call itself is what needs gating. Only a genuinely matched
@@ -3167,6 +3198,91 @@ def _kickout_context(channel: str, now: datetime) -> str:
     return ""
 
 
+def _window_spawn_epoch(tpath: str) -> float | None:
+    """Wall-clock start of this window = the first transcript line's timestamp
+    (a resume opens a new file; a fresh window's first line is its birth). Falls
+    back to the file's own ctime, then None."""
+    if not tpath:
+        return None
+    try:
+        with open(tpath, encoding="utf-8") as f:
+            for line in f:
+                m = _re.search(r'"timestamp":"([^"]+)"', line)
+                if m:
+                    try:
+                        return datetime.fromisoformat(
+                            m.group(1).replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        break
+                break
+    except OSError:
+        return None
+    try:
+        return os.path.getmtime(tpath)
+    except OSError:
+        return None
+
+
+def _cortex_lie_down_deny(inp: dict) -> str | None:
+    """Deny lie_down until the 碎碎念 (handoff) is written this window, when the
+    session asked to rotate OR the window is at the fuse line (force_tokens).
+    A plain lie_down under the line is allowed. Cortex window only. None = allow."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return None
+    if inp.get("tool_name") != "mcp__marrow__lie_down":
+        return None
+    ti = inp.get("tool_input", {}) or {}
+    tpath = inp.get("transcript_path") or ""
+    cx = config.load().get("cortex", {}) or {}
+    force = int(cx.get("force_tokens", 150_000) or 0)
+    wants_rotate = bool(ti.get("rotate"))
+    occupancy = _window_tokens_from_transcript(tpath)
+    if not wants_rotate and not (force > 0 and occupancy >= force):
+        return None  # plain lie_down under the line — allow
+    # Guard fires: require a handoff written after this window's spawn.
+    p = _cortex_handoff_path()
+    spawn = _window_spawn_epoch(tpath)
+    written = False
+    if p is not None and spawn is not None:
+        try:
+            written = p.stat().st_mtime >= spawn and bool(
+                p.read_text(encoding="utf-8").strip())
+        except OSError:
+            written = False
+    if written:
+        return None
+    return (cx.get("handoff_deny_text")
+            or "Write your 碎碎念 (handoff) first, then call lie_down again.")
+
+
+def _cortex_handoff_path():
+    """<[cortex].home>/<[cortex].handoff_file> — the 碎碎念 file a fresh cortex
+    window reads at SessionStart. None on config error."""
+    try:
+        cx = config.load().get("cortex", {}) or {}
+        home = (cx.get("home") or "~/.config/marrow/cortex")
+        name = (cx.get("handoff_file") or "handoff.md")
+        return Path(home).expanduser() / name
+    except Exception:
+        return None
+
+
+def _cortex_handoff_block() -> str:
+    """Handoff note content for a fresh cortex window. Empty if absent/unreadable."""
+    p = _cortex_handoff_path()
+    if p is None:
+        return ""
+    try:
+        text = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    title = (config.load().get("cortex", {}) or {}).get(
+        "handoff_title", "阿屿の碎碎念")
+    return f"{title}:\n{text}"
+
+
 def _window_tokens_from_transcript(tpath: str) -> int:
     """Context-window occupancy = the last assistant message's usage totals
     (input + cache read + cache creation + output) in the session jsonl. Mirrors
@@ -3191,21 +3307,58 @@ def _window_tokens_from_transcript(tpath: str) -> int:
     return total
 
 
-def _cortex_rotate_context(tpath: str) -> str:
-    """Soft-rotate warning, cortex window only (MARROW_CORTEX=1). Empty for
-    normal sessions, below threshold, or with the text blanked out."""
+def _cortex_show_context(tpath: str) -> str:
+    """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (10万
+    soft, ahead of the 15万 fuse). Empty for normal sessions, below threshold,
+    or with the text blanked out."""
     if not os.environ.get("MARROW_CORTEX"):
         return ""
     cr = config.load().get("cortex_rotate", {}) or {}
-    text = (cr.get("warn_text") or "").strip()
+    text = (cr.get("show_text") or "").strip()
     if not text:
         return ""
-    warn = int(cr.get("warn_tokens", 120_000) or 0)
-    if warn <= 0:
+    show = int(cr.get("show_tokens", 100_000) or 0)
+    if show <= 0:
         return ""
-    if _window_tokens_from_transcript(tpath) >= warn:
+    if _window_tokens_from_transcript(tpath) >= show:
         return text
     return ""
+
+
+def _usage_threshold_context(sid: str, tpath: str) -> str:
+    """In-window net-token threshold line (all sessions). Fires once net(main +
+    agent) crosses threshold_start, then again every threshold_step above the
+    last-injected watermark. Watermark tracked per session under state/. Empty
+    below the first threshold."""
+    if not sid or not tpath:
+        return ""
+    try:
+        from . import usage
+        cu = config.load().get("cortex_usage", {}) or {}
+        start = int(cu.get("threshold_start", 100_000) or 0)
+        step = int(cu.get("threshold_step", 50_000) or 0)
+        if start <= 0 or step <= 0:
+            return ""
+        main_net, agent_net = usage.session_net(tpath)
+        total = main_net + agent_net
+        if total < start:
+            return ""
+        # Current tier = highest crossed threshold (start + k*step).
+        tier = start + ((total - start) // step) * step
+        state_dir = config.DATA_DIR / "state" / "usage_watermark"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_file = state_dir / sid
+        last = 0
+        try:
+            last = int(state_file.read_text().strip())
+        except (OSError, ValueError):
+            last = 0
+        if tier <= last:
+            return ""
+        state_file.write_text(str(tier))
+        return usage.threshold_line(main_net, agent_net)
+    except Exception:
+        return ""
 
 
 def turn_inject() -> int:
@@ -3288,9 +3441,12 @@ def turn_inject() -> int:
         pass
 
     kickout_full = f"\n\n{kickout_ctx}" if kickout_ctx else ""
-    rotate_ctx = _cortex_rotate_context(tpath)
-    rotate_full = f"\n\n{rotate_ctx}" if rotate_ctx else ""
-    ctx = f"# Context — {now_str}{delta}{sched_ctx}{care_ctx}{kickout_full}{rotate_full}"
+    show_ctx = _cortex_show_context(tpath)
+    show_full = f"\n\n{show_ctx}" if show_ctx else ""
+    usage_ctx = _usage_threshold_context(sid, tpath)
+    usage_full = f"\n\n{usage_ctx}" if usage_ctx else ""
+    ctx = (f"# Context — {now_str}{delta}{sched_ctx}{care_ctx}"
+           f"{kickout_full}{show_full}{usage_full}")
     json.dump(
         {"hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

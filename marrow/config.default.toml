@@ -224,12 +224,22 @@ im_quiet_end = "06:00"
 im_quiet_text = ""
 
 [cortex_rotate]
-# Rotate warning for the cortex window only (MARROW_CORTEX=1). When the session
-# window tokens reach warn_tokens, turn_inject appends a one-line nudge telling
-# cortex to wrap up, write its 碎碎念, and /clear (soft rotate, ahead of the
-# 150k fuse). Normal sessions never see this. Empty text = inert.
-warn_tokens = 120000
-warn_text = "Window is filling up — wrap up this turn, write your 碎碎念 (handoff), then /clear to rotate into a fresh window."
+# Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌. When window tokens reach
+# show_tokens (10万 soft, ahead of the 15万 fuse) turn_inject appends a one-line
+# nudge to wrap up, write the 碎碎念 (handoff), and lie_down(rotate=True). Normal
+# sessions never see this. Empty text = inert.
+show_tokens = 100000
+show_text = "Window filling up (≥100k) — wrap this turn, write your 碎碎念 (handoff), then lie_down(rotate=True) for a fresh window."
+
+[cortex_usage]
+# Net-token visibility (all sessions self-aware). Rendered by usage.py off the
+# ct_rate_limit kv the collector (usage_snapshot) writes. In-window threshold
+# inject (turn_inject): once net(main+agent) crosses threshold_start, then again
+# every threshold_step above it; watermark tracked per session in state.
+threshold_start = 100000
+threshold_step = 50000
+# Global daily net budget the SessionStart "Net Token Used today" line reads.
+daily_budget = 1000000
 
 [agent_guard]
 # PreToolUse:Agent burst protection — subagent_types denied outright (they
@@ -281,6 +291,15 @@ wishlist_path = ""
 # = tools return a "not configured" error.
 venv_python = ""
 repo_root = ""
+# Handoff (碎碎念) note file under <home>. Injected at SessionStart on a fresh
+# cortex window (new process = fresh; resume skips). Written by the session.
+handoff_file = "handoff.md"
+handoff_title = "阿屿の碎碎念"
+# lie_down PreToolUse guard: deny (write your 碎碎念 first) when rotate=True OR
+# window occupancy >= force_tokens (15万 fuse line) and no handoff was written
+# this window (handoff mtime after the window's first transcript line).
+force_tokens = 150000
+handoff_deny_text = "Write your 碎碎念 (handoff) first — call lie_down again after saving it."
 
 [hooks]
 # PreToolUse backup guard — stateless, two tiers (no state, no dedup).

@@ -1269,11 +1269,13 @@ def _run_cortex_module(module: str, extra_args: list[str] | None = None) -> dict
 
 
 @cortex_tool()
-def lie_down() -> dict:
-    """End this wake. Write your handoff note (碎碎念) BEFORE calling if you have
-    content to carry forward. Clears due self_schedule, records this wake's
-    tokens, redraws the floor, and may queue a /clear when the window is full."""
-    return _run_cortex_module("cortex.lie_down")
+def lie_down(rotate: bool = False) -> dict:
+    """End this wake. Write your handoff note (碎碎念) BEFORE calling — a PreToolUse
+    guard denies lie_down (rotate or a large window) until the handoff is written
+    this window. Clears due self_schedule, records tokens, redraws the floor.
+    rotate=True respawns a fresh window on the next wake (you decide when the
+    window is full — there is no auto rotate)."""
+    return _run_cortex_module("cortex.lie_down", ["--rotate"] if rotate else None)
 
 
 @cortex_tool()
