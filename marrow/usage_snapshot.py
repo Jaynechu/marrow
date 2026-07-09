@@ -1,9 +1,12 @@
 """Usage snapshot collector -> ct_rate_limit kv.
 
-Standalone entry point (`python -m marrow.usage_snapshot`), invoked by
-cortex's tick collector as a subprocess (own venv/deps). Single writer of the
-usage kv every consumer (wakeup note render, SessionStart line, in-window
-threshold inject, dashboard) reads.
+Standalone entry point (`python -m marrow.usage_snapshot`). Primary carrier is
+marrow's own watcher (sync_loop.UsageSnapshotLoop, ~5min tick) — always alive,
+independent of cortex, so usage stays fresh even when cortex is off. Cortex's
+tick collector may also call it as a subprocess; either caller's write is an
+idempotent upsert, so overlap is harmless. Single writer of the usage kv every
+consumer (wakeup note render, SessionStart line, in-window threshold inject,
+dashboard) reads.
 
 Writes:
 - five_hour_pct / seven_day_pct + *_reset_at: Anthropic OAuth /api/oauth/usage
