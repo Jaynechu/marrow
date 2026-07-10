@@ -28,7 +28,7 @@ _CAL_DB = str(
     / "group.com.apple.calendar" / "Calendar.sqlitedb"
 )
 
-_PRIORITY_LABELS = {1: "❗", 5: "⚡"}
+_PRIORITY_LABELS = {1: "⚡"}
 
 
 def _schedule_cfg() -> dict:

@@ -80,16 +80,21 @@ def test_calendar_render_with_times():
 
 
 def test_priority_glyphs():
+    """Priority 1 = High (RFC 5545) gets ⚡; Medium (5) and Low (9) get none —
+    🚩 flagged is the primary highlight, medium/low glyphs are noise."""
     rems = [
         _rem(id=7, list="X", title="crit", priority=1,
              due_date="2026-07-10T00:00:00+10:00"),
-        _rem(id=8, list="X", title="high", priority=5,
+        _rem(id=8, list="X", title="med", priority=5,
+             due_date="2026-07-10T00:00:00+10:00"),
+        _rem(id=9, list="X", title="low", priority=9,
              due_date="2026-07-10T00:00:00+10:00"),
     ]
     lines = schedule._render_reminders(json.dumps(rems), "[]", TODAY)
-    joined = "\n".join(lines)
-    assert "❗" in joined
-    assert "⚡" in joined
+    by_title = {l.split("] ", 1)[1].split(" ")[0]: l for l in lines}
+    assert "⚡" in by_title["crit"]
+    assert "⚡" not in by_title["med"] and "❗" not in by_title["med"]
+    assert "⚡" not in by_title["low"] and "❗" not in by_title["low"]
 
 
 # --- (b) diff classification incl. done-with-completion-time ---------------
