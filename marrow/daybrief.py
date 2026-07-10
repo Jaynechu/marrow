@@ -10,11 +10,20 @@ now lives here in marrow.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 
 from . import config, schedule, timeline, usage
 from ._atomic import atomic_write
+
+# Human-read file: tl reconcile anchors (line + trailing render-state) carry
+# no function here — dashboard.py needs them, daybrief does not. Strip only
+# in this post-processing step; timeline.py itself is untouched.
+# Line anchors: <!-- tl:{sid} -->, <!-- tl:{sid}:{seq} -->,
+# <!-- tl:{sid}:{seq}:{idx} -->, <!-- tl:d:{date} -->, <!-- tl:e:{event_id} -->
+_TL_LINE_ANCHOR_RE = re.compile(r"[ \t]*<!--\s*tl:[^>]*?-->")
+_TL_TRAIL_RE = re.compile(r"\n?<!--\s*tl-rendered:[^>]*?-->")
 
 STATUS_START = "<!-- marrow:status:start -->"
 STATUS_END = "<!-- marrow:status:end -->"
@@ -63,10 +72,27 @@ def _remcal_body() -> str:
     return "### Rem & Cal\n" + (body or "(no schedule data)")
 
 
+def _strip_tl_anchors(content: str) -> str:
+    """Remove tl reconcile anchors (line + trailing render-state comment) for
+    the human-read daybrief. Line content is unchanged; only the trailing
+    HTML-comment markers are dropped, trailing whitespace tidied."""
+    content = _TL_TRAIL_RE.sub("", content)
+    lines = [_TL_LINE_ANCHOR_RE.sub("", ln).rstrip() for ln in content.splitlines()]
+    return "\n".join(lines)
+
+
 def _timeline_body(conn: sqlite3.Connection) -> str:
-    """render_timeline output verbatim — byte-identical to the dashboard."""
+    """render_timeline content with its leading '## Timeline' header stripped
+    (same treatment as schedule's header) and tl anchors removed — line
+    content otherwise identical to the dashboard."""
     content = timeline.render_timeline(conn)
-    return "### Timeline\n" + (content if content else "(no timeline yet)")
+    if not content:
+        return "### Timeline\n(no timeline yet)"
+    lines = content.splitlines()
+    if lines and lines[0].startswith("## Timeline"):
+        lines = lines[1:]
+    body = _strip_tl_anchors("\n".join(lines)).strip("\n")
+    return "### Timeline\n" + (body or "(no timeline yet)")
 
 
 def render(conn: sqlite3.Connection, existing: str | None = None) -> str:

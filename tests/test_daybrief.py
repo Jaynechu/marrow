@@ -1,16 +1,27 @@
 """Tests for marrow/daybrief.py — the day_log successor.
 
 daybrief is pure glue: it must compose the SAME render functions the
-SessionStart hook injects. The load-bearing assertion is byte-equality of the
-Timeline zone against timeline.render_timeline (identical to the dashboard).
+SessionStart hook injects. The load-bearing assertion is line-content equality
+of the Timeline zone against timeline.render_timeline (identical to the
+dashboard) modulo the stripped leading header and tl reconcile anchors, which
+have no function in a human-read file.
 """
 from __future__ import annotations
 
 import datetime as _dt
+import re
 
 import pytest
 
 from marrow import daybrief, storage, timeline
+
+_TL_ANCHOR_RE = re.compile(r"[ \t]*<!--\s*tl:[^>]*?-->")
+_TL_TRAIL_RE = re.compile(r"\n?<!--\s*tl-rendered:[^>]*?-->")
+
+
+def _strip_anchors(content: str) -> str:
+    content = _TL_TRAIL_RE.sub("", content)
+    return "\n".join(_TL_ANCHOR_RE.sub("", ln).rstrip() for ln in content.splitlines())
 
 
 @pytest.fixture()
@@ -20,13 +31,15 @@ def conn(tmp_path):
     c.close()
 
 
-def _digest(conn, sid: str, hours_ago: float, tl: str) -> None:
+def _digest(conn, sid: str, hours_ago: float, life_line: str) -> None:
+    """A 24h film-strip row: life_lines (not tl_line) is what render_timeline's
+    _render_24h turns into anchored lines."""
     ts = (_dt.datetime.now(_dt.timezone.utc)
           - _dt.timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        "INSERT INTO session_digests (sid, date, ts, text, kind, tl_line, life_lines)"
-        " VALUES (?, ?, ?, ?, 'casual', ?, NULL)",
-        (sid, ts[:10], ts, "body", tl),
+        "INSERT INTO session_digests (sid, date, ts, text, kind, life_lines)"
+        " VALUES (?, ?, ?, ?, 'casual', ?)",
+        (sid, ts[:10], ts, "body", life_line),
     )
     conn.commit()
 
@@ -47,7 +60,7 @@ def _stub_external(monkeypatch):
 
 
 def test_all_zones_present(conn):
-    _digest(conn, "sid-a", 2.0, "聊天了")
+    _digest(conn, "sid-a", 2.0, "20:00 聊天了")
     out = daybrief.render(conn)
     for marker in (
         daybrief.STATUS_START, daybrief.STATUS_END,
@@ -77,16 +90,26 @@ def test_remcal_strips_daily_schedule_header(conn):
     assert "- [Routine] 05:30-06:15 Wake up" in out
 
 
-def test_timeline_zone_byte_equal_to_render_timeline(conn):
-    _digest(conn, "sid-a", 2.0, "早上写代码")
-    _digest(conn, "sid-b", 20.0, "昨天复习")
+def test_timeline_zone_matches_render_timeline_modulo_header_and_anchors(conn):
+    _digest(conn, "sid-a", 2.0, "10:00 早上写代码")
+    _digest(conn, "sid-b", 20.0, "12:00 昨天复习")
     expected = timeline.render_timeline(conn)
     assert expected  # sanity: fixture produced real timeline content
+    assert expected.splitlines()[0].startswith("## Timeline")  # dashboard header present
+    assert "<!-- tl:" in expected  # sanity: fixture produced anchors to strip
+
     out = daybrief.render(conn)
     start = out.index(daybrief.TIMELINE_START) + len(daybrief.TIMELINE_START)
     end = out.index(daybrief.TIMELINE_END)
     zone = out[start:end].strip("\n")
-    assert zone == "### Timeline\n" + expected
+
+    assert "<!-- tl:" not in zone           # line anchors stripped
+    assert "tl-rendered:" not in zone       # trailing render-state stripped
+    assert not zone.startswith("### Timeline\n## Timeline")  # header not doubled
+
+    expected_stripped_lines = expected.splitlines()[1:]  # drop '## Timeline' header
+    expected_body = _strip_anchors("\n".join(expected_stripped_lines)).strip("\n")
+    assert zone == "### Timeline\n" + expected_body
 
 
 def test_first_and_timetrack_carry_over_byte_for_byte(conn):
