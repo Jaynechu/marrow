@@ -4,6 +4,15 @@
 [core]
 timezone = "Asia/Shanghai"
 
+[schedule]
+# Calendar + Reminders injection (SessionStart full + in-session diff).
+# false = both SessionStart and in-session injection off.
+enabled = true
+# Path to the cadence binary. Empty = built-in default under ~/CC-Lab.
+cadence_bin = ""
+# Header line shown above the schedule block.
+flag_note = "Only follow up overdue flagged 🚩 tasks — no push on others."
+
 [paths]
 # Empty = use defaults under ~/.config/marrow/
 db = ""

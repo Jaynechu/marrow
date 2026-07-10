@@ -1109,9 +1109,10 @@ def session_start() -> int:
 
             try:
                 from . import schedule as _sched
-                sched_content, _ = _sched.refresh_daily()
-                if sched_content:
-                    parts.append(sched_content)
+                if _sched.is_enabled():
+                    sched_content, _ = _sched.refresh_daily()
+                    if sched_content:
+                        parts.append(sched_content)
             except Exception:
                 pass
 
@@ -3294,12 +3295,25 @@ def turn_inject() -> int:
     now = datetime.now(timezone.utc).astimezone(tz)
     kickout_ctx = _kickout_context(channel, now)
 
+    def _sched_fragment() -> str:
+        try:
+            from . import schedule as _sched
+            inj = _sched.check_and_inject(sid)
+            return f"\n\n{inj}" if inj else ""
+        except Exception:
+            return ""
+
     if channel == "wx":
-        if kickout_ctx:
+        # WX bridge injects its own time — skip the time stamp only; the
+        # schedule fragment and kickout nudge still apply.
+        wx_sched = _sched_fragment()
+        wx_kick = f"\n\n{kickout_ctx}" if kickout_ctx else ""
+        wx_ctx = f"{wx_sched}{wx_kick}".strip()
+        if wx_ctx:
             json.dump(
                 {"hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
-                    "additionalContext": kickout_ctx,
+                    "additionalContext": wx_ctx,
                 }},
                 sys.stdout,
             )
@@ -3331,14 +3345,7 @@ def turn_inject() -> int:
     except Exception:
         pass
 
-    sched_ctx = ""
-    try:
-        from . import schedule as _sched
-        sched_inj = _sched.check_and_inject(sid)
-        if sched_inj:
-            sched_ctx = f"\n\n{sched_inj}"
-    except Exception:
-        pass
+    sched_ctx = _sched_fragment()
 
     # Absorbed global turn-inject: per-turn care directive (config-lives).
     care_ctx = ""
