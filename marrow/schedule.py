@@ -4,6 +4,7 @@ from __future__ import annotations
 import glob
 import json as _json
 import os
+import re as _re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -103,6 +104,8 @@ def _rem_line(r: dict, today_str: str) -> tuple[str, str, str]:
     """Return (bucket, sort_key, line).
 
     bucket: overdue | timed | untimed | done. sort_key orders within a bucket.
+    Line ends with the reminder id in brackets, after any glyphs, e.g.
+    '- [List] HH:MM title 🚩 [151]'.
     """
     lst = _clean_list(r.get("list", "Inbox"))
     title = r.get("title", "")
@@ -110,12 +113,14 @@ def _rem_line(r: dict, today_str: str) -> tuple[str, str, str]:
     flagged = bool(r.get("flagged", False))
     glyph = _glyphs(prio, flagged)
     suffix = f" {glyph}" if glyph else ""
+    rid = r.get("id")
+    id_tag = f" [{rid}]" if rid is not None else ""
 
     if r.get("completed"):
         comp = r.get("completion_date", "")
         hm = _hm(comp)
         tag = f" [Done {hm}]" if hm else " [Done]"
-        line = f"- [{lst}] {title}{tag}{suffix}"
+        line = f"- [{lst}] {title}{tag}{suffix}{id_tag}"
         return "done", comp, line
 
     due = r.get("due_date", "")
@@ -124,12 +129,12 @@ def _rem_line(r: dict, today_str: str) -> tuple[str, str, str]:
     timed = due and hm and hm != "00:00"
 
     if due_day and due_day < today_str:
-        line = f"- [{lst}] {title} [Overdue]{suffix}"
+        line = f"- [{lst}] {title} [Overdue]{suffix}{id_tag}"
         return "overdue", due, line
     if timed:
-        line = f"- [{lst}] {hm} {title}{suffix}"
+        line = f"- [{lst}] {hm} {title}{suffix}{id_tag}"
         return "timed", hm, line
-    line = f"- [{lst}] {title}{suffix}"
+    line = f"- [{lst}] {title}{suffix}{id_tag}"
     return "untimed", title, line
 
 
@@ -298,17 +303,28 @@ def _split_sections(content: str) -> tuple[list[str], list[str]]:
     return rem, cal
 
 
+_TRAILING_ID_RE = _re.compile(r"\s*\[(\d+)\]\s*$")
+
+
 def _rem_identity(line: str) -> str:
-    """Stable identity of a rem line: list + title, ignoring time/tag/status."""
-    import re
+    """Stable identity of a rem line.
+
+    Prefers the trailing reminder id `[id]`; rows without one (shouldn't
+    happen for real cadence data, kept for robustness) fall back to
+    list + title, ignoring time/tag/status decorations.
+    """
+    m = _TRAILING_ID_RE.search(line)
+    if m:
+        return f"id:{m.group(1)}"
+
     s = line
     # strip leading '- '
     s = s[2:] if s.startswith("- ") else s
     # drop trailing glyphs and status tags
-    s = re.sub(r"\s*[❗⚡🚩]+\s*$", "", s)
-    s = re.sub(r"\s*\[(Done[^\]]*|Overdue|all-day)\]\s*", " ", s)
+    s = _re.sub(r"\s*[❗⚡🚩]+\s*$", "", s)
+    s = _re.sub(r"\s*\[(Done[^\]]*|Overdue|all-day)\]\s*", " ", s)
     # drop a leading HH:MM after the list bracket
-    s = re.sub(r"(\]\s*)\d{2}:\d{2}\s+", r"\1", s)
+    s = _re.sub(r"(\]\s*)\d{2}:\d{2}\s+", r"\1", s)
     return s.strip()
 
 

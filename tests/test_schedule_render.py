@@ -41,11 +41,11 @@ def test_render_ordering_and_times():
     lines = schedule._render_reminders(json.dumps(rems), json.dumps(done), TODAY)
     joined = "\n".join(lines)
 
-    # order: overdue, timed, untimed, done
-    assert lines[0] == "- [Learning] MH Latte [Overdue]"
-    assert lines[1] == "- [Appointment] 08:30 GP 🚩"
-    assert lines[2] == "- [Chore] 周清洁"
-    assert lines[3] == "- [Financial] Transfer [Done 09:00]"
+    # order: overdue, timed, untimed, done; id trails after glyphs
+    assert lines[0] == "- [Learning] MH Latte [Overdue] [1]"
+    assert lines[1] == "- [Appointment] 08:30 GP 🚩 [2]"
+    assert lines[2] == "- [Chore] 周清洁 [3]"
+    assert lines[3] == "- [Financial] Transfer [Done 09:00] [4]"
     # timed shows due time; untimed does not
     assert "08:30" in lines[1]
     assert "🚩" in lines[1]
@@ -59,7 +59,7 @@ def test_done_only_today():
              completion_date="2026-07-10T20:00:00+10:00"),
     ]
     lines = schedule._render_reminders("[]", json.dumps(done), TODAY)
-    assert lines == ["- [Chore] new [Done 20:00]"]
+    assert lines == ["- [Chore] new [Done 20:00] [6]"]
 
 
 def test_calendar_render_with_times():
@@ -91,10 +91,12 @@ def test_priority_glyphs():
              due_date="2026-07-10T00:00:00+10:00"),
     ]
     lines = schedule._render_reminders(json.dumps(rems), "[]", TODAY)
-    by_title = {l.split("] ", 1)[1].split(" ")[0]: l for l in lines}
-    assert "⚡" in by_title["crit"]
-    assert "⚡" not in by_title["med"] and "❗" not in by_title["med"]
-    assert "⚡" not in by_title["low"] and "❗" not in by_title["low"]
+    by_id = {"[7]": next(l for l in lines if l.endswith("[7]")),
+             "[8]": next(l for l in lines if l.endswith("[8]")),
+             "[9]": next(l for l in lines if l.endswith("[9]"))}
+    assert "⚡" in by_id["[7]"]       # crit / High
+    assert "⚡" not in by_id["[8]"] and "❗" not in by_id["[8]"]  # med
+    assert "⚡" not in by_id["[9]"] and "❗" not in by_id["[9]"]  # low
 
 
 # --- (b) diff classification incl. done-with-completion-time ---------------
@@ -110,13 +112,13 @@ def _content(rem_lines, cal_lines):
 
 def test_diff_new_changed_done():
     old = _content(
-        ["- [Appointment] 08:30 GP 🚩", "- [Chore] 周清洁"],
+        ["- [Appointment] 08:30 GP 🚩 [2]", "- [Chore] 周清洁 [3]"],
         ["- [Routine] 05:30-06:15 Wake up"],
     )
     new = _content(
-        ["- [Appointment] 09:00 GP 🚩",          # changed (time)
-         "- [Chore] 周清洁 [Done 11:00]",         # done
-         "- [Learning] read paper"],             # new
+        ["- [Appointment] 09:00 GP 🚩 [2]",          # changed (time)
+         "- [Chore] 周清洁 [Done 11:00] [3]",         # done
+         "- [Learning] read paper [10]"],             # new
         ["- [Routine] 05:30-06:15 Wake up",
          "- [Leisure] 18:00-19:30 TV"],          # new cal
     )
@@ -125,6 +127,16 @@ def test_diff_new_changed_done():
     assert "✓[Chore] 周清洁 [Done 11:00]" in diff   # done marker + completion time
     assert "+[Learning] read paper" in diff        # new rem
     assert "+[Leisure] 18:00-19:30 TV" in diff      # new cal line with times
+
+
+def test_diff_title_change_same_id_is_changed_not_remove_add():
+    """Same id, different title → classified as changed (~), not -/+."""
+    old = _content(["- [Chore] old title [3]"], [])
+    new = _content(["- [Chore] new title [3]"], [])
+    diff = schedule.compute_diff(old, new)
+    assert "~[Chore] new title [3]" in diff
+    assert "-[Chore] old title [3]" not in diff
+    assert "+[Chore] new title [3]" not in diff
 
 
 def test_diff_empty_when_same():
