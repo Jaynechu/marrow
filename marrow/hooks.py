@@ -30,7 +30,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from . import config, repo, storage, top_sections, transcript
+from . import config, cortex_bridge, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach, popen_detach_lazy
 from .timeutil import (
     utc_iso_to_local_date,
@@ -1104,8 +1104,8 @@ def session_start() -> int:
             # a resume skips). Content is no longer injected here — the user's
             # cortex CLAUDE.md `@handoff.md` imports it directly. Page-turn
             # (stale-date archive + fresh template) still runs as a side effect.
-            if os.environ.get("MARROW_CORTEX") and not is_resume:
-                _cortex_handoff_page_turn_if_stale()
+            if cortex_bridge.enabled() and os.environ.get("MARROW_CORTEX") and not is_resume:
+                cortex_bridge._cortex_handoff_page_turn_if_stale()
 
             try:
                 from . import schedule as _sched
@@ -2941,7 +2941,8 @@ def pretool_use() -> int:
         # the 碎碎念 (handoff) is written this window. Plain lie_down passes.
         lie_down_deny: str | None = None
         try:
-            lie_down_deny = _cortex_lie_down_deny(inp)
+            if cortex_bridge.enabled():
+                lie_down_deny = cortex_bridge._cortex_lie_down_deny(inp)
         except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
             lie_down_deny = None
         if lie_down_deny:
@@ -3180,7 +3181,7 @@ def _kickout_context(channel: str, now: datetime) -> str:
     """B8 anti-late-night deterministic nudge, config-first ([kickout] in
     config.toml — see config.default.toml for the live windows/text). Cortex
     is immune (MARROW_CORTEX=1, own bulletin/schedule, not this hook's rules)."""
-    if os.environ.get("MARROW_CORTEX"):
+    if cortex_bridge.is_cortex_session():
         return ""
     kc = config.load().get("kickout", {}) or {}
     if not kc.get("enabled", True):
@@ -3198,154 +3199,6 @@ def _kickout_context(channel: str, now: datetime) -> str:
                             kc.get("im_quiet_end", "06:00")):
             return kc.get("im_quiet_text", "")
     return ""
-
-
-def _window_spawn_epoch(tpath: str) -> float | None:
-    """Wall-clock start of this window = the first transcript line's timestamp
-    (a resume opens a new file; a fresh window's first line is its birth). Falls
-    back to the file's own ctime, then None."""
-    if not tpath:
-        return None
-    try:
-        with open(tpath, encoding="utf-8") as f:
-            for line in f:
-                m = _re.search(r'"timestamp":"([^"]+)"', line)
-                if m:
-                    try:
-                        return datetime.fromisoformat(
-                            m.group(1).replace("Z", "+00:00")).timestamp()
-                    except ValueError:
-                        break
-                break
-    except OSError:
-        return None
-    try:
-        return os.path.getmtime(tpath)
-    except OSError:
-        return None
-
-
-def _cortex_lie_down_deny(inp: dict) -> str | None:
-    """Deny lie_down until the 碎碎念 (handoff) is written this window, when the
-    session asked to rotate OR the window is at the fuse line (force_tokens).
-    A plain lie_down under the line is allowed. Cortex window only. None = allow."""
-    if not os.environ.get("MARROW_CORTEX"):
-        return None
-    if inp.get("tool_name") != "mcp__marrow__lie_down":
-        return None
-    ti = inp.get("tool_input", {}) or {}
-    tpath = inp.get("transcript_path") or ""
-    cx = config.load().get("cortex", {}) or {}
-    force = int(cx.get("force_tokens", 150_000) or 0)
-    wants_rotate = bool(ti.get("rotate"))
-    occupancy = _window_tokens_from_transcript(tpath)
-    if not wants_rotate and not (force > 0 and occupancy >= force):
-        return None  # plain lie_down under the line — allow
-    # Guard fires: require a handoff written after this window's spawn.
-    p = _cortex_handoff_path()
-    spawn = _window_spawn_epoch(tpath)
-    written = False
-    if p is not None and spawn is not None:
-        try:
-            written = p.stat().st_mtime >= spawn and bool(
-                p.read_text(encoding="utf-8").strip())
-        except OSError:
-            written = False
-    if written:
-        return None
-    return (cx.get("handoff_deny_text")
-            or "Write your 碎碎念 (handoff) first, then call lie_down again.")
-
-
-def _cortex_handoff_path():
-    """<[cortex].home>/<[cortex].handoff_file> — the 碎碎念 file a fresh cortex
-    window reads at SessionStart. None on config error."""
-    try:
-        cx = config.load().get("cortex", {}) or {}
-        home = (cx.get("home") or "~/.config/marrow/cortex")
-        name = (cx.get("handoff_file") or "handoff.md")
-        return Path(home).expanduser() / name
-    except Exception:
-        return None
-
-
-_HANDOFF_DATE_RE = _re.compile(
-    r"\[(\d{4}-\d{2}-\d{2})\]|(\d{4}-\d{2}-\d{2})\s*$")
-
-
-def _handoff_l1_date(text: str) -> str | None:
-    """L1 date: `[YYYY-MM-DD]` bracketed or a bare trailing YYYY-MM-DD.
-    None if L1 is missing/unparsable (e.g. the literal template placeholder)."""
-    l1 = text.splitlines()[0] if text else ""
-    m = _HANDOFF_DATE_RE.search(l1)
-    if not m:
-        return None
-    date_str = m.group(1) or m.group(2)
-    try:
-        datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        return None
-    return date_str
-
-
-def _cortex_page_turn(p: Path, old_text: str) -> None:
-    """Archive a stale handoff.md and replace it with a fresh dated copy of the
-    template. Best-effort: any failure leaves the stale file in place (the
-    NEXT SessionStart will retry the page-turn)."""
-    cx = config.load().get("cortex", {}) or {}
-    home = (cx.get("home") or "~/.config/marrow/cortex")
-    home_p = Path(home).expanduser()
-    archive_dir = home_p / (cx.get("handoff_archive_dir") or "handoff_archive")
-    template_name = cx.get("handoff_template_file") or "handoff_template.md"
-    template_p = home_p / template_name
-    old_date = _handoff_l1_date(old_text)
-    try:
-        old_mtime = p.stat().st_mtime
-    except OSError:
-        old_mtime = time.time()
-    try:
-        template_text = template_p.read_text(encoding="utf-8")
-    except OSError:
-        return  # no template to copy from — leave the stale file in place
-    try:
-        archive_dir.mkdir(parents=True, exist_ok=True)
-        dest = archive_dir / f"{old_date}.md"
-        n = 1
-        while dest.exists():
-            n += 1
-            dest = archive_dir / f"{old_date}-{n}.md"
-        shutil.move(str(p), str(dest))
-
-        today = datetime.now(config.get_tz()).date().isoformat()
-        new_text = template_text.replace("[YYYY-MM-DD]", f"[{today}]")
-        p.write_text(new_text, encoding="utf-8")
-        # Backdate mtime so _cortex_lie_down_deny's "written this window" gate
-        # doesn't wrongly read the fresh copy as this window's own handoff.
-        os.utime(p, (old_mtime, old_mtime))
-    except OSError:
-        pass
-
-
-def _cortex_handoff_page_turn_if_stale() -> None:
-    """Daily file side effect for a fresh cortex window: a stale (before-today)
-    L1 date triggers archive + fresh dated template copy for tomorrow's read.
-    No parsable date or unreadable file -> no-op. No content is returned; the
-    user's cortex CLAUDE.md `@handoff.md` import is the sole read path now."""
-    p = _cortex_handoff_path()
-    if p is None:
-        return
-    try:
-        text = p.read_text(encoding="utf-8").strip()
-    except OSError:
-        return
-    if not text:
-        return
-    date_str = _handoff_l1_date(text)
-    if date_str is None:
-        return
-    today = datetime.now(config.get_tz()).date().isoformat()
-    if date_str < today:
-        _cortex_page_turn(p, text)
 
 
 def _window_tokens_from_transcript(tpath: str) -> int:
@@ -3370,24 +3223,6 @@ def _window_tokens_from_transcript(tpath: str) -> int:
             total = (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0)
                      + u.get("cache_creation_input_tokens", 0) + u.get("output_tokens", 0))
     return total
-
-
-def _cortex_show_context(tpath: str) -> str:
-    """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (10万
-    soft, ahead of the 15万 fuse). Empty for normal sessions, below threshold,
-    or with the text blanked out."""
-    if not os.environ.get("MARROW_CORTEX"):
-        return ""
-    cr = config.load().get("cortex_rotate", {}) or {}
-    text = (cr.get("show_text") or "").strip()
-    if not text:
-        return ""
-    show = int(cr.get("show_tokens", 100_000) or 0)
-    if show <= 0:
-        return ""
-    if _window_tokens_from_transcript(tpath) >= show:
-        return text
-    return ""
 
 
 def _usage_threshold_context(sid: str, tpath: str) -> str:
@@ -3516,7 +3351,7 @@ def turn_inject() -> int:
         pass
 
     kickout_full = f"\n\n{kickout_ctx}" if kickout_ctx else ""
-    show_ctx = _cortex_show_context(tpath)
+    show_ctx = cortex_bridge._cortex_show_context(tpath) if cortex_bridge.enabled() else ""
     show_full = f"\n\n{show_ctx}" if show_ctx else ""
     usage_ctx = _usage_threshold_context(sid, tpath)
     usage_full = f"\n\n{usage_ctx}" if usage_ctx else ""

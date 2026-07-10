@@ -279,6 +279,8 @@ length_range = "300-800"
 style = "叙述生动有趣，故事性强。文艺中带着搞笑。"
 
 [cortex]
+# Master switch: cortex is an optional autonomous-wake layer living in a separate repo; false = clean marrow, no cortex organs.
+enabled = false
 # Cortex own notebook home (C3, Decided 07-03 pm) — cwd for the resumed
 # full-env session; own CLAUDE.md lives here, other sessions never read it.
 home = "~/.config/marrow/cortex"
