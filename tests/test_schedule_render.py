@@ -79,6 +79,48 @@ def test_calendar_render_with_times():
     ]
 
 
+def test_calendar_exclude_drops_matching_calendar(monkeypatch):
+    monkeypatch.setattr(schedule, "_cal_exclude", lambda: {"STAR"})
+    monkeypatch.setattr(schedule, "_cal_keep_re", lambda: None)
+    events = [
+        _cal(calendar="STAR", title="Science And Society, Sem01",
+             start="2026-07-10T08:00:00+10:00", end="2026-07-10T09:50:00+10:00"),
+        _cal(calendar="Routine", title="Wake up",
+             start="2026-07-10T05:30:00+10:00", end="2026-07-10T06:15:00+10:00"),
+    ]
+    lines = schedule._render_calendar(json.dumps(events), TODAY)
+    assert lines == ["- [Routine] 05:30-06:15 Wake up"]
+
+
+def test_calendar_keep_regex_rescues_matching_title(monkeypatch):
+    monkeypatch.setattr(schedule, "_cal_exclude", lambda: {"STAR"})
+    monkeypatch.setattr(schedule, "_cal_keep_re", lambda: __import__("re").compile("(?i)lab|pra"))
+    events = [
+        _cal(calendar="STAR", title="Science And Society, Sem01",
+             start="2026-07-10T08:00:00+10:00", end="2026-07-10T09:50:00+10:00"),
+        _cal(calendar="STAR", title="Anatomy, Lab01",
+             start="2026-07-10T10:00:00+10:00", end="2026-07-10T12:00:00+10:00"),
+    ]
+    lines = schedule._render_calendar(json.dumps(events), TODAY)
+    assert lines == ["- [STAR] 10:00-12:00 Anatomy, Lab01"]
+
+
+def test_calendar_exclude_empty_is_no_change(monkeypatch):
+    monkeypatch.setattr(schedule, "_cal_exclude", lambda: set())
+    monkeypatch.setattr(schedule, "_cal_keep_re", lambda: None)
+    events = [
+        _cal(calendar="STAR", title="Science And Society, Sem01",
+             start="2026-07-10T08:00:00+10:00", end="2026-07-10T09:50:00+10:00"),
+    ]
+    lines = schedule._render_calendar(json.dumps(events), TODAY)
+    assert lines == ["- [STAR] 08:00-09:50 Science And Society, Sem01"]
+
+
+def test_cal_keep_re_invalid_pattern_is_safe(monkeypatch):
+    monkeypatch.setattr(schedule, "_schedule_cfg", lambda: {"cal_keep": "(unclosed"})
+    assert schedule._cal_keep_re() is None
+
+
 def test_priority_glyphs():
     """Priority 1 = High (RFC 5545) gets ⚡; Medium (5) and Low (9) get none —
     🚩 flagged is the primary highlight, medium/low glyphs are noise."""

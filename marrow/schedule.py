@@ -50,6 +50,23 @@ def _flag_note() -> str:
     return note if note else _DEFAULT_FLAG_NOTE
 
 
+def _cal_exclude() -> set[str]:
+    val = _schedule_cfg().get("cal_exclude", [])
+    if not isinstance(val, list):
+        return set()
+    return {str(v) for v in val}
+
+
+def _cal_keep_re():
+    pattern = _schedule_cfg().get("cal_keep", "")
+    if not pattern:
+        return None
+    try:
+        return _re.compile(pattern)
+    except _re.error:
+        return None
+
+
 def get_data_mtime() -> float:
     best = 0.0
     for pattern in (
@@ -192,10 +209,15 @@ def _render_calendar(cal_json: str, today_str: str) -> list[str]:
         events = _json.loads(cal_json) if cal_json else []
     except (ValueError, TypeError):
         events = []
+    exclude = _cal_exclude()
+    keep_re = _cal_keep_re()
     rows: list[tuple[str, str]] = []
     for e in events:
         cal = _clean_list(e.get("calendar", ""))
         title = e.get("title", "")
+        if cal in exclude:
+            if not (keep_re and keep_re.search(title)):
+                continue
         if e.get("all_day"):
             # skip all-day Scheduled Reminders duplicates; keep other all-day
             if cal == "Scheduled Reminders":

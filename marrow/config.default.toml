@@ -12,6 +12,11 @@ enabled = true
 cadence_bin = ""
 # Header line shown above the schedule block.
 flag_note = "Only follow up overdue flagged 🚩 tasks — no push on others."
+# Calendar names to drop from the rendered block entirely.
+cal_exclude = []
+# Regex against event title: if set and it matches, rescue an event that
+# would otherwise be dropped by cal_exclude. Invalid regex = no rescue.
+cal_keep = ""
 
 [paths]
 # Empty = use defaults under ~/.config/marrow/
