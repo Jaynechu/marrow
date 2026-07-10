@@ -2723,7 +2723,7 @@ def _git_revert_guard(inp: dict) -> str | None:
         cwd = inp.get("cwd") or ""
         if (
             "/.claude/worktrees/" in cwd
-            or "/.claude/worktrees/" in cmd
+            or ".claude/worktrees/" in cmd
             or _is_worktree_session(cwd)
         ):
             return ""
