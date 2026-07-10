@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from . import storage, config
 
-_SUBAGENT_RE = re.compile(r"subagent_tokens[:>]?\s*([0-9,]+)")
+_SUBAGENT_RE = re.compile(r"subagent_tokens[:>]?\s*([0-9][0-9,]*)")
 
 
 # --------------------------------------------------------------------------- #
