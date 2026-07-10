@@ -388,30 +388,43 @@ def _cortex_handoff_path():
         return None
 
 
-def _cortex_boot_rules_path():
-    """<[cortex].home>/<[cortex].boot_rules_file> — the sleep/wake rules a fresh
-    cortex window reads at SessionStart (the user authors this file herself; it
-    may not exist). None on config error."""
+def _cortex_home() -> Path:
+    cx = config.load().get("cortex", {}) or {}
+    return Path(cx.get("home") or "~/.config/marrow/cortex").expanduser()
+
+
+def _cortex_path(key: str, default_name: str) -> Path:
+    """Resolve a cortex-home file config value: absolute path used as-is,
+    bare name resolved under <home>."""
+    cx = config.load().get("cortex", {}) or {}
+    raw = (cx.get(key) or default_name)
+    p = Path(raw).expanduser()
+    return p if p.is_absolute() else _cortex_home() / raw
+
+
+def wake_emoji() -> str:
+    """The single-emoji launch prompt that triggers wake-instruction injection.
+    Must match the cortex-side wake.wake_prompt (kept in config on both sides so
+    they can't drift). Empty -> feature off (no emoji matches)."""
+    cx = config.load().get("cortex", {}) or {}
+    return str(cx.get("wake_emoji") or "").strip()
+
+
+def cortex_wake_instructions() -> str | None:
+    """Wake instructions injected as UserPromptSubmit additionalContext when the
+    emoji is submitted in a cortex window. {note}/{signal_log} are substituted
+    with resolved absolute paths (config-routed, never hardcoded). None when
+    disabled/misconfigured (empty template) so the caller injects nothing."""
     try:
         cx = config.load().get("cortex", {}) or {}
-        home = (cx.get("home") or "~/.config/marrow/cortex")
-        name = (cx.get("boot_rules_file") or "boot_rules.md")
-        return Path(home).expanduser() / name
+        tmpl = str(cx.get("wake_instructions") or "").strip()
+        if not tmpl:
+            return None
+        note = _cortex_path("wakeup_note_file", "wakeup_note.md")
+        signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
+        return tmpl.replace("{note}", str(note)).replace("{signal_log}", str(signal_log))
     except Exception:
         return None
-
-
-def cortex_boot_rules() -> str:
-    """Contents of the cortex boot-rules file for SessionStart injection (fresh
-    cortex window only). Empty string when the file is absent/unreadable/empty,
-    so a missing file simply injects nothing."""
-    p = _cortex_boot_rules_path()
-    if p is None:
-        return ""
-    try:
-        return p.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
 
 
 _HANDOFF_DATE_RE = _re.compile(

@@ -1106,11 +1106,6 @@ def session_start() -> int:
             # (stale-date archive + fresh template) still runs as a side effect.
             if cortex_bridge.enabled() and os.environ.get("MARROW_CORTEX") and not is_resume:
                 cortex_bridge._cortex_handoff_page_turn_if_stale()
-                # Sleep/wake boot rules (user-authored, optional): inject the
-                # file's contents into a fresh cortex window when it exists.
-                boot_rules = cortex_bridge.cortex_boot_rules()
-                if boot_rules:
-                    parts.append(boot_rules)
 
             try:
                 from . import schedule as _sched
@@ -1920,6 +1915,23 @@ def user_prompt_submit() -> int:
     is_subagent = bool(tpath and "/tasks/" in tpath)
     if _is_worktree_session(cwd or "") or is_subagent:
         return 0
+
+    # Cortex wake trigger: a fresh cortex window is launched with JUST the wake
+    # emoji as its first prompt (no readable text in the user's face). When that
+    # exact emoji lands inside a cortex window (MARROW_CORTEX set), inject the
+    # full wake instructions as additionalContext and stop (no recall for a wake
+    # prompt). Text + paths are config-routed in cortex_bridge.
+    if cortex_bridge.is_cortex_session():
+        _emoji = cortex_bridge.wake_emoji()
+        _prompt = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
+        if _emoji and _prompt == _emoji:
+            _instr = cortex_bridge.cortex_wake_instructions()
+            if _instr:
+                json.dump({"hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": _instr,
+                }}, sys.stdout)
+            return 0
 
     # cwd exclude gate — opt-out per-dir via config.toml [recall].exclude_cwds.
     _ex_cwds = config.load().get("recall", {}).get("exclude_cwds", []) or []

@@ -281,16 +281,44 @@ def test_switch_off_lie_down_deny_inactive(monkeypatch):
     assert cortex_bridge._cortex_lie_down_deny(inp) is None
 
 
-def test_cortex_boot_rules_reads_file(monkeypatch, tmp_path):
-    """cortex_boot_rules returns the boot-rules file contents (stripped) when it
-    exists under <[cortex].home>/<boot_rules_file>."""
+
+
+def test_wake_emoji_reads_config(monkeypatch):
+    """wake_emoji reflects [cortex].wake_emoji (stripped)."""
+    _force_enabled(monkeypatch, True, extra={"wake_emoji": "  ☀️ "})
+    assert cortex_bridge.wake_emoji() == "☀️"
+
+
+def test_wake_instructions_substitutes_config_paths(monkeypatch, tmp_path):
+    """cortex_wake_instructions substitutes {note}/{signal_log} with paths
+    resolved under [cortex].home (config-routed, no hardcoded /Users paths)."""
+    _force_enabled(monkeypatch, True, extra={
+        "home": str(tmp_path),
+        "wake_instructions": "read {note}; tail {signal_log}",
+    })
+    out = cortex_bridge.cortex_wake_instructions()
+    assert out == f"read {tmp_path/'wakeup_note.md'}; tail {tmp_path/'wake_signal.log'}"
+
+
+def test_wake_instructions_absolute_path_override(monkeypatch, tmp_path):
+    """An absolute wakeup_note_file/signal-log override is used as-is."""
+    note = tmp_path / "custom_note.md"
+    _force_enabled(monkeypatch, True, extra={
+        "home": str(tmp_path),
+        "wakeup_note_file": str(note),
+        "wake_instructions": "read {note}",
+    })
+    assert cortex_bridge.cortex_wake_instructions() == f"read {note}"
+
+
+def test_wake_instructions_empty_template_returns_none(monkeypatch, tmp_path):
+    """Empty instruction template -> None (caller injects nothing)."""
     _force_enabled(monkeypatch, True,
-                   extra={"home": str(tmp_path), "boot_rules_file": "boot_rules.md"})
-    (tmp_path / "boot_rules.md").write_text("  sleep after 23:00\n")
-    assert cortex_bridge.cortex_boot_rules() == "sleep after 23:00"
+                   extra={"home": str(tmp_path), "wake_instructions": ""})
+    assert cortex_bridge.cortex_wake_instructions() is None
 
 
-def test_cortex_boot_rules_absent_returns_empty(monkeypatch, tmp_path):
-    """No boot-rules file -> empty string (SessionStart injects nothing)."""
-    _force_enabled(monkeypatch, True, extra={"home": str(tmp_path)})
-    assert cortex_bridge.cortex_boot_rules() == ""
+def test_boot_rules_helpers_removed():
+    """The rejected boot_rules SessionStart mechanism is fully gone."""
+    assert not hasattr(cortex_bridge, "cortex_boot_rules")
+    assert not hasattr(cortex_bridge, "_cortex_boot_rules_path")
