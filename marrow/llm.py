@@ -29,7 +29,7 @@ _ISOLATION = ["--setting-sources", "", "--strict-mcp-config"]
 
 # Prefixes of policy-refusal prose (defense-in-depth; primary signal is
 # stop_reason=="refusal"). Keep short — match intent, not wording. CN entries
-# are case-invariant so lower() match is fine for both. Lumi's content is
+# are case-invariant so lower() match is fine for both. The user's content is
 # mostly CN; EN-only fingerprints would miss the common refusal path.
 _REFUSAL_FINGERPRINTS = (
     "i'm not able to",

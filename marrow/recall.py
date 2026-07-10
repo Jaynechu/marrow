@@ -791,9 +791,9 @@ def _fts_terms(q: str) -> list[str]:
 
     - ASCII alnum runs ≥3 chars kept whole (one trigram MATCH covers it).
     - CJK runs split into sliding 3-char windows aligned with the trigram
-      tokenizer — a long CJK prompt like (老公你知道鸭子梗么) yields windows
-      that include (鸭子梗), letting the OR query hit a row whose body
-      contains (鸭子梗) without requiring the full prompt to appear verbatim.
+      tokenizer — a long CJK prompt like (你知道这个梗么) yields windows
+      that include (这个梗), letting the OR query hit a row whose body
+      contains (这个梗) without requiring the full prompt to appear verbatim.
     - Anything <3 chars dropped (trigram MATCH returns 0 on short queries —
       this is the "OT" pathology gate).
 
@@ -1271,7 +1271,7 @@ def recall_fusion(
         return []
 
     # Stopword filter: strip config-driven tokens before FTS + vec.
-    # List is empty by default; populated by Lumi after reviewing candidates.
+    # List is empty by default; populated by the user after reviewing candidates.
     try:
         from . import config as _cfg
         _sw = _cfg.load().get("recall", {}).get("stopwords", []) or []

@@ -193,6 +193,10 @@ user_name = "User"
 assistant_name = "Assistant"
 user_aliases = []
 assistant_aliases = []
+# User's birth year, used by migrate.py to convert `[Age N]` milestone
+# headers into calendar years during the Phase-1 historical import. 0 =
+# feature off (importer skips age->year conversion).
+birth_year = 0
 # Relationship terms excluded from entity extraction (e.g. ["husband", "wife"]).
 relationship_terms = []
 # Memes keys that never age out. Explicit list, not derived from aliases.
