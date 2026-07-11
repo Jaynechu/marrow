@@ -493,6 +493,9 @@ def tuck_in_marker() -> str:
     return str(cx.get("tuck_in_marker") or "[TUCK-IN]").strip()
 
 
+_HARNESS_TAG_RE = _re.compile(r"^<[a-z][a-z0-9_-]*>")
+
+
 def is_machine_line(prompt: str) -> bool:
     """True when the incoming cortex-window prompt is a machine line arriving
     down the ear channel (wake marker / monitor death / tuck-in), NOT a real
@@ -500,6 +503,12 @@ def is_machine_line(prompt: str) -> bool:
     if not prompt:
         return True
     p = prompt
+    # Harness-style tag at the very start (e.g. <task-notification>,
+    # <system-reminder>, future tags): the harness flushes these through the
+    # prompt pipeline on events like a background task ending. A real user
+    # never opens a message with such a tag.
+    if _HARNESS_TAG_RE.match(p.lstrip()):
+        return True
     m = wake_marker()
     if m and m in p:
         return True
@@ -688,6 +697,27 @@ def _is_live_wait_until(raw: str) -> bool:
     return dt > datetime.now(_tz.utc)
 
 
+def _latest_wake_log_id() -> int | None:
+    """id of the most recent open wake row (ct_wake_log where wake=1), so a
+    user-wake reset can rejoin the accounting chain a later lie_down updates.
+    Best-effort: None on any error / empty / missing table — never raises."""
+    import sqlite3
+    try:
+        dbp = config.db_path()
+        conn = sqlite3.connect(dbp, timeout=30)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT id FROM ct_wake_log WHERE wake=1 "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        return int(row[0]) if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def _cortex_user_wake_reset(inp: dict) -> None:
     """Real user message in a cortex window -> flip awake, kill the pending
     alarm (floor deadline + sentinel), mark the user reply, and ensure a
@@ -710,7 +740,7 @@ def _cortex_user_wake_reset(inp: dict) -> None:
             from datetime import timezone as _tz
             d["awake"] = True
             d["awake_since"] = datetime.now(_tz.utc).isoformat()
-            d["wake_log_id"] = None
+            d["wake_log_id"] = _latest_wake_log_id()
             if tpath:
                 d["transcript"] = str(tpath)
         d["user_replied_this_wake"] = True
