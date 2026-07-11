@@ -328,6 +328,11 @@ wishlist_path = ""
 # = tools return a "not configured" error.
 venv_python = ""
 repo_root = ""
+# When the cortex window is closed while a wake is open, session_end runs a
+# proxy lie_down(--force-slept auto) with this next-wake (minutes, clamped
+# 1..240 by cortex) so the wake ends at once instead of waiting for the
+# 20-min fallback to discover the dead window.
+close_next_wake_min = 55
 # Handoff note file under <home>. Read via the cortex CLAUDE.md
 # `@handoff.md` memory import, not injected by SessionStart. Written by the
 # session. Daily file with lazy page-turn on a fresh cortex-window

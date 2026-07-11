@@ -59,6 +59,20 @@ def test_is_machine_line_excludes_markers(cortex_env):
     assert cortex_bridge.is_machine_line("") is True
 
 
+def test_is_machine_line_harness_tags(cortex_env):
+    # Any harness-style tag at the very start -> machine.
+    assert cortex_bridge.is_machine_line(
+        "<task-notification>bg task ended</task-notification>") is True
+    assert cortex_bridge.is_machine_line(
+        "<system-reminder>context follows</system-reminder>") is True
+    # Leading whitespace before the tag is tolerated.
+    assert cortex_bridge.is_machine_line("  \n<system-reminder>x") is True
+    # A tag mid-string is real user text, not a machine line.
+    assert cortex_bridge.is_machine_line(
+        "look at this <system-reminder> in my message") is False
+    assert cortex_bridge.is_machine_line("what does <tag> mean?") is False
+
+
 # --- reset actions ------------------------------------------------------------
 
 def test_reset_flips_awake_and_marks_reply(cortex_env):
@@ -170,3 +184,95 @@ def test_reset_spawns_watchdog_when_absent(cortex_env, monkeypatch):
                         lambda: spawned.append(1))
     cortex_bridge._cortex_user_wake_reset({"transcript_path": "/x.jsonl"})
     assert spawned == [1]
+
+
+# --- wake_log_id backfill (Fix B) ---------------------------------------------
+
+def test_reset_backfills_wake_log_id_from_open_row(cortex_env):
+    home, db = cortex_env
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE ct_wake_log (id INTEGER PRIMARY KEY, wake INTEGER)")
+    conn.execute("INSERT INTO ct_wake_log (id, wake) VALUES (7, 0)")   # closed
+    conn.execute("INSERT INTO ct_wake_log (id, wake) VALUES (8, 1)")   # open
+    conn.commit()
+    conn.close()
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/x.jsonl"})
+    d = _ws(home)
+    assert d["wake_log_id"] == 8  # latest open wake row
+
+
+def test_reset_backfill_none_on_empty_table(cortex_env):
+    home, db = cortex_env
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE ct_wake_log (id INTEGER PRIMARY KEY, wake INTEGER)")
+    conn.commit()
+    conn.close()
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/x.jsonl"})
+    d = _ws(home)
+    assert d["wake_log_id"] is None  # empty table -> None, no raise
+
+
+def test_latest_wake_log_id_missing_table(cortex_env):
+    # No ct_wake_log table at all -> None, never raises.
+    assert cortex_bridge._latest_wake_log_id() is None
+
+
+# --- window-closed proxy lie_down (Fix E) -------------------------------------
+
+def test_window_closed_runs_lie_down_when_awake(cortex_env, monkeypatch):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({
+        "awake": True, "transcript": "/live.jsonl",
+    }))
+    calls = []
+    monkeypatch.setattr(cortex_bridge.subprocess, "run",
+                        lambda *a, **k: calls.append((a, k)))
+    cortex_bridge.cortex_window_closed("/live.jsonl")
+    assert len(calls) == 1
+    cmd = calls[0][0][0]
+    assert "cortex.lie_down" in cmd
+    assert "--force-slept" in cmd and "auto" in cmd
+    assert "--next-wake-min" in cmd
+
+
+def test_window_closed_noop_when_not_awake(cortex_env, monkeypatch):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({"awake": False}))
+    calls = []
+    monkeypatch.setattr(cortex_bridge.subprocess, "run",
+                        lambda *a, **k: calls.append(1))
+    cortex_bridge.cortex_window_closed("/live.jsonl")
+    assert calls == []  # idempotent no-op
+
+
+def test_window_closed_skips_mismatched_transcript(cortex_env, monkeypatch):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({
+        "awake": True, "transcript": "/other.jsonl",
+    }))
+    calls = []
+    monkeypatch.setattr(cortex_bridge.subprocess, "run",
+                        lambda *a, **k: calls.append(1))
+    cortex_bridge.cortex_window_closed("/live.jsonl")
+    assert calls == []  # different session's window -> skip
+
+
+def test_window_closed_runs_when_no_transcript_recorded(cortex_env, monkeypatch):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({"awake": True}))
+    calls = []
+    monkeypatch.setattr(cortex_bridge.subprocess, "run",
+                        lambda *a, **k: calls.append(1))
+    cortex_bridge.cortex_window_closed("/live.jsonl")
+    assert calls == [1]  # no transcript recorded -> allowed
+
+
+def test_window_closed_noop_without_cortex_env(cortex_env, monkeypatch):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({"awake": True}))
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    calls = []
+    monkeypatch.setattr(cortex_bridge.subprocess, "run",
+                        lambda *a, **k: calls.append(1))
+    cortex_bridge.cortex_window_closed("/live.jsonl")
+    assert calls == []

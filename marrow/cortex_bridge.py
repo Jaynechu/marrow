@@ -756,6 +756,37 @@ def _cortex_user_wake_reset(inp: dict) -> None:
     _spawn_watchdog_if_absent()
 
 
+def cortex_window_closed(transcript_path: str | None) -> None:
+    """Cortex window really ending (session_end, non-'clear' reason): if the
+    wake_state is awake AND (no transcript recorded yet OR it matches this
+    session's), end the wake immediately via a proxy lie_down instead of
+    waiting for a 20-min fallback to discover the dead window. Idempotent —
+    lie_down already no-ops when not awake. Best-effort: never raises."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return
+    try:
+        p = _cortex_wake_state_path()
+        d = _wake_state_load(p)
+        if not d.get("awake"):
+            return
+        state_tpath = d.get("transcript")
+        if state_tpath and transcript_path and str(state_tpath) != str(transcript_path):
+            return
+        cx = config.load().get("cortex", {}) or {}
+        next_wake_min = cx.get("close_next_wake_min", 55)
+        py, root = _cortex_paths()
+        if not py or not root:
+            return
+        py = str(Path(py).expanduser())
+        root = str(Path(root).expanduser())
+        cmd = [py, "-m", "cortex.lie_down",
+               "--force-slept", "auto",
+               "--next-wake-min", str(next_wake_min)]
+        subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=10)
+    except Exception:  # noqa: BLE001 — never block session_end
+        pass
+
+
 _HANDOFF_DATE_RE = _re.compile(
     r"\[(\d{4}-\d{2}-\d{2})\]|(\d{4}-\d{2}-\d{2})\s*$")
 
