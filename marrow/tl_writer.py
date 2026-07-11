@@ -9,7 +9,7 @@ Format: HH:mm[-HH:mm] 【N word♡Y word】body [i]
   Single-side rows: just 【N word】 or 【Y word】.
   i = composite 1-5 (events.imp), one value for the whole row, not per side,
   rendered at the end as " [i]".
-  body <=30 chars.
+  body <=50 chars (config: tl.body_max).
 """
 from __future__ import annotations
 
@@ -22,7 +22,10 @@ from . import config as _config
 
 _TZ = _config.get_tz()
 _WORD_MAX = 8
-_BODY_MAX = 30
+
+
+def _body_max() -> int:
+    return int(_config.load().get("tl", {}).get("body_max", 50))
 _LABEL_RE = re.compile(r"^\s*(【[^】]*】)?(.*)$", re.DOTALL)
 _TRAIL_IMP_RE = re.compile(r"\s*\[\d\]\s*$")
 
@@ -119,8 +122,9 @@ def tl_add(conn, timerange: str, body: str,
     body = (body or "").strip()
     if not body:
         raise TlError("body required")
-    if len(body) > _BODY_MAX:
-        raise TlError(f"body exceeds {_BODY_MAX} chars: {len(body)}")
+    body_max = _body_max()
+    if len(body) > body_max:
+        raise TlError(f"body exceeds {body_max} chars: {len(body)}")
 
     n_word = _check_word(n_word, "N")
     y_word = _check_word(y_word, "Y")
@@ -207,8 +211,9 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
         body_part = body.strip()
         if not body_part:
             raise TlError("body cannot be empty")
-        if len(body_part) > _BODY_MAX:
-            raise TlError(f"body exceeds {_BODY_MAX} chars")
+        body_max = _body_max()
+        if len(body_part) > body_max:
+            raise TlError(f"body exceeds {body_max} chars")
     n_word = _check_word(n_word, "N")
     y_word = _check_word(y_word, "Y")
     if n_word or y_word:

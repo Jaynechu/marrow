@@ -533,7 +533,11 @@ import json as _json_ws
 def _wake_state_lock(p: Path):
     """Blocking exclusive flock on <wake_state>.lock, byte-compatible with
     cortex.wake_state._flock (same sibling .lock, same protocol). Best-effort:
-    an unacquirable lock still proceeds (matches cortex's fallback)."""
+    an unacquirable lock still proceeds (matches cortex's fallback).
+    COUPLED: base = marrow [cortex].wake_state_file / [cortex].home. Cortex's
+    side (wake_state.lock_path) resolves from cortex [paths].wake_state_file /
+    [paths].cortex_home — override one without the other and the two lock files
+    split (silent lost update)."""
     lp = p.with_suffix(".lock")
     fd = None
     got = False
@@ -578,9 +582,11 @@ def _wake_state_save(p: Path, data: dict) -> None:
 
 def _clear_floor_deadline() -> None:
     """Clear the pending floor deadline (next_floor_due_at) on the single-row
-    ct_pacemaker_state JSON: None floor = not due, so the killed alarm never
-    re-fires. cortex load_state / triggers tolerate None (floor due when now >=
-    None is treated as 'no floor set' -> waits for the next lie_down redraw)."""
+    ct_pacemaker_state JSON. Semantics: cortex triggers._floor_trigger treats
+    None as DUE (fail-safe = a spurious wake, heartbeat preserved). Net effect
+    is still correct — the awake gate blocks any signal while awake, and the
+    user-wake reset that calls this also flips awake=true, so the next lie_down
+    redraws a fresh floor before None could fire a wake."""
     import sqlite3
     dbp = config.db_path()
     try:

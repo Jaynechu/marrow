@@ -329,7 +329,7 @@ def tl(
         - 3 = Both medium (~ 1 week) - funny moments / light quarrels / outing
         - 4 = Either high intensity or high imp - major conflict / final exam
         - 5 = Milestone (both high) - worth recording forever?
-      - body <=30 chars, record real-world task/event + shared activities with assistant.
+      - body <=50 chars, record real-world task/event + shared activities with assistant.
         - vivid not work-log; life details in, tech details out.
         - e.g. meals, casual chat topics, plays and tiny/silly/funny moments.
         - No third person — 我/你 only, never 她/他."""
