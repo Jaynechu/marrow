@@ -246,8 +246,8 @@ im_quiet_text = ""
 # show_tokens (10万 soft, ahead of the 15万 fuse) turn_inject appends a one-line
 # nudge to wrap up, write the handoff, and lie_down(rotate=True). Normal
 # sessions never see this. Empty text = inert.
-show_tokens = 100000
-show_text = "Context ≥100k - If not actively chatting with user, handoff within 3 turns and lie_down(rotate=True) to clear.  If mid-conversation: carry on, the 150k fuse is the backstop."
+show_tokens = 120000
+show_text = "Context ≥120k - If not actively chatting with user, handoff within 3 turns and lie_down(rotate=True) to clear.  If mid-conversation: carry on, the 150k fuse is the backstop."
 
 [cortex_usage]
 # Net-token visibility (all sessions self-aware). Rendered by usage.py off the

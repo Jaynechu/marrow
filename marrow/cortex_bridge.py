@@ -805,6 +805,31 @@ def _cortex_handoff_page_turn_if_stale() -> None:
         _cortex_page_turn(p, text)
 
 
+def _cortex_handoff_header(ws: dict) -> str:
+    """Build the 'HH:mm-HH:mm | SID xxxxxxxx' line appended to show_text so
+    cortex knows the time range and session id to write into its handoff."""
+    from datetime import timezone as _tz
+    since_raw = ws.get("awake_since")
+    since_str = "??:??"
+    if since_raw:
+        try:
+            since_dt = datetime.fromisoformat(since_raw)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=_tz.utc)
+            since_str = since_dt.astimezone(config.get_tz()).strftime("%H:%M")
+        except (ValueError, TypeError):
+            pass
+    now_str = datetime.now(config.get_tz()).strftime("%H:%M")
+    transcript_raw = ws.get("transcript")
+    sid = "unknown"
+    if transcript_raw:
+        try:
+            sid = Path(str(transcript_raw)).stem[:8]
+        except (OSError, ValueError):
+            pass
+    return f"{since_str}-{now_str} | SID {sid}"
+
+
 def _cortex_show_context(tpath: str) -> str:
     """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (10万
     soft, ahead of the 15万 fuse). Empty for normal sessions, below threshold,
@@ -819,9 +844,18 @@ def _cortex_show_context(tpath: str) -> str:
     if show <= 0:
         return ""
     from .hooks import _window_tokens_from_transcript
-    if _window_tokens_from_transcript(tpath) >= show:
-        return text
-    return ""
+    if _window_tokens_from_transcript(tpath) < show:
+        return ""
+    try:
+        ws = _wake_state_load(_cortex_wake_state_path())
+    except Exception:
+        ws = {}
+    if ws.get("user_replied_this_wake"):
+        return ""
+    header = _cortex_handoff_header(ws)
+    if header:
+        text = f"{text}\nHandoff section header: {header}"
+    return text
 
 
 # ── llm: full-env cortex runner + per-wake accounting ─────────────────────────
