@@ -830,9 +830,23 @@ def _cortex_handoff_header(ws: dict) -> str:
     return f"{since_str}-{now_str} | SID {sid}"
 
 
+def _cortex_window_info() -> str:
+    """Every-turn cortex window identity line: SID + time range.
+    Cortex always knows its session id regardless of token threshold."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return ""
+    try:
+        ws = _wake_state_load(_cortex_wake_state_path())
+    except Exception:
+        return ""
+    header = _cortex_handoff_header(ws)
+    return f"Window: {header}" if header else ""
+
+
 def _cortex_show_context(tpath: str) -> str:
-    """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (10万
-    soft, ahead of the 15万 fuse). Empty for normal sessions, below threshold,
+    """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (12万
+    soft, ahead of the 15万 fuse). Suppressed when user is chatting
+    (user_replied_this_wake). Empty for normal sessions, below threshold,
     or with the text blanked out."""
     if not os.environ.get("MARROW_CORTEX"):
         return ""
