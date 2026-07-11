@@ -675,12 +675,29 @@ def _spawn_watchdog_if_absent() -> None:
         pass
 
 
+def _is_live_wait_until(raw: str) -> bool:
+    """True if raw (an ISO wake_state silence_wait_until value) parses and is
+    still in the future -> the in-flight wait it guards has not expired yet."""
+    from datetime import timezone as _tz
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_tz.utc)
+    return dt > datetime.now(_tz.utc)
+
+
 def _cortex_user_wake_reset(inp: dict) -> None:
     """Real user message in a cortex window -> flip awake, kill the pending
-    alarm (floor deadline + sentinel), zero the wait/silence state, mark the
-    user reply, and ensure a watchdog is alive. Fast + idempotent: already-awake
-    + watchdog-alive collapses to cheap no-op writes. Cortex session only; the
-    caller has already excluded machine lines (is_machine_line)."""
+    alarm (floor deadline + sentinel), mark the user reply, and ensure a
+    watchdog is alive. A wait only counts if its timer ran to expiry with no
+    user: if a LIVE (unexpired) silence_wait_until is interrupted here, the
+    in-flight wait never completed, so refund it (wait_count -= 1, floored at
+    0); an expired/absent wait_until leaves wait_count untouched. Fast +
+    idempotent: already-awake + watchdog-alive collapses to cheap no-op
+    writes. Cortex session only; the caller has already excluded machine
+    lines (is_machine_line)."""
     if not os.environ.get("MARROW_CORTEX"):
         return
     p = _cortex_wake_state_path()
@@ -697,8 +714,9 @@ def _cortex_user_wake_reset(inp: dict) -> None:
             if tpath:
                 d["transcript"] = str(tpath)
         d["user_replied_this_wake"] = True
-        d["wait_count"] = 0
-        d.pop("silence_wait_until", None)
+        raw_wait_until = d.pop("silence_wait_until", None)
+        if raw_wait_until is not None and _is_live_wait_until(raw_wait_until):
+            d["wait_count"] = max(0, int(d.get("wait_count") or 0) - 1)
         d.pop("tuck_pending", None)
         sentinel_pid = d.pop("sentinel_pid", None)
         _wake_state_save(p, d)

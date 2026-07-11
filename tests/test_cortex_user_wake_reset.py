@@ -1,7 +1,8 @@
 """User-wake reset (Item 3): a real user message in a cortex window flips the
-session awake, marks the reply, zeros wait/silence state, clears the pending
-floor deadline + sentinel, and (re)spawns a watchdog. Machine lines (wake marker
-/ monitor death / tuck-in) down the ear channel must NOT trigger it.
+session awake, marks the reply, clears silence state, refunds wait_count only
+if the interrupted wait was still live (unexpired), clears the pending floor
+deadline + sentinel, and (re)spawns a watchdog. Machine lines (wake marker /
+monitor death / tuck-in) down the ear channel must NOT trigger it.
 
 marrow venv cannot import cortex, so wake_state.json is manipulated directly —
 these tests exercise that direct path.
@@ -68,7 +69,7 @@ def test_reset_flips_awake_and_marks_reply(cortex_env):
     assert d["user_replied_this_wake"] is True
     assert d["wake_log_id"] is None
     assert d["transcript"] == "/x/y.jsonl"
-    assert d["wait_count"] == 0
+    assert "wait_count" not in d  # no wait_until -> untouched (never written)
 
 
 def test_reset_clears_silence_and_sentinel(cortex_env, monkeypatch):
@@ -85,9 +86,33 @@ def test_reset_clears_silence_and_sentinel(cortex_env, monkeypatch):
     assert "silence_wait_until" not in d
     assert "tuck_pending" not in d
     assert "sentinel_pid" not in d
-    assert d["wait_count"] == 0
+    # wait_until was already expired (2026-01-01) -> wait_count untouched.
+    assert d["wait_count"] == 2
     assert d["user_replied_this_wake"] is True
     assert 12345 in killed  # sentinel SIGTERM'd
+
+
+def test_reset_refunds_wait_count_on_live_wait_until(cortex_env):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({
+        "awake": True, "silence_wait_until": "2099-01-01T00:00:00+00:00",
+        "wait_count": 1,
+    }))
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/t.jsonl"})
+    d = _ws(home)
+    assert "silence_wait_until" not in d
+    assert d["wait_count"] == 0  # live wait interrupted -> refunded
+
+
+def test_reset_no_refund_without_live_wait_until(cortex_env):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({
+        "awake": True, "wait_count": 1,
+    }))
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/t.jsonl"})
+    d = _ws(home)
+    assert "silence_wait_until" not in d
+    assert d["wait_count"] == 1  # no live wait -> untouched
 
 
 def test_reset_already_awake_preserves_awake_since(cortex_env):
