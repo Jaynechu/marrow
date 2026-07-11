@@ -69,6 +69,44 @@ def test_ordinary_chat_no_note_inject(tmp_path, monkeypatch, capsys):
     assert "secret note" not in _ctx(capsys)
 
 
+def test_wakeup_note_fresh_render_wins(tmp_path, monkeypatch):
+    """render_module configured + subprocess succeeds => fresh stdout is used,
+    not the frozen file."""
+    (tmp_path / "wakeup_note.md").write_text("frozen", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
+                                    "venv_python": "/x/py", "repo_root": "/x"})
+
+    class _P:
+        returncode = 0
+        stdout = "FRESH note SID feed1234"
+        stderr = ""
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", lambda *a, **k: _P())
+    assert cortex_bridge.wakeup_note_text("/t/feed1234ab.jsonl") == "FRESH note SID feed1234"
+
+
+def test_wakeup_note_falls_back_on_render_failure(tmp_path, monkeypatch):
+    """Subprocess failure / non-zero / empty => frozen file is returned."""
+    (tmp_path / "wakeup_note.md").write_text("frozen fallback", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
+                                    "venv_python": "/x/py", "repo_root": "/x"})
+
+    def _boom(*a, **k):
+        raise OSError("no such venv")
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", _boom)
+    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") == "frozen fallback"
+
+
+def test_wakeup_note_no_render_module_uses_file(tmp_path, monkeypatch):
+    """render_module unset => never spawns, static file only (feature disabled)."""
+    (tmp_path / "wakeup_note.md").write_text("static only", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"venv_python": "/x/py", "repo_root": "/x"})
+
+    def _fail(*a, **k):
+        raise AssertionError("subprocess must not run when render_module unset")
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", _fail)
+    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") == "static only"
+
+
 def test_non_cortex_session_no_wake_inject(tmp_path, monkeypatch, capsys):
     """No MARROW_CORTEX => the whole cortex branch is skipped."""
     monkeypatch.delenv("MARROW_CORTEX", raising=False)

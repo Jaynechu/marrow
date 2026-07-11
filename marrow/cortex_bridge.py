@@ -444,9 +444,39 @@ def wake_marker() -> str:
     return str(cx.get("wake_marker") or "").strip()
 
 
-def wakeup_note_text() -> str | None:
-    """Full text of the wakeup note (config wakeup_note_file, resolved under
-    home). None when the file is missing/empty so the caller injects nothing."""
+def _render_note_fresh(transcript_path: str | None) -> str | None:
+    """Fresh render via the cortex venv (config [cortex].render_module, e.g.
+    cortex.note_render). Reflects the current time + the CALLER's transcript SID
+    even after a window rotation, unlike the frozen file. Unset module / any
+    failure / empty output -> None so the caller falls back to the static file."""
+    c = config.load().get("cortex", {})
+    module = str(c.get("render_module") or "").strip()
+    py, root = _cortex_paths()
+    if not module or not py or not root:
+        return None
+    py = str(Path(py).expanduser())
+    root = str(Path(root).expanduser())
+    cmd = [py, "-m", module]
+    if transcript_path:
+        cmd += ["--transcript", str(transcript_path)]
+    try:
+        p = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=10)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if p.returncode != 0:
+        return None
+    text = (p.stdout or "").strip()
+    return text or None
+
+
+def wakeup_note_text(transcript_path: str | None = None) -> str | None:
+    """Full text of the wakeup note. Tries a fresh render first (current time +
+    caller's transcript SID, correct after rotation); on any failure falls back
+    to the frozen file (config wakeup_note_file under home). None when both yield
+    nothing so the caller injects nothing."""
+    fresh = _render_note_fresh(transcript_path)
+    if fresh:
+        return fresh
     try:
         note = _cortex_path("wakeup_note_file", "wakeup_note.md")
         text = note.read_text(encoding="utf-8").strip()

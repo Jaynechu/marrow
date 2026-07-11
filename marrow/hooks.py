@@ -1954,7 +1954,7 @@ def user_prompt_submit() -> int:
         # empty note injects nothing (never crashes).
         _marker = cortex_bridge.wake_marker()
         if _marker and _marker in _prompt:
-            _note = cortex_bridge.wakeup_note_text()
+            _note = cortex_bridge.wakeup_note_text(tpath)
             if _note:
                 json.dump({"hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
