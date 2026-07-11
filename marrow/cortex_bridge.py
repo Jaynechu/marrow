@@ -10,7 +10,7 @@ back into.
 Two independent gates, both must be open for any cortex behaviour:
 
   1. [cortex].enabled (config, default false) — "are the organs installed".
-     enabled() == False  => register() is a no-op (none of the six tools reach
+     enabled() == False  => register() is a no-op (no cortex tool reaches
      the MCP schema) and every hook helper here short-circuits to its inert
      value. A clean marrow install shows ZERO cortex behaviour.
   2. MARROW_CORTEX (env) — "is this the cortex session". Set by the cortex
@@ -114,7 +114,8 @@ def first(
     sid: str | None = None,
     status: str = "done",
 ) -> dict | list[dict]:
-    """Respond to the Cortex First section (notes/concerns injected into context).
+    """(pending — not registered; original description saved in CC-Lab/docs/notes/ct-organ-descriptions.md)
+    Respond to the Cortex First section (notes/concerns injected into context).
     'tick' each item you acted on + a tiny note (1-10 chars), e.g. 处理好啦；等会儿再跟进。
     status='tried' when attempted but unsolved — note what blocked.
     'untick' a wrong ack; 'list' current ticks."""
@@ -178,7 +179,8 @@ def goal(
     value: str | None = None,
     unit: str | None = None,
 ) -> dict | list[dict]:
-    """Timetrack weekly goals e.g. study, sleep, exercise.
+    """(pending — not registered; original description saved in CC-Lab/docs/notes/ct-organ-descriptions.md)
+    Timetrack weekly goals e.g. study, sleep, exercise.
     action='set': create / update goals
     e.g. 'sleep goal 8h' → key='sleep' value='8' unit='h';
     'list'; 'delete' by key when dropped or achieved."""
@@ -308,8 +310,10 @@ def register(marrow_tool, db: str | None = None) -> None:
     """Install the cortex MCP tools onto the daemon when [cortex].enabled.
 
     `marrow_tool` is daemon.marrow_tool (the alwaysLoad tool decorator). enabled
-    == False => no-op (none of the six tools reach the schema). When enabled:
-      - wish / first / goal register for ALL sessions;
+    == False => no-op (none of the tools reach the schema). When enabled:
+      - wish registers for ALL sessions;
+      - first / goal are PENDING — not registered anywhere yet (no injection
+        mechanism wired; keep the functions + storage, just don't expose them);
       - lie_down / wait / say register ONLY in a cortex session (_CORTEX, the
         import-time MARROW_CORTEX capture — the original inner env gate).
     Idempotent per process (FastMCP tolerates re-adding the same tool name)."""
@@ -319,8 +323,6 @@ def register(marrow_tool, db: str | None = None) -> None:
     if not enabled():
         return
     marrow_tool()(wish)
-    marrow_tool()(first)
-    marrow_tool()(goal)
     if _CORTEX:
         marrow_tool()(lie_down)
         marrow_tool()(wait)

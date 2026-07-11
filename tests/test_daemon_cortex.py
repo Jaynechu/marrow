@@ -283,27 +283,31 @@ def test_switch_off_registers_no_tools(monkeypatch):
     assert set(m._tool_manager._tools.keys()) == set()
 
 
-def test_switch_on_registers_wish_first_goal(monkeypatch):
-    """enabled=true (no MARROW_CORTEX) => wish/first/goal for all sessions;
-    lie_down/wait/say stay absent (cortex-session inner gate)."""
+def test_switch_on_registers_wish_only(monkeypatch):
+    """enabled=true (no MARROW_CORTEX) => wish for all sessions; first/goal are
+    pending (not registered anywhere yet); lie_down/wait/say stay absent
+    (cortex-session inner gate)."""
     _force_enabled(monkeypatch, True)
     m, mt = _fresh_mcp()
     # _CORTEX is the import-time capture; force the non-cortex case explicitly.
     monkeypatch.setattr(cortex_bridge, "_CORTEX", False)
     cortex_bridge.register(mt)
     names = set(m._tool_manager._tools.keys())
-    assert {"wish", "first", "goal"} <= names
+    assert "wish" in names
+    assert "first" not in names and "goal" not in names
     assert "lie_down" not in names and "wait" not in names and "say" not in names
 
 
-def test_switch_on_cortex_session_registers_all_six(monkeypatch):
-    """enabled=true AND cortex session (_CORTEX) => all six tools register."""
+def test_switch_on_cortex_session_registers_wish_and_cortex_trio(monkeypatch):
+    """enabled=true AND cortex session (_CORTEX) => wish + lie_down/wait/say
+    register; first/goal stay pending (not registered)."""
     _force_enabled(monkeypatch, True)
     m, mt = _fresh_mcp()
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     names = set(m._tool_manager._tools.keys())
-    assert {"wish", "first", "goal", "lie_down", "wait", "say"} <= names
+    assert {"wish", "lie_down", "wait", "say"} <= names
+    assert "first" not in names and "goal" not in names
 
 
 def test_switch_off_show_context_gated_empty(monkeypatch, tmp_path):
