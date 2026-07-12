@@ -524,7 +524,7 @@ def _render_24h(digests: list[dict],
             return
         entries.append({
             "ts": ts_dt,
-            "local_date": _local_date_from_utc(ts_iso),
+            "local_date": ts_dt.astimezone(_TZ).date(),
             "sid": sd["sid"],
             "segment_seq": sd.get("segment_seq", 0),
             "line_index": idx,
@@ -609,7 +609,7 @@ def _render_24h(digests: list[dict],
             continue
         entries.append({
             "ts": ts_dt,
-            "local_date": _local_date_from_utc(ts),
+            "local_date": ts_dt.astimezone(_TZ).date(),
             "sid": None,
             "event_id": ev["id"],
             "line_index": None,
@@ -624,7 +624,7 @@ def _render_24h(digests: list[dict],
             continue
         entries.append({
             "ts": ts_dt,
-            "local_date": _local_date_from_utc(sr.get("ts") or ""),
+            "local_date": ts_dt.astimezone(_TZ).date(),
             "sid": None,
             "event_id": sr["id"],
             "line_index": None,
