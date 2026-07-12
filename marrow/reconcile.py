@@ -1472,6 +1472,8 @@ def reconcile_alerts(conn: sqlite3.Connection,
 # ── timeline reconcile ────────────────────────────────────────────────────────
 
 _TIMELINE_H2 = "## Timeline"
+_TIMELINE_END_MARKER = "<!-- marrow:timeline:end -->"
+_TL_TRAIL_T_RE = re.compile(r"t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
 # Matches `<!-- tl:<sid> -->` (session) and `<!-- tl:d:YYYY-MM-DD -->` (diary).
 _TL_SID_RE  = re.compile(r"<!--\s*tl:(?!d:|e:|ep:)(?P<sid>[^:\s>]+)(?::(?P<seq>\d+))?(?::(?P<ln>\d+))?\s*-->")
 _TL_DATE_RE = re.compile(r"<!--\s*tl:d:(?P<date>\d{4}-\d{2}-\d{2})\s*-->")
@@ -1488,6 +1490,15 @@ _TL_DAY_RE    = re.compile(r"^\d{2}-\d{2}\s+Day\s+【[^】]*】\s*")
 
 
 _TL_TRAIL_RE  = re.compile(r"<!--\s*tl-rendered:(?P<payload>[^>]+)\s*-->")
+
+
+def _trail_t_iso(block: str) -> str | None:
+    """Render timestamp from the tl-rendered trail (t=), or None if absent."""
+    m_trail = _TL_TRAIL_RE.search(block)
+    if not m_trail:
+        return None
+    m_t = _TL_TRAIL_T_RE.search(m_trail.group("payload"))
+    return m_t.group(1) if m_t else None
 _TL_EVT_RE    = re.compile(r"<!--\s*tl:e:(?P<eid>\d+)\s*-->")
 _TL_EP_RE     = re.compile(r"<!--\s*tl:ep:(?P<epid>\d+)\s*-->")
 _TL_PLUS_RE   = re.compile(
@@ -1628,13 +1639,22 @@ def reconcile_timeline(conn: sqlite3.Connection,
     if not dashboard_path.exists():
         return rpt
     text = dashboard_path.read_text(encoding="utf-8")
-    md_mtime_iso = _md_mtime_iso(dashboard_path)
     start = text.find(_TIMELINE_H2)
     if start == -1:
         return rpt
     after_h2 = text[start + len(_TIMELINE_H2):]
+    # Block ends at the earliest of the next H2 or the timeline end marker.
+    # Dashboard files have no end marker → falls back to next-H2 behaviour.
     next_h2 = re.search(r"\n##\s", after_h2)
-    block = after_h2[: next_h2.start()] if next_h2 else after_h2
+    end_marker = after_h2.find(_TIMELINE_END_MARKER)
+    ends = [m.start() if hasattr(m, "start") else m
+            for m in (next_h2, end_marker) if m is not None and m != -1]
+    block = after_h2[: min(ends)] if ends else after_h2
+    # Gate base: render timestamp from the trail (t=), when the block content
+    # actually last changed. Falls back to file mtime for legacy files or a
+    # hand-deleted trail. A volatile second writer (Status zone) bumps mtime
+    # every render, so mtime alone would lose its "content last rendered" meaning.
+    md_mtime_iso = _trail_t_iso(block) or _md_mtime_iso(dashboard_path)
 
     # Parse trail marker first — tells us what was rendered last time
     trail_sid_seqs: set[tuple[str, int]] = set()

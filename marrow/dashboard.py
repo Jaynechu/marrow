@@ -117,6 +117,9 @@ def _resolve_blocks(path: str, conn, fresh: list[tuple[str, str]],
         # Reconciled blocks: reconcile_* already absorbed any user edit into
         # the DB, so the fresh body IS the resolved state. Always overwrite.
         if bid in top_sections.RECONCILED_BLOCK_IDS:
+            if bid == "dashboard.timeline":
+                from .timeline import carry_trail_t
+                fresh_body = carry_trail_t(fresh_body, current.get(bid))
             out.append(fresh_body)
             pending.append((bid, _hash(fresh_body)))
             continue

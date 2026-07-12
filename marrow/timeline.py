@@ -765,10 +765,44 @@ def render_timeline(conn: sqlite3.Connection,
     if trail_dates: parts.append("d=" + ",".join(trail_dates))
     if trail_evts:  parts.append("e=" + ",".join(trail_evts))
     if trail_eps:   parts.append("ep=" + ",".join(trail_eps))
+    # t= = moment timeline block content last changed; render_timeline stays
+    # pure and stamps now — carry_trail_t (writer-side) rewrites it to the
+    # carried value when the content is unchanged. Only stamped when the block
+    # has rendered anchors (empty `_none_` render emits no trail at all).
     if parts:
+        parts.append("t=" + _now_utc_iso())
         text += f"\n<!-- tl-rendered:{';'.join(parts)} -->"
 
     return text
+
+
+def _now_utc_iso() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+_TL_TRAIL_LINE_RE = _re.compile(r"\n?<!--\s*tl-rendered:[^>]+-->\s*$")
+_TL_TRAIL_T_RE = _re.compile(r"t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
+
+
+def carry_trail_t(new_block: str, old_block: str | None) -> str:
+    """Writer-side trail-t reconciliation.
+
+    Compare new vs old timeline block with the trail line stripped. Identical
+    content → rewrite the new trail carrying the old t= (content unchanged).
+    Different content, or no old t= → keep the fresh t=now already stamped by
+    render_timeline. Returns the (possibly rewritten) new block.
+    """
+    if old_block is None:
+        return new_block
+    old_t = _TL_TRAIL_T_RE.search(_TL_TRAIL_LINE_RE.search(old_block).group(0)) \
+        if _TL_TRAIL_LINE_RE.search(old_block) else None
+    if old_t is None:
+        return new_block
+    new_body = _TL_TRAIL_LINE_RE.sub("", new_block)
+    old_body = _TL_TRAIL_LINE_RE.sub("", old_block)
+    if new_body != old_body:
+        return new_block
+    return _TL_TRAIL_T_RE.sub(f"t={old_t.group(1)}", new_block, count=1)
 
 
 def _assemble(open_lines: list[str],
