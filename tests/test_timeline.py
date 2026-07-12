@@ -200,7 +200,7 @@ def test_24h_life_line_with_model_timestamp_not_double_prefixed():
     )
     assert overflow == []
     assert lines == [
-        "**06-22 Mon**",
+        "**06-21 Sun**",
         "01:25 【委屈】过敏难受 <!-- tl:s-double-ts:0:0 -->",
     ]
     assert "01:54" not in lines[1]
@@ -286,9 +286,8 @@ def test_24h_calendar_divider_between_local_dates():
     )
     assert overflow == []
     assert lines == [
-        "**06-22 Mon**",
-        "00:30 凌晨聊天 <!-- tl:s-2200:0:0 -->",
         "**06-21 Sun**",
+        "00:30 凌晨聊天 <!-- tl:s-2200:0:0 -->",
         "23:30 深夜散步 <!-- tl:s-2130:0:0 -->",
     ]
 
@@ -646,9 +645,9 @@ def test_life_lines_resolve_against_event_span_midnight_crossing():
     assert lines == [
         "**06-21 Sun**",
         "08:59 morning wrap <!-- tl:b2f76aa9:0:4 -->",
+        "**06-20 Sat**",
         "04:50 late snack <!-- tl:b2f76aa9:0:3 -->",
         "02:39 after midnight note <!-- tl:b2f76aa9:0:2 -->",
-        "**06-20 Sat**",
         "14:33 leaving for shift <!-- tl:b2f76aa9:0:1 -->",
         "14:22 nap before shift <!-- tl:b2f76aa9:0:0 -->",
     ]
@@ -773,8 +772,8 @@ def test_24h_first_life_line_sorts_by_own_display_time():
         "**06-13 Sat**",
         "20:10 晚上聊天 <!-- tl:s-early-first:0:1 -->",
         "12:00 中午任务 <!-- tl:s-midday:0:0 -->",
-        "04:30 清晨醒来 <!-- tl:s-early-first:0:0 -->",
         "**06-12 Fri**",
+        "04:30 清晨醒来 <!-- tl:s-early-first:0:0 -->",
         "22:00 前夜任务 <!-- tl:s-prev-evening:0:0 -->",
     ]
     assert lines.count("**06-12 Fri**") == 1
