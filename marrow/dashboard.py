@@ -95,7 +95,9 @@ def _assemble_top_region(bodies: list[str]) -> str:
 
 
 def _resolve_blocks(path: str, conn, fresh: list[tuple[str, str]],
-                    current_top: str) -> tuple[list[str], list[tuple[str, str]]]:
+                    current_top: str,
+                    timeline_absorbed: bool = False,
+                    ) -> tuple[list[str], list[tuple[str, str]]]:
     """For each canonical fresh block decide: skip / preserve user edit / overwrite.
 
     Returns (bodies, pending_records) — bodies splice back into the top
@@ -119,7 +121,8 @@ def _resolve_blocks(path: str, conn, fresh: list[tuple[str, str]],
         if bid in top_sections.RECONCILED_BLOCK_IDS:
             if bid == "dashboard.timeline":
                 from .timeline import carry_trail_t
-                fresh_body = carry_trail_t(fresh_body, current.get(bid))
+                fresh_body = carry_trail_t(fresh_body, current.get(bid),
+                                           timeline_absorbed)
             out.append(fresh_body)
             pending.append((bid, _hash(fresh_body)))
             continue
@@ -150,6 +153,7 @@ def write_dashboard(path: str, conn, *, state_dir: str,
         return
     # Reconcile md edits BEFORE render so the user's ✅/❌ + tick/untick flow back.
     # Fail-soft: a reconcile error must never block dashboard refresh.
+    timeline_absorbed = False
     if os.path.exists(path):
         try:
             _rpt = reconcile_tasks(conn, Path(path))
@@ -183,6 +187,7 @@ def write_dashboard(path: str, conn, *, state_dir: str,
             )
         try:
             _rpt = reconcile_timeline(conn, Path(path), db=db)
+            timeline_absorbed = _rpt.any_change()
             emit_conflict_alerts(_rpt, "dashboard:timeline", db=db)
         except Exception as e:
             repo.add_alert(
@@ -200,7 +205,8 @@ def write_dashboard(path: str, conn, *, state_dir: str,
     current_top = _current_top_text(existing) if cur_block else ""
 
     fresh = top_sections.iter_top_blocks(conn, dashboard_path=path)
-    resolved, pending = _resolve_blocks(path, conn, fresh, current_top)
+    resolved, pending = _resolve_blocks(path, conn, fresh, current_top,
+                                        timeline_absorbed)
     new_top_region = _assemble_top_region(resolved)
 
     if cur_block:

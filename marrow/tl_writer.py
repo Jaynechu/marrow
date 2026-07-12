@@ -225,7 +225,8 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
 
     with conn:
         conn.execute(
-            "UPDATE events SET content=?, ts_start=?, ts_end=?, timestamp=?, imp=?"
+            "UPDATE events SET content=?, ts_start=?, ts_end=?, timestamp=?, imp=?,"
+            " updated_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')"
             " WHERE id=?",
             (new_content, ts_start, ts_end, ts_start, imp, event_id),
         )

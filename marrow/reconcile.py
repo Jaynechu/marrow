@@ -2024,12 +2024,13 @@ def reconcile_timeline(conn: sqlite3.Connection,
             rpt.updated += 1
         for eid in expected_evts - present_evts:
             erow = conn.execute(
-                "SELECT channel, role, created_at FROM events WHERE id=?", (eid,)
+                "SELECT channel, role, COALESCE(updated_at, created_at) AS mts"
+                " FROM events WHERE id=?", (eid,)
             ).fetchone()
             is_self = erow is not None and erow["role"] == "tl"
             if erow is None or not (is_self or erow["channel"] == "manual"):
                 continue
-            if md_mtime_iso and (erow["created_at"] or "") > md_mtime_iso:
+            if md_mtime_iso and (erow["mts"] or "") > md_mtime_iso:
                 continue
             conn.execute(
                 "DELETE FROM events WHERE id=? AND (channel='manual' OR role='tl')",
@@ -2092,11 +2093,29 @@ def reconcile_timeline(conn: sqlite3.Connection,
         # ── EDIT: event content (manual + self rows) ──────────────────────────
         for eid, raw_text in evt_edits.items():
             row = conn.execute(
-                "SELECT content, channel, role FROM events WHERE id=?", (eid,)
+                "SELECT content, channel, role,"
+                " COALESCE(updated_at, created_at) AS mts FROM events WHERE id=?",
+                (eid,)
             ).fetchone()
             if row is None:
                 rpt.conflicts.append(f"tl:e:{eid} not in events")
                 continue
+            # Freshness gate: DB row content-written after the render (t=) AND
+            # md text still differs → md is the stale second surface, DB wins.
+            # Prevents the two-writer ping-pong (dashboard.md ⇄ daybrief.md).
+            if md_mtime_iso and (row["mts"] or "") > md_mtime_iso:
+                _cur = (row["content"] or "")
+                _md = _TL_PERIOD_RE.sub("", _TL_HHMM_RE.sub("", raw_text)).strip()
+                if row["role"] == "tl":
+                    _m = _TL_SELF_RE.match(raw_text.strip())
+                    if _m:
+                        _b = (_m.group("body") or "").strip()
+                        _l = _m.group("label")
+                        _md = f"【{_l.strip()}】{_b}" if _l else _b
+                if _md and _md != _cur:
+                    db_win_skips.append(f"e:{eid}")
+                    rpt.unchanged += 1
+                    continue
             if row["role"] == "tl":
                 _reconcile_self_edit(conn, rpt, eid, raw_text, row, now_iso)
                 continue
@@ -2109,7 +2128,8 @@ def reconcile_timeline(conn: sqlite3.Connection,
                 rpt.unchanged += 1
                 continue
             if new_text != (row["content"] or ""):
-                conn.execute("UPDATE events SET content=? WHERE id=?", (new_text, eid))
+                conn.execute("UPDATE events SET content=?, updated_at=? WHERE id=?",
+                             (new_text, now_iso, eid))
                 try:
                     conn.execute("DELETE FROM events_vec WHERE rowid=?", (eid,))
                     conn.execute("DELETE FROM events_vec_meta WHERE rowid=?", (eid,))

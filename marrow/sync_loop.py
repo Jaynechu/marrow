@@ -56,6 +56,37 @@ def _max_updated(conn: sqlite3.Connection, table: str,
         return None
 
 
+def _iso_to_posix(ts) -> float | None:
+    """ISO 8601 UTC string → POSIX float, or None if unparseable."""
+    try:
+        import datetime
+        ts_clean = ts.rstrip("Z").replace("T", " ")
+        dt = datetime.datetime.fromisoformat(ts_clean)
+        return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+    except (ValueError, AttributeError):
+        return None
+
+
+def _max_expr(conn: sqlite3.Connection, table: str, expr: str,
+              where: str | None = None) -> float | None:
+    """max(expr) over table with an optional WHERE, as POSIX float.
+
+    expr/where are internal literals (never user input) — the S608 warning
+    is suppressed. Lets a source count only the rows a page actually renders
+    (e.g. timeline events role='tl'/manual) so unrelated churn never fires
+    the sync loop."""
+    sql = f"SELECT max({expr}) FROM {table}"  # noqa: S608 — internal literals
+    if where:
+        sql += f" WHERE {where}"  # noqa: S608 — internal literals
+    try:
+        row = conn.execute(sql).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None or row[0] is None:
+        return None
+    return _iso_to_posix(row[0])
+
+
 def _max_any(conn: sqlite3.Connection,
              specs: list[tuple[str, str]]) -> float | None:
     """Return max mtime across multiple (table, col) pairs. None if all miss."""
@@ -95,18 +126,26 @@ _DASHBOARD_DB_SOURCES: list[tuple[str, str]] = [
     ("diary",           "updated_at"),
 ]
 
-# Timeline-only subset feeding daybrief.md. Restricted to what
-# reconcile_timeline / render_timeline actually touch: session_digests (ts —
-# always populated, unlike the mostly-NULL updated_at), diary, events
-# (created_at catches new tl lines; in-place tl edits ride collect_tick's
-# 30min render), affect (open-episode rows the plan calls "episodes").
+# Timeline-only subset feeding daybrief.md. Restricted to the rows
+# render_timeline actually renders, via (table, expr, where) triples so raw
+# conversation churn cannot fire the loop:
+#   session_digests.ts — always populated (unlike mostly-NULL updated_at).
+#   diary.updated_at.
+#   events: ONLY role='tl' (self lines) or channel='manual'. The bare
+#     events.created_at moved forward on every chat turn (every turn inserts
+#     assistant/user rows) → the loop rendered daybrief every ~5s. Filtering to
+#     rendered rows + COALESCE(updated_at,created_at) catches new tl/manual
+#     lines AND in-place tl edits (updated_at now bumped) within one tick.
+#   affect: ONLY open episodes (the "未解" rows timeline renders).
 # Usage / rate-limit kv is EXCLUDED on purpose — Status-zone freshness rides
 # collect_tick, not the 5s loop, so its per-render churn cannot defeat the gate.
-_DAYBRIEF_DB_SOURCES: list[tuple[str, str]] = [
-    ("session_digests", "ts"),
-    ("diary",           "updated_at"),
-    ("events",          "created_at"),
-    ("affect",          "updated_at"),
+_DAYBRIEF_DB_EXPRS: list[tuple[str, str, str | None]] = [
+    ("session_digests", "ts", None),
+    ("diary", "updated_at", None),
+    ("events", "COALESCE(updated_at, created_at)",
+     "role='tl' OR channel='manual'"),
+    ("affect", "COALESCE(updated_at, created_at)",
+     "superseded_by IS NULL AND unresolved=1 AND resolved_at IS NULL"),
 ]
 
 
@@ -124,8 +163,13 @@ def last_db_mtime_dashboard(conn: sqlite3.Connection) -> float | None:
 
 
 def last_db_mtime_daybrief(conn: sqlite3.Connection) -> float | None:
-    """Return max db timestamp across the timeline-only daybrief sources."""
-    return _max_any(conn, _DAYBRIEF_DB_SOURCES)
+    """Return max db timestamp across the timeline-only daybrief sources.
+
+    Uses filtered expressions so only the rows render_timeline actually shows
+    move the clock — raw conversation event churn stays invisible to the loop."""
+    vals = [_max_expr(conn, t, e, w) for t, e, w in _DAYBRIEF_DB_EXPRS]
+    valid = [v for v in vals if v is not None]
+    return max(valid) if valid else None
 
 
 # ---------------------------------------------------------------------------

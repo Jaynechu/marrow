@@ -482,6 +482,67 @@ def test_last_db_mtime_daybrief_timeline_subset(tmp_path):
     c.close()
 
 
+def test_daybrief_raw_conversation_event_does_not_move_clock(tmp_path):
+    """D3: raw conversation events (role user/assistant, not tl/manual) must NOT
+    advance the daybrief clock, or the loop re-renders every chat turn."""
+    from datetime import datetime, timezone
+
+    from marrow import storage
+    db = str(tmp_path / "t.db")
+    c = storage.init_db(db)
+    assert last_db_mtime_daybrief(c) is None
+    # A rendered tl line establishes a baseline clock.
+    c.execute(
+        "INSERT INTO events (session_id, timestamp, role, content, created_at)"
+        " VALUES ('s1','2026-05-27T09:00:00Z','tl','x [3]',"
+        " '2026-05-27T09:00:00Z')"
+    )
+    c.commit()
+    base = last_db_mtime_daybrief(c)
+    assert base is not None
+    # A later raw conversation turn (role='assistant') — NOT rendered by the
+    # timeline. Its created_at is far newer but must be ignored.
+    c.execute(
+        "INSERT INTO events (session_id, timestamp, role, content, created_at)"
+        " VALUES ('s1','2026-05-27T10:00:00Z','assistant','chatter',"
+        " '2026-05-27T10:00:00Z')"
+    )
+    c.commit()
+    after = last_db_mtime_daybrief(c)
+    assert after == base, "raw conversation event must not move the daybrief clock"
+    expected = datetime(2026, 5, 27, 9, 0, 0, tzinfo=timezone.utc).timestamp()
+    assert abs(after - expected) < 1.0
+    c.close()
+
+
+def test_daybrief_tl_inplace_edit_moves_clock(tmp_path):
+    """D2/D3: an in-place tl edit bumps events.updated_at → daybrief clock
+    advances so the ≤5s loop reflects the edit to md."""
+    from datetime import datetime, timezone
+
+    from marrow import storage
+    db = str(tmp_path / "t.db")
+    c = storage.init_db(db)
+    c.execute(
+        "INSERT INTO events (session_id, timestamp, role, content, created_at)"
+        " VALUES ('s1','2026-05-27T09:00:00Z','tl','x [3]',"
+        " '2026-05-27T09:00:00Z')"
+    )
+    c.commit()
+    base = last_db_mtime_daybrief(c)
+    # In-place edit stamps updated_at newer than created_at.
+    c.execute(
+        "UPDATE events SET content='y [3]', updated_at='2026-05-27T11:00:00Z'"
+        " WHERE role='tl'"
+    )
+    c.commit()
+    after = last_db_mtime_daybrief(c)
+    expected = datetime(2026, 5, 27, 11, 0, 0, tzinfo=timezone.utc).timestamp()
+    assert abs(after - expected) < 1.0
+    assert after > base
+    c.close()
+
+
 def test_daybrief_db_change_triggers_render(tmp_path):
     """Insert a timeline row → db-newer → render_fn invoked (db→md path)."""
     from marrow import storage

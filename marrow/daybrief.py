@@ -96,18 +96,23 @@ def _extract_timeline_zone(existing: str | None) -> str | None:
     return existing[s + len(TIMELINE_START): e].strip("\n")
 
 
-def _timeline_body(conn: sqlite3.Connection, existing: str | None) -> str:
+def _timeline_body(conn: sqlite3.Connection, existing: str | None,
+                   absorbed: bool = False) -> str:
     """render_timeline output verbatim — H2 header, line anchors and trail all
     kept — with the id marker stamped and the render timestamp carried over an
-    unchanged block (carry_trail_t). Identical to the dashboard timeline zone."""
+    unchanged block (carry_trail_t). Identical to the dashboard timeline zone.
+
+    absorbed=True (reconcile just wrote an edit into the DB) forces a fresh t=
+    so the per-row db-win gate does not deadlock on the next reconcile."""
     content = timeline.render_timeline(conn)
     if not content:
         return "### Timeline\n(no timeline yet)"
     body = _stamp_block_id(content)
-    return timeline.carry_trail_t(body, _extract_timeline_zone(existing))
+    return timeline.carry_trail_t(body, _extract_timeline_zone(existing), absorbed)
 
 
-def render(conn: sqlite3.Connection, existing: str | None = None) -> str:
+def render(conn: sqlite3.Connection, existing: str | None = None,
+           absorbed: bool = False) -> str:
     now = datetime.now(timezone.utc).astimezone(config.get_tz())
     date = now.strftime("%Y-%m-%d")
     first_body = _extract_bounded(existing, FIRST_START, FIRST_END, _FIRST_PLACEHOLDER)
@@ -125,7 +130,7 @@ def render(conn: sqlite3.Connection, existing: str | None = None) -> str:
         REMCAL_END,
         "",
         TIMELINE_START,
-        _timeline_body(conn, existing),
+        _timeline_body(conn, existing, absorbed),
         TIMELINE_END,
         "",
         FIRST_START,
@@ -157,9 +162,11 @@ def update(conn: sqlite3.Connection | None = None) -> str:
         db = config.db_path()
         # Reconcile md hand-edits BEFORE render so timeline edits flow to DB.
         # Fail-soft: a reconcile error must never block the refresh.
+        absorbed = False
         if os.path.exists(path):
             try:
                 _rpt = reconcile_timeline(conn, Path(path), db=db)
+                absorbed = _rpt.any_change()
                 emit_conflict_alerts(_rpt, "daybrief:timeline", db=db)
             except Exception as e:
                 repo.add_alert(
@@ -173,7 +180,7 @@ def update(conn: sqlite3.Connection | None = None) -> str:
                 existing = f.read()
         except OSError:
             pass
-        new = render(conn, existing)
+        new = render(conn, existing, absorbed)
         atomic_write(path, new)
         # Record the timeline block hash AFTER the write so the watcher's
         # sync_file_observe has a baseline. Timeline is reconcile-driven

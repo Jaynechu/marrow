@@ -784,15 +784,25 @@ _TL_TRAIL_LINE_RE = _re.compile(r"\n?<!--\s*tl-rendered:[^>]+-->\s*$")
 _TL_TRAIL_T_RE = _re.compile(r"t=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
 
 
-def carry_trail_t(new_block: str, old_block: str | None) -> str:
+def carry_trail_t(new_block: str, old_block: str | None,
+                  absorbed: bool = False) -> str:
     """Writer-side trail-t reconciliation.
 
     Compare new vs old timeline block with the trail line stripped. Identical
     content → rewrite the new trail carrying the old t= (content unchanged).
     Different content, or no old t= → keep the fresh t=now already stamped by
     render_timeline. Returns the (possibly rewritten) new block.
+
+    absorbed=True means the reconcile pass just wrote at least one edit into
+    the DB, so the DB rows now carry a fresh mts (> the old t=). Keeping the
+    old t= would deadlock the per-row db-win gate (row_ts > t= forever → every
+    later edit of that row rejected). So on absorb, keep the fresh t=now even
+    when the rendered content equals the old file content (the reconcile made
+    the file match the DB, but the DB moved).
     """
     if old_block is None:
+        return new_block
+    if absorbed:
         return new_block
     old_t = _TL_TRAIL_T_RE.search(_TL_TRAIL_LINE_RE.search(old_block).group(0)) \
         if _TL_TRAIL_LINE_RE.search(old_block) else None
