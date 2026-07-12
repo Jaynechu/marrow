@@ -384,7 +384,7 @@ resume_ear_text = "⏯️ The session has been resumed - re-arm a fresh monitor 
 # or this window was rotated out and is reopened only to read history). This
 # window must stay read-only: arm no ear, touch no wake_state, never rotate.
 # {signal_log} substituted with the resolved absolute path. Blank = off.
-retired_ear_text = "⏯️ This is an archived session - ignore all task/monitor."
+retired_ear_text = "⏯️ This is an archived session - ignore all task/monitor. Do not call any tool."
 # Marker in the chat-tier TUCK-IN line the cortex watchdog appends to
 # wake_signal.log (arrives down the ear channel). A cortex-window prompt
 # carrying it is a machine line, excluded from the user-wake reset.
