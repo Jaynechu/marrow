@@ -1607,7 +1607,8 @@ def _reconcile_self_edit(conn, rpt, eid, raw_text, row, now_iso) -> None:
     label = m.group("label")
     new_content = f"【{label.strip()}】{body}" if label else body
     if new_content and new_content != (row["content"] or ""):
-        conn.execute("UPDATE events SET content=? WHERE id=?", (new_content, eid))
+        conn.execute("UPDATE events SET content=?, updated_at=? WHERE id=?",
+                     (new_content, now_iso, eid))
         try:
             conn.execute("DELETE FROM events_vec WHERE rowid=?", (eid,))
             conn.execute("DELETE FROM events_vec_meta WHERE rowid=?", (eid,))

@@ -15,7 +15,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 # Tables whose id must never be reused (freed-id-reuse disease family): a plain
 # INTEGER PRIMARY KEY hands a deleted id back to the next INSERT, and side-tables
@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS events (
   source_hash TEXT,
   ts_start TEXT,
   ts_end TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at TEXT
 );
 -- Deleted events: source_hash of rows the user purged. archive_events skips any
 -- hash listed here so a SessionEnd/catchup re-archive can't resurrect them.
@@ -524,6 +525,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         for tbl, col, decl in (
             ("milestones", "updated_at", "TEXT"),
             ("sessions", "cwd", "TEXT"),
+            ("events", "updated_at", "TEXT"),
         ):
             try:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
@@ -570,6 +572,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v36(conn)
         _migrate_to_v37(conn)
         _migrate_to_v38(conn)
+        _migrate_to_v39(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -1600,6 +1603,24 @@ def _migrate_to_v38(conn: sqlite3.Connection) -> None:
                 (md_max, table),
             )
     conn.execute("PRAGMA user_version=38")
+
+
+def _migrate_to_v39(conn: sqlite3.Connection) -> None:
+    """v39: events.updated_at — freshness arbitration for timeline reconcile.
+
+    The ALTER runs in the schema-evolution backfill loop above (idempotent);
+    this gate only bumps user_version. Existing rows stay NULL on purpose:
+    the reconcile gate reads COALESCE(updated_at, created_at), so NULL means
+    "never content-edited, base = created_at". Only a content-write path
+    (tl_writer.tl_update / reconcile self+manual edit) stamps updated_at.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 39:
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(events)")}
+    if "updated_at" not in cols:
+        conn.execute("ALTER TABLE events ADD COLUMN updated_at TEXT")
+    conn.execute("PRAGMA user_version=39")
 
 
 def get_latest_watermark(conn, sid):
