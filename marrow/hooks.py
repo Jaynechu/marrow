@@ -1104,13 +1104,40 @@ def session_start() -> int:
             # a resume skips). Content is no longer injected here — the user's
             # cortex CLAUDE.md `@handoff.md` imports it directly. Page-turn
             # (stale-date archive + fresh template) still runs as a side effect.
-            if cortex_bridge.enabled() and os.environ.get("MARROW_CORTEX") and not is_resume:
-                cortex_bridge._cortex_handoff_page_turn_if_stale()
-                # Arm the ear on a fresh cortex window: one-shot reminder to start
-                # the signal-log tail. Blank config text = no injection.
-                _arm = cortex_bridge.arm_ear_text()
-                if _arm:
-                    parts.append(_arm)
+            if cortex_bridge.enabled() and os.environ.get("MARROW_CORTEX"):
+                if not is_resume:
+                    cortex_bridge._cortex_handoff_page_turn_if_stale()
+                    # Arm the ear on a fresh cortex window: one-shot reminder to
+                    # start the signal-log tail. Blank config text = no injection.
+                    _arm = cortex_bridge.arm_ear_text()
+                    if _arm:
+                        parts.append(_arm)
+                else:
+                    # Resumed cortex window. Decide in code (not model judgement)
+                    # whether it is still the active resident: compare the
+                    # resumed transcript against wake_state.json's `transcript`
+                    # pointer.
+                    if cortex_bridge.is_resident_session(tpath):
+                        # Resident resume: the prior process died with its ear
+                        # tail; the harness will surface stale pre-resume task
+                        # notifications. Kill orphan tails (none of ours armed
+                        # yet — safe only here) and inject re-arm guidance so the
+                        # model does not treat leftovers as a wake/rotate.
+                        try:
+                            cortex_bridge.kill_orphan_ear_tails()
+                        except Exception:
+                            pass
+                        _resume = cortex_bridge.resume_ear_text()
+                        if _resume:
+                            parts.append(_resume)
+                    else:
+                        # Retired window: a newer cortex took over (or this was
+                        # rotated out and reopened to read history). Arm nothing,
+                        # touch no wake_state, never kill the live resident's
+                        # tail — inject read-only/archive guidance instead.
+                        _retired = cortex_bridge.retired_ear_text()
+                        if _retired:
+                            parts.append(_retired)
 
             try:
                 from . import schedule as _sched

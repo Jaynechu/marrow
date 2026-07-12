@@ -489,6 +489,61 @@ def arm_ear_text() -> str | None:
         return None
 
 
+def resume_ear_text() -> str | None:
+    """SessionStart line for a RESUMED cortex window ([cortex].resume_ear_text):
+    drop stale pre-resume task notifications and re-arm a fresh ear tail. The
+    fresh-window counterpart is arm_ear_text. {signal_log} substituted with the
+    resolved absolute path. None when disabled/blanked so the caller injects
+    nothing."""
+    try:
+        cx = config.load().get("cortex", {}) or {}
+        tmpl = str(cx.get("resume_ear_text") or "").strip()
+        if not tmpl:
+            return None
+        signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
+        return tmpl.replace("{signal_log}", str(signal_log))
+    except Exception:
+        return None
+
+
+def retired_ear_text() -> str | None:
+    """SessionStart line for a RESUMED cortex window that is NO LONGER the
+    resident ([cortex].retired_ear_text): a newer cortex has taken over, or this
+    window was rotated out and is being reopened only to read history. Tells the
+    model to stay an archive/read-only window — arm nothing, touch no wake_state.
+    {signal_log} substituted with the resolved absolute path. None when
+    disabled/blanked so the caller injects nothing."""
+    try:
+        cx = config.load().get("cortex", {}) or {}
+        tmpl = str(cx.get("retired_ear_text") or "").strip()
+        if not tmpl:
+            return None
+        signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
+        return tmpl.replace("{signal_log}", str(signal_log))
+    except Exception:
+        return None
+
+
+def is_resident_session(transcript_path: str | None) -> bool:
+    """True when the given transcript is the active resident cortex, per
+    wake_state.json's `transcript` pointer. Deterministic — no model judgement.
+
+    MATCH (resident): the recorded transcript equals this one, OR no transcript
+    is recorded yet (no newer cortex has claimed residency — mirrors the
+    cortex_window_closed empty-pointer semantics).
+    NO MATCH (retired): wake_state records a DIFFERENT transcript — a newer
+    cortex took over, or this window was rotated out. On any read failure defaults
+    to True (resident) so a transient error never silently retires a live window."""
+    try:
+        d = _wake_state_load(_cortex_wake_state_path())
+    except Exception:
+        return True
+    state_tpath = d.get("transcript")
+    if not state_tpath or not transcript_path:
+        return True
+    return str(state_tpath) == str(transcript_path)
+
+
 def wake_marker() -> str:
     """Marker prefixing a cortex wake signal line ([cortex].wake_marker). A
     UserPromptSubmit carrying it is a wake turn (full wakeup-note inject)."""
@@ -561,8 +616,17 @@ def rearm_text() -> str | None:
 def is_monitor_death(prompt: str) -> bool:
     """True when the incoming prompt is the harness notification for a Monitor
     (the ear tail) that stopped. Conservative two-token match — never fires on
-    ordinary chat."""
+    ordinary chat.
+
+    Explicitly excludes the on-resume "No completion record was found for this
+    background shell command" notice: the harness emits it for every background
+    shell that outlived the prior process (the ear tail among them), and its
+    correct handling is the resume_ear_text re-arm at SessionStart, NOT the
+    mid-window rearm flow. Treating it as a death fires a spurious wake/rotate.
+    """
     if not prompt:
+        return False
+    if "No completion record was found" in prompt:
         return False
     return "<task-notification>" in prompt and "Monitor stopped" in prompt
 
@@ -759,6 +823,43 @@ def _kill_pid(pid_val) -> None:
         os.kill(pid, _signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         pass
+
+
+def kill_orphan_ear_tails() -> int:
+    """Kill leftover ear-tail processes (`tail … -f <signal_log>`) whose owning
+    cc session already exited. Called at resume SessionStart: the resumed window
+    has not armed its own tail yet, so every match at this instant is an orphan
+    from the dead prior process. Match is narrowed to the exact resolved
+    signal-log path (pgrep -f) so unrelated tails are never touched; our own pid
+    is skipped defensively. Best-effort — returns the count signalled for kill,
+    0 on any failure (missing pgrep, no matches, disabled path)."""
+    try:
+        signal_log = str(_cortex_path("wake_signal_log_file", "wake_signal.log"))
+    except Exception:
+        return 0
+    if not signal_log:
+        return 0
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-f", f"-f {signal_log}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return 0
+    if proc.returncode not in (0, 1):
+        return 0
+    killed = 0
+    me = os.getpid()
+    for raw in (proc.stdout or "").split():
+        try:
+            pid = int(raw)
+        except ValueError:
+            continue
+        if pid <= 0 or pid == me:
+            continue
+        _kill_pid(pid)
+        killed += 1
+    return killed
 
 
 def _pid_alive(pid_val) -> bool:

@@ -373,6 +373,18 @@ arm_ear_text = "Important: Set a persistent monitor first: Monitor(command: \"ta
 # Rearm line injected when the ear Monitor dies mid-window (the harness surfaces
 # a "Monitor stopped" task-notification). {signal_log} substituted. Blank = off.
 rearm_text = "Monitor is off — rearm now: Monitor(command: \"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", persistent: true); then investigate why it died."
+# SessionStart line injected on a RESUMED cortex window (fresh windows get
+# arm_ear_text instead). The prior process died with its ear Monitor; the
+# resumed window has no live tail and the harness surfaces stale task
+# notifications. This line tells the model to drop the leftovers and re-arm.
+# {signal_log} substituted with the resolved absolute path. Blank = off.
+resume_ear_text = "⏯️ The session has been resumed - re-arm a fresh monitor (Monitor(command: \"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", persistent: true)). Continue the conversation as normal."
+# SessionStart line for a RESUMED cortex window that is NO LONGER the resident
+# (wake_state.json points at a different transcript — a newer cortex took over,
+# or this window was rotated out and is reopened only to read history). This
+# window must stay read-only: arm no ear, touch no wake_state, never rotate.
+# {signal_log} substituted with the resolved absolute path. Blank = off.
+retired_ear_text = "⏯️ This is an archived session - ignore all task/monitor."
 # Marker in the chat-tier TUCK-IN line the cortex watchdog appends to
 # wake_signal.log (arrives down the ear channel). A cortex-window prompt
 # carrying it is a machine line, excluded from the user-wake reset.
