@@ -377,6 +377,18 @@ rearm_text = "Monitor is off — rearm now: Monitor(command: \"tail -n 0 -f {sig
 # wake_signal.log (arrives down the ear channel). A cortex-window prompt
 # carrying it is a machine line, excluded from the user-wake reset.
 tuck_in_marker = "[TUCK-IN]"
+# Markers that identify an auto-compact continuation injection. Claude Code
+# replays the archived transcript as a user-role turn; without this it is
+# misread as a real user message and silently kills the pending wake alarm.
+# Any listed marker appearing near the start (within compact_marker_head_chars)
+# of a cortex-window prompt classifies it as a machine line. Narrow strings —
+# ordinary chat never contains them.
+compact_markers = ["===== BEGIN ORIGINAL TRANSCRIPT", "===== END ORIGINAL TRANSCRIPT"]
+compact_marker_head_chars = 200
+# Audit log for destructive wake-state actions (sentinel kill / floor clear /
+# awake flip). Bare name resolves under cortex home. Never silently destroy a
+# scheduled alarm again.
+wake_audit_log_file = "wake_audit.log"
 
 [hooks]
 # PreToolUse backup guard — stateless, two tiers (no state, no dedup).

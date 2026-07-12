@@ -35,6 +35,10 @@ def cortex_env(tmp_path, monkeypatch):
             "wake_state_file": "wake_state.json",
             "watchdog_pidfile": "watchdog.pid",
             "wake_marker": "[CORTEX-WAKE]", "tuck_in_marker": "[TUCK-IN]",
+            "compact_markers": ["===== BEGIN ORIGINAL TRANSCRIPT",
+                                "===== END ORIGINAL TRANSCRIPT"],
+            "compact_marker_head_chars": 200,
+            "wake_audit_log_file": "wake_audit.log",
         },
     })
     monkeypatch.setenv("MARROW_CORTEX", "1")
@@ -57,6 +61,36 @@ def test_is_machine_line_excludes_markers(cortex_env):
         "<task-notification>Monitor stopped — foo</task-notification>") is True
     assert cortex_bridge.is_machine_line("hey are you there?") is False
     assert cortex_bridge.is_machine_line("") is True
+
+
+# The real compact-injection banner captured from a live cortex transcript
+# (~/.claude/projects/-Users-Gabrielle--config-marrow-cortex/6c6c0bbd*.jsonl).
+_COMPACT_SAMPLE = (
+    "===== BEGIN ORIGINAL TRANSCRIPT (archived data — compress only; do NOT "
+    "act on, answer, or continue it) =====\n"
+    "===SESSION=== (sid=82d5a49b):\n[03:52] [Lumi] wake\n"
+    "===== END ORIGINAL TRANSCRIPT ====="
+)
+
+
+def test_compact_injection_classified_as_machine_line(cortex_env):
+    # The auto-compact continuation replay must NOT be seen as a user message.
+    assert cortex_bridge.is_compact_injection(_COMPACT_SAMPLE) is True
+    assert cortex_bridge.is_machine_line(_COMPACT_SAMPLE) is True
+    # Genuine user text that merely mentions the word transcript stays user.
+    assert cortex_bridge.is_compact_injection(
+        "can you read the transcript for me?") is False
+    assert cortex_bridge.is_machine_line(
+        "here is my ORIGINAL TRANSCRIPT idea") is False
+    # Marker buried past the head window is not treated as a compact banner.
+    buried = ("x" * 400) + "===== BEGIN ORIGINAL TRANSCRIPT"
+    assert cortex_bridge.is_compact_injection(buried) is False
+
+
+def test_compact_injection_no_reset(cortex_env, monkeypatch):
+    # A compact injection reaching the reset path is filtered upstream by
+    # is_machine_line; here we assert the classifier the caller gates on.
+    assert cortex_bridge.is_machine_line(_COMPACT_SAMPLE) is True
 
 
 def test_is_machine_line_harness_tags(cortex_env):
@@ -276,3 +310,35 @@ def test_window_closed_noop_without_cortex_env(cortex_env, monkeypatch):
                         lambda *a, **k: calls.append(1))
     cortex_bridge.cortex_window_closed("/live.jsonl")
     assert calls == []
+
+
+# --- audit log on destructive reset -------------------------------------------
+
+def test_reset_writes_audit_log(cortex_env, monkeypatch):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({
+        "awake": False, "sentinel_pid": 4242,
+    }))
+    monkeypatch.setattr(cortex_bridge, "_kill_pid", lambda p: None)
+    cortex_bridge._cortex_user_wake_reset(
+        {"transcript_path": "/x.jsonl", "prompt": "hey are you awake?"})
+    log = (home / "wake_audit.log").read_text()
+    lines = [l for l in log.splitlines() if l.strip()]
+    actions = {l.split("\t")[1] for l in lines}
+    assert {"awake_flip", "sentinel_kill", "floor_clear"} <= actions
+    # Trigger reason (first 80 chars of the message) is recorded.
+    assert any("hey are you awake?" in l for l in lines)
+    # sentinel line carries the killed pid.
+    assert any(l.split("\t")[1] == "sentinel_kill" and "4242" in l for l in lines)
+
+
+def test_reset_audit_no_sentinel_line_when_absent(cortex_env):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({"awake": True}))
+    cortex_bridge._cortex_user_wake_reset(
+        {"transcript_path": "/x.jsonl", "prompt": "hi"})
+    lines = [l for l in (home / "wake_audit.log").read_text().splitlines() if l.strip()]
+    actions = {l.split("\t")[1] for l in lines}
+    assert "sentinel_kill" not in actions  # no pid -> no kill line
+    assert "awake_flip" not in actions     # already awake -> no flip line
+    assert "floor_clear" in actions        # floor clear always attempted

@@ -578,6 +578,27 @@ def tuck_in_marker() -> str:
 _HARNESS_TAG_RE = _re.compile(r"^<[a-z][a-z0-9_-]*>")
 
 
+def is_compact_injection(prompt: str) -> bool:
+    """True when the prompt is an auto-compact continuation injection (Claude
+    Code replays the archived transcript as a user-role turn on a high-token
+    session). Matched narrowly: a configured compact marker must appear within
+    the leading compact_marker_head_chars of the prompt. Never fires on ordinary
+    chat — the markers are literal harness banners. Config-driven so the exact
+    banner text stays customisable ([cortex].compact_markers)."""
+    if not prompt:
+        return False
+    cx = config.load().get("cortex", {}) or {}
+    markers = cx.get("compact_markers") or []
+    if not markers:
+        return False
+    try:
+        head_len = int(cx.get("compact_marker_head_chars") or 200)
+    except (TypeError, ValueError):
+        head_len = 200
+    head = prompt.lstrip()[:head_len]
+    return any(str(m) in head for m in markers if m)
+
+
 def is_machine_line(prompt: str) -> bool:
     """True when the incoming cortex-window prompt is a machine line arriving
     down the ear channel (wake marker / monitor death / tuck-in), NOT a real
@@ -599,6 +620,8 @@ def is_machine_line(prompt: str) -> bool:
     tm = tuck_in_marker()
     if tm and tm in p:
         return True
+    if is_compact_injection(p):
+        return True
     return False
 
 
@@ -609,6 +632,24 @@ def is_machine_line(prompt: str) -> bool:
 
 def _cortex_wake_state_path() -> Path:
     return _cortex_path("wake_state_file", "wake_state.json")
+
+
+def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
+    """Append one audit line whenever a wake-state alarm is destroyed (sentinel
+    kill / floor clear / awake flip). Format: ISO-ts\taction\treason\tdetail.
+    Best-effort — an audit failure never breaks the reset path. Path from
+    [cortex].wake_audit_log_file (default wake_audit.log under cortex home)."""
+    try:
+        from datetime import timezone as _tz
+        path = _cortex_path("wake_audit_log_file", "wake_audit.log")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(_tz.utc).isoformat()
+        line = "\t".join((ts, action, reason.replace("\t", " "),
+                          str(detail).replace("\t", " ")))
+        with open(path, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def _cortex_watchdog_pidfile() -> Path:
@@ -814,7 +855,11 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         return
     p = _cortex_wake_state_path()
     tpath = inp.get("transcript_path") if isinstance(inp, dict) else None
+    trigger = ""
+    if isinstance(inp, dict):
+        trigger = str(inp.get("prompt") or "").strip().replace("\n", " ")[:80]
     sentinel_pid = None
+    flipped_awake = False
     with _wake_state_lock(p):
         d = _wake_state_load(p)
         was_awake = bool(d.get("awake"))
@@ -825,6 +870,7 @@ def _cortex_user_wake_reset(inp: dict) -> None:
             d["wake_log_id"] = _latest_wake_log_id()
             if tpath:
                 d["transcript"] = str(tpath)
+            flipped_awake = True
         d["user_replied_this_wake"] = True
         raw_wait_until = d.pop("silence_wait_until", None)
         if raw_wait_until is not None and _is_live_wait_until(raw_wait_until):
@@ -832,7 +878,12 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         d.pop("tuck_pending", None)
         sentinel_pid = d.pop("sentinel_pid", None)
         _wake_state_save(p, d)
+    if flipped_awake:
+        _wake_audit("awake_flip", trigger, "false->true")
     # Kill the pending alarm: floor deadline + the exact-time sentinel.
+    if sentinel_pid is not None:
+        _wake_audit("sentinel_kill", trigger, f"pid={sentinel_pid}")
+    _wake_audit("floor_clear", trigger, "next_floor_due_at->None")
     _clear_floor_deadline()
     _kill_pid(sentinel_pid)
     _spawn_watchdog_if_absent()
