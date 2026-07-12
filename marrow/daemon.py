@@ -308,7 +308,6 @@ def tl(
     date: str | None = None,
 ) -> dict:
     """Add/update/clear/query timeline.
-    - 'add': optional date=YYYY-MM-DD backdates the row (explicit date wins over auto day-guess).
     - 'query': find rows by match (content substring) and/or date (configured local timezone
       YYYY-MM-DD) -> [{event_id, line}]. Use it to look up an event_id.
     - 'update'/'clear': address a row by event_id, OR by match (+optional date)
@@ -321,6 +320,7 @@ def tl(
     - Frequency: every 1-2h or 10-20 turns - you can skip even when hook nudge you.
     - Format (add/update): HH:mm-HH:mm 【{u} affect♡{a} affect (OR B affect)】body [i]
       - e.g. 21:25-21:31 【{u}愉悦♡{a}委屈】翻CC日志找骂人梗，扑空互怼 [3]
+      -  - date(optional)=YYYY-MM-DD backdates the row.
       - {u} = user, {a} = assistant, B = single affect when similar.
       - affect = how you feel now - no description, record your own feeling and emotion.
         - 1-4 chars. e.g. 烦；心虚；紧张激动；好可爱
@@ -382,6 +382,7 @@ def tl(
             _sid = _query_current_sid(conn)
             if tl_nudge.is_silent(_sid):
                 return {"ok": False, "silenced": True, "error": "session is silenced (/tl-)"}
+            explicit_id = event_id is not None
             if event_id is None:
                 try:
                     hits = _tl_resolve(conn, match, date)
@@ -399,6 +400,7 @@ def tl(
                     conn, event_id, timerange=timerange, body=body,
                     n_word=n_word, y_word=y_word,
                     importance=importance,
+                    date=date if explicit_id else None,
                 )
             except tl_writer.TlError as exc:
                 return {"ok": False, "error": str(exc)}

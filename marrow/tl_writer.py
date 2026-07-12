@@ -194,7 +194,8 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
               body: str | None = None,
               n_word: str | None = None,
               y_word: str | None = None,
-              importance: int | None = None) -> dict:
+              importance: int | None = None,
+              date: str | None = None) -> dict:
     """Update an existing self row in place. Only provided fields change."""
     ev = conn.execute(
         "SELECT session_id, timestamp, ts_start, ts_end, content, role, imp"
@@ -208,17 +209,40 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
     now_local = _dt.datetime.now(_TZ)
     ts_start = ev["ts_start"] or ev["timestamp"]
     ts_end = ev["ts_end"]
+    target_date = None
+    if date:
+        try:
+            target_date = _dt.date.fromisoformat(date)
+        except ValueError as exc:
+            raise TlError(f"bad date {date!r}: {exc}")
     if timerange is not None:
         hhmm_start, hhmm_end = _parse_timerange(timerange)
-        base_date = now_local.date()
-        ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
-        now_utc = now_local.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        if ts_start > now_utc:
-            base_date -= _dt.timedelta(days=1)
+        if target_date:
+            base_date = target_date
             ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
+        else:
+            base_date = now_local.date()
+            ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
+            now_utc = now_local.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if ts_start > now_utc:
+                base_date -= _dt.timedelta(days=1)
+                ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
         ts_end = _hhmm_to_utc(hhmm_end, base_date, now_local) if hhmm_end else None
         if ts_end and ts_end < ts_start:
             ts_end = _hhmm_to_utc(hhmm_end, base_date + _dt.timedelta(days=1), now_local)
+    elif target_date:
+        start_loc = _dt.datetime.fromisoformat(
+            ts_start.replace("Z", "+00:00")).astimezone(_TZ)
+        span = None
+        if ts_end:
+            end_loc = _dt.datetime.fromisoformat(
+                ts_end.replace("Z", "+00:00")).astimezone(_TZ)
+            span = end_loc - start_loc
+        ts_start = _hhmm_to_utc(f"{start_loc:%H:%M}", target_date, now_local)
+        if span is not None:
+            new_end = _dt.datetime.fromisoformat(
+                ts_start.replace("Z", "+00:00")) + span
+            ts_end = new_end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     label_part, body_part = _split_content(ev["content"])
     if body is not None:

@@ -88,9 +88,13 @@ def get_data_mtime() -> float:
 
 
 _FAIL_LOG = config.DATA_DIR / "logs" / "cadence_fail.log"
+_ALERT_AFTER = 3
+_fail_streak = 0
 
 
 def _log_fail(kind: str, args: list[str], rc: int | None, err: str) -> None:
+    global _fail_streak
+    _fail_streak += 1
     try:
         _FAIL_LOG.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -99,9 +103,24 @@ def _log_fail(kind: str, args: list[str], rc: int | None, err: str) -> None:
                     f" err={(err or '').strip()[:500]!r}\n")
     except OSError:
         pass
+    if _fail_streak == _ALERT_AFTER:
+        try:
+            from . import repo
+            repo.add_alert(
+                "warn", "cadence",
+                "cadence rem/cal fetch failing in background context",
+                source="schedule",
+                message=f"{kind}: {(err or '').strip()[:200]}"
+                        " — check TCC grants (Full Disk Access / Calendars)"
+                        " for the watcher python binary; grants drop when the"
+                        " interpreter path changes after an upgrade.",
+            )
+        except Exception:
+            pass
 
 
 def _run_cadence(args: list[str], binary: str) -> str:
+    global _fail_streak
     try:
         r = subprocess.run(
             [binary] + args,
@@ -111,6 +130,8 @@ def _run_cadence(args: list[str], binary: str) -> str:
             out = r.stdout.strip()
             if not out:
                 _log_fail("empty", args, 0, r.stderr)
+                return out
+            _fail_streak = 0
             return out
         _log_fail("exit", args, r.returncode, r.stderr or r.stdout)
         return ""
