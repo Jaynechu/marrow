@@ -59,11 +59,14 @@ def _status_body() -> str:
     return "### Status\n" + body
 
 
-def _remcal_body() -> str:
-    """schedule.render_daily body with its '## Daily Schedule' header stripped."""
+def _remcal_body(existing: str | None) -> str:
+    """schedule.render_daily body with its '## Daily Schedule' header stripped.
+    Empty render (cadence subprocess failed) keeps the previous zone instead of
+    blanking the page over a transient failure."""
     content = schedule.render_daily()
     if not content:
-        return "### Rem & Cal\n(no schedule data)"
+        return _extract_bounded(existing, REMCAL_START, REMCAL_END,
+                                "### Rem & Cal\n(no schedule data)")
     lines = content.splitlines()
     if lines and lines[0].startswith("## Daily Schedule"):
         lines = lines[1:]
@@ -126,7 +129,7 @@ def render(conn: sqlite3.Connection, existing: str | None = None,
         STATUS_END,
         "",
         REMCAL_START,
-        _remcal_body(),
+        _remcal_body(existing),
         REMCAL_END,
         "",
         TIMELINE_START,
