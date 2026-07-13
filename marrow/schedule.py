@@ -110,13 +110,31 @@ def _log_fail(kind: str, args: list[str], rc: int | None, err: str) -> None:
                 "warn", "cadence",
                 "cadence rem/cal fetch failing in background context",
                 source="schedule",
-                message=f"{kind}: {(err or '').strip()[:200]}"
-                        " — check TCC grants (Full Disk Access / Calendars)"
-                        " for the watcher python binary; grants drop when the"
-                        " interpreter path changes after an upgrade.",
+                message=_alert_message(kind, err),
             )
         except Exception:
             pass
+
+
+def _alert_message(kind: str, err: str) -> str:
+    # TCC grants (Full Disk Access / Calendars) are a per-process snapshot
+    # taken at process start; a long-lived watcher keeps failing until it is
+    # restarted after (re)granting — a plain restart alone often heals it.
+    low = (err or "").lower()
+    is_auth = "authorization denied" in low or "reminders store" in low \
+        or "could not locate" in low or "access" in low
+    if kind == "timeout":
+        return ("cadence timing out (NOT an authorization issue). Retry or"
+                " restart watcher: launchctl kickstart -k gui/501/com.marrow.watcher."
+                " If it persists, investigate an EventKit hang.")
+    if is_auth:
+        return ("cadence failing in watcher (authorization). Fix order:"
+                " 1) restart watcher: launchctl kickstart -k gui/501/com.marrow.watcher"
+                " — TCC grants are a snapshot at process start; restart usually heals."
+                " 2) If still failing: grant Full Disk Access + Calendars to the"
+                " watcher python real binary (readlink -f <venv>/bin/python)."
+                " 3) Restart watcher again after granting.")
+    return f"cadence failing ({kind}): {(err or '').strip().splitlines()[0][:200] if (err or '').strip() else 'no error output'}"
 
 
 def _run_cadence(args: list[str], binary: str) -> str:
