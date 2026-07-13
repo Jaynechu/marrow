@@ -37,6 +37,15 @@ class TlError(ValueError):
 
 # ── validation helpers ───────────────────────────────────────────────────────
 
+def _check_body_plain(body: str) -> None:
+    """Reject a body carrying an affect block or trailing importance marker —
+    those parts are assembled server-side from n_word/y_word/importance."""
+    if "【" in body or "】" in body or _TRAIL_IMP_RE.search(body):
+        raise TlError(
+            "body is plain text — affect goes in n_word/y_word, "
+            "importance in importance")
+
+
 def _clamp_1_5(x, name: str, default: int) -> int:
     if x is None:
         return default
@@ -125,6 +134,7 @@ def tl_add(conn, timerange: str, body: str,
     body = (body or "").strip()
     if not body:
         raise TlError("body required")
+    _check_body_plain(body)
     body_max = _body_max()
     if len(body) > body_max:
         raise TlError(f"body exceeds {body_max} chars: {len(body)}")
@@ -249,6 +259,7 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
         body_part = body.strip()
         if not body_part:
             raise TlError("body cannot be empty")
+        _check_body_plain(body_part)
         body_max = _body_max()
         if len(body_part) > body_max:
             raise TlError(f"body exceeds {body_max} chars")

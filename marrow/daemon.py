@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Annotated
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import Field
 
 from . import config, cortex_bridge, recall as _recall_mod, repo, storage
 from .llm import LLMClient
@@ -39,11 +41,11 @@ cortex_bridge.register(marrow_tool, _DB)
 
 @marrow_tool()
 def recall(
-    query: str,
-    limit: int = 10,
-    context: bool = False,
-    since: str | None = None,
-    until: str | None = None,
+    query: Annotated[str, Field(description="Search text; matched over the event corpus via fused semantic+FTS+recency. Empty/whitespace query with since+until returns that window's digest rows instead. query='diary' + since/until returns diary rows for the window.")],
+    limit: Annotated[int, Field(ge=1, description="Max rows returned (default 10); also caps window-digest rows when query is empty.")] = 10,
+    context: Annotated[bool, Field(description="When true, attaches ±1 adjacent same-session turns as _context to each non-dim event/task row (default false).")] = False,
+    since: Annotated[str | None, Field(description="Lower time bound as a configured-local-timezone day string YYYY-MM-DD; converted to that day's start. Optional.")] = None,
+    until: Annotated[str | None, Field(description="Upper time bound as a configured-local-timezone day string YYYY-MM-DD; converted to that day's end. Optional.")] = None,
 ) -> list[dict]:
     """Recall events from db. Call when the user mention the past that you don't know.
     e.g. 你记得我上周说xxx？
@@ -119,7 +121,7 @@ def recall(
 
 
 @marrow_tool()
-def atlas_lookup(prefix: str) -> list[dict]:
+def atlas_lookup(prefix: Annotated[str, Field(description="Filesystem path prefix (expanduser+resolved to absolute); returns atlas rows whose path equals it or sits under it as a path component, each with description + naming_hint + depth.")]) -> list[dict]:
     """Look up atlas rows by path prefix — call before creating or naming files when location/naming is uncertain. Returns description + naming rules."""
     conn = storage.connect(_DB)
     try:
@@ -130,7 +132,7 @@ def atlas_lookup(prefix: str) -> list[dict]:
 
 
 @marrow_tool()
-def event_embed(batch: int = 50) -> dict:
+def event_embed(batch: Annotated[int, Field(ge=1, description="Max number of unvectorized events to embed this call (default 50); returns {embedded: count actually written}.")] = 50) -> dict:
     """Embed unvectorized events (write-time backfill). Returns count written."""
     conn = storage.connect(_DB)
     try:
@@ -294,18 +296,18 @@ def _tl_clear(event_id: int | None, sid: str | None,
 
 
 def tl(
-    action: str,
-    timerange: str | None = None,
-    body: str | None = None,
-    n_word: str | None = None,
-    y_word: str | None = None,
-    importance: int | None = None,
-    sid: str | None = None,
-    event_id: int | None = None,
-    before: str | None = None,
-    after: str | None = None,
-    match: str | None = None,
-    date: str | None = None,
+    action: Annotated[str, Field(description="One of add / update / clear / query.")],
+    timerange: Annotated[str | None, Field(description="'HH:mm-HH:mm' or single 'HH:mm'. A today-time still in the future rolls back to yesterday; end < start crosses midnight into next day. Required for add.")] = None,
+    body: Annotated[str | None, Field(description="Plain-text body, <=50 chars (config tl.body_max). Must NOT contain the 【】affect block or a trailing [i] marker — those parts are assembled server-side. Required for add.")] = None,
+    n_word: Annotated[str | None, Field(description="User-side affect word, <=8 chars enforced (style guide 1-4). At least one of n_word / y_word required for add; a single side is fine. On update, providing either replaces the whole label block.")] = None,
+    y_word: Annotated[str | None, Field(description="Assistant-side affect word, <=8 chars enforced (style guide 1-4). At least one of n_word / y_word required for add; a single side is fine. On update, providing either replaces the whole label block.")] = None,
+    importance: Annotated[int | None, Field(ge=1, le=5, description="Event composite intensity*importance, int 1-5. Omitted -> 3 on add, keeps existing value on update.")] = None,
+    sid: Annotated[str | None, Field(description="Session id. add: overrides the auto-resolved current session for the row. clear: delete all tl rows for this session (mutually exclusive with event_id and before/after).")] = None,
+    event_id: Annotated[int | None, Field(description="Target tl row id for update/clear. Get it from a 'query' call.")] = None,
+    before: Annotated[str | None, Field(description="clear only: delete tl rows with timestamp < this value (ISO). Combine with after for a range; mutually exclusive with event_id and sid.")] = None,
+    after: Annotated[str | None, Field(description="clear only: delete tl rows with timestamp >= this value (ISO). Combine with before for a range; mutually exclusive with event_id and sid.")] = None,
+    match: Annotated[str | None, Field(description="Content substring to resolve a row for query/update/clear when you don't have event_id; matched case-sensitively, newest-first, capped at 20. Must resolve to a single row for update/clear.")] = None,
+    date: Annotated[str | None, Field(description="Configured-local-timezone day YYYY-MM-DD. add/update: backdates the row. query/clear: filters resolution to that day.")] = None,
 ) -> dict:
     """Add/update/clear/query timeline.
     - 'query': find rows by match (content substring) and/or date (configured local timezone
@@ -505,11 +507,11 @@ def _sticker_pick(sticker_id: int) -> dict:
 
 @marrow_tool()
 def sticker(
-    action: str,
-    query: str | None = None,
-    limit: int = 5,
-    animated: bool = True,
-    sticker_id: int | None = None,
+    action: Annotated[str, Field(description="'search' to find stickers by vibe/emotion, or 'pick' to record a chosen sticker (bumps last_used).")],
+    query: Annotated[str | None, Field(description="search only: free-text vibe/emotion query; empty returns nothing. Uses vector match when available, else falls back to per-term desc LIKE.")] = None,
+    limit: Annotated[int, Field(ge=1, description="search only: max stickers returned (default 5).")] = 5,
+    animated: Annotated[bool, Field(description="search only: when false, excludes .gif animated stickers (default true = include).")] = True,
+    sticker_id: Annotated[int | None, Field(description="pick only: id of the sticker to mark used. Required for pick.")] = None,
 ) -> dict | list[dict]:
     """Send stickers to user when [channel: wx/tg]; NEVER on [channel: cli].
     Use stickers to express your feeling/thoughts; search by vibe/emotion
@@ -600,11 +602,11 @@ def _sticker_list_pending() -> list[dict]:
 
 @marrow_tool()
 def sticker_admin(
-    action: str,
-    image_path: str | None = None,
-    desc: str | None = None,
-    source: str = "wechat",
-    sticker_id: int | None = None,
+    action: Annotated[str, Field(description="One of ingest / update / delete / pending.")],
+    image_path: Annotated[str | None, Field(description="ingest only: path to the image file to add. Required for ingest; safe (no-op result) on duplicates.")] = None,
+    desc: Annotated[str | None, Field(description="ingest/update: description text for the sticker. Required for both (ingest and update).")] = None,
+    source: Annotated[str, Field(description="ingest only: origin tag stored on the sticker (default 'wechat').")] = "wechat",
+    sticker_id: Annotated[int | None, Field(description="update/delete: id of the target sticker. Required for update and delete.")] = None,
 ) -> dict | list[dict]:
     """Sticker library management. action='ingest': add an image file (safe
     on duplicates); 'update': rewrite a desc; 'delete': remove a sticker
@@ -871,15 +873,15 @@ def _dim_delete(kind: str | None, item_id: int | None) -> dict:
 
 @marrow_tool()
 def dim(
-    action: str,
-    kind: str | None = None,
-    name: str | None = None,
-    fact: str | None = None,
-    aliases: list[str] | None = None,
-    meme_type: str | None = None,
-    date: str | None = None,
-    scope: str = "me",
-    id: int | None = None,
+    action: Annotated[str, Field(description="One of upsert / query / delete.")],
+    kind: Annotated[str | None, Field(description="Dimension kind: person, pref, place, meme, or milestone. Required for upsert and delete; optional filter for query (omitted = all kinds).")] = None,
+    name: Annotated[str | None, Field(description="upsert: the entity/meme/milestone name (or meme key / milestone title); required. query: substring filter over name+fact (aliases for entities); omitted = no filter.")] = None,
+    fact: Annotated[str | None, Field(description="upsert: the fact/description/meme value stored on the row; optional (blank kept as null). On update, null leaves the existing value unchanged.")] = None,
+    aliases: Annotated[list[str] | None, Field(description="upsert of person/pref/place only: alternate names merged into the entity. Ignored for meme/milestone.")] = None,
+    meme_type: Annotated[str | None, Field(description="upsert of a meme only: one of paw/fact/news/event/others (paw+fact=personal/couple, other 3=public). Omitted -> 'others' on create, keeps existing type on update.")] = None,
+    date: Annotated[str | None, Field(description="upsert of a milestone only: YYYY-MM-DD or YYYY. Required for milestone; part of its dedup key.")] = None,
+    scope: Annotated[str, Field(description="upsert of a milestone only: 'us' (couple) or 'me' (default 'me'; any other value coerced to 'me').")] = "me",
+    id: Annotated[int | None, Field(description="delete only: numeric row id of the item to remove. Required for delete; find it via a query first.")] = None,
 ) -> dict | list[dict]:
     """Call for subpage edits (only 3 for now) - read/write/delete.
     - kind: person, pref, place, meme, milestone.
@@ -907,7 +909,10 @@ _ALERT_ACTIONS = {"list", "resolve"}
 
 
 @marrow_tool()
-def alert(action: str, alert_id: int | None = None) -> dict | list[dict]:
+def alert(
+    action: Annotated[str, Field(description="'list' unresolved alerts (newest first), or 'resolve' one by alert_id.")],
+    alert_id: Annotated[int | None, Field(description="resolve only: id of the alert to resolve (via `mw resolve`, which refreshes the dashboard and restarts the watcher if code changed). Required for resolve.")] = None,
+) -> dict | list[dict]:
     """list or solve alerts.
     action='list' unresolved alerts; 'resolve' by alert_id — auto-refreshes
     dashboard, restarts watcher if code changed."""
@@ -1053,7 +1058,11 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None) -> 
 
 
 @marrow_tool()
-def event_clear(before: str = "", after: str = "", last: int = 0) -> dict:
+def event_clear(
+    before: Annotated[str, Field(description="Delete events with timestamp < this (ISO or YYYY-MM-DD). Combine with after for a range; mutually exclusive with last. Empty = no bound.")] = "",
+    after: Annotated[str, Field(description="Delete events with timestamp >= this (ISO or YYYY-MM-DD). Combine with before for a range; mutually exclusive with last. Empty = no bound.")] = "",
+    last: Annotated[int, Field(ge=0, description="Delete the N most recent events; mutually exclusive with before/after. 0 = unused. With no before/after/last set, ALL events are purged.")] = 0,
+) -> dict:
     """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. Filters:
     before/after (ISO or YYYY-MM-DD); last=N most recent; none = all.
     DB backup first."""

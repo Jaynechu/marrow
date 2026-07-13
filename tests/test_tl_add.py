@@ -294,3 +294,38 @@ def test_nudge_disabled_never_fires(conn, monkeypatch):
     monkeypatch.setattr(tl_nudge, "enabled", lambda: False)
     for _ in range(20):
         assert tl_nudge.maybe_nudge(conn, "off") is None
+
+
+# ── body plain-text guard ────────────────────────────────────────────────────
+
+def test_tl_add_accepts_plain_body(conn):
+    r = _add(conn, body="翻CC日志找骂人梗")
+    assert r["ok"] is True
+
+
+def test_tl_add_rejects_affect_block_in_body(conn):
+    with pytest.raises(tl_writer.TlError, match="plain text"):
+        _add(conn, body="【愉悦】翻日志")
+
+
+def test_tl_add_rejects_trailing_imp_in_body(conn):
+    with pytest.raises(tl_writer.TlError, match="plain text"):
+        _add(conn, body="翻日志 [3]")
+
+
+def test_tl_update_accepts_plain_body(conn):
+    ev = _add(conn)["event_id"]
+    r = tl_writer.tl_update(conn, ev, body="换个新body")
+    assert r["ok"] is True
+
+
+def test_tl_update_rejects_affect_block_in_body(conn):
+    ev = _add(conn)["event_id"]
+    with pytest.raises(tl_writer.TlError, match="plain text"):
+        tl_writer.tl_update(conn, ev, body="body 【委屈】")
+
+
+def test_tl_update_rejects_trailing_imp_in_body(conn):
+    ev = _add(conn)["event_id"]
+    with pytest.raises(tl_writer.TlError, match="plain text"):
+        tl_writer.tl_update(conn, ev, body="body [4]")

@@ -33,6 +33,9 @@ import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field
 
 from . import config, storage
 
@@ -111,7 +114,11 @@ def _insert_at_section_end(existing: str, section: str, line: str) -> str:
     return "".join(lines[:insert_at]) + line + "".join(lines[insert_at:])
 
 
-def wish(text: str, section: str | None = None, due: str | None = None) -> dict:
+def wish(
+    text: Annotated[str, Field(description="The wish/promise/plan line to append; required. A leading '- ' is stripped. Stored as '[] <date> <text>' with the configured wish_date_format.")],
+    section: Annotated[str | None, Field(description="Heading substring (## or ###, e.g. 心愿单/约定/种草) to insert the line at that section's end; omit to append at end of file.")] = None,
+    due: Annotated[str | None, Field(description="Optional due tag appended as ' [<due>]' after the text (free-form, e.g. a date).")] = None,
+) -> dict:
     """Our wishlist — personal wishes & cravings (hers and yours), promises
     made, and shared plans. e.g. 你说好请我喝奶茶 / 最近想买耳钉 / 约好周末去看海.
     Line format: `[] YY/MM/DD text` (date format configurable via
