@@ -52,6 +52,48 @@ def test_wake_turn_injects_full_note(tmp_path, monkeypatch, capsys):
     assert _ctx(capsys) == "read me and act"
 
 
+def _seed_epoch(tmp_path, gen, state_id):
+    (tmp_path / "wake_state.json").write_text(
+        json.dumps({"gen": gen, "state_id": state_id}), encoding="utf-8")
+
+
+def test_wake_turn_current_token_injects(tmp_path, monkeypatch, capsys):
+    """A wake line carrying a token that matches the live epoch injects the note."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _seed_epoch(tmp_path, 7, "abcd1234")
+    _stdin(monkeypatch, {"session_id": "s1",
+                         "prompt": "[CORTEX-WAKE] 14:00 {g7:abcd1234}"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == "read me and act"
+
+
+def test_wake_turn_stale_token_suppressed(tmp_path, monkeypatch, capsys):
+    """A wake line whose token was superseded (newer gen) is NOT processed as a
+    wake: no note injected."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _seed_epoch(tmp_path, 8, "abcd1234")  # live gen moved past the line's gen 7
+    _stdin(monkeypatch, {"session_id": "s1",
+                         "prompt": "[CORTEX-WAKE] 14:00 {g7:abcd1234}"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == ""  # suppressed
+
+
+def test_wake_turn_legacy_tokenless_line_still_injects(tmp_path, monkeypatch, capsys):
+    """A token-less (legacy) wake line is processed as before even when an epoch
+    is recorded."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _seed_epoch(tmp_path, 8, "abcd1234")
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "[CORTEX-WAKE] 14:00"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == "read me and act"
+
+
 def test_wake_turn_missing_note_silent(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
     _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})

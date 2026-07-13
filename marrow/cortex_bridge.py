@@ -579,6 +579,48 @@ def _render_note_fresh(transcript_path: str | None) -> str | None:
     return text or None
 
 
+import re as _re_ws
+
+_GEN_TOKEN_RE = _re_ws.compile(r"\{g(\d+):([0-9a-fA-F]+)\}")
+
+
+def parse_gen_token(line: str) -> tuple[int, str] | None:
+    """Extract the cancellation-epoch token ' {g<gen>:<state_id>}' a wake signal
+    line may carry. None when absent (legacy token-less line = process as before)
+    or unparseable."""
+    if not line:
+        return None
+    m = _GEN_TOKEN_RE.search(line)
+    if not m:
+        return None
+    try:
+        return int(m.group(1)), m.group(2)
+    except (TypeError, ValueError):
+        return None
+
+
+def wake_token_current(token: tuple[int, str] | None) -> bool:
+    """True if a wake line's (gen, state_id) token still matches the live epoch.
+    token=None (legacy line) -> True (process as before). A stale token (a newer
+    epoch superseded this wake — e.g. a user message landed first) -> False, so
+    the consumer suppresses the wake-note injection. Reads the shared wake_state
+    under its flock; on any read/lock failure returns True (fail OPEN here: a
+    doubtful read must never DROP a genuine wake — a spurious extra note is
+    strictly safer than a missed wake)."""
+    if token is None:
+        return True
+    try:
+        p = _cortex_wake_state_path()
+        with _wake_state_lock(p):
+            d = _wake_state_load(p)
+        gen, state_id = token
+        if not isinstance(d.get("gen"), int):
+            return True  # no epoch recorded yet -> nothing to invalidate against
+        return d.get("gen") == gen and str(d.get("state_id") or "") == str(state_id)
+    except Exception:
+        return True
+
+
 def wakeup_note_text(transcript_path: str | None = None) -> str | None:
     """Full text of the wakeup note. Tries a fresh render first (current time +
     caller's transcript SID, correct after rotation); on any failure falls back
@@ -770,6 +812,18 @@ def _wake_state_load(p: Path) -> dict:
     except (OSError, ValueError):
         pass
     return {}
+
+
+def _ws_ensure_epoch(d: dict) -> None:
+    """Mirror of cortex.wake_state._ensure_epoch: initialise the cancellation
+    epoch (gen=0 + random state_id) on first touch so both sides agree. state_id
+    defends the delete/recreate ABA. Must stay byte-compatible with the cortex
+    side (same field names, same secrets.token_hex(8) shape)."""
+    import secrets as _secrets
+    if not isinstance(d.get("gen"), int):
+        d["gen"] = 0
+    if not d.get("state_id"):
+        d["state_id"] = _secrets.token_hex(8)
 
 
 def _wake_state_save(p: Path, data: dict) -> None:
@@ -964,8 +1018,10 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         trigger = str(inp.get("prompt") or "").strip().replace("\n", " ")[:80]
     sentinel_pid = None
     flipped_awake = False
+    old_gen = new_gen = None
     with _wake_state_lock(p):
         d = _wake_state_load(p)
+        _ws_ensure_epoch(d)
         was_awake = bool(d.get("awake"))
         if not was_awake:
             from datetime import timezone as _tz
@@ -975,15 +1031,31 @@ def _cortex_user_wake_reset(inp: dict) -> None:
             if tpath:
                 d["transcript"] = str(tpath)
             flipped_awake = True
+        # BUMP gen on EVERY real user message (even when already awake): a user
+        # arrival is a cancellation epoch — it invalidates every in-flight alarm
+        # token (a still-running lie_down's sentinel, a stale tick snapshot).
+        # This is the single most important bump: BUG A fired because the OLD
+        # sentinel pid was killed but a NEWer sentinel armed after the reset
+        # survived; bumping here makes that newer sentinel's fire-time epoch
+        # check fail, so it exits silently even though its pid was never chased.
+        old_gen = int(d["gen"])
+        d["gen"] = old_gen + 1
+        new_gen = d["gen"]
         d["user_replied_this_wake"] = True
         raw_wait_until = d.pop("silence_wait_until", None)
         if raw_wait_until is not None and _is_live_wait_until(raw_wait_until):
             d["wait_count"] = max(0, int(d.get("wait_count") or 0) - 1)
         d.pop("tuck_pending", None)
+        # Clear the durable next-wake ledger too: a user arrival cancels any
+        # scheduled alarm, so the tick reconcile must not later fire a stale
+        # next_wake_at (it is re-armed by the next lie_down).
+        d.pop("next_wake_at", None)
         sentinel_pid = d.pop("sentinel_pid", None)
         _wake_state_save(p, d)
     if flipped_awake:
         _wake_audit("awake_flip", trigger, "false->true")
+    if old_gen is not None:
+        _wake_audit("user_reset_gen", trigger, f"gen {old_gen}->{new_gen}")
     # Kill the pending alarm: floor deadline + the exact-time sentinel.
     if sentinel_pid is not None:
         _wake_audit("sentinel_kill", trigger, f"pid={sentinel_pid}")

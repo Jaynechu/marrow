@@ -1978,9 +1978,19 @@ def user_prompt_submit() -> int:
                 }}, sys.stdout)
             return 0
         # Wake turn → inject the full wakeup note. Marker match only; missing or
-        # empty note injects nothing (never crashes).
+        # empty note injects nothing (never crashes). The line may carry a
+        # cancellation-epoch token ' {g<gen>:<sid>}': a STALE token (a newer
+        # epoch — e.g. a user message — already superseded this alarm) suppresses
+        # the wake-note injection (log only, do NOT process as a wake). A
+        # token-less line is legacy and processed as before.
         _marker = cortex_bridge.wake_marker()
         if _marker and _marker in _prompt:
+            _tok = cortex_bridge.parse_gen_token(_prompt)
+            if _tok is not None and not cortex_bridge.wake_token_current(_tok):
+                cortex_bridge._wake_audit(
+                    "wake_line_stale", f"gen={_tok[0]}",
+                    "suppressed (superseded epoch)")
+                return 0
             _note = cortex_bridge.wakeup_note_text(tpath)
             if _note:
                 json.dump({"hookSpecificOutput": {

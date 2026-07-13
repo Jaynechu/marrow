@@ -342,3 +342,80 @@ def test_reset_audit_no_sentinel_line_when_absent(cortex_env):
     assert "sentinel_kill" not in actions  # no pid -> no kill line
     assert "awake_flip" not in actions     # already awake -> no flip line
     assert "floor_clear" in actions        # floor clear always attempted
+
+
+# --- cancellation epoch (gen) -------------------------------------------------
+
+def test_reset_bumps_gen_from_scratch(cortex_env):
+    """First real user message on a fresh (no-epoch) state initialises gen=0 then
+    bumps to 1, and seeds a state_id."""
+    home, _ = cortex_env
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/x.jsonl"})
+    d = _ws(home)
+    assert d["gen"] == 1
+    assert isinstance(d.get("state_id"), str) and d["state_id"]
+
+
+def test_reset_bumps_gen_even_when_already_awake(cortex_env):
+    """The critical BUG A guard: a user message bumps gen EVERY time, including
+    when the session is already awake (so a still-running lie_down's newer
+    sentinel is invalidated)."""
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps(
+        {"awake": True, "gen": 5, "state_id": "deadbeef"}))
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/x.jsonl"})
+    d = _ws(home)
+    assert d["gen"] == 6                 # bumped despite already awake
+    assert d["state_id"] == "deadbeef"   # state_id stable (no delete/recreate)
+
+
+def test_reset_clears_next_wake_at(cortex_env):
+    """A user arrival cancels the durable next-wake ledger so the tick reconcile
+    never fires a stale scheduled alarm."""
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps(
+        {"awake": True, "next_wake_at": "2030-01-01T09:00:00+11:00"}))
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/x.jsonl"})
+    d = _ws(home)
+    assert "next_wake_at" not in d
+
+
+def test_reset_writes_gen_audit_line(cortex_env):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps(
+        {"awake": True, "gen": 2, "state_id": "aa"}))
+    cortex_bridge._cortex_user_wake_reset(
+        {"transcript_path": "/x.jsonl", "prompt": "hey"})
+    lines = [l for l in (home / "wake_audit.log").read_text().splitlines() if l.strip()]
+    gen_lines = [l for l in lines if l.split("\t")[1] == "user_reset_gen"]
+    assert gen_lines and "gen 2->3" in gen_lines[0]
+
+
+# --- wake-line token parse + validation + legacy tolerance --------------------
+
+def test_parse_gen_token_present_and_absent():
+    assert cortex_bridge.parse_gen_token("[CORTEX-WAKE] 09:00 {g7:abcd1234}") == (7, "abcd1234")
+    assert cortex_bridge.parse_gen_token("[CORTEX-WAKE] 09:00") is None   # legacy
+    assert cortex_bridge.parse_gen_token("") is None
+
+
+def test_wake_token_current_matches_and_stale(cortex_env):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({"gen": 4, "state_id": "cafe"}))
+    assert cortex_bridge.wake_token_current((4, "cafe")) is True
+    assert cortex_bridge.wake_token_current((3, "cafe")) is False   # stale gen
+    assert cortex_bridge.wake_token_current((4, "beef")) is False   # ABA state_id
+
+
+def test_wake_token_current_legacy_line_always_current(cortex_env):
+    """A token-less (legacy) wake line is processed as before."""
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({"gen": 9, "state_id": "x"}))
+    assert cortex_bridge.wake_token_current(None) is True
+
+
+def test_wake_token_current_no_epoch_recorded_is_current(cortex_env):
+    """No gen recorded yet -> nothing to invalidate against -> process."""
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({}))
+    assert cortex_bridge.wake_token_current((1, "x")) is True
