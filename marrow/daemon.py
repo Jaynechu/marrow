@@ -47,11 +47,8 @@ def recall(
     since: Annotated[str | None, Field(description="Lower time bound as a configured-local-timezone day string YYYY-MM-DD; converted to that day's start. Optional.")] = None,
     until: Annotated[str | None, Field(description="Upper time bound as a configured-local-timezone day string YYYY-MM-DD; converted to that day's end. Optional.")] = None,
 ) -> list[dict]:
-    """Recall events from db. Call when the user mention the past that you don't know.
-    e.g. 你记得我上周说xxx？
-    context=True attaches ±1 adjacent same-session turns.
-    since/until: configured-local-timezone YYYY-MM-DD day strings.
-    Diary: query='diary' + since/until."""
+    """Recall events from db. Call when the user mentions the past that you don't know.
+    e.g. 你记得我上周说xxx？"""
     from .timecue import melb_day_range
     since_utc: str | None = None
     until_utc: str | None = None
@@ -122,7 +119,7 @@ def recall(
 
 @marrow_tool()
 def atlas_lookup(prefix: Annotated[str, Field(description="Filesystem path prefix (expanduser+resolved to absolute); returns atlas rows whose path equals it or sits under it as a path component, each with description + naming_hint + depth.")]) -> list[dict]:
-    """Look up atlas rows by path prefix — call before creating or naming files when location/naming is uncertain. Returns description + naming rules."""
+    """Look up atlas rows by path prefix — call before creating or naming files when location/naming is uncertain."""
     conn = storage.connect(_DB)
     try:
         from . import atlas
@@ -133,7 +130,7 @@ def atlas_lookup(prefix: Annotated[str, Field(description="Filesystem path prefi
 
 @marrow_tool()
 def event_embed(batch: Annotated[int, Field(ge=1, description="Max number of unvectorized events to embed this call (default 50); returns {embedded: count actually written}.")] = 50) -> dict:
-    """Embed unvectorized events (write-time backfill). Returns count written."""
+    """Embed unvectorized events (write-time backfill)."""
     conn = storage.connect(_DB)
     try:
         n = _recall_mod.embed_pending(conn, batch=batch)
@@ -296,45 +293,27 @@ def _tl_clear(event_id: int | None, sid: str | None,
 
 
 def tl(
-    action: Annotated[str, Field(description="One of add / update / clear / query.")],
-    timerange: Annotated[str | None, Field(description="'HH:mm-HH:mm' or single 'HH:mm'. A today-time still in the future rolls back to yesterday; end < start crosses midnight into next day. Required for add.")] = None,
-    body: Annotated[str | None, Field(description="Plain-text body, <=50 chars (config tl.body_max). Must NOT contain the 【】affect block or a trailing [i] marker — those parts are assembled server-side. Required for add.")] = None,
-    n_word: Annotated[str | None, Field(description="User-side affect word, <=8 chars enforced (style guide 1-4). At least one of n_word / y_word required for add; a single side is fine. On update, providing either replaces the whole label block.")] = None,
-    y_word: Annotated[str | None, Field(description="Assistant-side affect word, <=8 chars enforced (style guide 1-4). At least one of n_word / y_word required for add; a single side is fine. On update, providing either replaces the whole label block.")] = None,
-    importance: Annotated[int | None, Field(ge=1, le=5, description="Event composite intensity*importance, int 1-5. Omitted -> 3 on add, keeps existing value on update.")] = None,
+    action: Annotated[str, Field(description="add / update / clear / query. update: only provided fields change. clear: 1 row = no DB backup, deleted line returned; 2+ rows = DB backup + deleted lines capped at 20.")],
+    timerange: Annotated[str | None, Field(description="'HH:mm-HH:mm'.")] = None,
+    body: Annotated[str | None, Field(description="Plain text <=30 chars. Real-world task/event + shared activities, vivid not work-log — life details in, tech details out (meals, chat topics, plays, tiny/silly/funny moments). 以assistant第一人称描述（我），user=“你”, never third person.")] = None,
+    n_word: Annotated[str | None, Field(description="n = user; 1-4 chars: user's mood right now. e.g. 烦/心虚/紧张激动/好可爱. Single side fine. On update, providing either n_word or y_word replaces the whole label.")] = None,
+    y_word: Annotated[str | None, Field(description="y = assistant; 1-4 chars: how you feel right now. Same rules as n_word.")] = None,
+    importance: Annotated[int | None, Field(ge=1, le=5, description="ONE event-level composite (not per person): intensity (current) * importance (future). 1-2 = low-medium & short-term, routine (casual chat, life admin, study, coding); 3 = both medium ~1 week (funny moments, light quarrels, outing); 4 = either high (major conflict, final exam); 5 = milestone (both high — worth recording forever). Omitted -> 3 on add, kept on update.")] = None,
     sid: Annotated[str | None, Field(description="Session id. add: overrides the auto-resolved current session for the row. clear: delete all tl rows for this session (mutually exclusive with event_id and before/after).")] = None,
     event_id: Annotated[int | None, Field(description="Target tl row id for update/clear. Get it from a 'query' call.")] = None,
     before: Annotated[str | None, Field(description="clear only: delete tl rows with timestamp < this value (ISO). Combine with after for a range; mutually exclusive with event_id and sid.")] = None,
     after: Annotated[str | None, Field(description="clear only: delete tl rows with timestamp >= this value (ISO). Combine with before for a range; mutually exclusive with event_id and sid.")] = None,
     match: Annotated[str | None, Field(description="Content substring to resolve a row for query/update/clear when you don't have event_id; matched case-sensitively, newest-first, capped at 20. Must resolve to a single row for update/clear.")] = None,
-    date: Annotated[str | None, Field(description="Configured-local-timezone day YYYY-MM-DD. add/update: backdates the row. query/clear: filters resolution to that day.")] = None,
+    date: Annotated[str | None, Field(description="Optional YYYY-MM-DD, backdates the row.")] = None,
 ) -> dict:
-    """Add/update/clear/query timeline.
-    - 'query': find rows by match (content substring) and/or date (configured local timezone
-      YYYY-MM-DD) -> [{event_id, line}]. Use it to look up an event_id.
-    - 'update'/'clear': address a row by event_id, OR by match (+optional date)
-      when you don't have the id. e.g. update match='千层' date='2026-07-05'.
-    - 'clear': delete rows by event_id / match / sid / before+after range.
-      Single row: no DB backup, deleted line returned. 2+ rows: DB backup + deleted lines (capped at 20).
-    - Casual chat: When topic/location/mood change or task/activity done, 'add' one for previous turns
-    - Coding/study sessions: keep 1tl each session - update tl only when things changed.
-    - Each session edits its own tl ONLY — never update tl from other sessions; overlap is expected.
-    - Frequency: every 1-2h or 10-20 turns - you can skip even when hook nudge you.
-    - Format (add/update): HH:mm-HH:mm 【{u} affect♡{a} affect (OR B affect)】body [i]
-      - e.g. 21:25-21:31 【{u}愉悦♡{a}委屈】翻CC日志找骂人梗，扑空互怼 [3]
-      -  - date(optional)=YYYY-MM-DD backdates the row.
-      - {u} = user, {a} = assistant, B = single affect when similar.
-      - affect = how you feel now - no description, record your own feeling and emotion.
-        - 1-4 chars. e.g. 烦；心虚；紧张激动；好可爱
-      - i = ONE event-level composite (not per person): intensity (current state) * importance (future).
-        - 1-2 = low-medium intensity & short-term e.g. Routine - casual chat, life admin, study, coding 无趣/平淡/轻松/烦躁
-        - 3 = Both medium (~ 1 week) - funny moments / light quarrels / outing
-        - 4 = Either high intensity or high imp - major conflict / final exam
-        - 5 = Milestone (both high) - worth recording forever?
-      - body <=50 chars, record real-world task/event + shared activities with assistant.
-        - vivid not work-log; life details in, tech details out.
-        - e.g. meals, casual chat topics, plays and tiny/silly/funny moments.
-        - No third person — 我/你 only, never 她/他."""
+    """Summarise each session into tl lines.
+    Pass PARTS (timerange/n_word/y_word/body/importance) ONLY - code assemble rows.
+    - Casual chat: when topic/location/mood change or task/activity done, add one for previous turns.
+    - Coding/study sessions: keep 1 tl each session - update only when things changed.
+    - Each session edits its own tl ONLY — never touch other sessions'; overlap is expected.
+    - Frequency: every 1-2h or 10-20 turns - you can skip even when hook nudges you.
+    - query: look up rows/event_id by match and/or date. update/clear: address a row
+      by event_id, OR by match (+optional date). e.g. update match='千层' date='2026-07-05'."""
     if action not in _TL_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_TL_ACTIONS)}"}
 
@@ -514,9 +493,8 @@ def sticker(
     sticker_id: Annotated[int | None, Field(description="pick only: id of the sticker to mark used. Required for pick.")] = None,
 ) -> dict | list[dict]:
     """Send stickers to user when [channel: wx/tg]; NEVER on [channel: cli].
-    Use stickers to express your feeling/thoughts; search by vibe/emotion
-    then pick with the chosen id (bumps last_used), then send via
-    <image path="..."/> or <gif path="..."/>. animated=false excludes GIFs."""
+    Use stickers to express your feeling/thoughts; send the picked one via
+    <image path="..."/> or <gif path="..."/>."""
     if action not in _STICKER_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_STICKER_ACTIONS)}"}
     if action == "search":
@@ -608,9 +586,8 @@ def sticker_admin(
     source: Annotated[str, Field(description="ingest only: origin tag stored on the sticker (default 'wechat').")] = "wechat",
     sticker_id: Annotated[int | None, Field(description="update/delete: id of the target sticker. Required for update and delete.")] = None,
 ) -> dict | list[dict]:
-    """Sticker library management. action='ingest': add an image file (safe
-    on duplicates); 'update': rewrite a desc; 'delete': remove a sticker
-    everywhere; 'pending': list stickers with missing/placeholder desc."""
+    """Sticker library management. 'delete': remove a sticker everywhere.
+    'pending': list stickers with missing/placeholder desc."""
     if action not in _STICKER_ADMIN_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_STICKER_ADMIN_ACTIONS)}"}
     if action == "ingest":
@@ -884,16 +861,10 @@ def dim(
     id: Annotated[int | None, Field(description="delete only: numeric row id of the item to remove. Required for delete; find it via a query first.")] = None,
 ) -> dict | list[dict]:
     """Call for subpage edits (only 3 for now) - read/write/delete.
-    - kind: person, pref, place, meme, milestone.
-      - Entity (profile subpage): person, pref(偏好), place.
     - 'upsert': when recall misses something that clearly exists, or a hit
       shows stale/inaccurate info.
-      - Fields: name, fact, date(milestone), aliases(entities optional)
-      - Memes: type=paw/fact/news/event/others (paw+fact=personal/couple;
-        other 3=public)
-      - Milestones: scope=us/me
-    - 'query': by kind and/or name — verify a write landed, get ids.
-    - 'delete': by kind + id; query by name first if either unknown. Removes DB row + md line + tombstone."""
+    - 'query': verify a write landed, get ids.
+    - 'delete': query by name first if kind/id unknown. Removes DB row + md line + tombstone."""
     if action not in _DIM_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_DIM_ACTIONS)}"}
     if action == "upsert":
@@ -913,9 +884,7 @@ def alert(
     action: Annotated[str, Field(description="'list' unresolved alerts (newest first), or 'resolve' one by alert_id.")],
     alert_id: Annotated[int | None, Field(description="resolve only: id of the alert to resolve (via `mw resolve`, which refreshes the dashboard and restarts the watcher if code changed). Required for resolve.")] = None,
 ) -> dict | list[dict]:
-    """list or solve alerts.
-    action='list' unresolved alerts; 'resolve' by alert_id — auto-refreshes
-    dashboard, restarts watcher if code changed."""
+    """List or resolve alerts."""
     if action not in _ALERT_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_ALERT_ACTIONS)}"}
     if action == "list":
@@ -1063,9 +1032,7 @@ def event_clear(
     after: Annotated[str, Field(description="Delete events with timestamp >= this (ISO or YYYY-MM-DD). Combine with before for a range; mutually exclusive with last. Empty = no bound.")] = "",
     last: Annotated[int, Field(ge=0, description="Delete the N most recent events; mutually exclusive with before/after. 0 = unused. With no before/after/last set, ALL events are purged.")] = 0,
 ) -> dict:
-    """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. Filters:
-    before/after (ISO or YYYY-MM-DD); last=N most recent; none = all.
-    DB backup first."""
+    """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. DB backup first."""
     return _do_event_clear(before or None, after or None, last or None)
 
 

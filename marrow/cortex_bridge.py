@@ -121,12 +121,8 @@ def wish(
 ) -> dict:
     """Our wishlist — personal wishes & cravings (hers and yours), promises
     made, and shared plans. e.g. 你说好请我喝奶茶 / 最近想买耳钉 / 约好周末去看海.
-    Line format: `[] YY/MM/DD text` (date format configurable via
-    [cortex].wish_date_format, default %y/%m/%d) + ` [due]` if due given. section = a
-    heading substring (## or ###, e.g. 心愿单/约定/种草) to insert at that
-    section's end; omit to append at end of file. Markdown structure
-    (headings, subsections) is user-managed — this tool only adds lines,
-    never edits existing content: ~/.config/marrow/cortex/wishlist.md."""
+    Markdown structure (headings, subsections) is user-managed — this tool
+    only adds lines, never edits existing content: ~/.config/marrow/cortex/wishlist.md."""
     import fcntl
     from datetime import datetime
 
