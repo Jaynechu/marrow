@@ -111,6 +111,40 @@ def test_ordinary_chat_no_note_inject(tmp_path, monkeypatch, capsys):
     assert "secret note" not in _ctx(capsys)
 
 
+# ── Phase 2.5 item 1: free-round tuck-in carries its note INLINE — the hook must
+#    NOT also turn-inject the full note (07-14 double-note incident). ───────────
+
+def _read_gen(tmp_path):
+    d = json.loads((tmp_path / "wake_state.json").read_text())
+    return d.get("gen")
+
+
+def test_tuck_in_line_does_not_double_inject_note(tmp_path, monkeypatch, capsys):
+    """A [NEW ROUND] free-round line already carries its diff-mode note inline;
+    the hook must inject NOTHING extra (no duplicate note)."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("FROZEN note", encoding="utf-8")
+    _enable(monkeypatch, tmp_path,
+            {"wake_marker": "[CORTEX-WAKE]", "tuck_in_marker": "[NEW ROUND]"})
+    _stdin(monkeypatch, {"session_id": "s1",
+                         "prompt": "📮 note inline\n\nNow: 14:00\n⏳ [NEW ROUND] 15 min"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == ""  # nothing turn-injected on top of the inline note
+
+
+def test_tuck_in_line_does_not_bump_gen(tmp_path, monkeypatch, capsys):
+    """A tuck-in machine line must NOT count as a user message: no user-wake
+    reset, so the cancellation epoch (gen) is untouched (ghost-bump guard)."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]"})
+    _seed_epoch(tmp_path, 42, "beef1234")
+    _stdin(monkeypatch, {"session_id": "s1",
+                         "transcript_path": "/t/s.jsonl",
+                         "prompt": "📮 note inline\nNow: 14:00\n⏳ [NEW ROUND] 15 min"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _read_gen(tmp_path) == 42  # no user-wake reset -> gen unchanged
+
+
 def test_wakeup_note_fresh_render_wins(tmp_path, monkeypatch):
     """render_module configured + subprocess succeeds => fresh stdout is used,
     not the frozen file."""

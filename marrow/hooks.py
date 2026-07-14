@@ -1977,6 +1977,15 @@ def user_prompt_submit() -> int:
                     "additionalContext": _re_txt,
                 }}, sys.stdout)
             return 0
+        # Free-round tuck-in ([NEW ROUND]) already carries its diff-mode note
+        # INLINE (cortex watchdog D6) — the hook must NOT also turn-inject the
+        # full note, or the round lands with a duplicate note (07-14 incident).
+        # A tuck-in is a machine line but never a wake BELL, so this guard is
+        # checked before the wake-marker branch. The tuck-in falls through to
+        # the is_machine_line gate below (no user-wake reset either).
+        _tuck = cortex_bridge.tuck_in_marker()
+        if _tuck and _tuck in _prompt:
+            return 0
         # Wake turn → inject the full wakeup note. Marker match only; missing or
         # empty note injects nothing (never crashes). The line may carry a
         # cancellation-epoch token ' {g<gen>:<sid>}': a STALE token (a newer
