@@ -255,6 +255,11 @@ im_quiet_text = ""
 # sessions never see this. Empty text = inert.
 show_tokens = 120000
 show_text = "Context ≥120k - If not actively chatting with user, handoff within 3 turns and lie_down(rotate=True) to clear (rotate unlocks a short next_wake, ≥16min). If mid-conversation: carry on, the 150k fuse is the backstop."
+# Behavioural presence gate (mirrors cortex silent_max_min = 15): hold the nudge
+# while the user's last real message is younger than this many minutes (mid-chat
+# — the fuse is the backstop), inject once they have been silent this long. 0 =
+# no gate (fire on the boolean user_replied_this_wake only).
+show_silent_min = 15
 
 [cortex_usage]
 # Net-token visibility (all sessions self-aware). Rendered by usage.py off the

@@ -1108,6 +1108,12 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         d["gen"] = old_gen + 1
         new_gen = d["gen"]
         d["user_replied_this_wake"] = True
+        # Stamp the real user-message time so presence gates (e.g. the 120k
+        # show nudge) can hold while the user is actively chatting and fire once
+        # they have gone silent. Caller already excluded machine lines, so this
+        # never counts an injected/machine turn as user presence.
+        from datetime import timezone as _tz_u
+        d["last_user_msg_ts"] = datetime.now(_tz_u.utc).isoformat()
         raw_wait_until = d.pop("silence_wait_until", None)
         if raw_wait_until is not None and _is_live_wait_until(raw_wait_until):
             d["wait_count"] = max(0, int(d.get("wait_count") or 0) - 1)
@@ -1266,6 +1272,24 @@ def _cortex_handoff_header(ws: dict) -> str:
     return f"{since_str}-{now_str} | SID {sid}"
 
 
+def _user_active_within(ws: dict, minutes: int) -> bool:
+    """True when the wake_state records a real user message younger than
+    *minutes*. No stamp = treat as not-active (silence gate fires). Machine turns
+    never write last_user_msg_ts, so they never count as presence."""
+    raw = ws.get("last_user_msg_ts")
+    if not raw:
+        return False
+    from datetime import timezone as _tz
+    try:
+        dt = datetime.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_tz.utc)
+    age = (datetime.now(_tz.utc) - dt).total_seconds()
+    return age < minutes * 60
+
+
 def _cortex_show_context(tpath: str) -> str:
     """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (12万
     soft, ahead of the 15万 fuse). Suppressed when user is chatting
@@ -1287,7 +1311,14 @@ def _cortex_show_context(tpath: str) -> str:
         ws = _wake_state_load(_cortex_wake_state_path())
     except Exception:
         ws = {}
-    if ws.get("user_replied_this_wake"):
+    # Presence gate: hold the nudge while the user's last real message is younger
+    # than show_silent_min (mid-chat — the 150k fuse is the backstop). It retries
+    # on a later turn while tokens stay over threshold. Falls back to the boolean
+    # user_replied_this_wake when no timestamp is stored (legacy state / gate off).
+    silent_min = int(cr.get("show_silent_min", 0) or 0)
+    if silent_min > 0 and _user_active_within(ws, silent_min):
+        return ""
+    if silent_min <= 0 and ws.get("user_replied_this_wake"):
         return ""
     header = _cortex_handoff_header(ws)
     if header:
