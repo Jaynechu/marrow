@@ -122,6 +122,38 @@ def test_line_starts_with_marker_helper(cortex_env):
     assert cortex_bridge.line_starts_with_marker("看 [NEW ROUND] ?", tm) is False
 
 
+# The REAL ear-Monitor delivery envelope (07-14 incident): the free-round block
+# arrives WRAPPED — marker line reads `<event>⏳ [NEW ROUND] …`, not raw line
+# start. Verbatim shape copied from the incident; the guards must still classify
+# it as a machine/tuck line so the hook does not double-inject the full note.
+_WRAPPED_NEW_ROUND = (
+    "<task-notification>\n"
+    "<summary>Monitor event: \"cortex wake signal\"</summary>\n"
+    "<event>⏳ [NEW ROUND] 87 min since the user's last message. Choose again: "
+    "1) play around (playbook); 2) wait(N); 3) lie_down(next_wake_min=N). "
+    "NOTE: Call MCP tool to render the wakeup note.</event>\n"
+    "</task-notification>"
+)
+
+
+def test_line_starts_with_marker_wrapped_envelope(cortex_env):
+    """P2.5/FIX2: the wrapped ear-Monitor envelope (`<event>⏳ [NEW ROUND] …`)
+    still counts as a tuck line — the hook's de-dup guard rides this shape."""
+    tm = "[NEW ROUND]"
+    assert cortex_bridge.line_starts_with_marker(_WRAPPED_NEW_ROUND, tm) is True
+    # a marker quoted inside real prose must still NOT match
+    assert cortex_bridge.line_starts_with_marker(
+        "he asked <why> the [NEW ROUND] path fired", tm) is False
+
+
+def test_is_machine_line_wrapped_envelope(cortex_env):
+    """Both directions: the wrapped free-round envelope is machine; a real
+    user message quoting the marker mid-body stays a user message."""
+    assert cortex_bridge.is_machine_line(_WRAPPED_NEW_ROUND) is True
+    assert cortex_bridge.is_machine_line(
+        "did the [NEW ROUND] path fire after the <event> block?") is False
+
+
 # The real compact-injection banner captured from a live cortex transcript
 # (~/.claude/projects/-Users-Gabrielle--config-marrow-cortex/6c6c0bbd*.jsonl).
 _COMPACT_SAMPLE = (

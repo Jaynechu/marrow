@@ -717,6 +717,14 @@ _MARKER_LEAD_RE = _re.compile(
     r"^\s*(?:[\U00002300-\U000027BF\U00002B00-\U00002BFF"
     r"\U0001F300-\U0001FAFF\U0000FE0F\U0000200D]\s*){0,3}")
 
+# Ear-Monitor delivery envelope: the free-round/tuck-in block arrives WRAPPED in
+# a harness task-notification, so the marker line reads `<event>⏳ [NEW ROUND] …`
+# — the marker no longer sits at raw line start. Strip a leading run of XML-ish
+# envelope tags (`<event>`, `<task-notification>`) before the glyph strip so the
+# wrapped shape still counts as a machine line. Anti-false-positive kept: a prose
+# line never opens with such a tag, so a mid-sentence quote still never matches.
+_ENVELOPE_LEAD_RE = _re.compile(r"^\s*(?:</?[a-z][a-z0-9_-]*>\s*){0,3}")
+
 
 def machine_markers() -> tuple[str, ...]:
     """Line-start machine-marker family ([cortex].machine_markers) — the wake
@@ -728,14 +736,17 @@ def machine_markers() -> tuple[str, ...]:
 
 def _line_starts_with(prompt: str, marker: str) -> bool:
     """True iff ANY line of *prompt* begins with *marker* after a tolerated
-    leading decoration run (⚙️/⏳/☀️). Machine wake bells and tuck-in/free-round
-    blocks always line-start their marker (cortex window._append_signal_line,
-    watchdog._write_tuck_in_line — note ABOVE, marker as the final line). A real
-    user message merely quoting the marker mid-sentence never matches."""
+    leading envelope-tag run (<event>/<task-notification>) and decoration run
+    (⚙️/⏳/☀️). Machine wake bells and tuck-in/free-round blocks always line-start
+    their marker (cortex window._append_signal_line, watchdog._write_tuck_in_line
+    — note ABOVE, marker as the final line); when delivered by the ear Monitor
+    they arrive wrapped, marker line = `<event>⏳ [NEW ROUND] …`. A real user
+    message merely quoting the marker mid-sentence never matches."""
     if not marker:
         return False
     for line in prompt.splitlines() or [prompt]:
-        if _MARKER_LEAD_RE.sub("", line, count=1).startswith(marker):
+        head = _ENVELOPE_LEAD_RE.sub("", line, count=1)
+        if _MARKER_LEAD_RE.sub("", head, count=1).startswith(marker):
             return True
     return False
 
