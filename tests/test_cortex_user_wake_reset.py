@@ -82,6 +82,46 @@ def test_is_machine_line_new_marker_family(cortex_env):
         "did the [FUSE] path fire last night?") is False
 
 
+def test_is_machine_line_wake_tuck_marker_line_start_only(cortex_env):
+    """P2-2: the always-covered wake / tuck markers now line-start match, not
+    substring. A real user prompt quoting them mid-sentence stays user speech
+    (so the user-wake reset + downstream hook processing still fire)."""
+    # substring quote mid-body -> user message (was wrongly machine before)
+    assert cortex_bridge.is_machine_line(
+        "did the [NEW ROUND] path fire?") is False
+    assert cortex_bridge.is_machine_line(
+        "why is [TUCK-IN] showing twice in the log?") is False
+    assert cortex_bridge.is_machine_line(
+        "grep for [CORTEX-WAKE] in wake_signal.log") is False
+    # genuine machine block: note line(s) above, tuck marker as the final line
+    # (env's tuck_in_marker is [TUCK-IN]) — line-start on a non-first line.
+    assert cortex_bridge.is_machine_line(
+        "Budget: 40k. Pending: 2.\n"
+        "⏳ [TUCK-IN] 15 min since 念念's last message. Choose again.") is True
+    assert cortex_bridge.is_machine_line("⏳ [TUCK-IN] It's been 20 mins") is True
+
+
+def test_is_machine_line_cjk_lead_not_machine(cortex_env):
+    """P2-1 (bridge side): the narrowed decoration class excludes CJK/kana/hangul.
+    A Chinese message opening with a real word then a marker is NOT machine —
+    previously 「看」 was stripped and the line-start became [FUSE]."""
+    assert cortex_bridge.is_machine_line("看 [FUSE] path fired?") is False
+    assert cortex_bridge.is_machine_line(
+        "查一下 [NEW ROUND] 是不是误判") is False
+    # both-direction: the emoji-prefixed real machine line still classifies
+    assert cortex_bridge.is_machine_line("⚙️ [CMD ct-sleep] 90") is True
+
+
+def test_line_starts_with_marker_helper(cortex_env):
+    """The shared shape check the hook's tuck-in de-dup guard rides."""
+    tm = "[NEW ROUND]"
+    assert cortex_bridge.line_starts_with_marker(
+        "note above\n⏳ [NEW ROUND] 15 min since ...", tm) is True
+    assert cortex_bridge.line_starts_with_marker(
+        "did the [NEW ROUND] path fire?", tm) is False
+    assert cortex_bridge.line_starts_with_marker("看 [NEW ROUND] ?", tm) is False
+
+
 # The real compact-injection banner captured from a live cortex transcript
 # (~/.claude/projects/-Users-Gabrielle--config-marrow-cortex/6c6c0bbd*.jsonl).
 _COMPACT_SAMPLE = (

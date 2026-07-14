@@ -1984,7 +1984,7 @@ def user_prompt_submit() -> int:
         # checked before the wake-marker branch. The tuck-in falls through to
         # the is_machine_line gate below (no user-wake reset either).
         _tuck = cortex_bridge.tuck_in_marker()
-        if _tuck and _tuck in _prompt:
+        if _tuck and cortex_bridge.line_starts_with_marker(_prompt, _tuck):
             return 0
         # Wake turn → inject the full wakeup note. Marker match only; missing or
         # empty note injects nothing (never crashes). The line may carry a

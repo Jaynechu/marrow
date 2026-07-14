@@ -709,7 +709,13 @@ def is_compact_injection(prompt: str) -> bool:
     return any(str(m) in head for m in markers if m)
 
 
-_MARKER_LEAD_RE = _re.compile(r"^\s*(?:[\U00002190-\U0001faff️‍]\s*){0,3}")
+# Narrowed decoration class (see marrow.transcript._MARKER_GLYPH): misc-technical
+# + symbols + dingbats (⏳U+23F3 ☀️U+2600 ⚙️U+2699), arrows, emoji, VS16, ZWJ.
+# EXCLUDES CJK/kana/hangul so a Chinese line quoting a marker keeps its lead char
+# and is never misread as a machine line (dropped from the user-wake reset).
+_MARKER_LEAD_RE = _re.compile(
+    r"^\s*(?:[\U00002300-\U000027BF\U00002B00-\U00002BFF"
+    r"\U0001F300-\U0001FAFF\U0000FE0F\U0000200D]\s*){0,3}")
 
 
 def machine_markers() -> tuple[str, ...]:
@@ -718,6 +724,25 @@ def machine_markers() -> tuple[str, ...]:
     Shared by the user-wake reset (below) and marrow.transcript ingestion."""
     cx = config.load().get("cortex", {}) or {}
     return tuple(str(m) for m in (cx.get("machine_markers") or []) if str(m))
+
+
+def _line_starts_with(prompt: str, marker: str) -> bool:
+    """True iff ANY line of *prompt* begins with *marker* after a tolerated
+    leading decoration run (⚙️/⏳/☀️). Machine wake bells and tuck-in/free-round
+    blocks always line-start their marker (cortex window._append_signal_line,
+    watchdog._write_tuck_in_line — note ABOVE, marker as the final line). A real
+    user message merely quoting the marker mid-sentence never matches."""
+    if not marker:
+        return False
+    for line in prompt.splitlines() or [prompt]:
+        if _MARKER_LEAD_RE.sub("", line, count=1).startswith(marker):
+            return True
+    return False
+
+
+# Public alias — the marrow hook's tuck-in de-dup guard shares this shape check
+# so a real user prompt quoting the marker is not swallowed by the early return.
+line_starts_with_marker = _line_starts_with
 
 
 def _starts_with_machine_marker(prompt: str) -> bool:
@@ -746,11 +771,14 @@ def is_machine_line(prompt: str) -> bool:
     if _HARNESS_TAG_RE.match(p.lstrip()):
         return True
     # Critical markers always covered even if machine_markers is overridden.
+    # Line-start (not substring): a machine wake bell / tuck-in always opens its
+    # line with the marker; a real user prompt quoting it mid-sentence ("did the
+    # [NEW ROUND] path fire?") stays a user message.
     m = wake_marker()
-    if m and m in p:
+    if m and _line_starts_with(p, m):
         return True
     tm = tuck_in_marker()
-    if tm and tm in p:
+    if tm and _line_starts_with(p, tm):
         return True
     if is_monitor_death(p):
         return True

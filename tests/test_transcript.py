@@ -82,6 +82,30 @@ def test_no_markers_disables_filtering():
     assert [r["content"] for r in kept] == ["[NEW ROUND] would normally drop"]
 
 
+def test_cjk_lead_before_marker_is_not_stripped():
+    """P2-1 regression: the decoration class must NOT eat CJK/kana/hangul. A
+    Chinese message opening with a real word then quoting a marker keeps its lead
+    char, so its line-start is the CJK char (not the bracket) and it survives
+    ingestion. Previously U+4E00-9FFF fell inside the glyph range -> 「看」 was
+    stripped -> the row line-started with [FUSE] -> silently dropped."""
+    recs = [_user("看 [FUSE] path fired?"),
+            _user("查一下 [NEW ROUND] 是不是被误判了"),
+            _user("확인 [CTL] 이게 머신 라인인가")]
+    contents = [r["content"] for r in _rows(recs)]
+    assert contents == ["看 [FUSE] path fired?",
+                        "查一下 [NEW ROUND] 是不是被误判了",
+                        "확인 [CTL] 이게 머신 라인인가"]
+
+
+def test_real_machine_line_with_emoji_still_dropped():
+    """Both-direction guard: narrowing the class must not let real machine lines
+    through — the ⚙️/⏳/☀️-prefixed markers are still stripped + dropped."""
+    recs = [_user("⚙️ [CMD ct-sleep] wrap up this turn"),
+            _user("⏳ [NEW ROUND] 15 min since the user's last message"),
+            _user("☀️ [CORTEX-WAKE] 06:00")]
+    assert _rows(recs) == []
+
+
 # ── clean(): keep human dialogue verbatim ────────────────────────────────────
 
 def test_keeps_user_and_assistant_text(tmp_path):

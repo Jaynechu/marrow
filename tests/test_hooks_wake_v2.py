@@ -145,6 +145,31 @@ def test_tuck_in_line_does_not_bump_gen(tmp_path, monkeypatch, capsys):
     assert _read_gen(tmp_path) == 42  # no user-wake reset -> gen unchanged
 
 
+def test_marker_mention_mid_sentence_not_swallowed(tmp_path, monkeypatch, capsys):
+    """P2-2 regression: a REAL user prompt quoting the tuck-in marker mid-sentence
+    must NOT hit the de-dup early return — it is user speech, so the user-wake
+    reset fires (gen bumps) and later hook processing is reached. Previously the
+    substring guard (`marker in prompt`) swallowed it."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    called = {"reset": False}
+    monkeypatch.setattr(cortex_bridge, "_cortex_user_wake_reset",
+                        lambda inp: called.__setitem__("reset", True))
+    _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]"})
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
+                         "prompt": "did the [NEW ROUND] path fire?"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert called["reset"] is True  # treated as a real user message
+
+    # both-direction: a genuine machine block still hits the early return (no
+    # reset), so the note is not double-injected.
+    called["reset"] = False
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
+                         "prompt": "note above\n⏳ [NEW ROUND] 15 min since ..."})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert called["reset"] is False
+    assert _ctx(capsys) == ""  # nothing turn-injected
+
+
 def test_wakeup_note_fresh_render_wins(tmp_path, monkeypatch):
     """render_module configured + subprocess succeeds => fresh stdout is used,
     not the frozen file."""

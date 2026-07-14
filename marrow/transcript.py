@@ -185,9 +185,15 @@ def _is_control_command_row(raw: str) -> bool:
 
 # Leading decoration tolerated before a machine marker: whitespace + at most a
 # couple of pictographic glyphs and variation selectors (the ⚙️ / ⏳ / ☀️ that
-# prefix cortex lines). Bounded + narrow so real prose can't be stripped into a
-# false marker hit; the ASCII bracket then starts the marker itself.
-_MARKER_GLYPH = r"[\U00002190-\U0001faff️‍]"
+# prefix cortex lines). Narrowed to real decoration ranges — misc-technical +
+# symbols + dingbats (covers ⏳U+23F3 ☀️U+2600 ⚙️U+2699), arrows, emoji, plus
+# VS16 (U+FE0F) and ZWJ (U+200D). Deliberately EXCLUDES CJK/kana/hangul so a
+# Chinese message like 「看 [FUSE] …」 keeps its leading char and never collapses
+# into a false line-start marker hit.
+_MARKER_GLYPH = (
+    r"[\U00002300-\U000027BF\U00002B00-\U00002BFF"
+    r"\U0001F300-\U0001FAFF\U0000FE0F\U0000200D]"
+)
 _MACHINE_MARKER_LEAD_RE = re.compile(rf"^\s*(?:{_MARKER_GLYPH}\s*){{0,3}}")
 
 
