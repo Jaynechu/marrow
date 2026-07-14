@@ -111,6 +111,69 @@ def test_ordinary_chat_no_note_inject(tmp_path, monkeypatch, capsys):
     assert "secret note" not in _ctx(capsys)
 
 
+# ── GAP 2: WAKE branch is line-start shaped, not substring ─────────────────────
+
+def test_wake_marker_mid_sentence_not_swallowed(tmp_path, monkeypatch, capsys):
+    """A REAL user prompt quoting the wake marker mid-sentence ("grep for
+    [CORTEX-WAKE]") must NOT be swallowed by the wake branch: no note injected,
+    and the user-wake reset fires (it is user speech). Previously the substring
+    guard (`marker in prompt`) swallowed it, skipping reset + recall."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("secret note", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    called = {"reset": False}
+    monkeypatch.setattr(cortex_bridge, "_cortex_user_wake_reset",
+                        lambda inp: called.__setitem__("reset", True))
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
+                         "prompt": "grep for [CORTEX-WAKE] in the log"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert "secret note" not in _ctx(capsys)  # wake note NOT injected
+    assert called["reset"] is True            # treated as a real user message
+
+
+def test_wake_bell_line_start_fires_wake_branch(tmp_path, monkeypatch, capsys):
+    """A real wake bell (marker at line start, no epoch token) fires the wake
+    branch — full note injected, no user-wake reset."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    called = {"reset": False}
+    monkeypatch.setattr(cortex_bridge, "_cortex_user_wake_reset",
+                        lambda inp: called.__setitem__("reset", True))
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
+                         "prompt": "[CORTEX-WAKE] 2026-07-14 14:00 wake"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == "read me and act"  # wake branch fired
+    assert called["reset"] is False           # NOT a user message
+
+
+def test_wake_bell_with_epoch_token_fires_wake_branch(tmp_path, monkeypatch, capsys):
+    """The wake line may carry a ' {g<gen>:<sid>}' epoch suffix — the line-start
+    shape check tolerates it and the wake branch still fires (current token)."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _seed_epoch(tmp_path, 7, "abcd1234")
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
+                         "prompt": "[CORTEX-WAKE] 14:00 wake {g7:abcd1234}"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == "read me and act"
+
+
+def test_wake_bell_wrapped_envelope_fires_wake_branch(tmp_path, monkeypatch, capsys):
+    """Delivered by the ear Monitor the bell arrives wrapped:
+    `<event>⏳ [CORTEX-WAKE] … {g7:abcd1234}</event>` — the envelope-aware
+    line-start check still fires the wake branch."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _seed_epoch(tmp_path, 7, "abcd1234")
+    _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
+                         "prompt": "<event>⏳ [CORTEX-WAKE] 14:00 {g7:abcd1234}</event>"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == "read me and act"
+
+
 # ── Phase 2.5 item 1: free-round tuck-in carries its note INLINE — the hook must
 #    NOT also turn-inject the full note (07-14 double-note incident). ───────────
 

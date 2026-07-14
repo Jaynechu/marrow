@@ -1992,8 +1992,13 @@ def user_prompt_submit() -> int:
         # epoch — e.g. a user message — already superseded this alarm) suppresses
         # the wake-note injection (log only, do NOT process as a wake). A
         # token-less line is legacy and processed as before.
+        # Line-start shape check (NOT substring): a real user prompt merely
+        # quoting the marker mid-sentence ("grep for [CORTEX-WAKE]") must fall
+        # through to the user-wake reset + recall, not be swallowed here. The
+        # real wake bell always line-starts the marker; the epoch token
+        # ' {g<gen>:<sid>}' is a suffix, so the startswith check tolerates it.
         _marker = cortex_bridge.wake_marker()
-        if _marker and _marker in _prompt:
+        if _marker and cortex_bridge.line_starts_with_marker(_prompt, _marker):
             _tok = cortex_bridge.parse_gen_token(_prompt)
             if _tok is not None and not cortex_bridge.wake_token_current(_tok):
                 cortex_bridge._wake_audit(
