@@ -53,7 +53,8 @@ def test_wake_turn_injects_full_note(tmp_path, monkeypatch, capsys):
 
 
 def _seed_epoch(tmp_path, gen, state_id):
-    (tmp_path / "wake_state.json").write_text(
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "state" / "wake_state.json").write_text(
         json.dumps({"gen": gen, "state_id": state_id}), encoding="utf-8")
 
 
@@ -178,7 +179,7 @@ def test_wake_bell_wrapped_envelope_fires_wake_branch(tmp_path, monkeypatch, cap
 #    NOT also turn-inject the full note (07-14 double-note incident). ───────────
 
 def _read_gen(tmp_path):
-    d = json.loads((tmp_path / "wake_state.json").read_text())
+    d = json.loads((tmp_path / "state" / "wake_state.json").read_text())
     return d.get("gen")
 
 
@@ -294,7 +295,7 @@ def test_monitor_death_injects_rearm(tmp_path, monkeypatch, capsys):
             {"rearm_text": "rearm: tail {signal_log}"})
     _stdin(monkeypatch, {"session_id": "s1", "prompt": _DEATH})
     assert hooks.main(["user_prompt_submit"]) == 0
-    assert _ctx(capsys) == f"rearm: tail {tmp_path/'wake_signal.log'}"
+    assert _ctx(capsys) == f"rearm: tail {tmp_path/'state'/'wake_signal.log'}"
 
 
 def test_monitor_death_silent_on_normal_chat(tmp_path, monkeypatch, capsys):
@@ -332,7 +333,7 @@ def test_arm_line_injected_fresh_cortex_window(tmp_path, monkeypatch, capsys):
     _stdin(monkeypatch, {"session_id": "fresh1", "cwd": str(tmp_path),
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
-    assert f"arm: tail {tmp_path/'wake_signal.log'}" in _ctx(capsys)
+    assert f"arm: tail {tmp_path/'state'/'wake_signal.log'}" in _ctx(capsys)
 
 
 def test_arm_line_blank_silent(tmp_path, monkeypatch, capsys):
@@ -374,7 +375,8 @@ def _mark_resume(db, sid):
 
 
 def _write_wake_state(tmp_path, transcript):
-    (tmp_path / "wake_state.json").write_text(
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "state" / "wake_state.json").write_text(
         json.dumps({"awake": True, "transcript": str(transcript)}),
         encoding="utf-8")
 
@@ -399,7 +401,7 @@ def test_resume_resident_injects_resume_ear_text(tmp_path, monkeypatch, capsys):
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
     ctx = _ctx(capsys)
-    assert f"resume: retail {tmp_path/'wake_signal.log'}" in ctx
+    assert f"resume: retail {tmp_path/'state'/'wake_signal.log'}" in ctx
     assert "arm: tail" not in ctx
     assert "retired:" not in ctx
     assert called["n"] == 1  # orphan cleanup ran in the resident case
@@ -439,8 +441,9 @@ def test_is_resident_session_branch_decision(tmp_path, monkeypatch):
     # No match → retired.
     assert cortex_bridge.is_resident_session(str(tmp_path / "b.jsonl")) is False
     # Empty/missing pointer defaults to resident.
-    (tmp_path / "wake_state.json").write_text(json.dumps({"awake": True}),
-                                              encoding="utf-8")
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "state" / "wake_state.json").write_text(
+        json.dumps({"awake": True}), encoding="utf-8")
     assert cortex_bridge.is_resident_session(str(tmp_path / "a.jsonl")) is True
 
 
@@ -457,7 +460,7 @@ def test_fresh_window_still_arms_not_resume(tmp_path, monkeypatch, capsys):
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
     ctx = _ctx(capsys)
-    assert f"arm: tail {tmp_path/'wake_signal.log'}" in ctx
+    assert f"arm: tail {tmp_path/'state'/'wake_signal.log'}" in ctx
     assert "resume: retail" not in ctx
 
 

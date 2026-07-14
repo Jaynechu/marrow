@@ -806,7 +806,7 @@ def is_machine_line(prompt: str) -> bool:
 # with the SAME flock + atomic-replace protocol as cortex.wake_state. ──────────
 
 def _cortex_wake_state_path() -> Path:
-    return _cortex_path("wake_state_file", "wake_state.json")
+    return _cortex_path("wake_state_file", "state/wake_state.json")
 
 
 def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
@@ -816,7 +816,7 @@ def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
     [cortex].wake_audit_log_file (default wake_audit.log under cortex home)."""
     try:
         from datetime import timezone as _tz
-        path = _cortex_path("wake_audit_log_file", "wake_audit.log")
+        path = _cortex_path("wake_audit_log_file", "state/wake_audit.log")
         path.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(_tz.utc).isoformat()
         line = "\t".join((ts, action, reason.replace("\t", " "),
@@ -828,7 +828,7 @@ def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
 
 
 def _cortex_watchdog_pidfile() -> Path:
-    return _cortex_path("watchdog_pidfile", "watchdog.pid")
+    return _cortex_path("watchdog_pidfile", "state/watchdog.pid")
 
 
 import contextlib as _contextlib

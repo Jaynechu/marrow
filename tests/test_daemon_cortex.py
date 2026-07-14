@@ -338,7 +338,7 @@ def test_arm_ear_text_substitutes_signal_log(monkeypatch, tmp_path):
         "home": str(tmp_path),
         "arm_ear_text": "arm: tail {signal_log}",
     })
-    assert cortex_bridge.arm_ear_text() == f"arm: tail {tmp_path/'wake_signal.log'}"
+    assert cortex_bridge.arm_ear_text() == f"arm: tail {tmp_path/'state'/'wake_signal.log'}"
 
 
 def test_arm_ear_text_absolute_override(monkeypatch, tmp_path):
@@ -391,7 +391,7 @@ def test_rearm_text_substitutes_signal_log(monkeypatch, tmp_path):
         "home": str(tmp_path),
         "rearm_text": "rearm: tail {signal_log}",
     })
-    assert cortex_bridge.rearm_text() == f"rearm: tail {tmp_path/'wake_signal.log'}"
+    assert cortex_bridge.rearm_text() == f"rearm: tail {tmp_path/'state'/'wake_signal.log'}"
 
 
 def test_rearm_text_blank_returns_none(monkeypatch, tmp_path):

@@ -51,10 +51,10 @@ def _enable_cortex(monkeypatch, home=None):
 
 
 def _write_wake_state(home, **fields):
-    """Write a wake_state.json under the cortex *home* for presence-gate tests."""
+    """Write a wake_state.json under the cortex *home*/state/ for presence-gate tests."""
     import json as _json
-    home.mkdir(parents=True, exist_ok=True)
-    (home / "wake_state.json").write_text(_json.dumps(fields))
+    (home / "state").mkdir(parents=True, exist_ok=True)
+    (home / "state" / "wake_state.json").write_text(_json.dumps(fields))
 
 
 def test_show_fires_over_threshold(tmp_path, monkeypatch, capsys):

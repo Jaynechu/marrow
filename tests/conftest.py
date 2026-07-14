@@ -188,6 +188,7 @@ def _redirect_marrow_data_dir(tmp_path_factory):
     (vault / "db-pages").mkdir(parents=True, exist_ok=True)
     cortex_home = tmp / "cortex"
     cortex_home.mkdir(parents=True, exist_ok=True)
+    (cortex_home / "state").mkdir(exist_ok=True)
     mp = pytest.MonkeyPatch()
     mp.setattr(config, "DATA_DIR", tmp)
     mp.setattr(config, "CONFIG_PATH", tmp / "config.toml")
