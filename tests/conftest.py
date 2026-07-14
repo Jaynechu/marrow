@@ -214,6 +214,34 @@ def _redirect_marrow_data_dir(tmp_path_factory):
     except ImportError:
         pass
 
+    # Module-level path/db constants captured at IMPORT time (before this
+    # fixture ran) still point at the real tree — patching config.DATA_DIR /
+    # the paths singleton comes too late for them. A catchup spawn hands its
+    # child the real log path (out of reach of in-process guards), and a
+    # schedule snapshot mkdir()s a real dir. Repoint each one at tmp.
+    try:
+        from marrow import sessionstart_catchup as _sc_mod
+        mp.setattr(_sc_mod, "_LOGS_DIR", tmp / "logs")
+    except ImportError:
+        pass
+    try:
+        from marrow import schedule as _sched_mod
+        mp.setattr(_sched_mod, "_SNAPSHOT_DIR", tmp / "schedule-snapshots")
+        mp.setattr(_sched_mod, "_FAIL_LOG", tmp / "logs" / "cadence_fail.log")
+    except ImportError:
+        pass
+    # _DB constants = config.db_path() frozen at import (real marrow.db). The
+    # sqlite3 barrier now blocks writable real-tree connects, but repoint them
+    # at the tmp db so any code reading the module constant hits the isolated db.
+    _tmp_db = str(tmp / "marrow.db")
+    for _mod_name in ("cortex_bridge", "daemon"):
+        try:
+            _m = __import__(f"marrow.{_mod_name}", fromlist=["_DB"])
+            if hasattr(_m, "_DB"):
+                mp.setattr(_m, "_DB", _tmp_db)
+        except ImportError:
+            pass
+
     yield tmp
     mp.undo()
 

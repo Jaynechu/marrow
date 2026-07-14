@@ -482,3 +482,32 @@ def test_classify_retry_limit_resets_after_skip(db_env):
     # fail count resets: only 0 consecutive fails since the skip row -> spawn.
     assert _classify(db, sid, set()) == "spawn", \
         "fail count should reset after terminal skip; grew session should spawn"
+
+
+def test_module_path_constants_redirected_off_real_tree():
+    """GAP 3: module-level path/db constants captured at import time (before the
+    conftest redirect fixture ran) must be repointed at the session tmp dir, so a
+    catchup spawn never hands a child the real ~/.config/marrow/logs path and a
+    schedule snapshot never mkdir()s a real dir."""
+    import os
+    from pathlib import Path
+
+    from marrow import cortex_bridge, daemon, schedule, sessionstart_catchup
+
+    real = Path(os.path.expanduser("~/.config/marrow")).resolve()
+
+    def _under_real(p) -> bool:
+        rp = Path(p).resolve()
+        return rp == real or real in rp.parents
+
+    for label, val in (
+        ("catchup._LOGS_DIR", sessionstart_catchup._LOGS_DIR),
+        ("schedule._SNAPSHOT_DIR", schedule._SNAPSHOT_DIR),
+        ("schedule._FAIL_LOG", schedule._FAIL_LOG),
+        ("cortex_bridge._DB", cortex_bridge._DB),
+        ("daemon._DB", daemon._DB),
+    ):
+        assert not _under_real(val), (
+            f"{label}={val!r} still points under the real ~/.config/marrow/ tree "
+            f"— capture-before-fixture leak (see conftest _redirect_marrow_data_dir)"
+        )
