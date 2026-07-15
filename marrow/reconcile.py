@@ -2144,11 +2144,11 @@ def reconcile_timeline(conn: sqlite3.Connection,
                 rpt.unchanged += 1
 
     if db_win_skips:
-        from . import repo as _repo
-        _repo.add_alert(
-            "warn", "timeline", "timeline_reconcile:db_win",
-            source="reconcile.py", db=db,
-            message=(f"{len(db_win_skips)} stale md line(s) kept DB text "
-                     f"(first {db_win_skips[0]})"),
-        )
+        # Normal self-heal (DB wins, md re-rendered next pass) — audit trail
+        # only, no alert.
+        conn.execute(
+            "INSERT INTO audit_log (target_table, target_id, action, summary)"
+            " VALUES ('timeline', ?, 'md_stale_db_win', ?)",
+            (db_win_skips[0],
+             f"{len(db_win_skips)} stale md line(s) kept DB text"))
     return rpt
