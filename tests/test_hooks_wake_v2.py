@@ -249,6 +249,40 @@ def test_wakeup_note_fresh_render_wins(tmp_path, monkeypatch):
     assert cortex_bridge.wakeup_note_text("/t/feed1234ab.jsonl") == "FRESH note SID feed1234"
 
 
+def test_wakeup_note_fresh_render_mirrors_to_file(tmp_path, monkeypatch):
+    """A successful fresh render overwrites wakeup_note.md so the on-disk copy
+    equals the note actually injected."""
+    note = tmp_path / "wakeup_note.md"
+    note.write_text("stale frozen", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
+                                    "venv_python": "/x/py", "repo_root": "/x"})
+
+    class _P:
+        returncode = 0
+        stdout = "FRESH mirrored note"
+        stderr = ""
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", lambda *a, **k: _P())
+    cortex_bridge.wakeup_note_text("/t/x.jsonl")
+    assert note.read_text(encoding="utf-8") == "FRESH mirrored note"
+
+
+def test_wakeup_note_mirror_failure_never_breaks_injection(tmp_path, monkeypatch):
+    """A mirror write failure (atomic_write raising) is swallowed inside
+    _mirror_wakeup_note, so the injected text still returns."""
+    _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
+                                    "venv_python": "/x/py", "repo_root": "/x"})
+
+    class _P:
+        returncode = 0
+        stdout = "FRESH note"
+        stderr = ""
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", lambda *a, **k: _P())
+    import marrow._atomic as _atomic
+    monkeypatch.setattr(_atomic, "atomic_write",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") == "FRESH note"
+
+
 def test_wakeup_note_falls_back_on_render_failure(tmp_path, monkeypatch):
     """Subprocess failure / non-zero / empty => frozen file is returned."""
     (tmp_path / "wakeup_note.md").write_text("frozen fallback", encoding="utf-8")

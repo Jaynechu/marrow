@@ -629,6 +629,7 @@ def wakeup_note_text(transcript_path: str | None = None) -> str | None:
     nothing so the caller injects nothing."""
     fresh = _render_note_fresh(transcript_path)
     if fresh:
+        _mirror_wakeup_note(fresh)
         return fresh
     try:
         note = _cortex_path("wakeup_note_file", "wakeup_note.md")
@@ -636,6 +637,18 @@ def wakeup_note_text(transcript_path: str | None = None) -> str | None:
         return text or None
     except OSError:
         return None
+
+
+def _mirror_wakeup_note(text: str) -> None:
+    """Best-effort mirror of the injected note to wakeup_note_file so the on-disk
+    copy always equals the latest full note the session received. Never raises —
+    a write failure must not break injection."""
+    try:
+        path = _cortex_path("wakeup_note_file", "wakeup_note.md")
+        from ._atomic import atomic_write
+        atomic_write(str(path), text)
+    except Exception:
+        pass
 
 
 def rearm_text() -> str | None:
