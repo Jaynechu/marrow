@@ -319,6 +319,12 @@ def _sync_dashboard_line(event_id: int, hhmm_start: str, hhmm_end: str | None,
         if line.rstrip("\n").endswith(anchor):
             eol = "\n" if line.endswith("\n") else ""
             lines[i] = new_line + eol
-            dash.write_text("".join(lines), encoding="utf-8")
+            text = "".join(lines)
+            # Advance the tl-rendered trail t= together with this out-of-band
+            # write: reconcile trusts t= as "md current as of"; a stale t= makes
+            # the freshness gate misread this DB write as the md being outdated.
+            from .timeline import _TL_TRAIL_T_RE, _now_utc_iso
+            text = _TL_TRAIL_T_RE.sub(f"t={_now_utc_iso()}", text, count=1)
+            dash.write_text(text, encoding="utf-8")
             return True
     return False

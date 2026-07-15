@@ -2145,10 +2145,12 @@ def reconcile_timeline(conn: sqlite3.Connection,
 
     if db_win_skips:
         from . import repo as _repo
+        shown = ", ".join(db_win_skips[:10])
+        more = f" +{len(db_win_skips) - 10} more" if len(db_win_skips) > 10 else ""
         _repo.add_alert(
             "warn", "timeline", "timeline_reconcile:db_win",
             source="reconcile.py", db=db,
-            message=(f"{len(db_win_skips)} stale md line(s) kept DB text "
-                     f"(first {db_win_skips[0]})"),
+            message=(f"{len(db_win_skips)} stale md line(s) kept DB text: "
+                     f"{shown}{more}"),
         )
     return rpt
