@@ -30,7 +30,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from . import config, cortex_bridge, repo, storage, top_sections, transcript
+from . import config, cortex_bridge, outbox, repo, storage, top_sections, transcript
 from .popen_detach import popen_detach, popen_detach_lazy
 from .timeutil import (
     utc_iso_to_local_date,
@@ -2006,10 +2006,20 @@ def user_prompt_submit() -> int:
                     "suppressed (superseded epoch)")
                 return 0
             _note = cortex_bridge.wakeup_note_text(tpath)
-            if _note:
+            # Merge any ct-targeted outbox notes into the wake payload — the
+            # normal delivery path below never runs on a wake turn, so ct notes
+            # must be consumed here (same atomic claim/consume ordering).
+            try:
+                _ob = outbox.deliver(
+                    inp.get("session_id") if isinstance(inp, dict) else None,
+                    "ct", is_cortex=True, db=config.db_path())
+            except Exception:
+                _ob = None
+            _payload = "\n\n".join(p for p in (_note, _ob) if p)
+            if _payload:
                 json.dump({"hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
-                    "additionalContext": _note,
+                    "additionalContext": _payload,
                 }}, sys.stdout)
             return 0
         # Real user message (NOT a machine line down the ear channel) → user-wake
@@ -2036,15 +2046,29 @@ def user_prompt_submit() -> int:
     if prompt_text.startswith("===== BEGIN ORIGINAL TRANSCRIPT"):
         return 0
 
-    # Sticker nudge: increment turn counter; flag nudge if 10 turns since last sticker.
+    # Outbox delivery (cli/session notes): claim + render notes targeting this
+    # session (exact sid, or 'cli' broadcast for cli sessions), consume-once.
+    # ct-targeted notes are handled in the wake branch above. Seeds _nudge_line
+    # so it lands on every emit path (renders above recall / other nudges).
     _nudge_line: str | None = None
+    try:
+        _msg_note = outbox.deliver(
+            sid, os.environ.get("MARROW_CHANNEL") or "cli",
+            db=config.db_path())
+        if _msg_note:
+            _nudge_line = _msg_note
+    except Exception:
+        pass
+
+    # Sticker nudge: increment turn counter; flag nudge if 10 turns since last sticker.
     if sid and os.environ.get("MARROW_BRIDGE") == "1":
         try:
             _sn = _load_sticker_nudge(sid)
             _sn["turn_count"] = _sn.get("turn_count", 0) + 1
             if _sn["turn_count"] - _sn.get("last_sticker_turn", 0) >= 10:
                 user_name = config.persona()["user_name"]
-                _nudge_line = f"你怎么还不发表情包，{user_name}都等急了——翻翻 sticker(action=search) 找个应景的发一下。"
+                _sticker_line = f"你怎么还不发表情包，{user_name}都等急了——翻翻 sticker(action=search) 找个应景的发一下。"
+                _nudge_line = f"{_nudge_line}\n{_sticker_line}" if _nudge_line else _sticker_line
                 _sn["last_sticker_turn"] = _sn["turn_count"]
             _save_sticker_nudge(sid, _sn)
         except Exception:

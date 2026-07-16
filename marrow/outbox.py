@@ -7,6 +7,7 @@ resolves the target, enforces permission + daily caps, and inserts the row.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import os
 import sqlite3
 
@@ -43,8 +44,6 @@ def _from_sid() -> str | None:
 
 def _today_utc_range() -> tuple[str, str]:
     """Local-midnight-to-midnight window as (since_utc, until_utc) ISO."""
-    import datetime as _dt
-
     today = _dt.datetime.now(_MELB).strftime("%Y-%m-%d")
     return melb_day_range(today)
 
@@ -150,6 +149,91 @@ def send(
             conn.execute("ROLLBACK")
             raise
         return {"ok": True, "id": cur.lastrowid, "target": stored_target}
+    finally:
+        conn.close()
+
+
+def _render_note(header_tmpl: str, row: sqlite3.Row) -> str:
+    """One delivered note: config header line + body verbatim."""
+    from_sid = row["from_sid"] or ""
+    sid4 = from_sid[:4] if from_sid else "????"
+    created = row["created_at"] or ""
+    try:
+        dt = _dt.datetime.fromisoformat(created.replace("Z", "+00:00"))
+        hhmm = dt.astimezone(_MELB).strftime("%H:%M")
+    except Exception:
+        hhmm = ""
+    header = header_tmpl.format(
+        channel=row["from_channel"] or "?", sid4=sid4, time=hhmm
+    )
+    return f"{header}\n{row['body']}"
+
+
+def deliver(
+    sid: str | None,
+    channel: str,
+    *,
+    is_cortex: bool = False,
+    db: str | None = None,
+) -> str | None:
+    """Claim + render pending notes targeting the current session, mark them
+    sent. At-most-once: each row is claimed via a single atomic UPDATE guarded
+    on status='pending' (rowcount decides the winner between racing hooks).
+
+    Targets matched:
+      - session:<full-sid>  → exact sid match
+      - cli                 → any cli session (broadcast, consume-once)
+      - ct                  → cortex session only
+
+    Returns the joined note text (newline-separated) or None when nothing
+    delivered. A crash between claim and this return drops the note (status
+    stays 'claimed' as a forensic trace) — notes are non-critical.
+    """
+    header_tmpl = str(
+        config.load().get("outbox", {}).get("inject_header", "") or ""
+    )
+    conds = []
+    params: list = []
+    if sid:
+        conds.append("target = ?")
+        params.append(f"session:{sid}")
+    if channel == "cli":
+        conds.append("target = 'cli'")
+    if is_cortex:
+        conds.append("target = 'ct'")
+    if not conds:
+        return None
+
+    conn = storage.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT id FROM outbox WHERE status = 'pending' AND ("
+            + " OR ".join(conds) + ") ORDER BY id",
+            params,
+        ).fetchall()
+        delivered: list[str] = []
+        for r in rows:
+            rid = r["id"]
+            with conn:
+                cur = conn.execute(
+                    "UPDATE outbox SET status = 'claimed' WHERE id = ?"
+                    " AND status = 'pending'",
+                    (rid,),
+                )
+            if cur.rowcount != 1:
+                continue  # lost the claim race — another hook took it
+            full = conn.execute(
+                "SELECT id, created_at, from_sid, from_channel, body"
+                " FROM outbox WHERE id = ?", (rid,),
+            ).fetchone()
+            delivered.append(_render_note(header_tmpl, full))
+            with conn:
+                conn.execute(
+                    "UPDATE outbox SET status = 'sent',"
+                    " sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+                    " WHERE id = ?", (rid,),
+                )
+        return "\n\n".join(delivered) if delivered else None
     finally:
         conn.close()
 
