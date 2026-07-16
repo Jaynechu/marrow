@@ -422,10 +422,13 @@ wake_audit_log_file = "state/wake_audit.log"
 # Both counted since local midnight, refused at cap (warns outbox_cap).
 # user_send_channels: channels allowed to send to the user (P1: cortex only).
 # retention_days: sent/failed rows older than this aged out by the weekly job.
+# inject_header: cli/private note header rendered above the body on delivery
+#   ({channel} sender channel, {sid4} first 4 chars of sender sid, {time} HH:MM).
 daily_cap_user = 30
 daily_cap_session = 100
 user_send_channels = ["ct"]
 retention_days = 30
+inject_header = "📮 Message from {channel}·{sid4} {time}"
 
 [hooks]
 # PreToolUse backup guard — stateless, two tiers (no state, no dedup).
