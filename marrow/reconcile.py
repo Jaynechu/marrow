@@ -1656,7 +1656,8 @@ def reconcile_timeline(conn: sqlite3.Connection,
     # actually last changed. Falls back to file mtime for legacy files or a
     # hand-deleted trail. A volatile second writer (Status zone) bumps mtime
     # every render, so mtime alone would lose its "content last rendered" meaning.
-    md_mtime_iso = _trail_t_iso(block) or _md_mtime_iso(dashboard_path)
+    trail_t_iso = _trail_t_iso(block)
+    md_mtime_iso = trail_t_iso or _md_mtime_iso(dashboard_path)
 
     # Parse trail marker first — tells us what was rendered last time
     trail_sid_seqs: set[tuple[str, int]] = set()
@@ -2144,13 +2145,33 @@ def reconcile_timeline(conn: sqlite3.Connection,
                 rpt.unchanged += 1
 
     if db_win_skips:
-        from . import repo as _repo
-        shown = ", ".join(db_win_skips[:10])
-        more = f" +{len(db_win_skips) - 10} more" if len(db_win_skips) > 10 else ""
-        _repo.add_alert(
-            "warn", "timeline", "timeline_reconcile:db_win",
-            source="reconcile.py", db=db,
-            message=(f"{len(db_win_skips)} stale md line(s) kept DB text: "
-                     f"{shown}{more}"),
-        )
+        # Split render residue (file untouched since last render → silent self-heal)
+        # from a clobbered human edit (file changed after render → real warning).
+        # File mtime <= trail t= + slack means no human touched md since we rendered.
+        _DB_WIN_SLACK_S = 5
+        residue = False
+        try:
+            _file_mtime = dashboard_path.stat().st_mtime
+            _t_epoch = (_dt.datetime.strptime(trail_t_iso, "%Y-%m-%dT%H:%M:%SZ")
+                        .replace(tzinfo=_dt.timezone.utc).timestamp()
+                        if trail_t_iso else None)
+            residue = _t_epoch is not None and _file_mtime <= _t_epoch + _DB_WIN_SLACK_S
+        except OSError:
+            residue = False
+        if residue:
+            conn.execute(
+                "INSERT INTO audit_log (target_table, target_id, action, summary)"
+                " VALUES ('timeline', ?, 'md_stale_db_win', ?)",
+                (db_win_skips[0],
+                 f"{len(db_win_skips)} stale md line(s) kept DB text"))
+        else:
+            from . import repo as _repo
+            shown = ", ".join(db_win_skips[:10])
+            more = f" +{len(db_win_skips) - 10} more" if len(db_win_skips) > 10 else ""
+            _repo.add_alert(
+                "warn", "timeline", "timeline_reconcile:db_win",
+                source="reconcile.py", db=db,
+                message=(f"{len(db_win_skips)} stale md line(s) kept DB text: "
+                         f"{shown}{more}"),
+            )
     return rpt
