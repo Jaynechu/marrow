@@ -205,3 +205,120 @@ def test_cortex_excludes_ct_source(tmp_path, monkeypatch):
     _ev(db, SID_OTHER, "user", "cortex monologue", channel="ct",
         ts="2026-07-17T04:10:00Z")
     assert hooks._replay_context("ctsid0000", "ct") == ""
+
+
+# ── F8: monotonic advance (no rewind) + interleaved note/hook deliveries ──────
+
+def test_cortex_hook_never_rewinds_note_baseline(tmp_path, monkeypatch):
+    # note.py advanced the shared baseline further than the hook's own render
+    # would compute (smaller row-limit / stricter strip). The hook must NOT
+    # rewind last_note_ts and re-deliver already-consumed turns (the 18:38 bug).
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db)
+    _ev(db, SID_OTHER, "user", "old turn", ts="2026-07-17T04:05:00Z")
+    _ev(db, SID_OTHER, "assistant", "old reply", ts="2026-07-17T04:06:00Z")
+    import json
+    # note.py already consumed up to 04:06 (ahead of what a hook re-render of the
+    # same rows would land on if it wrote unconditionally).
+    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T04:06:00Z"}))
+    # a new turn arrives, older than the baseline is impossible; verify the hook,
+    # seeing only <= baseline rows, delivers nothing and leaves the baseline put.
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    assert json.loads(ws.read_text())["last_note_ts"] == "2026-07-17T04:06:00Z"
+
+
+def test_cortex_alternating_note_hook_no_repeat(tmp_path, monkeypatch):
+    # Alternate note-side stamps and hook-side deliveries; no line repeats and the
+    # baseline only moves forward.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db)
+    import json
+
+    def _baseline():
+        return json.loads(ws.read_text()).get("last_note_ts")
+
+    # hook delivers turn A
+    _ev(db, SID_OTHER, "user", "line A", ts="2026-07-17T04:10:00Z")
+    outA = hooks._replay_context("ctsid0000", "ct")
+    assert "line A" in outA
+    base1 = _baseline()
+
+    # note-side delivers turn B (stamps baseline forward itself)
+    _ev(db, SID_OTHER, "assistant", "line B", ts="2026-07-17T04:11:00Z")
+    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T04:11:00Z"}))
+    assert _baseline() > base1
+
+    # hook next turn: nothing new (B consumed by note) -> no repeat of A or B
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    assert _baseline() == "2026-07-17T04:11:00Z"
+
+    # hook delivers turn C
+    _ev(db, SID_OTHER, "user", "line C", ts="2026-07-17T04:12:00Z")
+    outC = hooks._replay_context("ctsid0000", "ct")
+    assert "line C" in outC
+    assert "line A" not in outC and "line B" not in outC
+    assert _baseline() == "2026-07-17T04:12:00Z"
+
+
+def test_cortex_concurrent_interleave_no_repeat_no_backward(tmp_path, monkeypatch):
+    # Two writers hit the same wake_state under the real flock: one thread runs
+    # hook deliveries, another stamps note-side baselines. No delivered line ever
+    # repeats across all hook outputs and the baseline is monotonic throughout.
+    import json
+    import threading
+
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db)
+    for i in range(20):
+        _ev(db, SID_OTHER, "user", f"msg {i}",
+            ts=f"2026-07-17T05:{i:02d}:00Z")
+
+    delivered = []
+    baselines = []
+    lock = threading.Lock()
+    errors = []
+
+    def _hook_worker():
+        try:
+            for _ in range(30):
+                out = hooks._replay_context("ctsid0000", "ct")
+                with lock:
+                    delivered.append(out)
+                    if ws.exists():
+                        b = json.loads(ws.read_text()).get("last_note_ts")
+                        if b:
+                            baselines.append(b)
+        except Exception as e:  # pragma: no cover
+            errors.append(e)
+
+    def _note_worker():
+        try:
+            for i in range(0, 20, 3):
+                with cortex_bridge._wake_state_lock(ws):
+                    d = cortex_bridge._wake_state_load(ws)
+                    cur = d.get("last_note_ts")
+                    cand = f"2026-07-17T05:{i:02d}:00Z"
+                    if not cur or cand > cur:
+                        d["last_note_ts"] = cand
+                        cortex_bridge._wake_state_save(ws, d)
+        except Exception as e:  # pragma: no cover
+            errors.append(e)
+
+    threads = [threading.Thread(target=_hook_worker),
+               threading.Thread(target=_note_worker)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    # baseline monotonic (never moves backward)
+    assert baselines == sorted(baselines)
+    # no single msg line delivered by the hook twice across all outputs
+    seen = set()
+    for out in delivered:
+        for i in range(20):
+            tag = f"msg {i}"
+            if out and tag in out:
+                assert tag not in seen, f"{tag} delivered twice"
+                seen.add(tag)

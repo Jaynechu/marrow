@@ -224,17 +224,25 @@ def _replay_truncate(text: str, limit: int) -> str:
     return text[: max(limit - 1, 0)] + "…"
 
 
-def _replay_render(rows, header: str, max_turns: int, per_chars: int) -> str:
-    """Group events into turns and render the P3 replay block, or '' when empty.
-    A user event opens a turn; consecutive user msgs stay in the same turn; the
-    following assistant msgs close it. Overflow beyond max_turns folds to a
-    count. Shared by the per-sid cursor path and the cortex last_note_ts path."""
+def _replay_render(rows, header: str, max_turns: int, per_chars: int):
+    """Group events into turns and render the P3 replay block. Returns
+    (block, rendered_cutoff): block is '' when empty; rendered_cutoff is the max
+    timestamp of the rows that carried non-empty content (mirrors note.py's
+    _replay cutoff — the diff baseline advances on exactly what was rendered,
+    fold included). A user event opens a turn; consecutive user msgs stay in the
+    same turn; the following assistant msgs close it. Overflow beyond max_turns
+    folds to a count. Shared by the per-sid cursor path and the cortex
+    last_note_ts path."""
     tz = config.get_tz()
     turns: list[list[dict]] = []
+    cutoff = None
     for r in rows:
         content = transcript.strip_media_markers(r["content"])
         if not content:
             continue
+        ts = r["timestamp"]
+        if ts and (cutoff is None or ts > cutoff):
+            cutoff = ts
         item = {
             "channel": r["channel"] or "?",
             "sid4": (r["session_id"] or "")[:4],
@@ -250,7 +258,7 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int) -> str:
         else:
             turns[-1].append(item)
     if not turns:
-        return ""
+        return "", None
     kept = turns[-max_turns:]
     folded = len(turns) - len(kept)
     lines = [header]
@@ -261,7 +269,7 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int) -> str:
             )
     if folded > 0:
         lines.append(f"+{folded} earlier turns")
-    return "\n".join(lines)
+    return "\n".join(lines), cutoff
 
 
 def _replay_cortex(header: str, max_turns: int, per_chars: int) -> str:
@@ -269,7 +277,9 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int) -> str:
     cursor (wake_state.json) so a turn delivered here is never re-delivered by the
     next note, and vice versa. Reads events newer than the baseline (excludes ct
     source, matching note.py semantics), renders P3 format, advances last_note_ts
-    to the newest rendered ts under the shared wake-state flock."""
+    to the newest RENDERED ts (same cutoff note.py uses) under the shared
+    wake-state flock. Advance is monotonic — never rewinds a baseline that
+    note.py (or a concurrent turn) already pushed forward."""
     p = cortex_bridge._cortex_wake_state_path()
     conn = storage.connect(config.db_path())
     try:
@@ -291,15 +301,13 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int) -> str:
             if not rows:
                 return ""
             rows = list(reversed(rows))  # chronological
-            cutoff = None
-            for r in rows:
-                ts = r["timestamp"]
-                if ts and (cutoff is None or ts > cutoff):
-                    cutoff = ts
-            block = _replay_render(rows, header, max_turns, per_chars)
+            block, cutoff = _replay_render(rows, header, max_turns, per_chars)
             if not block:
                 return ""
-            if cutoff:
+            # Monotonic advance to the rendered cutoff: only move forward, so a
+            # baseline note.py or a concurrent cortex turn already pushed past
+            # this point is never rewound (the double-deliver / 18:38-rewind bug).
+            if cutoff and (not since_ts or str(cutoff) > str(since_ts)):
                 cortex_bridge._ws_ensure_epoch(d)
                 d["last_note_ts"] = cutoff
                 cortex_bridge._wake_state_save(p, d)
@@ -395,7 +403,7 @@ def _replay_context(sid: str, channel: str) -> str:
 
     max_id = rows[-1]["id"]
 
-    block = _replay_render(rows, header, max_turns, per_chars)
+    block, _ = _replay_render(rows, header, max_turns, per_chars)
 
     # Advance cursor on a render decision regardless of fold (ambient replay).
     _save_replay_cursor(sid, max_id)
