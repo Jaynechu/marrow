@@ -454,6 +454,33 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
             or "Write your handoff first, then call lie_down again.")
 
 
+# The one tool that does NOT restore the wait quota (F5): calling wait() is the
+# "still waiting" action, not activity. Every other cortex tool clears
+# wait_spent so a wait may follow (play mode then wait again = allowed).
+_WAIT_TOOL_NAME = "mcp__marrow__wait"
+
+
+def _cortex_round_activity(inp: dict) -> None:
+    """F5 activity feed: any cortex tool call OTHER than wait() marks the round
+    active -> restore the wait quota (clear wait_spent) so a following wait is
+    allowed. Cortex session only; wait() itself is excluded (a consecutive empty
+    wait stays refused). Best-effort under the shared wake_state lock — never
+    blocks the tool. Runs in PreToolUse so the flag is cleared before the round's
+    wait() (if any) is evaluated."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return
+    if not isinstance(inp, dict) or inp.get("tool_name") == _WAIT_TOOL_NAME:
+        return
+    p = _cortex_wake_state_path()
+    try:
+        with _wake_state_lock(p):
+            d = _wake_state_load(p)
+            if d.get("awake") and d.pop("wait_spent", None):
+                _wake_state_save(p, d)
+    except Exception:
+        pass
+
+
 def _window_spawn_epoch(tpath: str) -> float | None:
     """Wall-clock start of this window = the first timestamp in the transcript
     (a resume opens a new file; a fresh window's first line is its birth).
@@ -1152,19 +1179,6 @@ def _spawn_watchdog_if_absent() -> None:
         pass
 
 
-def _is_live_wait_until(raw: str) -> bool:
-    """True if raw (an ISO wake_state silence_wait_until value) parses and is
-    still in the future -> the in-flight wait it guards has not expired yet."""
-    from datetime import timezone as _tz
-    try:
-        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_tz.utc)
-    return dt > datetime.now(_tz.utc)
-
-
 def _latest_wake_log_id() -> int | None:
     """id of the most recent open wake row (ct_wake_log where wake=1), so a
     user-wake reset can rejoin the accounting chain a later lie_down updates.
@@ -1219,10 +1233,9 @@ def _log_user_wake_row() -> int | None:
 def _cortex_user_wake_reset(inp: dict) -> None:
     """Real user message in a cortex window -> flip awake, kill the pending
     alarm (floor deadline + sentinel), mark the user reply, and ensure a
-    watchdog is alive. A wait only counts if its timer ran to expiry with no
-    user: if a LIVE (unexpired) silence_wait_until is interrupted here, the
-    in-flight wait never completed, so refund it (wait_count -= 1, floored at
-    0); an expired/absent wait_until leaves wait_count untouched. Fast +
+    watchdog is alive. F5: a user message is an external trigger that restores
+    the round's wait quota, so wait_spent is cleared unconditionally (the old
+    live-wait refund is subsumed — any activity resets the quota). Fast +
     idempotent: already-awake + watchdog-alive collapses to cheap no-op
     writes. Cortex session only; the caller has already excluded machine
     lines (is_machine_line)."""
@@ -1272,9 +1285,10 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         # never counts an injected/machine turn as user presence.
         from datetime import timezone as _tz_u
         d["last_user_msg_ts"] = datetime.now(_tz_u.utc).isoformat()
-        raw_wait_until = d.pop("silence_wait_until", None)
-        if raw_wait_until is not None and _is_live_wait_until(raw_wait_until):
-            d["wait_count"] = max(0, int(d.get("wait_count") or 0) - 1)
+        d.pop("silence_wait_until", None)
+        # F5: external trigger restores the round's wait quota (subsumes the old
+        # live-wait refund — any activity clears wait_spent).
+        d.pop("wait_spent", None)
         d.pop("tuck_pending", None)
         # Clear the durable next-wake ledger too: a user arrival cancels any
         # scheduled alarm, so the tick reconcile must not later fire a stale
