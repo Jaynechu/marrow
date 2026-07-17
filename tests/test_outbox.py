@@ -38,12 +38,13 @@ def _rows(p):
 def test_migration_creates_outbox_and_indexes(tmp_path):
     conn = storage.init_db(str(tmp_path / "m.db"))
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 42
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(outbox)")}
         assert {"id", "created_at", "from_sid", "from_channel", "target",
                 "body", "status", "sent_at", "retry_count", "watch_reply",
                 "watch_timeout_min", "watch_state",
-                "replied_at", "reply_text", "receipt_seen"} <= cols
+                "replied_at", "reply_text", "receipt_seen",
+                "claimed_by", "claimed_at"} <= cols
         idx = {r["name"] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index'"
             " AND tbl_name='outbox'")}
@@ -60,13 +61,15 @@ def test_migration_idempotent(tmp_path):
     # second init_db (re-run every migration) must not raise
     conn = storage.init_db(p)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 42
         storage._migrate_to_v40(conn)  # direct re-entry
         storage._migrate_to_v41(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 41
-        # receipt columns present + idempotent (re-init must not raise)
+        storage._migrate_to_v42(conn)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 42
+        # receipt + audit columns present + idempotent (re-init must not raise)
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(outbox)")}
-        assert {"replied_at", "reply_text", "receipt_seen"} <= cols
+        assert {"replied_at", "reply_text", "receipt_seen",
+                "claimed_by", "claimed_at"} <= cols
     finally:
         conn.close()
 
@@ -91,6 +94,27 @@ def test_send_session_target_inserts(db):
 def test_send_empty_text_refused(db):
     r = outbox.send("cli", "   ", db=db)
     assert not r["ok"] and "empty" in r["error"]
+
+
+def test_send_ct_target_fires_note_kick(db, monkeypatch):
+    # F9: a ct-targeted send kicks cortex immediately (kind='note', note_id=row).
+    from marrow import cortex_bridge
+    calls = []
+    monkeypatch.setattr(cortex_bridge, "kick_cortex",
+                        lambda kind, note_id=None: calls.append((kind, note_id)))
+    r = outbox.send("ct", "睡了吗", db=db)
+    assert r["ok"]
+    assert calls == [("note", r["id"])]
+
+
+def test_send_non_ct_target_does_not_kick(db, monkeypatch):
+    # cli / session sends stay mailbox — no kick.
+    from marrow import cortex_bridge
+    calls = []
+    monkeypatch.setattr(cortex_bridge, "kick_cortex",
+                        lambda kind, note_id=None: calls.append((kind, note_id)))
+    outbox.send("cli", "hey other session", db=db)
+    assert calls == []
 
 
 def test_send_watch_flags_stored(db):
@@ -174,6 +198,19 @@ def test_session_cap_independent_of_user_cap(db, monkeypatch):
     assert not outbox.send("ct", "s2", db=db)["ok"]  # session cap hit
     # user cap independent — tg still available
     assert outbox.send("tg", "u", db=db)["ok"]
+
+
+def test_ct_cap_blocked_send_does_not_kick(db, monkeypatch):
+    # F9: the cap gate runs BEFORE the kick — a cap-refused ct send never kicks.
+    from marrow import cortex_bridge
+    calls = []
+    monkeypatch.setattr(cortex_bridge, "kick_cortex",
+                        lambda kind, note_id=None: calls.append(kind))
+    monkeypatch.setattr(config, "load",
+                        _cfg_with_caps(config, cap_user=1, cap_session=1))
+    assert outbox.send("ct", "first", db=db)["ok"]     # this one kicks
+    assert not outbox.send("ct", "second", db=db)["ok"]  # cap hit -> no kick
+    assert calls == ["note"]                              # exactly one kick
 
 
 def test_cap_under_concurrency(db, monkeypatch):

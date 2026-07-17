@@ -32,7 +32,8 @@ def _status(db, rid):
     conn = storage.connect(db)
     try:
         return conn.execute(
-            "SELECT status, sent_at FROM outbox WHERE id=?", (rid,)
+            "SELECT status, sent_at, claimed_by, claimed_at FROM outbox"
+            " WHERE id=?", (rid,)
         ).fetchone()
     finally:
         conn.close()
@@ -53,6 +54,9 @@ def test_targeted_delivers_to_exact_sid(tmp_path):
     assert out and "hi A" in out
     row = _status(db, rid)
     assert row["status"] == "sent" and row["sent_at"]
+    # F9 audit: the hook claim path stamps its identity + time.
+    assert row["claimed_by"] == "marrow.deliver"
+    assert row["claimed_at"] is not None
 
 
 def test_targeted_not_delivered_to_other_sid(tmp_path):

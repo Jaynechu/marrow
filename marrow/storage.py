@@ -15,7 +15,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 42
 
 # Tables whose id must never be reused (freed-id-reuse disease family): a plain
 # INTEGER PRIMARY KEY hands a deleted id back to the next INSERT, and side-tables
@@ -268,7 +268,12 @@ CREATE TABLE IF NOT EXISTS outbox (
   -- v41: reply receipt — bridge stamps her reply on every sent tg/wx note.
   replied_at TEXT,
   reply_text TEXT,
-  receipt_seen INTEGER NOT NULL DEFAULT 0
+  receipt_seen INTEGER NOT NULL DEFAULT 0,
+  -- v42: claim-source audit — every claim path stamps who/when it consumed a
+  -- row (e.g. 'marrow.deliver' / 'cortex.note' / 'cortex.free_round'), so one
+  -- query answers "who consumed note N and when".
+  claimed_by TEXT,
+  claimed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status_target ON outbox(status, target);
 CREATE INDEX IF NOT EXISTS idx_outbox_watch_state_sent
@@ -553,6 +558,8 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
             ("outbox", "replied_at", "TEXT"),
             ("outbox", "reply_text", "TEXT"),
             ("outbox", "receipt_seen", "INTEGER NOT NULL DEFAULT 0"),
+            ("outbox", "claimed_by", "TEXT"),
+            ("outbox", "claimed_at", "TEXT"),
         ):
             try:
                 conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
@@ -602,6 +609,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v39(conn)
         _migrate_to_v40(conn)
         _migrate_to_v41(conn)
+        _migrate_to_v42(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -1677,6 +1685,19 @@ def _migrate_to_v41(conn: sqlite3.Connection) -> None:
     if v >= 41:
         return
     conn.execute("PRAGMA user_version=41")
+
+
+def _migrate_to_v42(conn: sqlite3.Connection) -> None:
+    """v42: outbox claim-source audit — claimed_by / claimed_at.
+
+    The two columns are added by the schema-evolution backfill loop above
+    (idempotent ALTER); this gate only bumps user_version so SCHEMA_VERSION
+    stays monotonic.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 42:
+        return
+    conn.execute("PRAGMA user_version=42")
 
 
 def get_latest_watermark(conn, sid):

@@ -148,7 +148,18 @@ def send(
         except Exception:
             conn.execute("ROLLBACK")
             raise
-        return {"ok": True, "id": cur.lastrowid, "target": stored_target}
+        new_id = cur.lastrowid
+        # F9: a ct-targeted note is the user's indirect intent — deliver it
+        # immediately (kick), not on the next passive round. asleep -> wake;
+        # awake -> F3 carrier free-round. The cap check above already gated it;
+        # kick_cortex is best-effort and never blocks the send.
+        if base == "ct":
+            try:
+                from . import cortex_bridge
+                cortex_bridge.kick_cortex("note", note_id=new_id)
+            except Exception:
+                pass
+        return {"ok": True, "id": new_id, "target": stored_target}
     finally:
         conn.close()
 
@@ -216,8 +227,10 @@ def deliver(
             rid = r["id"]
             with conn:
                 cur = conn.execute(
-                    "UPDATE outbox SET status = 'claimed' WHERE id = ?"
-                    " AND status = 'pending'",
+                    "UPDATE outbox SET status = 'claimed',"
+                    " claimed_by = 'marrow.deliver',"
+                    " claimed_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')"
+                    " WHERE id = ? AND status = 'pending'",
                     (rid,),
                 )
             if cur.rowcount != 1:
