@@ -146,6 +146,14 @@ Three runtimes:
 - `deploy/commands/ct-clear.md` — slash command wrapping `lie_down(rotate=True)`: summarise the session into handoff.md, then rotate.
 - agent_guard (§1.2) lives in the main hooks pipeline rather than a cortex-side hook because hooks only execute in the main session's settings.json, and cortex's resumed session shares the same global settings.
 
+### 6.6 msg outbox (outbox.py, mw-msg spec: docs/plans/mw-msg.md)
+- `msg(action, to, text, watch_reply, watch_timeout_min)` MCP tool — fire-and-forget notes: tg|wx (her phone, `[outbox].user_send_channels` whitelist, ct only) · cli/ct/session:<prefix> (covert session notes). Daily caps (daily_cap_user/daily_cap_session) counted + inserted in one BEGIN IMMEDIATE. Status pending/sent/failed, no read receipts, retention_days prune.
+- watch: either flag → `watch_state='armed'`. Any armed note: her reply on that channel → claim_reply kicks cortex instantly (matches any armed, not just watch_reply). watch_timeout_min → claim_timeouts kick unless replied before deadline (then satisfied, no timeout kick). Receipts unconditional for tg/wx sends; stamp bounded sent_at <= inbound_at (tg native msg date, wx poll-tick wallclock — no native per-msg ts); media receipt "[type] caption".
+- ct-targeted notes = kick treatment (kick_cortex "note"): asleep → wake; awake+idle → carrier round; live-wait → ear inject. Exactly ONE claim owner per note — atomic UPDATE WHERE status='pending' rowcount guard + claimed_by/claimed_at audit. Fresh wake: hook-side `outbox.deliver(sid,"ct")` (hooks.py UserPromptSubmit wake-marker branch) is the sole live payload channel; wake.py-side assemble output is mirror-file only.
+- Bridge side (synapse tg/wx loops): poll outbox every poll_interval_s, claim_pending pending→claimed→sent/failed, `sweep_orphan_claimed` at startup fails stale claimed rows (alerted, never resent). `note_prefix` "📮 " presentation-only at send; receipts/normal replies unprefixed.
+- Replay inject (`[replay]`): cross-session activity into every session — cortex shared cursor `last_note_ts` in wake_state.json under flock, others per-sid; monotonic forward-only, advance = rendered cutoff. SessionStart seeds last max_turns regardless of cursor (§3/F11); own-channel bridge-sent notes inject next turn as "📤 Sent on this channel" (F6, per-sid cursor, NOT seeded at SessionStart); `wire_channels` guard prevents cli/ct double-show.
+- Deploy gotcha: outbox/msg code runs inside each session's resident daemon — live sessions must restart to pick up changes; kickstart only reaches watcher/bridges; hooks.py spawns fresh per call.
+
 ## 7. Scheduled jobs (launchd)
 
 - com.marrow.watcher — persistent, KeepAlive.
