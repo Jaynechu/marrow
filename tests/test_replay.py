@@ -151,6 +151,40 @@ def test_truncation(tmp_path, monkeypatch):
     assert "abcdefghi…" in out
 
 
+# ── max_lines cap: newest lines win ─────────────────────────────────────────
+
+def test_max_lines_caps_to_newest(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 1, "max_lines": 4})
+    hooks._replay_context(SID_SELF, "cli")
+    # a single turn (consecutive user msgs stay open) carrying 6 messages —
+    # within max_turns=1 but over max_lines=4.
+    for i in range(3):
+        _ev(db, SID_OTHER, "user", f"u{i}", ts=f"2026-07-17T05:0{i}:00Z")
+    _ev(db, SID_OTHER, "assistant", "a0", ts="2026-07-17T05:10:00Z")
+    _ev(db, SID_OTHER, "assistant", "a1", ts="2026-07-17T05:11:00Z")
+    _ev(db, SID_OTHER, "assistant", "a2", ts="2026-07-17T05:12:00Z")
+    out = hooks._replay_context(SID_SELF, "cli")
+    lines = [l for l in out.splitlines() if l.startswith("[")]
+    assert len(lines) == 4
+    assert "u0" not in out and "u1" not in out  # oldest dropped
+    assert "u2" in out and "a2" in out          # newest kept
+
+
+def test_max_lines_zero_disables_cap(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 1, "max_lines": 0})
+    hooks._replay_context(SID_SELF, "cli")
+    for i in range(3):
+        _ev(db, SID_OTHER, "user", f"u{i}", ts=f"2026-07-17T05:0{i}:00Z")
+    _ev(db, SID_OTHER, "assistant", "a0", ts="2026-07-17T05:10:00Z")
+    _ev(db, SID_OTHER, "assistant", "a1", ts="2026-07-17T05:11:00Z")
+    _ev(db, SID_OTHER, "assistant", "a2", ts="2026-07-17T05:12:00Z")
+    out = hooks._replay_context(SID_SELF, "cli")
+    lines = [l for l in out.splitlines() if l.startswith("[")]
+    assert len(lines) == 6  # single turn, no line cap
+
+
 # ── own-sid exclusion ───────────────────────────────────────────────────────
 
 def test_own_sid_excluded(tmp_path, monkeypatch):

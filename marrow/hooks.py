@@ -259,15 +259,17 @@ def _replay_truncate(text: str, limit: int) -> str:
     return text[: max(limit - 1, 0)] + "…"
 
 
-def _replay_render(rows, header: str, max_turns: int, per_chars: int):
+def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines: int = 0):
     """Group events into turns and render the P3 replay block. Returns
     (block, rendered_cutoff): block is '' when empty; rendered_cutoff is the max
     timestamp of the rows that carried non-empty content (mirrors note.py's
     _replay cutoff — the diff baseline advances on exactly what was rendered,
     fold included). A user event opens a turn; consecutive user msgs stay in the
     same turn; the following assistant msgs close it. Overflow beyond max_turns
-    folds to a count. Shared by the per-sid cursor path and the cortex
-    last_note_ts path."""
+    folds to a count. `max_lines` (0 = no cap) further caps the rendered message
+    lines to the newest N after turn-capping — an outer bound below max_turns
+    for turns that carry many per-turn messages. Shared by the per-sid cursor
+    path and the cortex last_note_ts path."""
     tz = config.get_tz()
     turns: list[list[dict]] = []
     cutoff = None
@@ -296,18 +298,19 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int):
         return "", None
     kept = turns[-max_turns:]
     folded = len(turns) - len(kept)
-    lines = [header]
-    for turn in kept:
-        for it in turn:
-            lines.append(
-                f"[{it['channel']}·{it['sid4']} {it['hm']}] {it['role']}: {it['content']}"
-            )
+    msg_lines = [
+        f"[{it['channel']}·{it['sid4']} {it['hm']}] {it['role']}: {it['content']}"
+        for turn in kept for it in turn
+    ]
+    if max_lines and len(msg_lines) > max_lines:
+        msg_lines = msg_lines[-max_lines:]  # newest lines win
+    lines = [header, *msg_lines]
     if folded > 0:
         lines.append(f"+{folded} earlier turns")
     return "\n".join(lines), cutoff
 
 
-def _replay_cortex(header: str, max_turns: int, per_chars: int) -> str:
+def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int = 0) -> str:
     """Cortex-window replay on a normal turn, sharing note.py's last_note_ts diff
     cursor (wake_state.json) so a turn delivered here is never re-delivered by the
     next note, and vice versa. Reads events newer than the baseline (excludes ct
@@ -336,7 +339,7 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int) -> str:
             if not rows:
                 return ""
             rows = list(reversed(rows))  # chronological
-            block, cutoff = _replay_render(rows, header, max_turns, per_chars)
+            block, cutoff = _replay_render(rows, header, max_turns, per_chars, max_lines)
             if not block:
                 return ""
             # Monotonic advance to the rendered cutoff: only move forward, so a
@@ -375,7 +378,8 @@ def _her_last_user_age_min(conn, sid: str) -> float | None:
     return (datetime.now(timezone.utc) - dt).total_seconds() / 60.0
 
 
-def _replay_seed(conn, sid: str, header: str, max_turns: int, per_chars: int) -> str:
+def _replay_seed(conn, sid: str, header: str, max_turns: int, per_chars: int,
+                  max_lines: int = 0) -> str:
     """F11: SessionStart-only first-sight render for the per-sid replay cursor.
     Renders the last max_turns turns of other-session activity regardless of
     cursor position (there is none yet), then advances the cursor forward to
@@ -394,7 +398,7 @@ def _replay_seed(conn, sid: str, header: str, max_turns: int, per_chars: int) ->
         _save_replay_cursor(sid, seed)
         return ""
     rows = list(reversed(rows))  # chronological
-    block, _ = _replay_render(rows, header, max_turns, per_chars)
+    block, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
     max_id = rows[-1]["id"]
     _save_replay_cursor(sid, max_id)
     return block
@@ -422,12 +426,13 @@ def _replay_context(sid: str, channel: str, *, seed_ok: bool = False) -> str:
         return ""
 
     max_turns = int(cfg.get("max_turns", 2))
-    per_chars = int(cfg.get("per_msg_chars", 150))
+    per_chars = int(cfg.get("per_msg_chars", 250))
+    max_lines = int(cfg.get("max_lines", 4))
     header = cfg.get("header", "## Recent replay from other sessions")
 
     if cortex_bridge.is_cortex_session():
         try:
-            return _replay_cortex(header, max_turns, per_chars)
+            return _replay_cortex(header, max_turns, per_chars, max_lines)
         except Exception:
             return ""
 
@@ -441,7 +446,7 @@ def _replay_context(sid: str, channel: str, *, seed_ok: bool = False) -> str:
         cursor = _load_replay_cursor(sid)
         if cursor is None:
             if seed_ok:
-                return _replay_seed(conn, sid, header, max_turns, per_chars)
+                return _replay_seed(conn, sid, header, max_turns, per_chars, max_lines)
             row = conn.execute("SELECT MAX(id) AS m FROM events").fetchone()
             seed = int(row["m"]) if row and row["m"] is not None else 0
             _save_replay_cursor(sid, seed)
@@ -472,7 +477,7 @@ def _replay_context(sid: str, channel: str, *, seed_ok: bool = False) -> str:
 
     max_id = rows[-1]["id"]
 
-    block, _ = _replay_render(rows, header, max_turns, per_chars)
+    block, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
 
     # Advance cursor on a render decision regardless of fold (ambient replay).
     _save_replay_cursor(sid, max_id)

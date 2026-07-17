@@ -410,6 +410,8 @@ wire_channels = ["tg", "wx"]
 # sessions' recent user/assistant turns. Cursor per sid (state/replay/<sid>);
 # first sight seeds to current MAX(events.id) — future-only, never backfills.
 # max_turns: turn cap (one user->assistant exchange); overflow folds to +N more.
+# max_lines: outer cap on rendered message lines, below max_turns — a turn with
+#   many per-turn messages can still overflow the turn cap; newest lines win.
 # per_msg_chars: per-message truncation (shorter than cortex — ambient only).
 # idle_gate_min: non-cortex sessions inject replay only when her last completed
 #   turn in that session is >= this many minutes old (catch-up on return, quiet
@@ -420,7 +422,8 @@ wire_channels = ["tg", "wx"]
 #   Source ct events are excluded by the query itself.
 enabled = true
 max_turns = 2
-per_msg_chars = 150
+max_lines = 4
+per_msg_chars = 250
 idle_gate_min = 20
 header = "## Recent replay from other sessions"
 exclude_target_channels = []
