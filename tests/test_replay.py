@@ -2,9 +2,12 @@
 
 Covers: first-sight cursor seed (no backfill), cursor advance, turn grouping +
 cap + fold line, own-sid exclusion, source-ct exclusion, destination-channel
-exclusion, enabled=false, nothing-new → empty inject.
+exclusion, enabled=false, nothing-new → empty inject; F11 SessionStart seed.
 """
 from __future__ import annotations
+
+import io
+import json
 
 from marrow import config, hooks, storage
 
@@ -187,3 +190,52 @@ def test_enabled_false(tmp_path, monkeypatch):
     _ev(db, SID_OTHER, "user", "hi")
     assert hooks._replay_context(SID_SELF, "cli") == ""
     assert _cursor(SID_SELF) is None
+
+
+# ── F11: SessionStart seed, moves the first inject earlier ─────────────────
+
+def _run_hook(monkeypatch, event, payload):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr("sys.stdout", io.StringIO())
+    import sys as _sys
+    buf = io.StringIO()
+    monkeypatch.setattr(_sys, "stdout", buf)
+    rc = hooks.main([event])
+    return rc, buf.getvalue()
+
+
+def test_session_start_seeds_and_first_turn_shows_new_activity(tmp_path, monkeypatch):
+    # F11: SessionStart seeds the replay cursor early via _replay_context (the
+    # same function turn_inject calls each turn), so genuinely new activity
+    # between SessionStart and her first message surfaces on turn 1 instead of
+    # being swallowed by the first-sight seed-only call.
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db)
+    # Fresh sid, never seen before -> SessionStart seeds the cursor (empty inject,
+    # matches the always-empty first-sight rule).
+    rc, out = _run_hook(monkeypatch, "session_start", {"session_id": SID_SELF})
+    assert rc == 0
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "## Recent replay from other sessions" not in ctx
+    assert _cursor(SID_SELF) is not None
+
+    # Activity from another session lands AFTER the seed, BEFORE her first msg.
+    _ev(db, SID_OTHER, "user", "activity before her first message",
+        ts="2026-07-17T04:10:00Z")
+    _ev(db, SID_OTHER, "assistant", "reply before her first message",
+        ts="2026-07-17T04:11:00Z")
+
+    rc, out = _run_hook(
+        monkeypatch, "turn_inject",
+        {"session_id": SID_SELF, "prompt": "hi", "cwd": str(tmp_path)})
+    assert rc == 0
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "activity before her first message" in ctx
+
+    # Turn 1 consumed the cursor — a second turn with no new events repeats nothing.
+    rc, out = _run_hook(
+        monkeypatch, "turn_inject",
+        {"session_id": SID_SELF, "prompt": "again", "cwd": str(tmp_path)})
+    assert rc == 0
+    ctx2 = json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+    assert "activity before her first message" not in ctx2

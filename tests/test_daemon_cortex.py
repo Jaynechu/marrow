@@ -329,7 +329,7 @@ def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_pat
     wd = m._tool_manager._tools["wait"].description
     assert "N=25-200 (Day); 90-300 (Night)" in ld
     assert "N=2-18" in wd
-    assert "one wait per wake" in wd
+    assert "no consecutive empty waits" in wd
     assert "12-min auto timer" in wd  # rendered from [wake.watchdog].silent_max_min
     assert "expiry brings the 3-choice menu" in wd
     # No stale hardcoded ranges leaked in.

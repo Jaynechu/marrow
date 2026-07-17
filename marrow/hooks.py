@@ -1282,6 +1282,16 @@ def session_start() -> int:
             if backdrop:
                 parts.append(backdrop)
 
+            # F11: seed cross-session replay here (same cursor/render path as
+            # turn_inject) so opening context carries other-session activity
+            # before her first message, instead of wasting the first-sight seed
+            # call on turn 1. Outbound-notes (F6) excluded — its own cursor
+            # would otherwise be consumed here too, silencing turn 1's inject.
+            if sid:
+                replay_seed = _replay_context(sid, os.environ.get("MARROW_CHANNEL") or "cli")
+                if replay_seed:
+                    parts.append(replay_seed)
+
             # Usage block (all sessions self-aware) — off the collector kv.
             try:
                 from . import usage as _usage

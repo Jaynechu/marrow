@@ -379,14 +379,15 @@ def _lie_down_doc() -> str:
 
 def _wait_doc() -> str:
     """C10 (user-final): wait description with the wait clamp numbers rendered
-    from cortex config [wake].wait_min/wait_max, and the chat-tier auto-timer
+    from cortex config [wake].wait_min/wait_max, and the idle-bar auto timer
     length from [wake.watchdog].silent_max_min. Never hardcoded."""
     lo = int(_cortex_toml_section("wake", "wait_min", 1))
     hi = int(_cortex_toml_section("wake", "wait_max", 20))
     auto = int(_cortex_toml_section("wake.watchdog", "silent_max_min", 20))
-    return (f"wait(N) [N={lo}-{hi}] — one wait per wake. Each user reply "
-            f"triggers a {auto}-min auto timer and resets all other timers. "
-            f"The auto timer also counts — expiry brings the 3-choice menu.")
+    return (f"wait(N) [N={lo}-{hi}] — no consecutive empty waits; any activity "
+            f"(tool call, user reply, kick, note delivery) restores the quota "
+            f"and resets all other timers. A {auto}-min auto timer runs "
+            f"regardless — expiry brings the 3-choice menu.")
 
 
 def register(marrow_tool, db: str | None = None) -> None:
