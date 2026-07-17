@@ -162,12 +162,6 @@ cosine_threshold = 0.85
 # repeat candidates.
 fast_skip_count = 3
 
-[tasks_dedup]
-# Cosine vs active tasks + 24h-window done tasks. Archived intentionally
-# excluded — old archived tasks may legitimately resurface under new
-# wording. Cross-category in both insert paths.
-cosine_threshold = 0.85
-
 [milestones_dedup]
 # Cosine vs all milestones.title (table stays small, <1 row/month).
 cosine_threshold = 0.85
@@ -287,21 +281,10 @@ text_file = ""
 # false = no cross-window tl injection.
 enabled = true
 
-[day_para]
-# Day-paragraph writer (marrow.day_para): one 100-150 char overview per day,
-# composed from that day's self-timeline (role='tl') rows + calendar. Fills the
-# diary.overview column without touching diary.content. Prompt text lives in
-# marrow/data/prompt_day_para.txt (or point prompt_file at your own).
-prompt_file = ""
-chars_min = 100
-chars_max = 150
-# Pull the day's calendar (cadence cal read) into the prompt. false = tl only.
-include_calendar = true
-
 [diary]
-# Diary free-write prompt loader (marrow.day_para.load_diary_prompt). Text in
-# marrow/data/prompt_diary.txt (or point prompt_file at your own). enabled is a
-# groundwork flag for the cortex free-write slot — no writer wired yet.
+# Diary free-write groundwork for the cortex free-write slot — no writer wired
+# yet. Prompt text in marrow/data/prompt_diary.txt (or point prompt_file at your
+# own). enabled is a groundwork flag.
 enabled = false
 prompt_file = ""
 length_range = "300-800"

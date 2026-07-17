@@ -271,41 +271,6 @@ def test_candidate_row_deleted_drops_and_tombstones(tmp_path):
     assert nh in audit["summary"]
 
 
-def test_candidate_drop_blocks_revive_via_write_milestone_cand(tmp_path):
-    """After drop, write_milestone_cand must not re-insert the same row."""
-    from marrow import candidates
-    p = str(tmp_path / "t.db")
-    conn = storage.init_db(p)
-    with conn:
-        cur = conn.execute(
-            "INSERT INTO milestones(scope,date,title,pinned,source_hash) "
-            "VALUES('me','2026-05-22','Killed',0,'sh-x')"
-        )
-        rid = cur.lastrowid
-    dash = tmp_path / "dashboard.md"
-    dash.write_text(
-        "<!-- marrow:top:start -->\n"
-        "## Milestone candidate [0]\n"
-        f"<!-- cand:milestone:ids=[{rid}] -->\n"
-        "## Affect\n"
-        "<!-- marrow:top:end -->\n"
-    )
-    reconcile.reconcile_milestone_candidates(conn, dash)
-    raw = (
-        "===MILESTONE_CAND===\n"
-        '{"scope":"me","date":"2026-05-22","title":"Killed",'
-        '"description":"x","conf":0.95}\n'
-        "===END===\n"
-    )
-    n = candidates.write_milestone_cand(conn, raw, "2026-05-22")
-    cnt = conn.execute(
-        "SELECT COUNT(*) FROM milestones WHERE title='Killed'"
-    ).fetchone()[0]
-    conn.close()
-    assert n == 0
-    assert cnt == 0
-
-
 def test_candidate_no_vote_is_inert(tmp_path):
     p = str(tmp_path / "t.db")
     conn = storage.init_db(p)

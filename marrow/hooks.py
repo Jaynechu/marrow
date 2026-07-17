@@ -1057,44 +1057,6 @@ def _claude_json_snapshot_block() -> str | None:
         return None
 
 
-# ── affect heartbeat ─────────────────────────────────────────────────────────
-
-def _affect_heartbeat(conn: sqlite3.Connection) -> str | None:
-    """Return block line if a day in last 7d had events but no affect, else None.
-
-    DECISIONS line 37: fires ONLY on a day that HAD events but NO affect.
-    Checks the past 7 calendar days (UTC date boundary), but ignores days
-    earlier than the affect pipeline's first-seen date — historical events
-    before AFFECT extraction shipped never had a chance to produce rows.
-    """
-    pipeline_start_row = conn.execute(
-        "SELECT MIN(date) FROM affect_live"
-    ).fetchone()
-    pipeline_start = pipeline_start_row[0] if pipeline_start_row else None
-    if not pipeline_start:
-        return None  # pipeline never produced anything → warning is noise
-    today = _now_utc().date()
-    gap_day: str | None = None
-    for delta in range(1, 8):
-        d = (today - timedelta(days=delta)).isoformat()
-        if d < pipeline_start:
-            continue
-        has_events = conn.execute(
-            "SELECT 1 FROM events WHERE date(timestamp) = ? LIMIT 1", (d,)
-        ).fetchone()
-        if not has_events:
-            continue
-        has_affect = conn.execute(
-            "SELECT 1 FROM affect_live WHERE date = ? LIMIT 1", (d,)
-        ).fetchone()
-        if not has_affect:
-            gap_day = d
-            break  # report the most recent gap only
-    if gap_day:
-        return f"[⚠ (情感记录可能中断): {gap_day}]"
-    return None
-
-
 # ── session-start payload ────────────────────────────────────────────────────
 
 def _read_input() -> dict:
@@ -1187,11 +1149,6 @@ def session_start() -> int:
             if cj_snap:
                 parts.append(cj_snap)
 
-            # Heartbeat block goes first so it is never buried.
-            heartbeat = _affect_heartbeat(conn)
-            if heartbeat:
-                parts.append(heartbeat)
-
             alert_rows = conn.execute(
                 "SELECT id, severity, type, message FROM alerts WHERE resolved = 0 ORDER BY id"
             ).fetchall()
@@ -1282,7 +1239,7 @@ def session_start() -> int:
                     (
                         "sessions",
                         "session_start:zones",
-                        f"git={len(git_hk or '')} hb={len(heartbeat or '')} alerts={len(alert_block)}"
+                        f"git={len(git_hk or '')} alerts={len(alert_block)}"
                         f" tl={len(backdrop or '')} total={len(ctx)}",
                     ),
                 )

@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 # Empty-model backstop: a spawn that exited before any assistant flush has
 # no model signal. Its first user / queue-operation content head matches a
 # Marrow-pipeline or prompt-lint spawn prompt; a real interrupted session
-# carries a human prompt instead. Heads kept in sync with the prompt
-# constants in marrow/daily.py, marrow/sessionend_prompts.py, and
-# ~/.claude/hooks/prompt-lint.py.
+# carries a human prompt instead. Heads kept in sync with the surviving
+# summariser/handover prompts and ~/.claude/hooks/prompt-lint.py. Retired
+# daily/sessionend heads are inert now (those spawns no longer fire).
 _SPAWN_HEADS = (
     "===== BEGIN ORIGINAL TRANSCRIPT",
     "You compress ONE long session of dialogue",

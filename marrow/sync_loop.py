@@ -483,8 +483,11 @@ def build_targets(folder: str,
         monitor_path = ""
     if monitor_path:
         def _monitor_db_mtime(c: sqlite3.Connection) -> float | None:
+            # resolved_at included so a resolve-only change (which never bumps
+            # updated_at) still advances the clock and re-renders monitor.md.
             return _max_any(c, [("alerts", "updated_at"),
-                                ("alerts", "created_at")])
+                                ("alerts", "created_at"),
+                                ("alerts", "resolved_at")])
 
         def _monitor_render(c: sqlite3.Connection) -> None:
             from . import monitor

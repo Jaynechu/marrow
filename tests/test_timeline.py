@@ -75,50 +75,6 @@ def _freeze_timeline_now(monkeypatch, melb_dt: _dt.datetime) -> None:
     monkeypatch.setattr(timeline._dt, "datetime", FrozenDateTime)
 
 
-# ── open episodes ─────────────────────────────────────────────────────────────
-
-def test_open_episode_renders_at_top(conn):
-    _affect(conn, 0.2, 0.7, 3, "委屈", "吵架了", unresolved=1, hours_ago=5)
-    result = timeline.render_timeline(conn)
-    assert "未解: 吵架了" in result
-    assert "<!-- tl:ep:" in result
-    lines = result.splitlines()
-    top = [l for l in lines if l.startswith("未解:")]
-    assert top, "open episode must appear"
-    # Must be before any HH:MM content
-    content_idx = next((i for i, l in enumerate(lines)
-                        if len(l) >= 5 and l[2] == ":" and not l.startswith("未解:")), None)
-    open_idx = next((i for i, l in enumerate(lines)
-                     if l.startswith("未解:")), None)
-    if content_idx is not None and open_idx is not None:
-        assert open_idx < content_idx
-
-
-def test_open_episode_expired_hidden(conn):
-    """Episode older than 7 days must not appear in open line."""
-    ts_old = _utc(8 * 24)  # 8 days ago — outside _OPEN_EXPIRY_DAYS window
-    conn.execute(
-        "INSERT INTO affect (date, ep, valence, arousal, importance, label,"
-        " description, source, unresolved, created_at)"
-        " VALUES (?, 1, 0.2, 0.7, 3, '委屈', '旧事', 'test', 1, ?)",
-        (ts_old[:10], ts_old),
-    )
-    conn.commit()
-    result = timeline.render_timeline(conn)
-    assert "旧事" not in result
-
-
-def test_resolved_episode_not_in_open(conn):
-    row_id = _affect(conn, 0.2, 0.7, 3, "委屈", "已解决了",
-                     unresolved=1, hours_ago=5)
-    ts_now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    conn.execute("UPDATE affect SET resolved_at=? WHERE id=?",
-                 (ts_now, row_id))
-    conn.commit()
-    result = timeline.render_timeline(conn)
-    assert "已解决了" not in result
-
-
 # ── 24h film-strip ────────────────────────────────────────────────────────────
 
 def _local_iso(year: int, month: int, day: int, hour: int, minute: int) -> str:
@@ -372,26 +328,17 @@ def test_zone_b_renders_overview_with_tone(conn):
     diary_data = {
         "2026-06-22": {"tone": "温暖", "overview": "今天散步了很开心。"},
     }
-    lines = timeline._render_zone_b(diary_data, [date], [], [])
+    lines = timeline._render_zone_b(diary_data, [date])
     assert lines[0] == "**06-22 Mon 【温暖】** <!-- tl:d:2026-06-22 -->"
     assert lines[1] == "今天散步了很开心。"
 
 
 def test_zone_b_empty_diary_returns_empty(conn):
-    """_render_zone_b with no diary data returns [] (no footer either)."""
+    """_render_zone_b with no diary data returns []."""
     import datetime as _dt2
     dates = [_dt2.date(2026, 6, 22), _dt2.date(2026, 6, 21)]
-    lines = timeline._render_zone_b({}, dates, [], [])
+    lines = timeline._render_zone_b({}, dates)
     assert lines == []
-
-
-def test_zone_b_week_footer_present_when_diary_data_exists():
-    """Week trend footer appended when diary days are rendered."""
-    import datetime as _dt2
-    date = _dt2.date(2026, 6, 22)
-    diary_data = {"2026-06-22": {"tone": "平淡", "overview": "普通的一天。"}}
-    lines = timeline._render_zone_b(diary_data, [date], [], [])
-    assert any("The Week" in l for l in lines)
 
 
 def test_query_diary_zone_b_skips_null_overview(conn):
@@ -427,7 +374,6 @@ def test_zone_b_diary_appears_in_render_timeline(conn):
     conn.commit()
     result = timeline.render_timeline(conn)
     assert "三天前很开心。" in result
-    assert "The Week" in result
 
 
 # ── trim order ────────────────────────────────────────────────────────────────

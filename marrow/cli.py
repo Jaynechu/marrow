@@ -576,8 +576,6 @@ _LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 # All plist templates shipped in deploy/ with their launchd labels.
 _ALL_PLISTS: list[tuple[str, str]] = [
     ("mw-aging.plist",         "com.marrow.aging"),
-    ("mw-daily-catchup.plist", "com.marrow.daily-catchup"),
-    ("mw-daily-routine.plist", "com.marrow.daily-routine"),
     ("mw-db-backup.plist",     "com.marrow.db-backup"),
     ("mw-goose-bites.plist",   "com.marrow.goose-bites"),
     ("mw-watcher.plist",       "com.marrow.watcher"),

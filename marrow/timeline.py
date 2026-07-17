@@ -31,37 +31,11 @@ from . import config as _config
 
 _TZ = _config.get_tz()
 
-# ── 9-tone table: (V-band, A-band) → main tone ───────────────────────────────
-# V band: <0.4 Low, 0.4–0.6 Neu, ≥0.6 High
-# A band: <0.4 Calm, 0.4–0.6 Active, ≥0.6 Intense
-_TONE = {
-    ("Low",  "Calm"): "低落", ("Low",  "Active"): "烦躁", ("Low",  "Intense"): "痛苦",
-    ("Neu",  "Calm"): "平淡", ("Neu",  "Active"): "专注", ("Neu",  "Intense"): "紧张",
-    ("High", "Calm"): "温暖", ("High", "Active"): "愉悦", ("High", "Intense"): "兴奋",
-}
-
-
-def _vband(v: float) -> str:
-    return "Low" if v < 0.4 else ("Neu" if v < 0.6 else "High")
-
-
-def _aband(a: float) -> str:
-    return "Calm" if a < 0.4 else ("Active" if a < 0.6 else "Intense")
-
-
-def _tone(v: float, a: float) -> str:
-    return _TONE[(_vband(v), _aband(a))]
-
-
-def _wmean(rows: list[dict], key: str) -> float:
-    ws = sum(r["importance"] for r in rows)
-    return sum(r[key] * r["importance"] for r in rows) / ws if ws else 0.5
 # Matches leading HH:MM in a LIFE line (e.g. "21:40 买了b5精华")
 _LIFE_TS_RE = _re.compile(r"^(\d{2}:\d{2})(?:-\d{2}:\d{2})?(?:\s+|(?=【))(.*)", _re.DOTALL)
 _CUTOFF_H = 6          # 6AM local day boundary
 _BUDGET = 4000         # soft char budget (safety net; zone caps control sizing)
 _INJECT_CAP = 20       # max film-strip lines injected into context
-_OPEN_EXPIRY_DAYS = 7  # open episodes older than this are hidden
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -172,36 +146,6 @@ def _period_diary_date(utc_iso: str) -> tuple[_dt.date, str]:
     return diary_date, period
 
 
-def _tone_from_rows(rows: list[dict]) -> str:
-    if not rows:
-        return "平淡"
-    v = _wmean(rows, "valence")
-    a = _wmean(rows, "arousal")
-    return _tone(v, a)
-
-
-def _week_trend(this_week: list[dict], last_week: list[dict]) -> str:
-    """↗/↘/→ based on V/A mean delta between this week and last week."""
-    if not this_week:
-        return "平淡"
-    tw_v = _wmean(this_week, "valence")
-    tw_a = _wmean(this_week, "arousal")
-    tone_label = _tone(tw_v, tw_a)
-    if not last_week:
-        return tone_label
-    lw_v = _wmean(last_week, "valence")
-    delta_v = tw_v - lw_v
-    if delta_v > 0.05:
-        arrow = "↗"
-    elif delta_v < -0.05:
-        arrow = "↘"
-    else:
-        arrow = "→"
-    return f"{tone_label} {arrow}"
-
-
-
-
 def _tl_anchor_sid(sid: str, segment_seq: int = 0,
                    line_index: int | None = None) -> str:
     if line_index is not None:
@@ -291,22 +235,6 @@ def _life_line_local_date(item: str, session_date: _dt.date,
 
 # ── DB queries ───────────────────────────────────────────────────────────────
 
-def _query_open_episodes(conn: sqlite3.Connection,
-                         cutoff_utc: str) -> list[dict]:
-    """Unresolved affect episodes from last 7d, not superseded."""
-    rows = conn.execute(
-        "SELECT id, description, label, created_at"
-        " FROM affect"
-        " WHERE superseded_by IS NULL"
-        " AND unresolved = 1"
-        " AND resolved_at IS NULL"
-        " AND created_at >= ?"
-        " ORDER BY created_at ASC",
-        (cutoff_utc,),
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
 def _query_digests_range(conn: sqlite3.Connection,
                          from_utc: str, to_utc: str) -> list[dict]:
     """Visible digests with sd.ts in a generous range for Python filtering.
@@ -350,61 +278,6 @@ def _query_session_max_event_ts(conn: sqlite3.Connection,
         sids,
     ).fetchall()
     return {r["session_id"]: r["t_end"] for r in rows if r["t_end"]}
-
-
-def _query_affect_range(conn: sqlite3.Connection,
-                        from_utc: str, to_utc: str) -> list[dict]:
-    """Affect rows in UTC range for tone computation."""
-    rows = conn.execute(
-        "SELECT valence, arousal, importance, created_at"
-        " FROM affect"
-        " WHERE superseded_by IS NULL"
-        " AND created_at >= ? AND created_at < ?",
-        (from_utc, to_utc),
-    ).fetchall()
-    return [dict(r) for r in rows]
-
-
-def _query_affect_by_session(conn: sqlite3.Connection,
-                              from_utc: str, to_utc: str) -> dict[str, list[dict]]:
-    """Affect rows grouped by session_id for 24h tone tags (Bug 3).
-
-    Affect rows don't carry a session_id column, so we match by time span:
-    rows whose created_at falls within [session_start, session_end) where
-    session_end = next session's start (or to_utc).  We approximate this by
-    joining on events: affect.created_at between first and last event of
-    the session.  For sessions with no events we use the digest ts window.
-    Returns {sid: [affect_row, ...]}
-    """
-    # Fetch affect rows in range with their timestamps
-    rows = conn.execute(
-        "SELECT valence, arousal, importance, created_at"
-        " FROM affect"
-        " WHERE superseded_by IS NULL"
-        " AND created_at >= ? AND created_at < ?",
-        (from_utc, to_utc),
-    ).fetchall()
-    affect_rows = [dict(r) for r in rows]
-
-    # Fetch session time spans (first_event_ts, last_event_ts) from events
-    spans = conn.execute(
-        "SELECT session_id, MIN(timestamp) AS t_start, MAX(timestamp) AS t_end"
-        " FROM events"
-        " WHERE timestamp >= ? AND timestamp < ?"
-        " GROUP BY session_id",
-        (from_utc, to_utc),
-    ).fetchall()
-
-    by_sid: dict[str, list[dict]] = {}
-    for span in spans:
-        sid = span["session_id"]
-        t_start = span["t_start"]
-        t_end = span["t_end"]
-        by_sid[sid] = [
-            ar for ar in affect_rows
-            if t_start <= ar["created_at"] <= t_end
-        ]
-    return by_sid
 
 
 def _query_diary_zone_b(conn: sqlite3.Connection,
@@ -496,17 +369,6 @@ def _query_current_sid(conn: sqlite3.Connection) -> str | None:
 
 
 # ── zone renderers ───────────────────────────────────────────────────────────
-
-def _render_open_episodes(episodes: list[dict]) -> list[str]:
-    lines: list[str] = []
-    for ep in episodes:
-        desc = ep.get("description") or ep.get("label") or "(ep)"
-        label = ep.get("label") or ""
-        tag = f" [{label}]" if label and label != desc else ""
-        ep_id = ep.get("id", 0)
-        lines.append(f"未解: {desc}{tag} <!-- tl:ep:{ep_id} -->")
-    return lines
-
 
 def _render_24h(digests: list[dict],
                 current_sid: str | None,
@@ -687,10 +549,8 @@ def _render_24h(digests: list[dict],
 
 
 def _render_zone_b(diary_data: dict[str, dict],
-                   dates: list[_dt.date],
-                   this_week_affect: list[dict],
-                   last_week_affect: list[dict]) -> list[str]:
-    """Zone B: per-day diary overview + week trend footer.
+                   dates: list[_dt.date]) -> list[str]:
+    """Zone B: per-day diary overview.
     Returns [] if there is no diary data (no days rendered).
     """
     day_lines: list[str] = []
@@ -704,12 +564,7 @@ def _render_zone_b(diary_data: dict[str, dict],
         day_lines.append(f"**{date.strftime('%m-%d')} {date.strftime('%a')} 【{tone}】** {anchor}")
         day_lines.append(overview)
 
-    if not day_lines:
-        return []
-
-    # Week trend footer
-    trend = _week_trend(this_week_affect, last_week_affect)
-    return day_lines + ["", f"**The Week 【{trend}】**"]
+    return day_lines
 
 
 # ── main render ──────────────────────────────────────────────────────────────
@@ -732,16 +587,7 @@ def render_timeline(conn: sqlite3.Connection,
     ).astimezone(_dt.timezone.utc)
     yesterday_start_utc_iso = _utc_iso(yesterday_start_utc)
 
-    # Time boundaries (UTC ISO strings)
-    t_24h = (now_utc - _dt.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    t_7d  = (now_utc - _dt.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    t_14d = (now_utc - _dt.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
-
     current_sid = _query_current_sid(conn)
-
-    # ── open episodes ────────────────────────────────────────────────────────
-    open_eps = _query_open_episodes(conn, t_7d)
-    open_lines = _render_open_episodes(open_eps)
 
     # ── last 24h ─────────────────────────────────────────────────────────────
     digests_24h = _query_digests_range(conn, yesterday_start_utc_iso, now_utc_iso)
@@ -765,20 +611,15 @@ def render_timeline(conn: sqlite3.Connection,
     zone_b_dates = [zone_a_start_date - _dt.timedelta(days=d) for d in range(1, 4)]
     diary_data = _query_diary_zone_b(conn, zone_b_dates)
 
-    # Affect for week trend
-    zone_b_from_utc = _day_start_utc(zone_b_dates[-1]).strftime("%Y-%m-%dT%H:%M:%SZ")
-    this_week_affect = _query_affect_range(conn, zone_b_from_utc, now_utc_iso)
-    last_week_affect = _query_affect_range(conn, t_14d, t_7d)
-
-    lines_zone_b = _render_zone_b(diary_data, zone_b_dates, this_week_affect, last_week_affect)
+    lines_zone_b = _render_zone_b(diary_data, zone_b_dates)
 
     # ── assemble + trim to budget ────────────────────────────────────────────
-    all_sections = _assemble(open_lines, lines_24h, lines_zone_b)
+    all_sections = _assemble(lines_24h, lines_zone_b)
     text = "## Timeline\n" + "\n".join(all_sections) if all_sections else "## Timeline\n_none_"
 
     # Trim if over budget (visible text only — edit anchors don't count)
     if _visible_len(text) > _BUDGET:
-        text = _trim_to_budget(text, open_lines, lines_24h, lines_zone_b)
+        text = _trim_to_budget(text, lines_24h, lines_zone_b)
 
     # Append tl-rendered trail marker so reconcile knows which anchors were rendered
     trail_sids  = sorted(set(_TL_TRAIL_SID_RE.findall(text)))
@@ -860,11 +701,9 @@ def carry_trail_t(new_block: str, old_block: str | None,
     return _TL_TRAIL_T_RE.sub(f"t={old_t.group(1)}", new_block, count=1)
 
 
-def _assemble(open_lines: list[str],
-              lines_24h: list[str],
+def _assemble(lines_24h: list[str],
               lines_zone_b: list[str]) -> list[str]:
     parts: list[str] = []
-    parts.extend(open_lines)
     parts.extend(lines_24h)
     if lines_zone_b:
         if parts:
@@ -890,22 +729,21 @@ visible_len = _visible_len
 
 
 def _trim_to_budget(text: str,
-                    open_lines: list[str],
                     lines_24h: list[str],
                     lines_zone_b: list[str]) -> str:
     lzb = list(lines_zone_b)
     l24h = list(lines_24h)
 
     def _rebuild() -> str:
-        parts = _assemble(open_lines, l24h, lzb)
+        parts = _assemble(l24h, lzb)
         body = "\n".join(parts) if parts else "_none_"
         return "## Timeline\n" + body
 
-    # Trim zone B lines (farthest day first = near end, skip week footer)
-    while len(lzb) > 2 and _visible_len(_rebuild()) > _BUDGET:
+    # Trim zone B lines (farthest day first = near end)
+    while len(lzb) >= 2 and _visible_len(_rebuild()) > _BUDGET:
         # Remove last day entry (2 lines: header + overview)
-        lzb.pop(-3)  # overview before the footer gap
-        lzb.pop(-3)  # header before the footer gap
+        lzb.pop()  # overview
+        lzb.pop()  # header
 
     # Remove all zone B if still over
     if lzb and _visible_len(_rebuild()) > _BUDGET:

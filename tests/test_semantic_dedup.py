@@ -1,5 +1,5 @@
-"""Tests for the shared semantic_dedup helper + tasks/milestones/entities
-cosine layer added on top of the existing string-layer dedup.
+"""Tests for the shared semantic_dedup helper + the entity cosine layer that
+survives in candidates.match_entity (dim upsert dedup + auto-learn aliases).
 
 Cosine is monkeypatched in these tests — no bge-m3 inference. Real
 embedder round-trip is covered by tests/test_memes_dedup.py (slow path).
@@ -12,7 +12,6 @@ import pytest
 
 from marrow import (
     candidates,
-    reconcile,
     semantic_dedup,
     storage,
 )
@@ -67,76 +66,36 @@ def test_cosine_top_match_picks_highest(db, monkeypatch):
     assert score >= 0.85
 
 
-# ── milestones: write_milestone_cand cosine layer ───────────────────────────
+# ── entities: match_entity cosine layer (dim upsert dedup) ──────────────────
 
-_MS_RAW = (
-    "===MILESTONE_CAND===\n"
-    "[{{\"title\":\"{title}\",\"scope\":\"me\",\"date\":\"{date}\","
-    " \"description\":\"d\",\"conf\":0.95}}]\n"
-    "===END===\n"
-)
-
-
-def test_milestone_cosine_hit_skips(db, monkeypatch):
-    db.execute(
-        "INSERT INTO milestones (scope, date, title) VALUES (?, ?, ?)",
-        ("me", "2026-05-20", "WAM 92"),
-    )
-    db.commit()
-    monkeypatch.setattr(
-        semantic_dedup, "cosine_max", lambda conn, q, t: 0.93,
-    )
-    n = candidates.write_milestone_cand(
-        db, _MS_RAW.format(title="期末成绩 WAM 九十二", date="2026-05-25"),
-        "2026-05-25",
-    )
-    assert n == 0
-
-
-def test_milestone_cosine_miss_inserts(db, monkeypatch):
-    db.execute(
-        "INSERT INTO milestones (scope, date, title) VALUES (?, ?, ?)",
-        ("me", "2026-05-20", "WAM 92"),
-    )
-    db.commit()
-    monkeypatch.setattr(
-        semantic_dedup, "cosine_max", lambda conn, q, t: 0.40,
-    )
-    n = candidates.write_milestone_cand(
-        db, _MS_RAW.format(title="bought a townhouse", date="2026-05-25"),
-        "2026-05-25",
-    )
-    assert n == 1
-
-
-# ── entities: write_entity_cand cosine layer ────────────────────────────────
-
-def _entity_raw(name: str, kind: str = "person",
-                aliases: list[str] | None = None) -> str:
-    obj = {"kind": kind, "name": name, "conf": 0.9}
-    if aliases is not None:
-        obj["aliases"] = aliases
-    return (
-        "===ENTITY_CAND===\n"
-        + json.dumps([obj], ensure_ascii=False)
-        + "\n===END===\n"
-    )
-
-
-def test_entity_cosine_hit_merges_alias(db, monkeypatch):
-    # Seed existing entity with no aliases.
+def test_match_entity_cosine_hit_returns_row(db, monkeypatch):
+    # Seed existing entity; cosine-high candidate "Stellan" matches "屿忱".
     db.execute(
         "INSERT INTO entities (kind, name, source) VALUES (?, ?, ?)",
-        ("person", "屿忱", "daily"),
+        ("person", "屿忱", "test"),
     )
     db.commit()
-    # Cosine returns high — new candidate "Stellan" should be absorbed
-    # as an alias of "屿忱", no fresh row.
+    rid = db.execute(
+        "SELECT id FROM entities WHERE name='屿忱'"
+    ).fetchone()["id"]
     monkeypatch.setattr(
         semantic_dedup, "cosine_top_match", lambda conn, q, t: (0, 0.91),
     )
-    n = candidates.write_entity_cand(db, _entity_raw("Stellan"))
-    assert n == 0  # no INSERT — merged
+    hit = candidates.match_entity(db, "person", "Stellan", [])
+    assert hit == rid
+
+
+def test_match_entity_cosine_hit_merge_absorbs_alias(db, monkeypatch):
+    db.execute(
+        "INSERT INTO entities (kind, name, source) VALUES (?, ?, ?)",
+        ("person", "屿忱", "test"),
+    )
+    db.commit()
+    monkeypatch.setattr(
+        semantic_dedup, "cosine_top_match", lambda conn, q, t: (0, 0.91),
+    )
+    hit = candidates.match_entity(db, "person", "Stellan", [])
+    candidates._merge_aliases_into(db, hit, "Stellan", [])
     row = db.execute(
         "SELECT aliases FROM entities WHERE name='屿忱'"
     ).fetchone()
@@ -148,18 +107,14 @@ def test_entity_cosine_hit_merges_alias(db, monkeypatch):
     assert cnt == 1
 
 
-def test_entity_cosine_miss_inserts_new_row(db, monkeypatch):
+def test_match_entity_cosine_miss_returns_none(db, monkeypatch):
     db.execute(
         "INSERT INTO entities (kind, name, source) VALUES (?, ?, ?)",
-        ("person", "屿忱", "daily"),
+        ("person", "屿忱", "test"),
     )
     db.commit()
     monkeypatch.setattr(
         semantic_dedup, "cosine_top_match", lambda conn, q, t: (0, 0.20),
     )
-    n = candidates.write_entity_cand(db, _entity_raw("某陌生人"))
-    assert n == 1
-    cnt = db.execute(
-        "SELECT COUNT(*) FROM entities WHERE kind='person'"
-    ).fetchone()[0]
-    assert cnt == 2
+    hit = candidates.match_entity(db, "person", "某陌生人", [])
+    assert hit is None

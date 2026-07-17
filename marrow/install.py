@@ -53,10 +53,17 @@ _MARROW_HOOKS: dict[str, list[dict]] = {
 
 _ALL_PLISTS: list[tuple[str, str]] = [
     ("mw-aging.plist",          "com.marrow.aging"),
-    ("mw-daily-catchup.plist",  "com.marrow.daily-catchup"),
-    ("mw-daily-routine.plist",  "com.marrow.daily-routine"),
     ("mw-db-backup.plist",      "com.marrow.db-backup"),
     ("mw-watcher.plist",        "com.marrow.watcher"),
+]
+
+# Retired labels (and any legacy plist filename they installed under). An
+# upgrade from an older install boots these out + removes their files so a
+# deleted module never keeps firing. Filenames cover both naming schemes.
+_OBSOLETE_PLISTS: list[tuple[str, ...]] = [
+    ("com.marrow.dashboard-tick", "mw-dashboard-tick.plist"),
+    ("com.marrow.daily-routine",  "mw-daily-routine.plist"),
+    ("com.marrow.daily-catchup",  "mw-daily-catchup.plist"),
 ]
 
 
@@ -371,11 +378,25 @@ def _resolve_plist(text: str) -> str:
     )
 
 
+def _remove_obsolete_plists(domain: str) -> None:
+    """Boot out + delete any retired plist an older install left behind."""
+    for label, *legacy_fnames in _OBSOLETE_PLISTS:
+        targets = [_LAUNCH_AGENTS / f"{label}.plist"]
+        targets += [_LAUNCH_AGENTS / fn for fn in legacy_fnames]
+        for tgt in targets:
+            if not tgt.exists():
+                continue
+            _launchctl("bootout", domain, str(tgt))  # tolerated
+            tgt.unlink(missing_ok=True)
+            _ok(f"removed obsolete {tgt.name}")
+
+
 def install_plists() -> bool:
     _LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     (_CONFIG_DIR / "logs").mkdir(parents=True, exist_ok=True)
     uid = _uid()
     domain = f"gui/{uid}"
+    _remove_obsolete_plists(domain)
     errors = 0
     for fname, label in _ALL_PLISTS:
         src = _DEPLOY_DIR / fname

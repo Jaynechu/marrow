@@ -87,7 +87,7 @@ def load() -> dict:
     monitor = paths.get("monitor") or str(Path(paths["db_pages"]) / "monitor.md")
     paths["monitor"] = str(Path(monitor).expanduser())
     # Legacy keys kept synchronised so any caller still using sub_pages_path()
-    # (uncommitted other-window edits in daily.py etc.) gets the same path.
+    # gets the same path.
     paths["sub_pages"] = paths["db_pages"]
     paths["sub_pages_state"] = paths["db_pages_state"]
     cfg.setdefault("backup", {}).setdefault("keep", 14)
@@ -156,8 +156,7 @@ def db_pages_state_path() -> str:
     return load()["paths"]["db_pages_state"]
 
 
-# Legacy aliases — kept until all callers move to db_pages_path(). Pending
-# uncommitted edits in marrow/daily.py and tests still call these.
+# Legacy aliases — kept until all callers move to db_pages_path().
 sub_pages_path = db_pages_path
 sub_pages_state_path = db_pages_state_path
 

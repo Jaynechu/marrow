@@ -526,8 +526,8 @@ def _scan_candidate_ids(text: str) -> set[int]:
 
 def _drop_milestone_candidate(conn, rid: int, source: str) -> None:
     """DELETE + write anti-revive tombstone keyed on natural_key hash.
-    Summary stays `sha=<hash>|title=<title>` so migrate._insert and
-    candidates.write_milestone_cand can LIKE-match the same key.
+    Summary stays `sha=<hash>|title=<title>` so migrate._insert can LIKE-match
+    the same key.
     """
     row = conn.execute(
         "SELECT scope, date, title FROM milestones WHERE id=?", (rid,)

@@ -96,6 +96,40 @@ def test_last_db_mtime_subpage_with_data(tmp_path):
     c.close()
 
 
+def test_monitor_db_mtime_advances_on_resolve_only(tmp_path):
+    """A resolve-only change bumps resolved_at but never updated_at. The monitor
+    clock must still advance so monitor.md re-renders (alert line disappears)."""
+    from marrow import storage
+    from marrow.sync_loop import _max_any
+
+    specs = [("alerts", "updated_at"),
+             ("alerts", "created_at"),
+             ("alerts", "resolved_at")]
+
+    db = str(tmp_path / "t.db")
+    c = storage.init_db(db)
+    # Fixed past created_at/updated_at so neither dominates the max — the resolve
+    # timestamp is the only thing that can move the clock forward.
+    c.execute(
+        "INSERT INTO alerts (severity, type, fingerprint, message, created_at,"
+        " updated_at, resolved) VALUES ('warn','tg','fp','m',"
+        "'2026-05-27T10:00:00Z','2026-05-27T10:00:00Z',0)"
+    )
+    c.commit()
+    before = _max_any(c, specs)
+
+    # Resolve by stamping resolved_at only, without touching updated_at. With
+    # resolved_at in the spec list the clock still advances so monitor.md
+    # re-renders and the resolved line disappears.
+    c.execute(
+        "UPDATE alerts SET resolved_at='2026-05-27T12:00:00Z'"
+        " WHERE fingerprint='fp'"
+    )
+    c.commit()
+    after = _max_any(c, specs)
+
+    assert before is not None and after is not None
+    assert after > before
     c.close()
 
 
