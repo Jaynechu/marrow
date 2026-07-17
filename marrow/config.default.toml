@@ -485,5 +485,5 @@ housekeep_protected_files = [
 ]
 
 # ~/.claude.json mcpServers snapshot: rolling backups kept in
-# ~/.config/marrow/backups/claude-json/, newest N retained.
+# ~/.config/marrow/backup/claude-json/, newest N retained.
 claude_json_snapshot_keep = 10
