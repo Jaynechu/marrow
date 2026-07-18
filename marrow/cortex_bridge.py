@@ -424,6 +424,127 @@ def register(marrow_tool, db: str | None = None) -> None:
 # _usage_threshold_context); it is imported lazily where needed below.
 
 
+# ── single-active-window PreToolUse gate (P14 Fix 3) ──────────────────────────
+# Tools a retired cortex window must never drive again — every one of them
+# mutates shared wake/alarm/outbox state or talks to the user on cortex's
+# behalf. Read/Write are deliberately absent (deathbed handoff write stays
+# allowed). Bash is handled separately (only cortex-module invocations deny).
+_GATE_DENY_TOOLS = (
+    "Monitor", "ScheduleWakeup",
+    "mcp__marrow__lie_down", "mcp__marrow__wait",
+    "mcp__marrow__msg", "mcp__marrow__say",
+)
+
+# Bash command substrings that invoke a cortex module — a retired window must
+# not drive these either. "-m cortex.ctl wake" is the narrow /ct-wake
+# exception (see _ctl_wake_takeover_claim): that ONE invocation claims
+# takeover instead of being denied.
+_GATE_DENY_BASH_SUBSTR = ("-m cortex.", "cortex.lie_down", "cortex.wait", "cortex.say")
+
+_CTL_WAKE_PATTERN = ("-m cortex.ctl", "wake")
+
+
+def _is_ctl_wake_bash(command: str) -> bool:
+    """True iff this Bash command is the `<venv_python> -m cortex.ctl wake`
+    invocation (ct-wake.md) — the ONE Bash form that claims takeover instead
+    of being denied. Substring match on both fragments (module + subcommand),
+    tolerant of the venv_python prefix/flags."""
+    return all(frag in command for frag in _CTL_WAKE_PATTERN)
+
+
+def _ctl_wake_takeover_claim(inp: dict) -> None:
+    """PreToolUse, caller side: a cortex window running `/ct-wake` (Bash ->
+    cortex.ctl wake) CAS-registers itself as the active cortex window BEFORE
+    the call proceeds — the takeover happens here, not in cmd_wake (cmd_wake
+    has no reliable access to its caller's claude sid, only wake_state's
+    iTerm-liveness session_id, a different domain). Registration flips first;
+    cmd_wake's ear branch then bells the OLD resident (its wake_state.session_id
+    still points there, correct — liveness domain untouched), and that bell-
+    opened turn now mismatches the NEW registration -> the gate injects
+    takeover_text on it (the deathbed turn), deterministically, no new
+    mechanism. Plain cli windows (no MARROW_CORTEX) never reach this — /ct-wake
+    there keeps its original semantics. Best-effort: a claim failure (lock
+    timeout) leaves registration unchanged; cmd_wake still runs normally."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return
+    if inp.get("tool_name") != "Bash":
+        return
+    command = str((inp.get("tool_input") or {}).get("command") or "")
+    if not _is_ctl_wake_bash(command):
+        return
+    tpath = inp.get("transcript_path")
+    try:
+        claim_registration_takeover(tpath)
+    except Exception:  # noqa: BLE001 — never blocks the Bash call
+        pass
+
+
+def _monitor_targets_wake_signal(inp: dict) -> bool:
+    """True iff a Monitor tool call's command references the resolved cortex
+    wake_signal_log path — the ear tail any window (cortex or a cli /loop)
+    could arm. Global check: runs for every session, cheap string match, only
+    matters when it hits."""
+    if inp.get("tool_name") != "Monitor":
+        return False
+    command = str((inp.get("tool_input") or {}).get("command") or "")
+    if not command:
+        return False
+    try:
+        signal_log = str(_cortex_path("wake_signal_log_file", "wake_signal.log"))
+    except Exception:
+        return False
+    return signal_log in command
+
+
+def cortex_gate_pretool(inp: dict) -> str | None:
+    """Single-active-window PreToolUse gate. Returns a deny reason, or None to
+    allow. Two independent checks:
+
+    1. Cortex-window liveness tools (_GATE_DENY_TOOLS + cortex-module Bash),
+       gated on MARROW_CORTEX + this window's claude sid != registered (and
+       not the narrow /ct-wake takeover exception, claimed above by the
+       caller before this check runs — so a legitimate takeover call always
+       passes as "now registered").
+    2. GLOBAL: any session's Monitor call targeting the cortex wake_signal
+       path, when that session's own claude sid != registered — covers a
+       cli /loop window re-arming a persistent Monitor on resume (F-D), not
+       just cortex windows.
+
+    Fail-open on any error — a gate malfunction must never wedge the window;
+    the worst case is a zombie turn still gated by the existing prompt-side
+    is_machine_line / user-wake-reset paths."""
+    try:
+        tpath = inp.get("transcript_path")
+        tool = inp.get("tool_name", "")
+
+        # Check 2 first (global, cheap, runs even off a cortex window).
+        if _monitor_targets_wake_signal(inp) and not is_registered_window(tpath):
+            return ("This window is not the registered cortex session — "
+                    "the wake-signal Monitor stays with the active window only.")
+
+        # Check 1: cortex-window-only tool gate.
+        if not os.environ.get("MARROW_CORTEX"):
+            return None
+        if is_registered_window(tpath):
+            return None  # this IS the registered window -> nothing denied
+
+        if tool in _GATE_DENY_TOOLS:
+            return takeover_text(registered_claude_sid()) or (
+                "This cortex window has been retired by a newer window — "
+                "stay silent, only write the handoff.")
+        if tool == "Bash":
+            command = str((inp.get("tool_input") or {}).get("command") or "")
+            if _is_ctl_wake_bash(command):
+                return None  # takeover already claimed above -> now registered
+            if any(s in command for s in _GATE_DENY_BASH_SUBSTR):
+                return takeover_text(registered_claude_sid()) or (
+                    "This cortex window has been retired by a newer window — "
+                    "stay silent, only write the handoff.")
+        return None
+    except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+        return None
+
+
 def _cortex_lie_down_deny(inp: dict) -> str | None:
     """Deny lie_down until the handoff is written this window, when the
     session asked to rotate OR the window is at the fuse line (force_tokens).
@@ -1050,6 +1171,223 @@ def _wake_state_save(p: Path, data: dict) -> None:
     tmp = p.with_suffix(p.suffix + f".tmp.{os.getpid()}")
     tmp.write_text(_json_ws.dumps(data, ensure_ascii=False, indent=2))
     os.replace(tmp, p)
+
+
+# ── single-active-window registration (P14 Fix 3) ─────────────────────────────
+# `cortex_claude_sid` is a SEPARATE key from wake_state's `session_id`/
+# `transcript` (iTerm liveness/respawn, untouched by this section) — strict
+# one-way responsibility: every function below reads/writes ONLY
+# cortex_claude_sid + cortex_registration_pending. Fail-closed strict lock
+# (unlike _wake_state_lock's advisory best-effort): a lock timeout drops the
+# mutation, state stays unchanged, never proceeds unlocked. COUPLED: same
+# sibling .lock file as cortex.wake_state._strict_flock (base = marrow
+# [cortex].wake_state_file/[cortex].home <-> cortex [paths].wake_state_file/
+# [paths].cortex_home — override one without the other and the two lock files
+# split, same trap as _wake_state_lock above).
+
+class _RegistrationLockError(Exception):
+    """Fail-closed sentinel: the strict lock could not be acquired. Every
+    registration mutator treats this as "drop the mutation silently"."""
+
+
+@_contextlib.contextmanager
+def _strict_wake_state_lock(p: Path):
+    lp = p.with_suffix(".lock")
+    fd = None
+    got = False
+    try:
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lp), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as e:
+        raise _RegistrationLockError(f"lock open failed: {e}") from e
+    deadline = time.monotonic() + 5.0
+    try:
+        while True:
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                got = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise _RegistrationLockError("lock acquire timeout")
+                time.sleep(0.02)
+        yield
+    finally:
+        if got:
+            with _contextlib.suppress(OSError):
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+        if fd is not None:
+            with _contextlib.suppress(OSError):
+                os.close(fd)
+
+
+def registered_claude_sid() -> str | None:
+    """The claude conversation sid (transcript stem) currently registered as
+    the single active cortex window, or None if never registered (tolerant —
+    treated as "no gate" by is_registered_window, same convention as
+    is_resident_session's no-recorded-transcript case)."""
+    try:
+        d = _wake_state_load(_cortex_wake_state_path())
+    except Exception:
+        return None
+    v = d.get("cortex_claude_sid")
+    return str(v) if v else None
+
+
+def _claude_sid_of(tpath: str | None) -> str | None:
+    """Claude conversation sid = transcript jsonl stem — same convention as
+    cortex.window.claude_session_id / wake_state.set_retired_sid."""
+    return Path(str(tpath)).stem if tpath else None
+
+
+def is_registered_window(tpath: str | None) -> bool:
+    """True when `tpath` is the registered active cortex window, OR no
+    registration has ever been recorded (fail-open only for that legacy/
+    first-run case — mirrors is_resident_session). A recorded registration
+    that names a DIFFERENT sid is a hard mismatch -> False (retired)."""
+    registered = registered_claude_sid()
+    if not registered:
+        return True
+    return registered == _claude_sid_of(tpath)
+
+
+def _stamp_registration_change(d: dict) -> None:
+    """Record when cortex_claude_sid last changed (ISO UTC) — the deathbed
+    idempotency anchor (handoff_written_since): a retired window's takeover_text
+    injects only for handoff activity AT/AFTER this stamp."""
+    from datetime import timezone as _tz
+    d["cortex_registered_at"] = datetime.now(_tz.utc).isoformat()
+
+
+def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | None) -> bool:
+    """Rotate/fresh-spawn handshake claim: called from the wake-marker
+    UserPromptSubmit branch when the wake line carries a cancellation-epoch
+    token. Only succeeds while a registration handshake is PENDING and
+    `token` still matches the live epoch (both checked + written under one
+    strict-lock hold — true CAS, fail-closed on any lock/parse trouble).
+    Writes cortex_claude_sid = this window's own claude sid, clears pending."""
+    if token is None or not tpath:
+        return False
+    p = _cortex_wake_state_path()
+    try:
+        with _strict_wake_state_lock(p):
+            d = _wake_state_load(p)
+            _ws_ensure_epoch(d)
+            if not d.get("cortex_registration_pending"):
+                return False
+            gen, state_id = token
+            if int(d.get("gen", -1)) != int(gen) or str(d.get("state_id") or "") != str(state_id):
+                return False
+            d["cortex_claude_sid"] = _claude_sid_of(tpath)
+            d.pop("cortex_registration_pending", None)
+            _stamp_registration_change(d)
+            _wake_state_save(p, d)
+            return True
+    except _RegistrationLockError:
+        return False
+
+
+def claim_registration_takeover(tpath: str | None) -> bool:
+    """/ct-wake takeover claim (PreToolUse, caller side): unconditionally
+    CAS-register the CALLING window's own claude sid as the active cortex
+    window — no compare-fail on a mismatched prior value, that mismatch IS
+    the takeover. No-op (still True) when already registered to self. The CAS
+    discipline here is atomicity (read + write under one lock hold), not a
+    token check: any prior registered value is superseded. Fail-closed on a
+    lock timeout (registration unchanged, caller retries take no effect until
+    the lock frees) — never proceeds unlocked."""
+    sid = _claude_sid_of(tpath)
+    if not sid:
+        return False
+    p = _cortex_wake_state_path()
+    try:
+        with _strict_wake_state_lock(p):
+            d = _wake_state_load(p)
+            _ws_ensure_epoch(d)
+            if d.get("cortex_claude_sid") == sid:
+                return True  # already self -> no-op
+            d["cortex_claude_sid"] = sid
+            d.pop("cortex_registration_pending", None)
+            _stamp_registration_change(d)
+            _wake_state_save(p, d)
+            return True
+    except _RegistrationLockError:
+        return False
+
+
+def takeover_text(new_sid: str | None) -> str | None:
+    """[cortex].takeover_text (user-final copy) with {new_sid} substituted.
+    None when blank/disabled so the caller injects nothing."""
+    try:
+        cx = config.load().get("cortex", {}) or {}
+        tmpl = str(cx.get("takeover_text") or "").strip()
+        if not tmpl:
+            return None
+        return tmpl.replace("{new_sid}", str(new_sid or "")[:8])
+    except Exception:
+        return None
+
+
+def handoff_written_since_takeover() -> bool:
+    """Deathbed idempotency check (mtime-based per adjudication — NOT a
+    per-window section marker): True once handoff.md has been touched with
+    non-empty content at/after the last recorded registration change
+    (cortex_registered_at). Used so a retired window's takeover_text injects
+    only until it writes its handoff; a false positive (unrelated handoff
+    touch) merely skips further injection — the window was already going
+    silent regardless, an accepted degraded mode. No stamp recorded (legacy/
+    first-run) -> False (never silences a real deathbed turn)."""
+    try:
+        d = _wake_state_load(_cortex_wake_state_path())
+    except Exception:
+        return False
+    raw = d.get("cortex_registered_at")
+    if not raw:
+        return False
+    try:
+        since = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    p = _cortex_handoff_path()
+    if p is None:
+        return False
+    try:
+        if not p.exists():
+            return False
+        return p.stat().st_mtime >= since.timestamp() and bool(
+            p.read_text(encoding="utf-8").strip())
+    except OSError:
+        return False
+
+
+def notify_handoff_landed_once() -> None:
+    """The FIRST time a retired window's deathbed handoff is observed landed
+    (handoff_written_since_takeover flips True), send the new registered
+    window a 'ct' note via the existing msg/outbox machinery: 'previous window
+    handoff landed'. One-shot per takeover — guarded by comparing a
+    cortex_handoff_notified marker against the current cortex_registered_at
+    stamp (a NEW takeover naturally resets the guard, since it stamps a new
+    cortex_registered_at). Best-effort: any failure here never blocks the
+    retired window's turn."""
+    p = _cortex_wake_state_path()
+    try:
+        with _strict_wake_state_lock(p):
+            d = _wake_state_load(p)
+            registered_at = d.get("cortex_registered_at")
+            if not registered_at or d.get("cortex_handoff_notified") == registered_at:
+                return
+            d["cortex_handoff_notified"] = registered_at
+            _wake_state_save(p, d)
+    except _RegistrationLockError:
+        return
+    try:
+        from . import outbox
+        cx = config.load().get("cortex", {}) or {}
+        text = str(cx.get("handoff_landed_text")
+                    or "previous window handoff landed").strip()
+        outbox.send("ct", text, db=config.db_path())
+    except Exception:  # noqa: BLE001 — best-effort, never blocks the turn
+        pass
 
 
 def _clear_floor_deadline() -> None:

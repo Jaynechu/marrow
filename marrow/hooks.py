@@ -1326,7 +1326,16 @@ def session_start() -> int:
             # before her first message, instead of wasting the first-sight seed
             # call on turn 1. Outbound-notes (F6) excluded — its own cursor
             # would otherwise be consumed here too, silencing turn 1's inject.
-            if sid:
+            # Single-active-window gate: a RESUMED RETIRED cortex window must
+            # not advance the shared last_note_ts cursor either (same as the
+            # turn_inject gate below).
+            _seed_replay_ok = True
+            if sid and cortex_bridge.is_cortex_session():
+                try:
+                    _seed_replay_ok = cortex_bridge.is_registered_window(tpath)
+                except Exception:
+                    _seed_replay_ok = True  # fail-open
+            if sid and _seed_replay_ok:
                 replay_seed = _replay_context(
                     sid, os.environ.get("MARROW_CHANNEL") or "cli", seed_ok=True)
                 if replay_seed:
@@ -1806,6 +1815,45 @@ def user_prompt_submit() -> int:
                     "wake_line_stale", f"gen={_tok[0]}",
                     "suppressed (superseded epoch)")
                 return 0
+            # Rotate/fresh-spawn registration handshake (P14 Fix 3): this wake
+            # line's token, if a handshake is still pending, claims single-
+            # active-window registration for THIS window's own claude sid.
+            # Best-effort — a claim failure just means the gate below sees
+            # "not yet registered" and the retired branch is taken instead
+            # (fail-closed toward silence, never toward a false wake payload).
+            try:
+                cortex_bridge.claim_registration_if_pending(tpath, _tok)
+            except Exception:
+                pass
+            # Single-active-window gate: a window whose claude sid does not
+            # match the registered one (retired by a rotate elsewhere, or by
+            # a /ct-wake takeover claimed in PreToolUse) is NOT the resident
+            # any more — EARLY-RETURN before the replay-cursor advance /
+            # outbox claim / wait-quota mutation below (a retired window must
+            # never consume shared state meant for the active one). Inject
+            # takeover_text once (deathbed turn); once handoff.md shows
+            # activity since the takeover, go fully silent.
+            try:
+                _registered = cortex_bridge.is_registered_window(tpath)
+            except Exception:
+                _registered = True  # fail-open: never silently swallow a real wake
+            if not _registered:
+                if not cortex_bridge.handoff_written_since_takeover():
+                    _tot = cortex_bridge.takeover_text(cortex_bridge.registered_claude_sid())
+                    if _tot:
+                        json.dump({"hookSpecificOutput": {
+                            "hookEventName": "UserPromptSubmit",
+                            "additionalContext": _tot,
+                        }}, sys.stdout)
+                else:
+                    # Deathbed handoff just landed (first sight) — tell the
+                    # new registered window via the existing msg/outbox
+                    # machinery. One-shot per takeover (guarded internally).
+                    try:
+                        cortex_bridge.notify_handoff_landed_once()
+                    except Exception:
+                        pass
+                return 0
             _note = cortex_bridge.wakeup_note_text(tpath)
             # Merge any ct-targeted outbox notes into the wake payload — the
             # normal delivery path below never runs on a wake turn, so ct notes
@@ -1826,7 +1874,15 @@ def user_prompt_submit() -> int:
         # Real user message (NOT a machine line down the ear channel) → user-wake
         # reset: flip awake, kill the pending alarm + sentinel, spawn a watchdog.
         # Best-effort; never blocks the prompt or the recall below.
-        if not cortex_bridge.is_machine_line(_prompt):
+        # Single-active-window gate: a RETIRED window's ordinary chat turn must
+        # never flip awake / bump gen / spawn a watchdog on the shared
+        # wake_state (that IS the zombie side effect) — it still gets a plain
+        # read-only answer via recall below, just no liveness mutation.
+        try:
+            _registered_chat = cortex_bridge.is_registered_window(tpath)
+        except Exception:
+            _registered_chat = True  # fail-open
+        if _registered_chat and not cortex_bridge.is_machine_line(_prompt):
             try:
                 cortex_bridge._cortex_user_wake_reset(inp if isinstance(inp, dict) else {})
             except Exception:
@@ -1864,11 +1920,20 @@ def user_prompt_submit() -> int:
     # so ct notes must be claimed here too — same atomic claim resolves the race
     # so a row taken by either path is never re-delivered. Seeds _nudge_line so it
     # lands on every emit path (renders above recall / other nudges).
+    # Single-active-window gate: a RETIRED cortex window must never claim 'ct'
+    # notes — those are the resident's mail (is_cortex here gates on THIS
+    # window's own registration, not merely the MARROW_CORTEX env marker).
+    _is_ct_claimant = cortex_bridge.is_cortex_session()
+    if _is_ct_claimant:
+        try:
+            _is_ct_claimant = cortex_bridge.is_registered_window(tpath)
+        except Exception:
+            _is_ct_claimant = True  # fail-open
     _nudge_line: str | None = None
     try:
         _msg_note = outbox.deliver(
             sid, os.environ.get("MARROW_CHANNEL") or "cli",
-            is_cortex=cortex_bridge.is_cortex_session(),
+            is_cortex=_is_ct_claimant,
             db=config.db_path())
         if _msg_note:
             _nudge_line = _msg_note
@@ -2882,6 +2947,36 @@ def pretool_use() -> int:
             })
             return 0
 
+        # /ct-wake takeover claim (P14 Fix 3) — runs BEFORE anything else touches
+        # wake_state this round: a cortex window running `cortex.ctl wake` via
+        # Bash CAS-registers itself as the active window first, so cmd_wake's
+        # own bell (to the OLD resident, liveness-domain untouched) opens a
+        # deathbed turn on the now-mismatched old window.
+        try:
+            if cortex_bridge.enabled():
+                cortex_bridge._ctl_wake_takeover_claim(inp)
+        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+            pass
+
+        # Single-active-window gate (P14 Fix 3) — a cortex window whose claude
+        # sid no longer matches the registered one (retired by a rotate or a
+        # takeover) is denied every liveness tool; a global Monitor-on-
+        # wake-signal check also covers a cli /loop window re-arming the ear.
+        # Runs before the F5/lie_down gates below so a retired window's
+        # lie_down attempt hits THIS deny, not the handoff deny.
+        gate_deny: str | None = None
+        try:
+            if cortex_bridge.enabled():
+                gate_deny = cortex_bridge.cortex_gate_pretool(inp)
+        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
+            gate_deny = None
+        if gate_deny:
+            _emit_hso({
+                "permissionDecision": "deny",
+                "permissionDecisionReason": gate_deny,
+            })
+            return 0
+
         # Cortex F5 activity feed — any cortex tool call other than wait()
         # restores the round's wait quota (no consecutive empty waits). Never
         # blocks; runs before the lie_down gate below.
@@ -3333,7 +3428,18 @@ def turn_inject() -> int:
     show_full = f"\n\n{show_ctx}" if show_ctx else ""
     usage_ctx = _usage_threshold_context(sid, tpath)
     usage_full = f"\n\n{usage_ctx}" if usage_ctx else ""
-    replay_ctx = _replay_context(sid, channel)
+    # Single-active-window gate: a RETIRED cortex window must not advance the
+    # shared last_note_ts replay cursor (_replay_cortex) — that cursor belongs
+    # to the registered resident. Non-cortex sessions are unaffected
+    # (is_registered_window defaults True when this isn't a cortex window's
+    # own tpath check path, since registration is cortex-only state).
+    _replay_ok = True
+    if cortex_bridge.is_cortex_session():
+        try:
+            _replay_ok = cortex_bridge.is_registered_window(tpath)
+        except Exception:
+            _replay_ok = True  # fail-open
+    replay_ctx = _replay_context(sid, channel) if _replay_ok else ""
     replay_full = f"\n\n{replay_ctx}" if replay_ctx else ""
     own_ctx = _outbound_notes(sid, channel)
     own_full = f"\n\n{own_ctx}" if own_ctx else ""

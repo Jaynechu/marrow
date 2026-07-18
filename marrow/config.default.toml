@@ -357,6 +357,16 @@ resume_ear_text = "⏯️ The session has been resumed - re-arm a fresh monitor 
 # window must stay read-only: arm no ear, touch no wake_state, never rotate.
 # {signal_log} substituted with the resolved absolute path. Blank = off.
 retired_ear_text = "⏯️ This is an archived session - ignore all task/monitor. Do not call any tool."
+# Single-active-window (P14 Fix 3): injected on a RETIRED window's deathbed
+# turn (its claude sid no longer matches wake_state's cortex_claude_sid
+# registration — superseded by a rotate or a /ct-wake takeover). {new_sid}
+# substituted with the first 8 chars of the newly registered claude sid.
+# User-final copy — do not reword. Blank = no injection (still gated silent).
+takeover_text = "⚙️ [RETIRED] A new cortex window has taken over (sid {new_sid}). This window is retired: append this window's section to handoff.md now, then go fully silent — no monitor, no wait/lie_down, no msg, do not reply to her from this window."
+# Sent (via the msg/outbox 'ct' channel) to the NEW registered window the
+# first time a retired window's deathbed handoff is observed landed. Blank
+# falls back to the literal English default in code.
+handoff_landed_text = "previous window handoff landed"
 # Marker in the free-round line the cortex watchdog appends to wake_signal.log
 # (arrives down the ear channel). A cortex-window prompt carrying it is a machine
 # line, excluded from the user-wake reset — must match cortex tuck_in_text.
