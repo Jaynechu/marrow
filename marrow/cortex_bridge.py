@@ -373,8 +373,10 @@ def _lie_down_doc() -> str:
     day_max = int(_cortex_toml_section("wake", "next_wake_max", 240))
     night_min = int(_cortex_toml_section("night", "floor_min", 120))
     night_max = int(_cortex_toml_section("night", "floor_max", 360))
-    return (f"lie_down(next_wake_min=N) "
-            f"[N={day_min}-{day_max} (Day); {night_min}-{night_max} (Night)]")
+    return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
+            f'rotate to next window - lie_down(next_wake_min=N, rotate=True); '
+            f'Activate night mode - lie_down(next_wake_min=N, mode="night") '
+            f'[N={night_min}-{night_max}]')
 
 
 def _wait_doc() -> str:

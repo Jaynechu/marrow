@@ -327,7 +327,7 @@ def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_pat
     cortex_bridge.register(mt)
     ld = m._tool_manager._tools["lie_down"].description
     wd = m._tool_manager._tools["wait"].description
-    assert "N=25-200 (Day); 90-300 (Night)" in ld
+    assert "N=25-200" in ld and 'N=90-300' in ld
     assert "N=2-18" in wd
     assert "no consecutive empty waits" in wd
     assert "12-min auto timer" in wd  # rendered from [wake.watchdog].silent_max_min
@@ -345,8 +345,9 @@ def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
     m, mt = _fresh_mcp()
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
-    assert "N=21-240 (Day); 120-360 (Night)" in \
-        m._tool_manager._tools["lie_down"].description
+    ld = m._tool_manager._tools["lie_down"].description
+    assert "N=21-240" in ld and 'N=120-360' in ld
+    assert 'mode="night"' in ld and "rotate=True" in ld
     assert "20-min auto timer" in m._tool_manager._tools["wait"].description
     assert "N=1-20" in m._tool_manager._tools["wait"].description
 
