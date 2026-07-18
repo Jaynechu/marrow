@@ -628,7 +628,9 @@ def _render_note_fresh(transcript_path: str | None) -> str | None:
         return None
     py = str(Path(py).expanduser())
     root = str(Path(root).expanduser())
-    cmd = [py, "-m", module]
+    # --no-ct: the wake-branch hook delivers ct notes via outbox.deliver, so the
+    # fresh render must not also peek them (would double them in one payload).
+    cmd = [py, "-m", module, "--no-ct"]
     if transcript_path:
         cmd += ["--transcript", str(transcript_path)]
     try:

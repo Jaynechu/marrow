@@ -106,6 +106,56 @@ def test_ct_delivered_only_when_cortex(tmp_path):
     assert _status(db, rid)["status"] == "sent"
 
 
+# ── pending-visible: claim ≠ settled (F-A / P14 Fix 1) ──────────────────────
+
+def test_deliver_no_settle_leaves_claimed_pending_visible(tmp_path):
+    """settle=False claims the row (pending -> claimed) and renders it, but does
+    NOT mark it sent — a real injection is the sole settle point."""
+    db = _fresh_db(tmp_path)
+    rid = _mk(db, "ct", "covert", from_channel="tg")
+    out = outbox.deliver(SID_A, "ct", is_cortex=True, db=db, settle=False)
+    assert out and "covert" in out
+    row = _status(db, rid)
+    assert row["status"] == "claimed"         # pending-visible, not settled
+    assert row["sent_at"] is None
+    assert row["claimed_by"] == "marrow.deliver"
+
+
+def test_deliver_rerenders_unsettled_claim_then_settles(tmp_path):
+    """An un-settled claimed row re-renders on the next deliver (at-least-once
+    visible); a settling deliver marks it sent so it stops re-rendering."""
+    db = _fresh_db(tmp_path)
+    rid = _mk(db, "ct", "covert", from_channel="tg")
+    # first injection failed to land -> left claimed
+    assert "covert" in outbox.deliver(SID_A, "ct", is_cortex=True, db=db,
+                                      settle=False)
+    # next deliver re-renders the same un-settled claim (duplicate acceptable)
+    out2 = outbox.deliver(SID_A, "ct", is_cortex=True, db=db, settle=True)
+    assert out2 and "covert" in out2
+    assert _status(db, rid)["status"] == "sent"
+    # now settled -> gone
+    assert outbox.deliver(SID_A, "ct", is_cortex=True, db=db) is None
+
+
+def test_deliver_settles_cross_path_frozen_claim(tmp_path):
+    """A row cortex's assemble claimed into a discarded frozen note
+    (claimed_by='cortex.note') is re-rendered + settled by the marrow hook
+    deliver (owner-agnostic settle; claim stays exactly-one-owner)."""
+    db = _fresh_db(tmp_path)
+    conn = storage.connect(db)
+    try:
+        with conn:
+            conn.execute(
+                "INSERT INTO outbox(from_channel, target, body, status,"
+                " claimed_by, claimed_at) VALUES('tg','ct','frozen','claimed',"
+                " 'cortex.note', strftime('%Y-%m-%dT%H:%M:%SZ','now'))")
+    finally:
+        conn.close()
+    out = outbox.deliver(SID_A, "ct", is_cortex=True, db=db, settle=True)
+    assert out and "frozen" in out
+    assert _status(db, 1)["status"] == "sent"
+
+
 # ── at-most-once under concurrency ──────────────────────────────────────────
 
 def test_concurrent_claim_exactly_one_winner(tmp_path):
