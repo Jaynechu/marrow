@@ -376,7 +376,8 @@ def _lie_down_doc() -> str:
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True); '
             f'Activate night mode - lie_down(next_wake_min=N, mode="night") '
-            f'[N={night_min}-{night_max}]')
+            f'[N={night_min}-{night_max}]; '
+            f'Always handoff before rotate or night mode')
 
 
 def _wait_doc() -> str:
@@ -557,7 +558,10 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
     tpath = inp.get("transcript_path") or ""
     cx = config.load().get("cortex", {}) or {}
     force = int(cx.get("force_tokens", 150_000) or 0)
-    wants_rotate = bool(ti.get("rotate"))
+    # mode="night" forces rotate cortex-side (lie_down.py), so the hook never
+    # sees ti.rotate for a night package — treat night mode as rotate intent too,
+    # else the night four-piece skips the handoff gate.
+    wants_rotate = bool(ti.get("rotate")) or ti.get("mode") == "night"
     from .hooks import _window_tokens_from_transcript
     occupancy = _window_tokens_from_transcript(tpath)
     if not wants_rotate and not (force > 0 and occupancy >= force):

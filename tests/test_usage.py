@@ -238,6 +238,29 @@ def test_allow_rotate_with_fresh_handoff(tmp_path, monkeypatch):
     assert cortex_bridge._cortex_lie_down_deny(inp) is None
 
 
+def test_deny_night_mode_without_handoff(tmp_path, monkeypatch):
+    """mode='night' forces rotate cortex-side, so ti.rotate is absent — the gate
+    must still fire on the night four-piece (Item 1 fix): no handoff -> deny."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    jl = _big_transcript(tmp_path, 10_000)  # under the fuse line, no ti.rotate
+    monkeypatch.setattr(cortex_bridge, "_cortex_handoff_path", lambda: tmp_path / "none.md")
+    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
+           "tool_input": {"mode": "night"}}
+    assert cortex_bridge._cortex_lie_down_deny(inp) is not None
+
+
+def test_allow_night_mode_with_fresh_handoff(tmp_path, monkeypatch):
+    """mode='night' + a handoff written this window -> allow."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    jl = _big_transcript(tmp_path, 10_000, spawn_ts="2026-07-08T10:00:00+00:00")
+    _handoff(tmp_path, monkeypatch, mtime=time.time())
+    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
+           "tool_input": {"mode": "night"}}
+    assert cortex_bridge._cortex_lie_down_deny(inp) is None
+
+
 def test_allow_plain_lie_down_small_window(tmp_path, monkeypatch):
     monkeypatch.setenv("MARROW_CORTEX", "1")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)

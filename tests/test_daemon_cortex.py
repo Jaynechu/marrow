@@ -348,6 +348,7 @@ def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
     ld = m._tool_manager._tools["lie_down"].description
     assert "N=21-240" in ld and 'N=120-360' in ld
     assert 'mode="night"' in ld and "rotate=True" in ld
+    assert "Always handoff before rotate or night mode" in ld
     assert "20-min auto timer" in m._tool_manager._tools["wait"].description
     assert "N=1-20" in m._tool_manager._tools["wait"].description
 
