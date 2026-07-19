@@ -203,6 +203,51 @@ def test_claim_registration_if_pending_fails_when_not_pending(cortex_env, tmp_pa
     assert "cortex_claude_sid" not in _ws(home)
 
 
+def test_claim_registration_refuses_live_foreign_resident(cortex_env, tmp_path, monkeypatch):
+    """P18 mirror: a live recorded resident pid NOT in the caller's chain -> the
+    spawn claim is refused (no write), audit refuse line present. Same ONE RULE
+    as cortex.wake_state, byte-compatible mirror in marrow."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "intruder")
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_resident_pid=4321, cortex_claude_sid="live-resident")
+    monkeypatch.setattr(cortex_bridge, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(cortex_bridge, "_chains_to_ancestor", lambda pid, anc: False)
+    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    assert ok is False
+    d = _ws(home)
+    assert d["cortex_claude_sid"] == "live-resident"  # untouched
+    audit = (home / "wake_audit.log").read_text()
+    assert "claim\trefuse" in audit
+
+
+def test_claim_registration_grants_and_records_resident_pid(cortex_env, tmp_path, monkeypatch):
+    """P18 mirror grant: dead/no recorded resident -> claim writes sid + records
+    THIS window's own claude pid, audit grant line present."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "freshwin")
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True)
+    monkeypatch.setattr(cortex_bridge, "_claude_ancestor_pid", lambda p=None: 6666)
+    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    assert ok is True
+    d = _ws(home)
+    assert d["cortex_claude_sid"] == "freshwin"
+    assert d["cortex_resident_pid"] == 6666
+    assert "claim\tgrant" in (home / "wake_audit.log").read_text()
+
+
+def test_claim_registration_dead_recorded_resident_is_claimable(cortex_env, tmp_path, monkeypatch):
+    """A dead recorded resident (kill -0 fails) = office claimable -> grant."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "successor")
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_resident_pid=4321, cortex_claude_sid="dead-one")
+    monkeypatch.setattr(cortex_bridge, "_pid_alive", lambda pid: False)
+    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    assert ok is True
+    assert _ws(home)["cortex_claude_sid"] == "successor"
+
+
 def test_stage_registration_claim_writes_pending_claim_not_registration(cortex_env, tmp_path):
     """P17 stage-then-promote: staging must NEVER touch cortex_claude_sid —
     only cortex's cmd_wake (the sole promoter) may do that."""

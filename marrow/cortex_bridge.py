@@ -1341,6 +1341,79 @@ def _stamp_registration_change(d: dict) -> None:
     d["cortex_registered_at"] = datetime.now(_tz.utc).isoformat()
 
 
+_PPID_WALK_MAX_DEPTH = 20
+
+
+def _ppid_of(pid: int) -> int | None:
+    """Mirror of cortex.lie_down._ppid_of (marrow venv cannot import cortex)."""
+    try:
+        proc = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=5)
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return int((proc.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def _chains_to_ancestor(pid: int, ancestor_pid: int) -> bool:
+    """Mirror of cortex.lie_down._chains_to_ancestor: True if ancestor_pid is in
+    pid's parent chain. Bounded depth, stops at pid<=1."""
+    current = pid
+    for _ in range(_PPID_WALK_MAX_DEPTH):
+        if current == ancestor_pid:
+            return True
+        parent = _ppid_of(current)
+        if parent is None or parent <= 1:
+            return False
+        current = parent
+    return False
+
+
+def _claude_ancestor_pid(caller_pid: int | None = None) -> int | None:
+    """The `claude` process in the CALLER's parent chain (the window this hook
+    runs inside), or None. Mirror of cortex.window.claude_ancestor_pid."""
+    if caller_pid is None:
+        caller_pid = os.getpid()
+    try:
+        p = subprocess.run(["pgrep", "-x", "claude"], capture_output=True, text=True)
+    except OSError:
+        return None
+    if p.returncode not in (0, 1):
+        return None
+    claude_pids = {int(x) for x in p.stdout.split() if x.isdigit()}
+    if not claude_pids:
+        return None
+    current = caller_pid
+    for _ in range(_PPID_WALK_MAX_DEPTH):
+        if current in claude_pids:
+            return current
+        parent = _ppid_of(current)
+        if parent is None or parent <= 1:
+            return None
+        current = parent
+    return None
+
+
+def _resident_alive_under_lock(d: dict, caller_pid: int) -> bool:
+    """THE ONE RULE (mirror of cortex.wake_state._resident_alive_under_lock, same
+    file/lock, byte-compatible): True iff recorded resident pid alive AND not in
+    the caller's process chain. No recorded pid = no resident (False)."""
+    pid = d.get("cortex_resident_pid")
+    try:
+        pid = int(pid) if pid is not None else None
+    except (TypeError, ValueError):
+        pid = None
+    if pid is None or not _pid_alive(pid):
+        return False
+    if _chains_to_ancestor(caller_pid, pid) or _chains_to_ancestor(pid, caller_pid):
+        return False
+    return True
+
+
 def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | None) -> bool:
     """Rotate/fresh-spawn handshake claim: called from the wake-marker
     UserPromptSubmit branch when the wake line carries a cancellation-epoch
@@ -1350,6 +1423,9 @@ def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | No
     Writes cortex_claude_sid = this window's own claude sid, clears pending."""
     if token is None or not tpath:
         return False
+    sid = _claude_sid_of(tpath)
+    caller_pid = os.getpid()
+    resident_pid = _claude_ancestor_pid(caller_pid)
     p = _cortex_wake_state_path()
     try:
         with _strict_wake_state_lock(p):
@@ -1360,12 +1436,21 @@ def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | No
             gen, state_id = token
             if int(d.get("gen", -1)) != int(gen) or str(d.get("state_id") or "") != str(state_id):
                 return False
-            d["cortex_claude_sid"] = _claude_sid_of(tpath)
+            # THE ONE RULE (mirror): a live foreign resident holds office -> refuse
+            # (no write), audit the refusal.
+            if _resident_alive_under_lock(d, caller_pid):
+                _wake_audit("claim", "refuse", f"via=spawn sid={sid} caller_pid={caller_pid}")
+                return False
+            d["cortex_claude_sid"] = sid
+            if resident_pid is not None:
+                d["cortex_resident_pid"] = int(resident_pid)
             d.pop("cortex_registration_pending", None)
             _stamp_registration_change(d)
             _wake_state_save(p, d)
+            _wake_audit("claim", "grant", f"via=spawn sid={sid} resident_pid={resident_pid}")
             return True
     except _RegistrationLockError:
+        _wake_audit("claim", "refuse", f"via=spawn sid={sid} lock_fail")
         return False
 
 
