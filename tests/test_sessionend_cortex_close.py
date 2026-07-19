@@ -40,7 +40,8 @@ def _stdin(monkeypatch, tpath, reason=None):
 def _run(monkeypatch, tpath, reason, cortex):
     _stdin(monkeypatch, tpath, reason)
     calls = []
-    monkeypatch.setattr(hooks.cortex_bridge, "is_cortex_session", lambda: cortex)
+    monkeypatch.setattr(hooks.cortex_bridge, "is_cortex_session",
+                        lambda transcript_path=None: cortex)
     monkeypatch.setattr(hooks.cortex_bridge, "cortex_window_closed",
                         lambda tp: calls.append(tp))
     hooks.session_end()

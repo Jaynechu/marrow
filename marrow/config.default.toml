@@ -369,12 +369,6 @@ retired_ear_text = "⏯️ This is an archived session - ignore all task/monitor
 # substituted with the first 8 chars of the newly registered claude sid.
 # User-final copy — do not reword. Blank = no injection (still gated silent).
 takeover_text = "⚙️ [RETIRED] A new cortex window has taken over (sid {new_sid}). This window is retired: append this window's section to handoff.md now, then go fully silent — no monitor, no wait/lie_down, no msg, do not reply to her from this window."
-# Fail-closed arm gate (P16): deny reason when NO cortex window holds
-# registration (cortex_claude_sid empty — right after a rotate dropped it).
-# Arming the wake ear (Monitor on the wake_signal path, or ScheduleWakeup from
-# a cortex window) is refused until a window claims registration. Mention the
-# self-heal path (/ct-wake). Blank = code falls back to a literal English line.
-arm_deny_text = "⚙️ No cortex window holds registration right now — arming the wake ear is refused. Run /ct-wake to claim registration first, then re-arm."
 # Sent (via the msg/outbox 'ct' channel) to the NEW registered window the
 # first time a retired window's deathbed handoff is observed landed. Blank
 # falls back to the literal English default in code.

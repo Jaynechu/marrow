@@ -404,7 +404,8 @@ def _replay_seed(conn, sid: str, header: str, max_turns: int, per_chars: int,
     return block
 
 
-def _replay_context(sid: str, channel: str, *, seed_ok: bool = False) -> str:
+def _replay_context(sid: str, channel: str, *, seed_ok: bool = False,
+                    transcript_path: str | None = None) -> str:
     """Cross-session replay inject. Returns '' when disabled, when this session's
     channel is an excluded target, on first sight of the sid (seed only, unless
     seed_ok), when gated by idle_gate_min, or when no new events from OTHER
@@ -430,7 +431,7 @@ def _replay_context(sid: str, channel: str, *, seed_ok: bool = False) -> str:
     max_lines = int(cfg.get("max_lines", 4))
     header = cfg.get("header", "## Recent replay from other sessions")
 
-    if cortex_bridge.is_cortex_session():
+    if cortex_bridge.is_cortex_session(transcript_path):
         try:
             return _replay_cortex(header, max_turns, per_chars, max_lines)
         except Exception:
@@ -1330,14 +1331,15 @@ def session_start() -> int:
             # not advance the shared last_note_ts cursor either (same as the
             # turn_inject gate below).
             _seed_replay_ok = True
-            if sid and cortex_bridge.is_cortex_session():
+            if sid and cortex_bridge.is_cortex_session(tpath):
                 try:
                     _seed_replay_ok = cortex_bridge.is_registered_window(tpath)
                 except Exception:
                     _seed_replay_ok = True  # fail-open
             if sid and _seed_replay_ok:
                 replay_seed = _replay_context(
-                    sid, os.environ.get("MARROW_CHANNEL") or "cli", seed_ok=True)
+                    sid, os.environ.get("MARROW_CHANNEL") or "cli", seed_ok=True,
+                    transcript_path=tpath)
                 if replay_seed:
                     parts.append(replay_seed)
 
@@ -1436,7 +1438,7 @@ def session_end() -> int:
     # but leaves the window alive): end the wake now instead of waiting for
     # a 20-min fallback to discover the dead window. Best-effort, never
     # blocks the rest of session_end.
-    if cortex_bridge.is_cortex_session():
+    if cortex_bridge.is_cortex_session(tpath):
         reason = inp.get("reason")
         if reason != "clear":
             try:
@@ -1745,7 +1747,7 @@ def user_prompt_submit() -> int:
     # (wake), or the harness surfaces a "Monitor stopped" task-notification when
     # the ear dies. Both are handled here and stop before recall; ordinary chat
     # turns fall through untouched. Text + paths are config-routed.
-    if cortex_bridge.is_cortex_session():
+    if cortex_bridge.is_cortex_session(tpath):
         _prompt = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
         # Monitor death → rearm the ear. Checked first: the death notification is
         # a distinct harness shape, never a wake marker.
@@ -1936,7 +1938,7 @@ def user_prompt_submit() -> int:
     # Single-active-window gate: a RETIRED cortex window must never claim 'ct'
     # notes — those are the resident's mail (is_cortex here gates on THIS
     # window's own registration, not merely the MARROW_CORTEX env marker).
-    _is_ct_claimant = cortex_bridge.is_cortex_session()
+    _is_ct_claimant = cortex_bridge.is_cortex_session(tpath)
     if _is_ct_claimant:
         try:
             _is_ct_claimant = cortex_bridge.is_registered_window(tpath)
@@ -2971,25 +2973,6 @@ def pretool_use() -> int:
         except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
             pass
 
-        # Single-active-window gate (P14 Fix 3) — a cortex window whose claude
-        # sid no longer matches the registered one (retired by a rotate or a
-        # takeover) is denied every liveness tool; a global Monitor-on-
-        # wake-signal check also covers a cli /loop window re-arming the ear.
-        # Runs before the F5/lie_down gates below so a retired window's
-        # lie_down attempt hits THIS deny, not the handoff deny.
-        gate_deny: str | None = None
-        try:
-            if cortex_bridge.enabled():
-                gate_deny = cortex_bridge.cortex_gate_pretool(inp)
-        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
-            gate_deny = None
-        if gate_deny:
-            _emit_hso({
-                "permissionDecision": "deny",
-                "permissionDecisionReason": gate_deny,
-            })
-            return 0
-
         # Cortex F5 activity feed — any cortex tool call other than wait()
         # restores the round's wait quota (no consecutive empty waits). Never
         # blocks; runs before the lie_down gate below.
@@ -3239,11 +3222,11 @@ def _in_time_window(now_min: int, start: str, end: str) -> bool:
     return now_min >= s or now_min < e
 
 
-def _kickout_context(channel: str, now: datetime) -> str:
+def _kickout_context(channel: str, now: datetime, transcript_path: str | None = None) -> str:
     """B8 anti-late-night deterministic nudge, config-first ([kickout] in
     config.toml — see config.default.toml for the live windows/text). Cortex
-    is immune (MARROW_CORTEX=1, own bulletin/schedule, not this hook's rules)."""
-    if cortex_bridge.is_cortex_session():
+    is immune (env marker OR a manually registered resident window)."""
+    if cortex_bridge.is_cortex_session(transcript_path):
         return ""
     kc = config.load().get("kickout", {}) or {}
     if not kc.get("enabled", True):
@@ -3354,7 +3337,7 @@ def turn_inject() -> int:
 
     tz = config.get_tz()
     now = datetime.now(timezone.utc).astimezone(tz)
-    kickout_ctx = _kickout_context(channel, now)
+    kickout_ctx = _kickout_context(channel, now, tpath)
 
     def _sched_fragment() -> str:
         try:
@@ -3382,7 +3365,7 @@ def turn_inject() -> int:
         wx_sched = _sched_fragment()
         wx_tl = _tl_fragment()
         wx_kick = f"\n\n{kickout_ctx}" if kickout_ctx else ""
-        wx_replay = _replay_context(sid, channel)
+        wx_replay = _replay_context(sid, channel, transcript_path=tpath)
         wx_replay = f"\n\n{wx_replay}" if wx_replay else ""
         wx_own = _outbound_notes(sid, channel)
         wx_own = f"\n\n{wx_own}" if wx_own else ""
@@ -3447,12 +3430,12 @@ def turn_inject() -> int:
     # (is_registered_window defaults True when this isn't a cortex window's
     # own tpath check path, since registration is cortex-only state).
     _replay_ok = True
-    if cortex_bridge.is_cortex_session():
+    if cortex_bridge.is_cortex_session(tpath):
         try:
             _replay_ok = cortex_bridge.is_registered_window(tpath)
         except Exception:
             _replay_ok = True  # fail-open
-    replay_ctx = _replay_context(sid, channel) if _replay_ok else ""
+    replay_ctx = _replay_context(sid, channel, transcript_path=tpath) if _replay_ok else ""
     replay_full = f"\n\n{replay_ctx}" if replay_ctx else ""
     own_ctx = _outbound_notes(sid, channel)
     own_full = f"\n\n{own_ctx}" if own_ctx else ""

@@ -47,9 +47,19 @@ def enabled() -> bool:
     return bool(config.load().get("cortex", {}).get("enabled", False))
 
 
-def is_cortex_session() -> bool:
-    """True inside a cortex-spawned marrow window (MARROW_CORTEX in env)."""
-    return bool(os.environ.get("MARROW_CORTEX"))
+def is_cortex_session(transcript_path: str | None = None) -> bool:
+    """True inside a cortex window: spawned with MARROW_CORTEX in env, OR this
+    window took office manually (/ct-wake) and is the registered resident.
+    A manually opened window lacks the env marker, so a transcript_path is
+    matched against the recorded registration (fail-CLOSED on an empty
+    registration — a plain cli window with no registration is never cortex).
+    Env-only when transcript_path is omitted (call sites without a tpath)."""
+    if os.environ.get("MARROW_CORTEX"):
+        return True
+    if not transcript_path:
+        return False
+    registered = registered_claude_sid()
+    return bool(registered) and registered == _claude_sid_of(transcript_path)
 
 
 # Import-time capture of the cortex-session env marker, mirroring the original
@@ -425,56 +435,7 @@ def register(marrow_tool, db: str | None = None) -> None:
 # _usage_threshold_context); it is imported lazily where needed below.
 
 
-# ── single-active-window PreToolUse gate (P14 Fix 3) ──────────────────────────
-# Tools a retired cortex window must never drive again — every one of them
-# mutates shared wake/alarm/outbox state or talks to the user on cortex's
-# behalf. Read/Write are deliberately absent (deathbed handoff write stays
-# allowed). Bash is handled separately (only cortex-module invocations deny).
-_GATE_DENY_TOOLS = (
-    "Monitor", "ScheduleWakeup",
-    "mcp__marrow__lie_down", "mcp__marrow__wait",
-    "mcp__marrow__msg", "mcp__marrow__say",
-)
-
-# Tools that ARM the wake ear -> fail-closed (may_arm_ear): denied even on an
-# empty registration (post-rotate), not just a sid mismatch. Subset of
-# _GATE_DENY_TOOLS; the rest keep the fail-open is_registered_window path.
-_EAR_ARM_TOOLS = ("Monitor", "ScheduleWakeup")
-
-_ARM_DENY_FALLBACK = (
-    "No cortex window holds registration — arming the wake ear is refused. "
-    "Run /ct-wake to claim registration first.")
-
-
-_RETIRED_TEXT_FALLBACK = (
-    "This cortex window has been retired by a newer window — "
-    "stay silent, only write the handoff.")
-
-
-def _retired_deny_reason() -> str:
-    return takeover_text(registered_claude_sid()) or _RETIRED_TEXT_FALLBACK
-
-
-def _arm_deny_reason() -> str:
-    return arm_deny_text() or _ARM_DENY_FALLBACK
-
-
-def _arm_deny_by_registration() -> str:
-    """Arm-gate deny copy split by registration state. EMPTY registration ->
-    the /ct-wake self-heal hint (arm_deny_text): claiming an empty slot is
-    safe. MISMATCH (another window holds it) -> the retired/takeover wording,
-    NO /ct-wake hint: /ct-wake's takeover claim is unconditional, so pointing
-    a retired zombie at it would dethrone the healthy resident."""
-    if registered_claude_sid():
-        return _retired_deny_reason()
-    return _arm_deny_reason()
-
-# Bash command substrings that invoke a cortex module — a retired window must
-# not drive these either. "-m cortex.ctl wake" is the narrow /ct-wake
-# exception (see _ctl_wake_takeover_claim): that ONE invocation claims
-# takeover instead of being denied.
-_GATE_DENY_BASH_SUBSTR = ("-m cortex.", "cortex.lie_down", "cortex.wait", "cortex.say")
-
+# ── /ct-wake takeover claim (registration, PreToolUse caller side) ────────────
 _CTL_WAKE_PATTERN = ("-m cortex.ctl", "wake")
 
 
@@ -511,74 +472,6 @@ def _ctl_wake_takeover_claim(inp: dict) -> None:
         claim_registration_takeover(tpath)
     except Exception:  # noqa: BLE001 — never blocks the Bash call
         pass
-
-
-def _monitor_targets_wake_signal(inp: dict) -> bool:
-    """True iff a Monitor tool call's command references the resolved cortex
-    wake_signal_log path — the ear tail any window (cortex or a cli /loop)
-    could arm. Global check: runs for every session, cheap string match, only
-    matters when it hits."""
-    if inp.get("tool_name") != "Monitor":
-        return False
-    command = str((inp.get("tool_input") or {}).get("command") or "")
-    if not command:
-        return False
-    try:
-        signal_log = str(_cortex_path("wake_signal_log_file", "wake_signal.log"))
-    except Exception:
-        return False
-    return signal_log in command
-
-
-def cortex_gate_pretool(inp: dict) -> str | None:
-    """Single-active-window PreToolUse gate. Returns a deny reason, or None to
-    allow. Two independent checks:
-
-    1. Cortex-window liveness tools (_GATE_DENY_TOOLS + cortex-module Bash),
-       gated on MARROW_CORTEX + this window's claude sid != registered (and
-       not the narrow /ct-wake takeover exception, claimed above by the
-       caller before this check runs — so a legitimate takeover call always
-       passes as "now registered").
-    2. GLOBAL: any session's Monitor call targeting the cortex wake_signal
-       path, when that session's own claude sid != registered — covers a
-       cli /loop window re-arming a persistent Monitor on resume (F-D), not
-       just cortex windows.
-
-    Fail-open on any error — a gate malfunction must never wedge the window;
-    the worst case is a zombie turn still gated by the existing prompt-side
-    is_machine_line / user-wake-reset paths."""
-    try:
-        tpath = inp.get("transcript_path")
-        tool = inp.get("tool_name", "")
-
-        # Check 2 first (global, cheap, runs even off a cortex window). Arming
-        # the wake_signal ear is fail-CLOSED (may_arm_ear): an empty
-        # registration (post-rotate) denies EVERY window, not just mismatches.
-        if _monitor_targets_wake_signal(inp) and not may_arm_ear(tpath):
-            return _arm_deny_by_registration()
-
-        # Check 1: cortex-window-only tool gate.
-        if not os.environ.get("MARROW_CORTEX"):
-            return None
-        # Monitor/ScheduleWakeup ARM the ear -> fail-closed (may_arm_ear). An
-        # empty registration denies them even before a mismatch exists. The
-        # other liveness tools keep the fail-open is_registered_window path.
-        if tool in _EAR_ARM_TOOLS and not may_arm_ear(tpath):
-            return _arm_deny_by_registration()
-        if is_registered_window(tpath):
-            return None  # this IS the registered window -> nothing denied
-
-        if tool in _GATE_DENY_TOOLS:
-            return _retired_deny_reason()
-        if tool == "Bash":
-            command = str((inp.get("tool_input") or {}).get("command") or "")
-            if _is_ctl_wake_bash(command):
-                return None  # takeover already claimed above -> now registered
-            if any(s in command for s in _GATE_DENY_BASH_SUBSTR):
-                return _retired_deny_reason()
-        return None
-    except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
-        return None
 
 
 def _cortex_lie_down_deny(inp: dict) -> str | None:
@@ -1403,19 +1296,6 @@ def is_registered_window(tpath: str | None) -> bool:
     return registered == _claude_sid_of(tpath)
 
 
-def may_arm_ear(tpath: str | None) -> bool:
-    """Fail-CLOSED arm permission (P16), inverse of is_registered_window's
-    legacy fail-open no-registration case. True iff a registration exists AND
-    it names this window. Empty registration (right after a rotate dropped
-    cortex_claude_sid) -> False: no window may arm the wake_signal ear until
-    the next window legally claims registration via /ct-wake. Separate function
-    on purpose — is_registered_window's fail-open callers must stay unchanged."""
-    registered = registered_claude_sid()
-    if not registered:
-        return False
-    return registered == _claude_sid_of(tpath)
-
-
 def _stamp_registration_change(d: dict) -> None:
     """Record when cortex_claude_sid last changed (ISO UTC) — the deathbed
     idempotency anchor (handoff_written_since): a retired window's takeover_text
@@ -1489,18 +1369,6 @@ def takeover_text(new_sid: str | None) -> str | None:
         if not tmpl:
             return None
         return tmpl.replace("{new_sid}", str(new_sid or "")[:8])
-    except Exception:
-        return None
-
-
-def arm_deny_text() -> str | None:
-    """[cortex].arm_deny_text — deny reason for the fail-closed arm gate (P16)
-    when NO window holds registration (empty cortex_claude_sid, right after a
-    rotate). Tells the model the self-heal path (/ct-wake claims registration).
-    None when blank/disabled so the caller falls back to a literal string."""
-    try:
-        cx = config.load().get("cortex", {}) or {}
-        return str(cx.get("arm_deny_text") or "").strip() or None
     except Exception:
         return None
 

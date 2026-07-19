@@ -1,8 +1,9 @@
-"""Single-active-window registration + gate (P14 Fix 3): cortex_claude_sid is a
+"""Single-active-window registration (P14 Fix 3, P17): cortex_claude_sid is a
 SEPARATE registration key from wake_state's session_id/transcript (iTerm
 liveness — untouched by this suite). Covers the CAS registration primitives,
-the PreToolUse gate + /ct-wake takeover claim, and the UserPromptSubmit
-wake-branch early-return / deathbed-turn / handoff-landed notify.
+the /ct-wake takeover claim, cortex-session identity (env OR registered
+resident), and the UserPromptSubmit wake-branch early-return / deathbed-turn /
+handoff-landed notify. P17 removed all PreToolUse tool denies.
 """
 from __future__ import annotations
 
@@ -108,137 +109,51 @@ def test_is_registered_window_mismatch_is_false(cortex_env, tmp_path):
     assert cortex_bridge.is_registered_window(tpath) is False
 
 
-# --- P16: fail-closed arm predicate (may_arm_ear) -----------------------------
+# --- P17: cortex-session identity (env OR registered resident) ----------------
 
-def test_may_arm_ear_empty_registration_is_false(cortex_env, tmp_path):
-    """Inverse of is_registered_window's fail-open: no registration -> False."""
+def test_is_cortex_session_env_only_true(cortex_env):
+    """MARROW_CORTEX set -> cortex session regardless of transcript."""
+    assert cortex_bridge.is_cortex_session() is True
+    assert cortex_bridge.is_cortex_session("/anything.jsonl") is True
+
+
+def test_is_cortex_session_manual_registered_window_true(cortex_env, tmp_path, monkeypatch):
+    """A manually opened window lacks the env marker but IS the registered
+    resident (took office via /ct-wake) -> recognised as full cortex."""
     home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    assert cortex_bridge.may_arm_ear(tpath) is False
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    tpath = _jsonl(tmp_path, "manual")
+    _write_ws(home, cortex_claude_sid="manual")
+    assert cortex_bridge.is_cortex_session(tpath) is True
 
 
-def test_may_arm_ear_match_is_true(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="abc")
-    assert cortex_bridge.may_arm_ear(tpath) is True
-
-
-def test_may_arm_ear_mismatch_is_false(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="other-sid")
-    assert cortex_bridge.may_arm_ear(tpath) is False
-
-
-def test_gate_wake_signal_monitor_denied_empty_registration(cortex_env, tmp_path):
-    """P16 root case: no registration (post-rotate) denies the ear arm for the
-    would-be resident itself, not just a mismatch."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")  # no cortex_claude_sid written
-    signal_log = str(home / "state" / "wake_signal.log")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
-    assert cortex_bridge.cortex_gate_pretool(inp)
-
-
-def test_gate_wake_signal_monitor_denied_mismatch(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="other-sid")
-    signal_log = str(home / "state" / "wake_signal.log")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
-    assert cortex_bridge.cortex_gate_pretool(inp)
-
-
-def test_gate_wake_signal_monitor_allowed_for_registered(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="abc")
-    signal_log = str(home / "state" / "wake_signal.log")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
-    assert cortex_bridge.cortex_gate_pretool(inp) is None
-
-
-def test_gate_non_wake_signal_monitor_allowed_anyone(cortex_env, tmp_path, monkeypatch):
-    """A non-cortex session Monitor-ing something else passes untouched even
-    with an empty registration."""
+def test_is_cortex_session_cli_window_not_cortex(cortex_env, tmp_path, monkeypatch):
+    """A plain cli window: no env, not the registered sid -> never cortex,
+    even when another window holds registration."""
     home, _ = cortex_env
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     tpath = _jsonl(tmp_path, "cli")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": "tail -n 0 -f /var/log/other.log"}}
-    assert cortex_bridge.cortex_gate_pretool(inp) is None
+    _write_ws(home, cortex_claude_sid="the-real-cortex")
+    assert cortex_bridge.is_cortex_session(tpath) is False
 
 
-def test_gate_schedule_wakeup_allowed_without_cortex_env(cortex_env, tmp_path, monkeypatch):
-    """ScheduleWakeup outside a MARROW_CORTEX window (cli /loop self-pacing)
-    must NOT be denied, empty registration or not (check 1 is env-gated)."""
+def test_is_cortex_session_no_registration_no_env_not_cortex(cortex_env, tmp_path, monkeypatch):
+    """Fail-CLOSED on empty registration: a cli window with no registration
+    recorded must never be misclassified as cortex (would break kickout/replay)."""
     home, _ = cortex_env
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "cli")
-    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
-           "tool_input": {}}
-    assert cortex_bridge.cortex_gate_pretool(inp) is None
+    tpath = _jsonl(tmp_path, "cli")  # no cortex_claude_sid written
+    assert cortex_bridge.is_cortex_session(tpath) is False
 
 
-def test_gate_schedule_wakeup_denied_cortex_empty_registration(cortex_env, tmp_path):
-    """Under MARROW_CORTEX, ScheduleWakeup arms -> fail-closed on empty reg."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")  # no registration
-    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
-           "tool_input": {}}
-    assert cortex_bridge.cortex_gate_pretool(inp)
+def test_is_cortex_session_no_tpath_no_env_not_cortex(cortex_env, monkeypatch):
+    """No env marker and no transcript to match -> env-only, so not cortex."""
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    assert cortex_bridge.is_cortex_session() is False
+    assert cortex_bridge.is_cortex_session(None) is False
 
 
-# --- P16 follow-up: arm-deny copy split by registration state -----------------
-# EMPTY reg -> /ct-wake self-heal hint (claiming an empty slot is safe).
-# MISMATCH -> retired/takeover wording, NO /ct-wake (its takeover claim is
-# unconditional; pointing a zombie at it would dethrone the healthy resident).
-
-def test_arm_deny_wake_signal_empty_registration_hints_ct_wake(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")  # no registration
-    signal_log = str(home / "state" / "wake_signal.log")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
-    reason = cortex_bridge.cortex_gate_pretool(inp)
-    assert "/ct-wake" in reason
-
-
-def test_arm_deny_wake_signal_mismatch_omits_ct_wake(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="other-sid")
-    signal_log = str(home / "state" / "wake_signal.log")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
-    reason = cortex_bridge.cortex_gate_pretool(inp)
-    assert "/ct-wake" not in reason
-    assert "other-si" in reason  # takeover_text carries the registered sid
-
-
-def test_arm_deny_schedule_wakeup_empty_registration_hints_ct_wake(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")  # no registration
-    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
-           "tool_input": {}}
-    reason = cortex_bridge.cortex_gate_pretool(inp)
-    assert "/ct-wake" in reason
-
-
-def test_arm_deny_schedule_wakeup_mismatch_omits_ct_wake(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="other-sid")
-    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
-           "tool_input": {}}
-    reason = cortex_bridge.cortex_gate_pretool(inp)
-    assert "/ct-wake" not in reason
-    assert "other-si" in reason
-
+# --- registration CAS primitives ----------------------------------------------
 
 def test_claim_registration_if_pending_succeeds_with_current_token(cortex_env, tmp_path):
     home, _ = cortex_env
@@ -335,102 +250,7 @@ def test_notify_handoff_landed_once_is_one_shot(cortex_env, monkeypatch):
     assert len(sent) == 1  # second call is a no-op (same registered_at stamp)
 
 
-# --- PreToolUse gate: cortex_gate_pretool --------------------------------------
-
-def test_gate_allows_registered_window(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "reg")
-    _write_ws(home, cortex_claude_sid="reg")
-    inp = {"transcript_path": tpath, "tool_name": "mcp__marrow__lie_down",
-           "tool_input": {}}
-    assert cortex_bridge.cortex_gate_pretool(inp) is None
-
-
-def test_gate_denies_retired_window_liveness_tool(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="registered-one")
-    for tool in ("Monitor", "ScheduleWakeup", "mcp__marrow__lie_down",
-                 "mcp__marrow__wait", "mcp__marrow__msg", "mcp__marrow__say"):
-        inp = {"transcript_path": tpath, "tool_name": tool, "tool_input": {}}
-        reason = cortex_bridge.cortex_gate_pretool(inp)
-        assert reason, f"{tool} should be denied for a retired window"
-
-
-def test_gate_allows_read_write_for_retired_window(cortex_env, tmp_path):
-    """Read/Write stay allowed — the deathbed handoff write must go through."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="registered-one")
-    for tool in ("Read", "Write"):
-        inp = {"transcript_path": tpath, "tool_name": tool, "tool_input": {}}
-        assert cortex_bridge.cortex_gate_pretool(inp) is None
-
-
-def test_gate_denies_bash_invoking_cortex_module(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="registered-one")
-    inp = {"transcript_path": tpath, "tool_name": "Bash",
-           "tool_input": {"command": "/venv/bin/python -m cortex.lie_down --next-wake-min 30"}}
-    assert cortex_bridge.cortex_gate_pretool(inp)
-
-
-def test_gate_allows_ctl_wake_bash_exception(cortex_env, tmp_path):
-    """The narrow /ct-wake exception: a retired window's ctl-wake Bash call is
-    NOT denied here (it claims takeover upstream in PreToolUse first)."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="registered-one")
-    inp = {"transcript_path": tpath, "tool_name": "Bash",
-           "tool_input": {"command": "/venv/bin/python -m cortex.ctl wake"}}
-    assert cortex_bridge.cortex_gate_pretool(inp) is None
-
-
-def test_gate_deny_reason_is_takeover_text(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="newsid12345678")
-    inp = {"transcript_path": tpath, "tool_name": "mcp__marrow__wait", "tool_input": {}}
-    reason = cortex_bridge.cortex_gate_pretool(inp)
-    assert "newsid12" in reason
-
-
-def test_gate_off_cortex_env_is_noop(cortex_env, tmp_path, monkeypatch):
-    home, _ = cortex_env
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="registered-one")
-    inp = {"transcript_path": tpath, "tool_name": "mcp__marrow__lie_down", "tool_input": {}}
-    assert cortex_bridge.cortex_gate_pretool(inp) is None
-
-
-def test_gate_global_monitor_wake_signal_deny_covers_cli_window(cortex_env, tmp_path, monkeypatch):
-    """A plain cli window (no MARROW_CORTEX) arming a Monitor on the cortex
-    wake_signal path is also denied when it is not the registered window
-    (covers cli /loop windows re-arming the ear on resume, F-D)."""
-    home, _ = cortex_env
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "cli-window")
-    _write_ws(home, cortex_claude_sid="the-real-cortex-window")
-    signal_log = str(home / "state" / "wake_signal.log")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
-    reason = cortex_bridge.cortex_gate_pretool(inp)
-    assert reason
-
-
-def test_gate_monitor_other_command_untouched(cortex_env, tmp_path, monkeypatch):
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "cli-window")
-    home, _ = cortex_env
-    _write_ws(home, cortex_claude_sid="the-real-cortex-window")
-    inp = {"transcript_path": tpath, "tool_name": "Monitor",
-           "tool_input": {"command": "tail -n 0 -f /var/log/other.log"}}
-    assert cortex_bridge.cortex_gate_pretool(inp) is None
-
-
-# --- PreToolUse hook integration: takeover claim + gate deny -------------------
+# --- PreToolUse hook integration: /ct-wake takeover claim ----------------------
 
 def test_pretool_takeover_claim_registers_caller(cortex_env, tmp_path, monkeypatch):
     home, db = cortex_env
@@ -457,7 +277,9 @@ def test_pretool_takeover_claim_then_allows_call(cortex_env, tmp_path, monkeypat
     assert hso.get("permissionDecision") != "deny"
 
 
-def test_pretool_denies_retired_window_lie_down(cortex_env, tmp_path, monkeypatch, capsys):
+def test_pretool_retired_window_lie_down_not_denied(cortex_env, tmp_path, monkeypatch, capsys):
+    """P17: no tool denies. A retired window's lie_down is no longer blocked by
+    the PreToolUse gate (the stop-before-close discipline lives cortex-side)."""
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "retired")
     _write_ws(home, cortex_claude_sid="registered-elsewhere")
@@ -466,7 +288,21 @@ def test_pretool_denies_retired_window_lie_down(cortex_env, tmp_path, monkeypatc
         "tool_name": "mcp__marrow__lie_down", "tool_input": {"next_wake_min": 30},
     })
     assert hooks.main(["pretool_use"]) == 0
-    assert _hso(capsys)["permissionDecision"] == "deny"
+    assert _hso(capsys).get("permissionDecision") != "deny"
+
+
+def test_pretool_retired_window_monitor_not_denied(cortex_env, tmp_path, monkeypatch, capsys):
+    """P17: arming a Monitor on the wake-signal path is no longer denied."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "retired")
+    _write_ws(home, cortex_claude_sid="registered-elsewhere")
+    signal_log = str(home / "state" / "wake_signal.log")
+    _stdin(monkeypatch, {
+        "transcript_path": tpath, "session_id": "s1", "tool_name": "Monitor",
+        "tool_input": {"command": f"tail -n 0 -f {signal_log}"},
+    })
+    assert hooks.main(["pretool_use"]) == 0
+    assert _hso(capsys).get("permissionDecision") != "deny"
 
 
 def test_pretool_plain_cli_ctl_wake_never_claims(cortex_env, tmp_path, monkeypatch):
@@ -630,9 +466,8 @@ def test_wake_turn_handoff_landing_sends_notify(cortex_env, tmp_path, monkeypatc
 
 
 def test_chat_turn_retired_window_no_user_wake_reset(cortex_env, tmp_path, monkeypatch, capsys):
-    """Scenario matrix: chat in retired window -> read-only, liveness tools
-    denied. A real (non-machine) chat message must not flip awake / bump gen
-    on the shared wake_state."""
+    """Scenario matrix: chat in retired window -> read-only. A real (non-machine)
+    chat message must not flip awake / bump gen on the shared wake_state."""
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "retired")
     _write_ws(home, cortex_claude_sid="new-resident", awake=False)
