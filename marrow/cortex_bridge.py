@@ -329,17 +329,21 @@ def _run_cortex_module(module: str, extra_args: list[str] | None = None) -> dict
 
 
 def lie_down(next_wake_min: float, rotate: bool = False,
-             mode: str | None = None) -> dict:
+             mode: str | None = None, human_override: bool = False) -> dict:
     # Description rendered from cortex config at register() (C9); see
     # _lie_down_doc. Kept minimal here — FastMCP reads __doc__ at registration.
     # mode='night' = the night package (forces rotate, clamps N to the night
     # band, sets the persistent night flag). Cleared by the morning kick.
+    # human_override = explicit minutes pierce the day/night/rotate clamp band
+    # (threaded straight to cortex's --human-override).
     """lie_down(next_wake_min=N)."""
     args = ["--next-wake-min", str(next_wake_min)]
     if rotate:
         args += ["--rotate"]
     if mode:
         args += ["--mode", str(mode)]
+    if human_override:
+        args += ["--human-override"]
     out = _run_cortex_module("cortex.lie_down", args)
     # Surface the chosen wake time (cortex.lie_down prints JSON with a
     # "next_wake":"HH:MM" field). Old cortex builds omit it — tolerate silently.
@@ -351,6 +355,15 @@ def lie_down(next_wake_min: float, rotate: bool = False,
             if nw:
                 out["next_wake"] = nw
                 out["text"] = f"next wake ≈ {nw}"
+            # Rotate precondition refusal (P17): cortex refused because this
+            # window's own wake-signal ear tail is still alive. Surface the
+            # refusal text as the tool result text — without this the model
+            # never sees "TaskStop your monitor first, then call lie_down
+            # again" and the whole rotate precondition is invisible.
+            refused = data.get("refused")
+            if data.get("skipped") == "rotate_refused" and refused:
+                out["refused"] = refused
+                out["text"] = refused
         except (ValueError, TypeError):
             pass
     return out
@@ -961,10 +974,11 @@ _DEFAULT_FUSE_PROMPT = (
 )
 
 _DEFAULT_CTL_SLEEP = (
-    "Wrap up this turn: {rotate}lie_down(next_wake_min={mins}{rotate_arg})."
+    "Wrap up this turn: {rotate}lie_down(next_wake_min={mins}{rotate_arg}{human_arg})."
 )
 
-_CTL_ARGS_RE = _re.compile(r"mins=(\d+)\s+rotate=(true|false)", _re.IGNORECASE)
+_CTL_ARGS_RE = _re.compile(
+    r"mins=(\d+)\s+rotate=(true|false)(?:\s+human=(true|false))?", _re.IGNORECASE)
 
 
 def fuse_prompt_text() -> str | None:
@@ -981,8 +995,11 @@ def fuse_prompt_text() -> str | None:
 def ctl_sleep_text(marker_line: str) -> str | None:
     """CTL sleep instruction body injected as additionalContext when the cortex
     ear surfaces a [CTL] marker turn. The marker line carries the dynamic args
-    ('mins=N rotate=true|false'); this renders {mins}/{rotate}/{rotate_arg} from
-    them. Override [cortex].ctl_sleep_text; blank/None -> inject nothing."""
+    ('mins=N rotate=true|false [human=true|false]'); this renders
+    {mins}/{rotate}/{rotate_arg}/{human_arg} from them. human=true (an explicit
+    /ct-sleep minutes choice) renders human_override=True into the lie_down(...)
+    call so it pierces the day/night/rotate clamp band end to end. Override
+    [cortex].ctl_sleep_text; blank/None -> inject nothing."""
     cx = config.load().get("cortex", {}) or {}
     if "ctl_sleep_text" in cx:
         tmpl = str(cx.get("ctl_sleep_text") or "").strip()
@@ -993,10 +1010,13 @@ def ctl_sleep_text(marker_line: str) -> str | None:
     m = _CTL_ARGS_RE.search(marker_line or "")
     mins = m.group(1) if m else ""
     rotate = bool(m and m.group(2).lower() == "true")
+    human = bool(m and m.group(3) and m.group(3).lower() == "true")
     rot = "write your handoff then " if rotate else ""
     rotate_arg = ", rotate=true" if rotate else ""
+    human_arg = ", human_override=True" if human else ""
     return (tmpl.replace("{mins}", str(mins))
             .replace("{rotate_arg}", rotate_arg)
+            .replace("{human_arg}", human_arg)
             .replace("{rotate}", rot))
 
 

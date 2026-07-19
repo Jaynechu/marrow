@@ -279,6 +279,43 @@ def test_ctl_marker_no_rotate_omits_rotate_arg(tmp_path, monkeypatch, capsys):
     assert "rotate=true" not in ctx
 
 
+def test_ctl_marker_human_true_renders_human_override(tmp_path, monkeypatch, capsys):
+    """P17: an explicit /ct-sleep minutes marker carries human=true — the
+    rendered lie_down(...) call must include human_override=True so it pierces
+    the clamp band end to end."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    _enable(monkeypatch, tmp_path, {})
+    _stdin(monkeypatch, {"session_id": "s1",
+                         "prompt": "⚙️ [CTL] mins=10 rotate=false human=true"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    ctx = _ctx(capsys)
+    assert "lie_down(next_wake_min=10, human_override=True)" in ctx
+
+
+def test_ctl_marker_human_false_omits_human_override(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    _enable(monkeypatch, tmp_path, {})
+    _stdin(monkeypatch, {"session_id": "s1",
+                         "prompt": "⚙️ [CTL] mins=30 rotate=true human=false"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    ctx = _ctx(capsys)
+    assert "lie_down(next_wake_min=30, rotate=true)" in ctx
+    assert "human_override" not in ctx
+
+
+def test_ctl_marker_no_human_field_backward_compatible(tmp_path, monkeypatch, capsys):
+    """A marker line with no human= field (older cortex build) still renders
+    cleanly — no human_override arg, no crash."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    _enable(monkeypatch, tmp_path, {})
+    _stdin(monkeypatch, {"session_id": "s1",
+                         "prompt": "⚙️ [CTL] mins=15 rotate=false"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    ctx = _ctx(capsys)
+    assert "lie_down(next_wake_min=15)" in ctx
+    assert "human_override" not in ctx
+
+
 def test_fuse_ctl_markers_not_swallowed_mid_sentence(tmp_path, monkeypatch, capsys):
     """A real user prompt quoting [FUSE]/[CTL] mid-sentence is NOT swallowed —
     the covert branches are line-start shaped, so it falls through to user speech

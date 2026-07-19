@@ -199,6 +199,64 @@ def test_lie_down_non_json_stdout(env, monkeypatch, tmp_path):
     assert "next_wake" not in out
 
 
+def test_lie_down_surfaces_rotate_refused_text(env, monkeypatch, tmp_path):
+    """P17: rotate refused while the window's own ear tail is alive — the
+    refusal text must reach the calling session as the tool result text,
+    else the rotate precondition is invisible to the model."""
+    _fake_lie_down_run(
+        monkeypatch, tmp_path,
+        '{"skipped": "rotate_refused", "refused": '
+        '"TaskStop your monitor first, then call lie_down again."}')
+    out = cortex_bridge.lie_down(next_wake_min=20, rotate=True)
+    assert out["ok"] is True
+    assert out["refused"] == "TaskStop your monitor first, then call lie_down again."
+    assert out["text"] == "TaskStop your monitor first, then call lie_down again."
+
+
+def test_lie_down_passes_human_override_flag(env, monkeypatch, tmp_path):
+    fake_py = tmp_path / "python"
+    fake_root = tmp_path / "repo"
+    monkeypatch.setattr(config, "load", lambda: {
+        "cortex": {"venv_python": str(fake_py), "repo_root": str(fake_root)},
+    })
+    captured = {}
+
+    class _P:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def _fake_run(cmd, cwd=None, **kw):
+        captured["cmd"] = cmd
+        return _P()
+
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", _fake_run)
+    cortex_bridge.lie_down(next_wake_min=10, human_override=True)
+    assert "--human-override" in captured["cmd"]
+
+
+def test_lie_down_no_human_override_flag_by_default(env, monkeypatch, tmp_path):
+    fake_py = tmp_path / "python"
+    fake_root = tmp_path / "repo"
+    monkeypatch.setattr(config, "load", lambda: {
+        "cortex": {"venv_python": str(fake_py), "repo_root": str(fake_root)},
+    })
+    captured = {}
+
+    class _P:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def _fake_run(cmd, cwd=None, **kw):
+        captured["cmd"] = cmd
+        return _P()
+
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", _fake_run)
+    cortex_bridge.lie_down(next_wake_min=10)
+    assert "--human-override" not in captured["cmd"]
+
+
 def test_say_runs_module(env, monkeypatch, tmp_path):
     fake_py = tmp_path / "python"
     fake_root = tmp_path / "repo"
