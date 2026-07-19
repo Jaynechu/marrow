@@ -398,16 +398,21 @@ _DB = config.db_path()
 def _lie_down_doc() -> str:
     """C9 (user-final): lie_down description with all four clamp numbers rendered
     from cortex config — day bounds [wake].next_wake_min/max, night bounds
-    [night].floor_min/max. Never hardcoded in the string."""
+    [night].floor_min/max. Never hardcoded in the string. Tail sentence is
+    configurable via [cortex].lie_down_doc_tail (marrow config.toml)."""
     day_min = int(_cortex_toml_section("wake", "next_wake_min", 21))
     day_max = int(_cortex_toml_section("wake", "next_wake_max", 240))
     night_min = int(_cortex_toml_section("night", "floor_min", 120))
     night_max = int(_cortex_toml_section("night", "floor_max", 360))
+    cx = config.load().get("cortex", {}) or {}
+    tail = cx.get("lie_down_doc_tail") or (
+        "Always handoff before rotate or night mode; Always run TaskList and "
+        "TaskStop for all background tasks, including monitor and subagents.")
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True); '
             f'Activate night mode - lie_down(next_wake_min=N, mode="night") '
             f'[N={night_min}-{night_max}]; '
-            f'Always handoff before rotate or night mode')
+            f'{tail}')
 
 
 def _wait_doc() -> str:
