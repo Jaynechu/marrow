@@ -53,10 +53,17 @@ def is_cortex_session(transcript_path: str | None = None) -> bool:
     A manually opened window lacks the env marker, so a transcript_path is
     matched against the recorded registration (fail-CLOSED on an empty
     registration — a plain cli window with no registration is never cortex).
-    Env-only when transcript_path is omitted (call sites without a tpath)."""
+    Env-only when transcript_path is omitted (call sites without a tpath).
+
+    The registration branch additionally requires enabled() — unlike the env
+    marker (only ever set by cortex_bridge.call_cortex, which itself only runs
+    when cortex is wired up, so env already implies enabled), a stale
+    cortex_claude_sid can outlive [cortex].enabled being flipped false, and
+    that must never resurrect cortex hook paths (replay/outbox/kickout/marker
+    interception) on a disabled install."""
     if os.environ.get("MARROW_CORTEX"):
         return True
-    if not transcript_path:
+    if not transcript_path or not enabled():
         return False
     registered = registered_claude_sid()
     return bool(registered) and registered == _claude_sid_of(transcript_path)

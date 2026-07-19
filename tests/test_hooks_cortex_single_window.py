@@ -146,6 +146,24 @@ def test_is_cortex_session_no_registration_no_env_not_cortex(cortex_env, tmp_pat
     assert cortex_bridge.is_cortex_session(tpath) is False
 
 
+def test_is_cortex_session_disabled_with_stale_registration_not_cortex(
+        cortex_env, tmp_path, monkeypatch):
+    """P2 fix: [cortex].enabled=false + a stale matching cortex_claude_sid left
+    in wake_state + no env marker -> must NOT be cortex. A disabled install must
+    never resurrect cortex hook paths (replay/outbox/kickout/marker interception)
+    off a leftover registration."""
+    home, _ = cortex_env
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    tpath = _jsonl(tmp_path, "manual")
+    _write_ws(home, cortex_claude_sid="manual")
+    real = config.load
+    disabled = dict(real())
+    disabled["cortex"] = dict(disabled["cortex"])
+    disabled["cortex"]["enabled"] = False
+    monkeypatch.setattr(config, "load", lambda: disabled)
+    assert cortex_bridge.is_cortex_session(tpath) is False
+
+
 def test_is_cortex_session_no_tpath_no_env_not_cortex(cortex_env, monkeypatch):
     """No env marker and no transcript to match -> env-only, so not cortex."""
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
