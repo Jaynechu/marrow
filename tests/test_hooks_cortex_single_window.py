@@ -203,25 +203,29 @@ def test_claim_registration_if_pending_fails_when_not_pending(cortex_env, tmp_pa
     assert "cortex_claude_sid" not in _ws(home)
 
 
-def test_claim_registration_takeover_unconditional_overwrite(cortex_env, tmp_path):
+def test_stage_registration_claim_writes_pending_claim_not_registration(cortex_env, tmp_path):
+    """P17 stage-then-promote: staging must NEVER touch cortex_claude_sid —
+    only cortex's cmd_wake (the sole promoter) may do that."""
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "newwindow")
     _write_ws(home, cortex_claude_sid="oldwindow")
-    ok = cortex_bridge.claim_registration_takeover(tpath)
+    ok = cortex_bridge.stage_registration_claim(tpath)
     assert ok is True
     d = _ws(home)
-    assert d["cortex_claude_sid"] == "newwindow"
-    assert "cortex_registered_at" in d
+    assert d["cortex_claude_sid"] == "oldwindow"  # untouched
+    assert d["pending_claim"]["sid"] == "newwindow"
+    assert "ts" in d["pending_claim"]
 
 
-def test_claim_registration_takeover_noop_when_already_self(cortex_env, tmp_path):
+def test_stage_registration_claim_noop_when_already_self(cortex_env, tmp_path):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "samewindow")
     _write_ws(home, cortex_claude_sid="samewindow", cortex_registered_at="2020-01-01T00:00:00+00:00")
-    ok = cortex_bridge.claim_registration_takeover(tpath)
+    ok = cortex_bridge.stage_registration_claim(tpath)
     assert ok is True
     d = _ws(home)
-    # Already-self is a no-op — the registered_at stamp is untouched.
+    # Already the live registration -> nothing staged, stamp untouched.
+    assert "pending_claim" not in d
     assert d["cortex_registered_at"] == "2020-01-01T00:00:00+00:00"
 
 
@@ -268,9 +272,11 @@ def test_notify_handoff_landed_once_is_one_shot(cortex_env, monkeypatch):
     assert len(sent) == 1  # second call is a no-op (same registered_at stamp)
 
 
-# --- PreToolUse hook integration: /ct-wake takeover claim ----------------------
+# --- PreToolUse hook integration: /ct-wake claim staging -----------------------
 
-def test_pretool_takeover_claim_registers_caller(cortex_env, tmp_path, monkeypatch):
+def test_pretool_stages_claim_without_touching_registration(cortex_env, tmp_path, monkeypatch):
+    """P17: the PreToolUse hook stages pending_claim only — cortex_claude_sid
+    stays whatever it was until cmd_wake (cortex side) promotes or discards it."""
     home, db = cortex_env
     tpath = _jsonl(tmp_path, "newcaller")
     _write_ws(home, cortex_claude_sid="oldresident")
@@ -279,10 +285,12 @@ def test_pretool_takeover_claim_registers_caller(cortex_env, tmp_path, monkeypat
         "tool_input": {"command": "/venv/bin/python -m cortex.ctl wake"},
     })
     assert hooks.main(["pretool_use"]) == 0
-    assert _ws(home)["cortex_claude_sid"] == "newcaller"
+    d = _ws(home)
+    assert d["cortex_claude_sid"] == "oldresident"  # untouched by the hook
+    assert d["pending_claim"]["sid"] == "newcaller"
 
 
-def test_pretool_takeover_claim_then_allows_call(cortex_env, tmp_path, monkeypatch, capsys):
+def test_pretool_stage_claim_then_allows_call(cortex_env, tmp_path, monkeypatch, capsys):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "newcaller")
     _write_ws(home, cortex_claude_sid="oldresident")
@@ -325,7 +333,7 @@ def test_pretool_retired_window_monitor_not_denied(cortex_env, tmp_path, monkeyp
 
 def test_pretool_plain_cli_ctl_wake_never_claims(cortex_env, tmp_path, monkeypatch):
     """Plain cli window (no MARROW_CORTEX) running /ct-wake keeps original
-    semantics — never registers itself."""
+    semantics — never stages a claim, never registers itself."""
     home, _ = cortex_env
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     tpath = _jsonl(tmp_path, "cliwindow")
@@ -335,7 +343,9 @@ def test_pretool_plain_cli_ctl_wake_never_claims(cortex_env, tmp_path, monkeypat
         "tool_input": {"command": "/venv/bin/python -m cortex.ctl wake"},
     })
     assert hooks.main(["pretool_use"]) == 0
-    assert _ws(home)["cortex_claude_sid"] == "the-resident"  # unchanged
+    d = _ws(home)
+    assert d["cortex_claude_sid"] == "the-resident"  # unchanged
+    assert "pending_claim" not in d
 
 
 # --- UserPromptSubmit wake-branch: early-return / deathbed / handoff-landed ---

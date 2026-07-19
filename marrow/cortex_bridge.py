@@ -455,31 +455,34 @@ def register(marrow_tool, db: str | None = None) -> None:
 # _usage_threshold_context); it is imported lazily where needed below.
 
 
-# ── /ct-wake takeover claim (registration, PreToolUse caller side) ────────────
+# ── /ct-wake claim staging (registration, PreToolUse caller side) ─────────────
 _CTL_WAKE_PATTERN = ("-m cortex.ctl", "wake")
 
 
 def _is_ctl_wake_bash(command: str) -> bool:
     """True iff this Bash command is the `<venv_python> -m cortex.ctl wake`
-    invocation (ct-wake.md) — the ONE Bash form that claims takeover instead
+    invocation (ct-wake.md) — the ONE Bash form that stages a registration claim instead
     of being denied. Substring match on both fragments (module + subcommand),
     tolerant of the venv_python prefix/flags."""
     return all(frag in command for frag in _CTL_WAKE_PATTERN)
 
 
-def _ctl_wake_takeover_claim(inp: dict) -> None:
+def _ctl_wake_claim_staging(inp: dict) -> None:
     """PreToolUse, caller side: a cortex window running `/ct-wake` (Bash ->
-    cortex.ctl wake) CAS-registers itself as the active cortex window BEFORE
-    the call proceeds — the takeover happens here, not in cmd_wake (cmd_wake
-    has no reliable access to its caller's claude sid, only wake_state's
-    iTerm-liveness session_id, a different domain). Registration flips first;
-    cmd_wake's ear branch then bells the OLD resident (its wake_state.session_id
-    still points there, correct — liveness domain untouched), and that bell-
-    opened turn now mismatches the NEW registration -> the gate injects
-    takeover_text on it (the deathbed turn), deterministically, no new
-    mechanism. Plain cli windows (no MARROW_CORTEX) never reach this — /ct-wake
-    there keeps its original semantics. Best-effort: a claim failure (lock
-    timeout) leaves registration unchanged; cmd_wake still runs normally."""
+    cortex.ctl wake) STAGES its own claude sid as wake_state's `pending_claim`
+    BEFORE the call proceeds (marrow is the only side with reliable access to
+    the caller's own claude sid — cmd_wake only has wake_state's iTerm-liveness
+    session_id, a different domain). Staging is NOT a takeover: it never writes
+    cortex_claude_sid. cmd_wake (cortex side) is the sole promoter/discarder —
+    it grants (promote pending_claim -> cortex_claude_sid) or refuses (discard
+    pending_claim, zero registration change) based on its own live-resident
+    check, which this hook cannot see (stage-then-promote via the shared
+    wake_state file — the P17 fix: a refused wake used to already have stolen
+    registration here before cmd_wake even ran). Plain cli windows (no
+    MARROW_CORTEX) never reach this — /ct-wake there keeps its original
+    semantics. Best-effort: a stage failure (lock timeout) leaves wake_state
+    unchanged; cmd_wake still runs normally (falls back to no-pending-claim
+    behaviour)."""
     if not os.environ.get("MARROW_CORTEX"):
         return
     if inp.get("tool_name") != "Bash":
@@ -489,7 +492,7 @@ def _ctl_wake_takeover_claim(inp: dict) -> None:
         return
     tpath = inp.get("transcript_path")
     try:
-        claim_registration_takeover(tpath)
+        stage_registration_claim(tpath)
     except Exception:  # noqa: BLE001 — never blocks the Bash call
         pass
 
@@ -1249,7 +1252,9 @@ def _wake_state_save(p: Path, data: dict) -> None:
 # `cortex_claude_sid` is a SEPARATE key from wake_state's `session_id`/
 # `transcript` (iTerm liveness/respawn, untouched by this section) — strict
 # one-way responsibility: every function below reads/writes ONLY
-# cortex_claude_sid + cortex_registration_pending. Fail-closed strict lock
+# cortex_claude_sid + cortex_registration_pending + pending_claim (P17
+# stage-then-promote: marrow stages pending_claim, cortex's cmd_wake is the
+# sole promoter/discarder — see stage_registration_claim). Fail-closed strict lock
 # (unlike _wake_state_lock's advisory best-effort): a lock timeout drops the
 # mutation, state stays unchanged, never proceeds unlocked. COUPLED: same
 # sibling .lock file as cortex.wake_state._strict_flock (base = marrow
@@ -1359,15 +1364,18 @@ def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | No
         return False
 
 
-def claim_registration_takeover(tpath: str | None) -> bool:
-    """/ct-wake takeover claim (PreToolUse, caller side): unconditionally
-    CAS-register the CALLING window's own claude sid as the active cortex
-    window — no compare-fail on a mismatched prior value, that mismatch IS
-    the takeover. No-op (still True) when already registered to self. The CAS
-    discipline here is atomicity (read + write under one lock hold), not a
-    token check: any prior registered value is superseded. Fail-closed on a
-    lock timeout (registration unchanged, caller retries take no effect until
-    the lock frees) — never proceeds unlocked."""
+def stage_registration_claim(tpath: str | None) -> bool:
+    """/ct-wake staging claim (PreToolUse, caller side): stage the CALLING
+    window's own claude sid as a `pending_claim` in wake_state — NEVER writes
+    `cortex_claude_sid` directly. cmd_wake (cortex side) is the sole promoter:
+    it reads pending_claim and either promotes it to cortex_claude_sid (grant/
+    self-re-wake) or discards it (refuse — a live foreign resident is on
+    duty), so a refused wake leaves the true resident's registration and
+    is_cortex_session identity fully untouched (P17 gap fix — the caller-side
+    hook has no visibility into cmd_wake's grant/refuse outcome, only cmd_wake
+    does). No-op (still True) when the sid is already the live registration
+    (nothing to stage). Fail-closed on a lock timeout (nothing staged, caller
+    retries take no effect until the lock frees) — never proceeds unlocked."""
     sid = _claude_sid_of(tpath)
     if not sid:
         return False
@@ -1377,10 +1385,12 @@ def claim_registration_takeover(tpath: str | None) -> bool:
             d = _wake_state_load(p)
             _ws_ensure_epoch(d)
             if d.get("cortex_claude_sid") == sid:
-                return True  # already self -> no-op
-            d["cortex_claude_sid"] = sid
-            d.pop("cortex_registration_pending", None)
-            _stamp_registration_change(d)
+                return True  # already the live registration -> nothing to stage
+            from datetime import timezone as _tz
+            d["pending_claim"] = {
+                "sid": sid,
+                "ts": datetime.now(_tz.utc).isoformat(),
+            }
             _wake_state_save(p, d)
             return True
     except _RegistrationLockError:

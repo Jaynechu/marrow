@@ -2962,14 +2962,15 @@ def pretool_use() -> int:
             })
             return 0
 
-        # /ct-wake takeover claim (P14 Fix 3) — runs BEFORE anything else touches
+        # /ct-wake claim staging (P17) — runs BEFORE anything else touches
         # wake_state this round: a cortex window running `cortex.ctl wake` via
-        # Bash CAS-registers itself as the active window first, so cmd_wake's
-        # own bell (to the OLD resident, liveness-domain untouched) opens a
-        # deathbed turn on the now-mismatched old window.
+        # Bash stages its own claude sid as wake_state's pending_claim. cmd_wake
+        # (cortex side) is the sole promoter/discarder — it grants or refuses
+        # based on its own live-resident check, so a refused wake never touches
+        # registration (stage-then-promote, not takeover-then-hope).
         try:
             if cortex_bridge.enabled():
-                cortex_bridge._ctl_wake_takeover_claim(inp)
+                cortex_bridge._ctl_wake_claim_staging(inp)
         except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
             pass
 
