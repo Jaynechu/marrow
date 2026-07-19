@@ -108,6 +108,91 @@ def test_is_registered_window_mismatch_is_false(cortex_env, tmp_path):
     assert cortex_bridge.is_registered_window(tpath) is False
 
 
+# --- P16: fail-closed arm predicate (may_arm_ear) -----------------------------
+
+def test_may_arm_ear_empty_registration_is_false(cortex_env, tmp_path):
+    """Inverse of is_registered_window's fail-open: no registration -> False."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")
+    assert cortex_bridge.may_arm_ear(tpath) is False
+
+
+def test_may_arm_ear_match_is_true(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")
+    _write_ws(home, cortex_claude_sid="abc")
+    assert cortex_bridge.may_arm_ear(tpath) is True
+
+
+def test_may_arm_ear_mismatch_is_false(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")
+    _write_ws(home, cortex_claude_sid="other-sid")
+    assert cortex_bridge.may_arm_ear(tpath) is False
+
+
+def test_gate_wake_signal_monitor_denied_empty_registration(cortex_env, tmp_path):
+    """P16 root case: no registration (post-rotate) denies the ear arm for the
+    would-be resident itself, not just a mismatch."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")  # no cortex_claude_sid written
+    signal_log = str(home / "state" / "wake_signal.log")
+    inp = {"transcript_path": tpath, "tool_name": "Monitor",
+           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
+    assert cortex_bridge.cortex_gate_pretool(inp)
+
+
+def test_gate_wake_signal_monitor_denied_mismatch(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")
+    _write_ws(home, cortex_claude_sid="other-sid")
+    signal_log = str(home / "state" / "wake_signal.log")
+    inp = {"transcript_path": tpath, "tool_name": "Monitor",
+           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
+    assert cortex_bridge.cortex_gate_pretool(inp)
+
+
+def test_gate_wake_signal_monitor_allowed_for_registered(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")
+    _write_ws(home, cortex_claude_sid="abc")
+    signal_log = str(home / "state" / "wake_signal.log")
+    inp = {"transcript_path": tpath, "tool_name": "Monitor",
+           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
+    assert cortex_bridge.cortex_gate_pretool(inp) is None
+
+
+def test_gate_non_wake_signal_monitor_allowed_anyone(cortex_env, tmp_path, monkeypatch):
+    """A non-cortex session Monitor-ing something else passes untouched even
+    with an empty registration."""
+    home, _ = cortex_env
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    tpath = _jsonl(tmp_path, "cli")
+    inp = {"transcript_path": tpath, "tool_name": "Monitor",
+           "tool_input": {"command": "tail -n 0 -f /var/log/other.log"}}
+    assert cortex_bridge.cortex_gate_pretool(inp) is None
+
+
+def test_gate_schedule_wakeup_allowed_without_cortex_env(cortex_env, tmp_path, monkeypatch):
+    """ScheduleWakeup outside a MARROW_CORTEX window (cli /loop self-pacing)
+    must NOT be denied, empty registration or not (check 1 is env-gated)."""
+    home, _ = cortex_env
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    tpath = _jsonl(tmp_path, "cli")
+    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
+           "tool_input": {}}
+    assert cortex_bridge.cortex_gate_pretool(inp) is None
+
+
+def test_gate_schedule_wakeup_denied_cortex_empty_registration(cortex_env, tmp_path):
+    """Under MARROW_CORTEX, ScheduleWakeup arms -> fail-closed on empty reg."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")  # no registration
+    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
+           "tool_input": {}}
+    assert cortex_bridge.cortex_gate_pretool(inp)
+
+
 def test_claim_registration_if_pending_succeeds_with_current_token(cortex_env, tmp_path):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "newsid")

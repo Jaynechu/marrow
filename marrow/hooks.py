@@ -1828,7 +1828,15 @@ def user_prompt_submit() -> int:
             # "not yet registered" and the retired branch is taken instead
             # (fail-closed toward silence, never toward a false wake payload).
             try:
-                cortex_bridge.claim_registration_if_pending(tpath, _tok)
+                if cortex_bridge.claim_registration_if_pending(tpath, _tok):
+                    # This window just claimed registration (rotate/fresh spawn)
+                    # and has not armed its own ear yet — every surviving tail is
+                    # a zombie from the retired window. Sweep them (mirrors the
+                    # resident-resume sweep at session_start ~1377).
+                    try:
+                        cortex_bridge.kill_orphan_ear_tails()
+                    except Exception:
+                        pass
             except Exception:
                 pass
             # Single-active-window gate: a window whose claude sid does not
