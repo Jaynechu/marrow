@@ -236,6 +236,39 @@ def test_claim_registration_grants_and_records_resident_pid(cortex_env, tmp_path
     assert "claim\tgrant" in (home / "wake_audit.log").read_text()
 
 
+def test_claim_registration_refuses_when_resident_pid_unresolved(cortex_env, tmp_path, monkeypatch):
+    """07-20 live incident, root cause: pgrep excludes its own ancestors, so this
+    hook could never resolve its own claude pid -> resident_pid=None reached the
+    claim and used to silently GRANT with no pid recorded (fail-open inversion,
+    audit showed 'claim grant ... resident_pid=None'). Fixed: resident_pid=None
+    is now a HARD refuse, audited distinctly (no_pid) — never a silent
+    grant-without-a-pid."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "ghostwin")
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True)
+    monkeypatch.setattr(cortex_bridge, "_claude_ancestor_pid", lambda p=None: None)
+    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    assert ok is False
+    d = _ws(home)
+    assert "cortex_claude_sid" not in d  # nothing written
+    log = (home / "wake_audit.log").read_text()
+    assert "claim\trefuse" in log and "no_pid" in log
+
+
+def test_claude_ancestor_pid_resolves_real_process_tree():
+    """REAL-TREE proof (no monkeypatch): _claude_ancestor_pid must resolve an
+    actual live `claude` pid via the real pgrep/ps walk — this is the exact
+    function whose `pgrep -x claude` (missing `-a`) silently excluded its own
+    ancestors and caused every real-world claim to record resident_pid=None."""
+    import subprocess
+    pid = cortex_bridge._claude_ancestor_pid()
+    if pid is None:
+        pytest.skip("not running inside a claude process tree")
+    comm = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
+                          capture_output=True, text=True).stdout.strip()
+    assert comm == "claude"
+
+
 def test_claim_registration_dead_recorded_resident_is_claimable(cortex_env, tmp_path, monkeypatch):
     """A dead recorded resident (kill -0 fails) = office claimable -> grant."""
     home, _ = cortex_env

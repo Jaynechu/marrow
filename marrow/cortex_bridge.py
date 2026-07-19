@@ -1375,11 +1375,15 @@ def _chains_to_ancestor(pid: int, ancestor_pid: int) -> bool:
 
 def _claude_ancestor_pid(caller_pid: int | None = None) -> int | None:
     """The `claude` process in the CALLER's parent chain (the window this hook
-    runs inside), or None. Mirror of cortex.window.claude_ancestor_pid."""
+    runs inside), or None. Mirror of cortex.window.claude_ancestor_pid.
+    `-a` is REQUIRED: BSD/macOS pgrep excludes the calling process's own
+    ANCESTORS by default (pgrep(1) `-a`) — without it, plain `pgrep -x claude`
+    silently drops the exact resident pid this hook needs every time (verified
+    07-20 live-incident root cause: resident_pid always recorded None)."""
     if caller_pid is None:
         caller_pid = os.getpid()
     try:
-        p = subprocess.run(["pgrep", "-x", "claude"], capture_output=True, text=True)
+        p = subprocess.run(["pgrep", "-a", "-x", "claude"], capture_output=True, text=True)
     except OSError:
         return None
     if p.returncode not in (0, 1):
@@ -1420,12 +1424,21 @@ def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | No
     token. Only succeeds while a registration handshake is PENDING and
     `token` still matches the live epoch (both checked + written under one
     strict-lock hold — true CAS, fail-closed on any lock/parse trouble).
-    Writes cortex_claude_sid = this window's own claude sid, clears pending."""
+    Writes cortex_claude_sid = this window's own claude sid, clears pending.
+
+    `resident_pid=None` (07-20 live incident: pgrep excluding its own ancestors
+    left the caller unable to resolve its own pid) is a HARD refuse, never a
+    silent grant-without-a-pid — mirrors cortex.wake_state.claim_office's fix:
+    a registration with no recorded pid can never be judged alive later, which
+    is the exact fail-open hole that let a fresh spawn clobber a live resident."""
     if token is None or not tpath:
         return False
     sid = _claude_sid_of(tpath)
     caller_pid = os.getpid()
     resident_pid = _claude_ancestor_pid(caller_pid)
+    if resident_pid is None:
+        _wake_audit("claim", "refuse", f"via=spawn sid={sid} caller_pid={caller_pid} no_pid")
+        return False
     p = _cortex_wake_state_path()
     try:
         with _strict_wake_state_lock(p):
@@ -1442,8 +1455,7 @@ def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | No
                 _wake_audit("claim", "refuse", f"via=spawn sid={sid} caller_pid={caller_pid}")
                 return False
             d["cortex_claude_sid"] = sid
-            if resident_pid is not None:
-                d["cortex_resident_pid"] = int(resident_pid)
+            d["cortex_resident_pid"] = int(resident_pid)
             d.pop("cortex_registration_pending", None)
             _stamp_registration_change(d)
             _wake_state_save(p, d)
