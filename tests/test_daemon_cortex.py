@@ -401,12 +401,6 @@ def test_arm_ear_text_blank_returns_none(monkeypatch, tmp_path):
     assert cortex_bridge.arm_ear_text() is None
 
 
-def test_wake_marker_reads_config(monkeypatch):
-    """wake_marker reflects [cortex].wake_marker (stripped)."""
-    _force_enabled(monkeypatch, True, extra={"wake_marker": "  [CORTEX-WAKE] "})
-    assert cortex_bridge.wake_marker() == "[CORTEX-WAKE]"
-
-
 def test_wakeup_note_text_reads_file(monkeypatch, tmp_path):
     """wakeup_note_text returns the note file contents (stripped)."""
     (tmp_path / "wakeup_note.md").write_text("  do the thing  ", encoding="utf-8")

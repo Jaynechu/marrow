@@ -769,13 +769,6 @@ def is_resident_session(transcript_path: str | None) -> bool:
     return str(state_tpath) == str(transcript_path)
 
 
-def wake_marker() -> str:
-    """Marker prefixing a cortex wake signal line ([cortex].wake_marker). A
-    UserPromptSubmit carrying it is a wake turn (full wakeup-note inject)."""
-    cx = config.load().get("cortex", {}) or {}
-    return str(cx.get("wake_marker") or "").strip()
-
-
 def _render_note_fresh(transcript_path: str | None) -> str | None:
     """Fresh render via the cortex venv (config [cortex].render_module, e.g.
     cortex.note_render). Reflects the current time + the CALLER's transcript SID
@@ -803,27 +796,7 @@ def _render_note_fresh(transcript_path: str | None) -> str | None:
     return text or None
 
 
-import re as _re_ws
-
-_GEN_TOKEN_RE = _re_ws.compile(r"\{g(\d+):([0-9a-fA-F]+)\}")
-
-
-def parse_gen_token(line: str) -> tuple[int, str] | None:
-    """Extract the cancellation-epoch token ' {g<gen>:<state_id>}' a wake signal
-    line may carry. None when absent (legacy token-less line = process as before)
-    or unparseable."""
-    if not line:
-        return None
-    m = _GEN_TOKEN_RE.search(line)
-    if not m:
-        return None
-    try:
-        return int(m.group(1)), m.group(2)
-    except (TypeError, ValueError):
-        return None
-
-
-# ── wake bell: receipt sidecar (new) + shape/legacy fallbacks ─────────────────
+# ── wake bell: receipt sidecar (new) + shape fallback ─────────────────────────
 # The visible bell line is human text only ([cortex].wake_bell_template). The
 # machine data (gen/state_id/rearm) lives in a wake_state `wake_receipt` written
 # by the producer at send time. Recognition order (match_wake_bell):
@@ -832,9 +805,7 @@ def parse_gen_token(line: str) -> tuple[int, str] | None:
 #   (b) receipt missing/unreadable/expired -> shape fallback: the line starts
 #       with the persisted template prefix -> treat as bell, fail OPEN on
 #       staleness (process it), audit the degraded path.
-#   (c) legacy '[CORTEX-WAKE] … {g..}' line -> recognized + epoch-checked as
-#       today (transition safety).
-#   (d) none -> normal user prompt.
+#   (c) none -> normal user prompt.
 # Failure direction (mirrors wake_token_current): never DROP a genuine wake; a
 # swallowed user message is the only unacceptable outcome, so the receipt path
 # is EXACT-match only.
@@ -921,7 +892,6 @@ def match_wake_bell(prompt: str) -> tuple[str, tuple[int, str] | None, bool] | N
                         caller consumes the receipt + epoch-checks (suppress stale).
       kind='shape'   -> receipt missing but the line starts with the template
                         prefix; token=None, degraded=True; caller fails OPEN.
-      kind='legacy'  -> old '[CORTEX-WAKE] … {g..}' line; token parsed; epoch-check.
     A blank template prefix disables the shape fallback (never matches on empty)."""
     if not prompt:
         return None
@@ -932,11 +902,6 @@ def match_wake_bell(prompt: str) -> tuple[str, tuple[int, str] | None, bool] | N
         state_id = receipt.get("state_id")
         token = (int(gen), str(state_id)) if gen is not None and state_id else None
         return ("receipt", token, False)
-    # (c) legacy inline-marker line (checked before shape: a legacy line also
-    # would not match the new prefix, and it carries a real epoch token).
-    legacy = wake_marker()
-    if legacy and _line_starts_with(prompt, legacy):
-        return ("legacy", parse_gen_token(prompt), False)
     # (b) shape fallback: match the on-screen line against the template shape.
     #   - template WITH an {hm} placeholder -> '<prefix> HH:MM' (whole line), so
     #     an ordinary user message merely OPENING with the prefix emoji is NOT
@@ -1243,7 +1208,7 @@ def is_machine_line(prompt: str) -> bool:
     # line with the marker; a real user prompt quoting it mid-sentence ("did the
     # [NEW ROUND] path fire?") stays a user message.
     # New wake bell = human text: recognized via the receipt sidecar / template
-    # prefix (match_wake_bell), plus the legacy marker line for transition.
+    # prefix (match_wake_bell).
     try:
         if match_wake_bell(p) is not None:
             return True

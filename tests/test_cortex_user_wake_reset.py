@@ -36,8 +36,8 @@ def cortex_env(tmp_path, monkeypatch):
             "venv_python": str(py), "repo_root": str(root),
             "wake_state_file": "wake_state.json",
             "watchdog_pidfile": "watchdog.pid",
-            "wake_marker": "[CORTEX-WAKE]", "tuck_in_marker": "[TUCK-IN]",
-            "machine_markers": ["[CORTEX-WAKE]", "[NEW ROUND]", "[TUCK-IN]",
+            "tuck_in_marker": "[TUCK-IN]",
+            "machine_markers": ["[NEW ROUND]", "[TUCK-IN]",
                                 "[NIGHT]", "[FUSE]", "[CTL]", "[CMD"],
             "compact_markers": ["===== BEGIN ORIGINAL TRANSCRIPT",
                                 "===== END ORIGINAL TRANSCRIPT"],
@@ -58,7 +58,6 @@ def _ws(home):
 # --- machine-line exclusion ---------------------------------------------------
 
 def test_is_machine_line_excludes_markers(cortex_env):
-    assert cortex_bridge.is_machine_line("[CORTEX-WAKE] 14:00") is True
     assert cortex_bridge.is_machine_line(
         "⏳ [TUCK-IN] It's been 20 mins — choose again") is True
     assert cortex_bridge.is_machine_line(
@@ -200,7 +199,7 @@ def test_is_machine_line_harness_tags(cortex_env):
     assert cortex_bridge.is_machine_line("what does <tag> mean?") is False
 
 
-# --- wake bell: receipt sidecar / shape / legacy recognition ------------------
+# --- wake bell: receipt sidecar / shape recognition ---------------------------
 
 def _put_receipt(home, text="☀️ 09:05", gen=3, state_id="cafe", rearm=False,
                  ts=None, template_prefix="☀️ "):
@@ -239,10 +238,12 @@ def test_match_wake_bell_shape_fallback_no_receipt(cortex_env):
     assert kind == "shape" and tok is None and degraded is True
 
 
-def test_match_wake_bell_legacy_line(cortex_env):
-    # Old-style inline-marker line still recognized + token parsed (transition).
-    kind, tok, degraded = cortex_bridge.match_wake_bell("[CORTEX-WAKE] 09:05 {g4:aa}")
-    assert kind == "legacy" and tok == (4, "aa") and degraded is False
+def test_match_wake_bell_legacy_marker_falls_through(cortex_env):
+    # Legacy '[CORTEX-WAKE] … {g..}' recognition removed post-migration (5f7efe7
+    # human-text bell + receipt sidecar). No receipt + no shape match -> not a
+    # bell -> falls through to normal user-prompt handling.
+    assert cortex_bridge.match_wake_bell("[CORTEX-WAKE] 09:00 {g5:abcd}") is None
+    assert cortex_bridge.is_machine_line("[CORTEX-WAKE] 09:00 {g5:abcd}") is False
 
 
 def test_match_wake_bell_ttl_expiry(cortex_env):
@@ -735,13 +736,7 @@ def test_reset_writes_gen_audit_line(cortex_env):
     assert gen_lines and "gen 2->3" in gen_lines[0]
 
 
-# --- wake-line token parse + validation + legacy tolerance --------------------
-
-def test_parse_gen_token_present_and_absent():
-    assert cortex_bridge.parse_gen_token("[CORTEX-WAKE] 09:00 {g7:abcd1234}") == (7, "abcd1234")
-    assert cortex_bridge.parse_gen_token("[CORTEX-WAKE] 09:00") is None   # legacy
-    assert cortex_bridge.parse_gen_token("") is None
-
+# --- wake-line token validation -----------------------------------------------
 
 def test_wake_token_current_matches_and_stale(cortex_env):
     home, _ = cortex_env
@@ -751,8 +746,8 @@ def test_wake_token_current_matches_and_stale(cortex_env):
     assert cortex_bridge.wake_token_current((4, "beef")) is False   # ABA state_id
 
 
-def test_wake_token_current_legacy_line_always_current(cortex_env):
-    """A token-less (legacy) wake line is processed as before."""
+def test_wake_token_current_tokenless_always_current(cortex_env):
+    """A token-less wake (receipt without gen/state_id) is processed as before."""
     home, _ = cortex_env
     (home / "wake_state.json").write_text(json.dumps({"gen": 9, "state_id": "x"}))
     assert cortex_bridge.wake_token_current(None) is True
