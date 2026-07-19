@@ -41,64 +41,83 @@ def _enable(monkeypatch, tmp_path, extra=None):
 
 
 # ── Item 2: wake-turn full-note inject ────────────────────────────────────────
+# The visible bell is human text ([cortex].wake_bell_template, default "☀️ {hm}").
+# Machine data lives in the wake_state receipt; recognition is receipt-exact then
+# template-shape fallback. Legacy '[CORTEX-WAKE]' recognition was removed (5f7efe7).
+
+def _seed_epoch(tmp_path, gen, state_id):
+    (tmp_path / "state").mkdir(exist_ok=True)
+    p = tmp_path / "state" / "wake_state.json"
+    d = json.loads(p.read_text()) if p.exists() else {}
+    d.update({"gen": gen, "state_id": state_id})
+    p.write_text(json.dumps(d), encoding="utf-8")
+
+
+def _seed_receipt(tmp_path, text="☀️ 14:00", gen=None, state_id=None):
+    from datetime import datetime, timezone
+    (tmp_path / "state").mkdir(exist_ok=True)
+    p = tmp_path / "state" / "wake_state.json"
+    d = json.loads(p.read_text()) if p.exists() else {}
+    r = {"text": text, "ts": datetime.now(timezone.utc).isoformat()}
+    if gen is not None:
+        r["gen"] = gen
+        r["state_id"] = state_id
+    d["wake_receipt"] = r
+    p.write_text(json.dumps(d), encoding="utf-8")
+
 
 def test_wake_turn_injects_full_note(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
-    _stdin(monkeypatch, {"session_id": "s1",
-                         "prompt": "[CORTEX-WAKE] 2026-07-11 14:00 wake"})
+    _enable(monkeypatch, tmp_path)
+    _seed_receipt(tmp_path, text="☀️ 14:00")
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == "read me and act"
 
 
-def _seed_epoch(tmp_path, gen, state_id):
-    (tmp_path / "state").mkdir(exist_ok=True)
-    (tmp_path / "state" / "wake_state.json").write_text(
-        json.dumps({"gen": gen, "state_id": state_id}), encoding="utf-8")
-
-
 def test_wake_turn_current_token_injects(tmp_path, monkeypatch, capsys):
-    """A wake line carrying a token that matches the live epoch injects the note."""
+    """A receipt whose token matches the live epoch injects the note."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 7, "abcd1234")
-    _stdin(monkeypatch, {"session_id": "s1",
-                         "prompt": "[CORTEX-WAKE] 14:00 {g7:abcd1234}"})
+    _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == "read me and act"
 
 
 def test_wake_turn_stale_token_suppressed(tmp_path, monkeypatch, capsys):
-    """A wake line whose token was superseded (newer gen) is NOT processed as a
+    """A receipt whose token was superseded (newer gen) is NOT processed as a
     wake: no note injected."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
-    _seed_epoch(tmp_path, 8, "abcd1234")  # live gen moved past the line's gen 7
-    _stdin(monkeypatch, {"session_id": "s1",
-                         "prompt": "[CORTEX-WAKE] 14:00 {g7:abcd1234}"})
+    _enable(monkeypatch, tmp_path)
+    _seed_epoch(tmp_path, 8, "abcd1234")  # live gen moved past the receipt's gen 7
+    _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == ""  # suppressed
 
 
-def test_wake_turn_legacy_tokenless_line_still_injects(tmp_path, monkeypatch, capsys):
-    """A token-less (legacy) wake line is processed as before even when an epoch
-    is recorded."""
+def test_wake_turn_tokenless_receipt_still_injects(tmp_path, monkeypatch, capsys):
+    """A token-less receipt is processed as before even when an epoch is recorded."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 8, "abcd1234")
-    _stdin(monkeypatch, {"session_id": "s1", "prompt": "[CORTEX-WAKE] 14:00"})
+    _seed_receipt(tmp_path, text="☀️ 14:00")  # no gen/state_id on the receipt
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == "read me and act"
 
 
 def test_wake_turn_missing_note_silent(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
-    _stdin(monkeypatch, {"session_id": "s1", "prompt": "[CORTEX-WAKE] wake"})
+    _enable(monkeypatch, tmp_path)
+    _seed_receipt(tmp_path, text="☀️ 14:00")
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == ""
 
@@ -106,71 +125,74 @@ def test_wake_turn_missing_note_silent(tmp_path, monkeypatch, capsys):
 def test_ordinary_chat_no_note_inject(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("secret note", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _enable(monkeypatch, tmp_path)
+    _seed_receipt(tmp_path, text="☀️ 14:00")
     _stdin(monkeypatch, {"session_id": "s1", "prompt": "今天过得怎么样"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert "secret note" not in _ctx(capsys)
 
 
-# ── GAP 2: WAKE branch is line-start shaped, not substring ─────────────────────
+# ── GAP 2: WAKE branch is exact/line-start shaped, not substring ───────────────
 
-def test_wake_marker_mid_sentence_not_swallowed(tmp_path, monkeypatch, capsys):
-    """A REAL user prompt quoting the wake marker mid-sentence ("grep for
-    [CORTEX-WAKE]") must NOT be swallowed by the wake branch: no note injected,
-    and the user-wake reset fires (it is user speech). Previously the substring
-    guard (`marker in prompt`) swallowed it, skipping reset + recall."""
+def test_wake_bell_mid_sentence_not_swallowed(tmp_path, monkeypatch, capsys):
+    """A REAL user prompt merely quoting the bell text mid-sentence must NOT be
+    swallowed by the wake branch: no note injected, and the user-wake reset fires
+    (it is user speech). Receipt match is exact full-line, never a substring."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("secret note", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _enable(monkeypatch, tmp_path)
+    _seed_receipt(tmp_path, text="☀️ 14:00")
     called = {"reset": False}
     monkeypatch.setattr(cortex_bridge, "_cortex_user_wake_reset",
                         lambda inp: called.__setitem__("reset", True))
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
-                         "prompt": "grep for [CORTEX-WAKE] in the log"})
+                         "prompt": "did ☀️ 14:00 fire in the log?"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert "secret note" not in _ctx(capsys)  # wake note NOT injected
     assert called["reset"] is True            # treated as a real user message
 
 
-def test_wake_bell_line_start_fires_wake_branch(tmp_path, monkeypatch, capsys):
-    """A real wake bell (marker at line start, no epoch token) fires the wake
-    branch — full note injected, no user-wake reset."""
+def test_wake_bell_shape_fallback_fires_wake_branch(tmp_path, monkeypatch, capsys):
+    """A real wake bell with NO receipt on disk still fires the wake branch via
+    the template-shape fallback (fail-open) — full note injected, no user-wake
+    reset."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _enable(monkeypatch, tmp_path)
     called = {"reset": False}
     monkeypatch.setattr(cortex_bridge, "_cortex_user_wake_reset",
                         lambda inp: called.__setitem__("reset", True))
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
-                         "prompt": "[CORTEX-WAKE] 2026-07-14 14:00 wake"})
+                         "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == "read me and act"  # wake branch fired
     assert called["reset"] is False           # NOT a user message
 
 
-def test_wake_bell_with_epoch_token_fires_wake_branch(tmp_path, monkeypatch, capsys):
-    """The wake line may carry a ' {g<gen>:<sid>}' epoch suffix — the line-start
-    shape check tolerates it and the wake branch still fires (current token)."""
+def test_wake_bell_receipt_fires_wake_branch(tmp_path, monkeypatch, capsys):
+    """A receipt exact match with a current epoch token fires the wake branch."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 7, "abcd1234")
+    _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
-                         "prompt": "[CORTEX-WAKE] 14:00 wake {g7:abcd1234}"})
+                         "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == "read me and act"
 
 
 def test_wake_bell_wrapped_envelope_fires_wake_branch(tmp_path, monkeypatch, capsys):
     """Delivered by the ear Monitor the bell arrives wrapped:
-    `<event>⏳ [CORTEX-WAKE] … {g7:abcd1234}</event>` — the envelope-aware
-    line-start check still fires the wake branch."""
+    `<event>☀️ 14:00</event>` — the envelope-aware exact match still fires the
+    wake branch."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
+    _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 7, "abcd1234")
+    _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
-                         "prompt": "<event>⏳ [CORTEX-WAKE] 14:00 {g7:abcd1234}</event>"})
+                         "prompt": "<event>☀️ 14:00</event>"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == "read me and act"
 
@@ -190,8 +212,7 @@ def test_tuck_in_line_injects_menu_not_note(tmp_path, monkeypatch, capsys):
     screen)."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("FROZEN note", encoding="utf-8")
-    _enable(monkeypatch, tmp_path,
-            {"wake_marker": "[CORTEX-WAKE]", "tuck_in_marker": "[NEW ROUND]"})
+    _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]"})
     _stdin(monkeypatch, {"session_id": "s1",
                          "prompt": "📮 note inline\n\nNow: 14:00\n⏳ [NEW ROUND] 15 min"})
     assert hooks.main(["user_prompt_submit"]) == 0
@@ -387,8 +408,9 @@ def test_non_cortex_session_no_wake_inject(tmp_path, monkeypatch, capsys):
     """No MARROW_CORTEX => the whole cortex branch is skipped."""
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     (tmp_path / "wakeup_note.md").write_text("note", encoding="utf-8")
-    _enable(monkeypatch, tmp_path, {"wake_marker": "[CORTEX-WAKE]"})
-    _stdin(monkeypatch, {"session_id": "s1", "prompt": "[CORTEX-WAKE] wake"})
+    _enable(monkeypatch, tmp_path)
+    _seed_receipt(tmp_path, text="☀️ 14:00")
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert "note" not in _ctx(capsys)
 

@@ -49,8 +49,8 @@ def cortex_env(tmp_path, monkeypatch):
             "venv_python": str(py), "repo_root": str(root),
             "wake_state_file": "wake_state.json",
             "watchdog_pidfile": "watchdog.pid",
-            "wake_marker": "[CORTEX-WAKE]", "tuck_in_marker": "[TUCK-IN]",
-            "machine_markers": ["[CORTEX-WAKE]", "[NEW ROUND]", "[TUCK-IN]",
+            "tuck_in_marker": "[TUCK-IN]",
+            "machine_markers": ["[NEW ROUND]", "[TUCK-IN]",
                                 "[NIGHT]", "[FUSE]", "[CTL]", "[CMD"],
             "compact_markers": ["===== BEGIN ORIGINAL TRANSCRIPT",
                                 "===== END ORIGINAL TRANSCRIPT"],
@@ -362,7 +362,7 @@ def test_wake_turn_registered_window_gets_normal_payload(cortex_env, tmp_path, m
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath,
-        "prompt": "[CORTEX-WAKE] 09:00",
+        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
     })
     assert hooks.main(["user_prompt_submit"]) == 0
     assert "note body here" in _ctx(capsys)
@@ -433,7 +433,7 @@ def test_wake_turn_retired_window_gets_takeover_text_not_note(cortex_env, tmp_pa
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath,
-        "prompt": "[CORTEX-WAKE] 09:00",
+        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
     })
     assert hooks.main(["user_prompt_submit"]) == 0
     ctx = _ctx(capsys)
@@ -452,7 +452,7 @@ def test_wake_turn_retired_window_after_handoff_goes_silent(cortex_env, tmp_path
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath,
-        "prompt": "[CORTEX-WAKE] 09:00",
+        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
     })
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == ""  # fully silent
@@ -471,7 +471,7 @@ def test_wake_turn_retired_window_no_cursor_or_outbox_claim(cortex_env, tmp_path
     monkeypatch.setattr(_outbox, "deliver", lambda *a, **k: calls.append(1))
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath,
-        "prompt": "[CORTEX-WAKE] 09:00",
+        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
     })
     assert hooks.main(["user_prompt_submit"]) == 0
     assert calls == []  # outbox never touched on the retired branch
@@ -490,7 +490,7 @@ def test_wake_turn_handoff_landing_sends_notify(cortex_env, tmp_path, monkeypatc
     monkeypatch.setattr(_outbox, "send", lambda *a, **k: sent.append(a) or {"ok": True})
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath,
-        "prompt": "[CORTEX-WAKE] 09:00",
+        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
     })
     assert hooks.main(["user_prompt_submit"]) == 0
     assert len(sent) == 1

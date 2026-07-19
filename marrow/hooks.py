@@ -1802,9 +1802,8 @@ def user_prompt_submit() -> int:
         #             (stale token = a newer epoch superseded this alarm -> suppress).
         #   shape   = receipt gone/expired but the line starts with the template
         #             prefix -> fail OPEN (process the wake), audit the degraded path.
-        #   legacy  = old '[CORTEX-WAKE] … {g..}' line -> parse token + epoch-check.
-        # Exact-match (receipt) / line-start (shape/legacy), never substring: a
-        # real user prompt merely quoting the bell text falls through to the
+        # Exact-match (receipt) / line-start (shape), never substring: a real
+        # user prompt merely quoting the bell text falls through to the
         # user-wake reset + recall, never swallowed here.
         _bell = cortex_bridge.match_wake_bell(_prompt)
         if _bell is not None:
@@ -1814,8 +1813,8 @@ def user_prompt_submit() -> int:
             if _degraded:
                 cortex_bridge._wake_audit(
                     "wake_bell_shape", "", "receipt missing -> shape fallback (fail-open)")
-            # Staleness check only when a real epoch token is present (receipt /
-            # legacy). The shape fallback has no token -> fails OPEN.
+            # Staleness check only when a real epoch token is present (receipt).
+            # The shape fallback has no token -> fails OPEN.
             if _tok is not None and not cortex_bridge.wake_token_current(_tok):
                 cortex_bridge._wake_audit(
                     "wake_line_stale", f"gen={_tok[0]}",

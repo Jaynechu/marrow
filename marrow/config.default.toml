@@ -331,16 +331,11 @@ handoff_template_file = "handoff_template.md"
 force_tokens = 150000
 handoff_deny_text = "Write your handoff note first — call lie_down again after saving it."
 # Wake pipeline (v2). The ear is a Monitor tailing wake_signal_log_file; cortex
-# appends wake_marker-prefixed lines to it, which surface as user turns. Paths
+# appends the human-text bell line to it, which surfaces as a user turn. Paths
 # for the note and signal log default to <home>/<file> (override with an
 # absolute path).
 wakeup_note_file = "wakeup_note.md"
 wake_signal_log_file = "state/wake_signal.log"
-# Marker prefixing a LEGACY wake signal line ('[CORTEX-WAKE] HH:MM {g..}'). New
-# bells no longer render this — the visible line is human text only and the
-# machine data lives in the wake_state receipt (see below). Kept so a straggler
-# legacy line still parses + epoch-checks during the transition.
-wake_marker = "[CORTEX-WAKE]"
 # Visible bell = human text only. Must match cortex [wake].wake_bell_template.
 # The producer writes the exact rendered text into the wake_state receipt at
 # send time; the hook exact-matches the on-screen line against that receipt.
@@ -395,8 +390,10 @@ compact_marker_head_chars = 200
 # round, night close, fuse, ctl, slash-command body), NOT user/assistant speech,
 # so ingestion drops it from events/recall/tl. Exact line-start match only —
 # a real message merely quoting a marker keeps flowing. Emoji prefix (⚙️/⏳/☀️)
-# is tolerated automatically.
-machine_markers = ["[CORTEX-WAKE]", "[NEW ROUND]", "[TUCK-IN]", "[NIGHT]",
+# is tolerated automatically. (The wake bell is human text now — dropped from
+# ingestion via the template-shape match in transcript._is_wake_bell_row, not
+# an inline marker here.)
+machine_markers = ["[NEW ROUND]", "[TUCK-IN]", "[NIGHT]",
                    "[FUSE]", "[CTL]", "[CMD"]
 # Audit log for destructive wake-state actions (sentinel kill / floor clear /
 # awake flip). Bare name resolves under cortex home. Never silently destroy a
