@@ -200,6 +200,119 @@ def test_is_machine_line_harness_tags(cortex_env):
     assert cortex_bridge.is_machine_line("what does <tag> mean?") is False
 
 
+# --- wake bell: receipt sidecar / shape / legacy recognition ------------------
+
+def _put_receipt(home, text="☀️ 09:05", gen=3, state_id="cafe", rearm=False,
+                 ts=None, template_prefix="☀️ "):
+    from datetime import datetime, timezone
+    ws = _ws(home) if (home / "wake_state.json").exists() else {}
+    ws["wake_receipt"] = {
+        "text": text, "gen": gen, "state_id": state_id, "rearm": rearm,
+        "ts": ts or datetime.now(timezone.utc).isoformat(),
+        "template_prefix": template_prefix,
+    }
+    (home / "wake_state.json").write_text(json.dumps(ws))
+
+
+def test_match_wake_bell_receipt_exact_hit(cortex_env):
+    home, _ = cortex_env
+    _put_receipt(home, text="☀️ 09:05", gen=7, state_id="beef")
+    kind, tok, degraded = cortex_bridge.match_wake_bell("☀️ 09:05")
+    assert kind == "receipt" and tok == (7, "beef") and degraded is False
+    # exact-match only: a user line merely quoting the bell text is NOT a receipt.
+    assert cortex_bridge.match_wake_bell("did ☀️ 09:05 fire?") is None
+
+
+def test_match_wake_bell_receipt_wrapped_envelope(cortex_env):
+    home, _ = cortex_env
+    _put_receipt(home, text="☀️ 09:05")
+    wrapped = ("<task-notification>\n<event>☀️ 09:05</event>\n"
+               "</task-notification>")
+    kind, _, _ = cortex_bridge.match_wake_bell(wrapped)
+    assert kind == "receipt"
+
+
+def test_match_wake_bell_shape_fallback_no_receipt(cortex_env):
+    home, _ = cortex_env
+    # No receipt on disk -> shape fallback (fail-open), degraded=True, token None.
+    kind, tok, degraded = cortex_bridge.match_wake_bell("☀️ 09:05")
+    assert kind == "shape" and tok is None and degraded is True
+
+
+def test_match_wake_bell_legacy_line(cortex_env):
+    # Old-style inline-marker line still recognized + token parsed (transition).
+    kind, tok, degraded = cortex_bridge.match_wake_bell("[CORTEX-WAKE] 09:05 {g4:aa}")
+    assert kind == "legacy" and tok == (4, "aa") and degraded is False
+
+
+def test_match_wake_bell_ttl_expiry(cortex_env):
+    home, _ = cortex_env
+    from datetime import datetime, timezone, timedelta
+    old = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    _put_receipt(home, text="☀️ 09:05", ts=old)
+    # Receipt expired past receipt_ttl_min (default 15) -> not a receipt hit;
+    # the on-screen line still matches the shape -> degraded fallback.
+    kind, tok, degraded = cortex_bridge.match_wake_bell("☀️ 09:05")
+    assert kind == "shape" and degraded is True
+
+
+def test_match_wake_bell_user_text_equal_to_prefix_no_receipt(cortex_env):
+    """Documented residue: with NO receipt, an ordinary user line that merely
+    OPENS with the template prefix (not the exact '<prefix> HH:MM' shape) is NOT
+    a bell -> falls through to the user-wake reset. Only the near-exact bell
+    shape is swallowed (accepted fail-open degraded case)."""
+    assert cortex_bridge.match_wake_bell("☀️ 早安呀") is None
+    assert cortex_bridge.match_wake_bell("☀️ good morning") is None
+    # The near-exact shape IS swallowed (the accepted residue).
+    assert cortex_bridge.match_wake_bell("☀️ 09:05")[0] == "shape"
+
+
+def test_match_wake_bell_stale_epoch_suppressed_via_receipt(cortex_env, monkeypatch):
+    home, _ = cortex_env
+    _put_receipt(home, text="☀️ 09:05", gen=2, state_id="dd")
+    # Live epoch moved on -> the receipt token is stale.
+    monkeypatch.setattr(cortex_bridge, "wake_token_current", lambda tok: False)
+    kind, tok, _ = cortex_bridge.match_wake_bell("☀️ 09:05")
+    assert kind == "receipt" and tok == (2, "dd")
+    assert cortex_bridge.wake_token_current(tok) is False
+
+
+def test_is_machine_line_new_bell_shape(cortex_env):
+    home, _ = cortex_env
+    _put_receipt(home, text="☀️ 09:05", gen=1, state_id="ab")
+    assert cortex_bridge.is_machine_line("☀️ 09:05") is True
+    # A real user message that just opens with the emoji is NOT machine.
+    assert cortex_bridge.is_machine_line("☀️ 早安") is False
+
+
+_ZWJ_STATIC = "🧚‍♀️ 笨鸭换岗成功"  # multi-codepoint ZWJ emoji + CJK, fully static
+
+
+def test_match_wake_bell_static_zwj_receipt_exact(cortex_env):
+    """A fully STATIC template (no {hm}) with a ZWJ emoji round-trips through the
+    receipt exact-match — byte-for-byte, multi-codepoint intact."""
+    home, _ = cortex_env
+    _put_receipt(home, text=_ZWJ_STATIC, gen=8, state_id="feed",
+                 template_prefix=_ZWJ_STATIC)
+    # tag the receipt template as static (no {hm})
+    ws = _ws(home); ws["wake_receipt"]["template"] = _ZWJ_STATIC
+    (home / "wake_state.json").write_text(json.dumps(ws))
+    kind, tok, degraded = cortex_bridge.match_wake_bell(_ZWJ_STATIC)
+    assert kind == "receipt" and tok == (8, "feed") and degraded is False
+
+
+def test_match_wake_bell_static_zwj_shape_fallback(cortex_env, monkeypatch):
+    """Static template, no receipt -> shape fallback = EXACT match of the static
+    text (no time appended). A user line merely containing it is not a bell."""
+    monkeypatch.setattr(cortex_bridge, "wake_bell_template",
+                        lambda cfg=None: _ZWJ_STATIC)
+    kind, tok, degraded = cortex_bridge.match_wake_bell(_ZWJ_STATIC)
+    assert kind == "shape" and tok is None and degraded is True
+    # not the exact static text -> not a bell (falls through to user reset)
+    assert cortex_bridge.match_wake_bell(f"是 {_ZWJ_STATIC} 吗？") is None
+    assert cortex_bridge.match_wake_bell("🧚‍♀️ 早安") is None
+
+
 # --- reset actions ------------------------------------------------------------
 
 def test_reset_flips_awake_and_marks_reply(cortex_env):

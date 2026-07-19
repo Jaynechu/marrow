@@ -1796,20 +1796,26 @@ def user_prompt_submit() -> int:
                     "additionalContext": _body,
                 }}, sys.stdout)
             return 0
-        # Wake turn → inject the full wakeup note. Marker match only; missing or
-        # empty note injects nothing (never crashes). The line may carry a
-        # cancellation-epoch token ' {g<gen>:<sid>}': a STALE token (a newer
-        # epoch — e.g. a user message — already superseded this alarm) suppresses
-        # the wake-note injection (log only, do NOT process as a wake). A
-        # token-less line is legacy and processed as before.
-        # Line-start shape check (NOT substring): a real user prompt merely
-        # quoting the marker mid-sentence ("grep for [CORTEX-WAKE]") must fall
-        # through to the user-wake reset + recall, not be swallowed here. The
-        # real wake bell always line-starts the marker; the epoch token
-        # ' {g<gen>:<sid>}' is a suffix, so the startswith check tolerates it.
-        _marker = cortex_bridge.wake_marker()
-        if _marker and cortex_bridge.line_starts_with_marker(_prompt, _marker):
-            _tok = cortex_bridge.parse_gen_token(_prompt)
+        # Wake turn → inject the full wakeup note. The VISIBLE bell is human text
+        # only; its machine data lives in the wake_state receipt (match_wake_bell):
+        #   receipt = exact on-screen match -> consume the receipt + epoch-check
+        #             (stale token = a newer epoch superseded this alarm -> suppress).
+        #   shape   = receipt gone/expired but the line starts with the template
+        #             prefix -> fail OPEN (process the wake), audit the degraded path.
+        #   legacy  = old '[CORTEX-WAKE] … {g..}' line -> parse token + epoch-check.
+        # Exact-match (receipt) / line-start (shape/legacy), never substring: a
+        # real user prompt merely quoting the bell text falls through to the
+        # user-wake reset + recall, never swallowed here.
+        _bell = cortex_bridge.match_wake_bell(_prompt)
+        if _bell is not None:
+            _kind, _tok, _degraded = _bell
+            if _kind == "receipt":
+                cortex_bridge._consume_wake_receipt()
+            if _degraded:
+                cortex_bridge._wake_audit(
+                    "wake_bell_shape", "", "receipt missing -> shape fallback (fail-open)")
+            # Staleness check only when a real epoch token is present (receipt /
+            # legacy). The shape fallback has no token -> fails OPEN.
             if _tok is not None and not cortex_bridge.wake_token_current(_tok):
                 cortex_bridge._wake_audit(
                     "wake_line_stale", f"gen={_tok[0]}",

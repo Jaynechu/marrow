@@ -336,9 +336,20 @@ handoff_deny_text = "Write your handoff note first — call lie_down again after
 # absolute path).
 wakeup_note_file = "wakeup_note.md"
 wake_signal_log_file = "state/wake_signal.log"
-# Marker prefixing a wake signal line. A UserPromptSubmit carrying it inside a
-# cortex window is a wake turn: the hook injects the full wakeup-note text.
+# Marker prefixing a LEGACY wake signal line ('[CORTEX-WAKE] HH:MM {g..}'). New
+# bells no longer render this — the visible line is human text only and the
+# machine data lives in the wake_state receipt (see below). Kept so a straggler
+# legacy line still parses + epoch-checks during the transition.
 wake_marker = "[CORTEX-WAKE]"
+# Visible bell = human text only. Must match cortex [wake].wake_bell_template.
+# The producer writes the exact rendered text into the wake_state receipt at
+# send time; the hook exact-matches the on-screen line against that receipt.
+# {hm} = local HH:MM. The static prefix (text before {hm}) is the shape the
+# consumer falls back to when the receipt is missing/unreadable (fail-open).
+wake_bell_template = "☀️ {hm}"
+# Receipt time-to-live (minutes): a pending receipt older than this is ignored
+# (stale hygiene). Must match cortex [wake].receipt_ttl_min.
+receipt_ttl_min = 15
 # SessionStart arm line (fresh cortex window only). {signal_log} is substituted
 # with the resolved absolute path. Blank = no injection.
 arm_ear_text = "Important: Set a persistent monitor first: Monitor(command: \"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", persistent: true); keep it alive for the entire session!"

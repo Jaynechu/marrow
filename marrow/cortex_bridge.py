@@ -788,6 +788,150 @@ def parse_gen_token(line: str) -> tuple[int, str] | None:
         return None
 
 
+# ── wake bell: receipt sidecar (new) + shape/legacy fallbacks ─────────────────
+# The visible bell line is human text only ([cortex].wake_bell_template). The
+# machine data (gen/state_id/rearm) lives in a wake_state `wake_receipt` written
+# by the producer at send time. Recognition order (match_wake_bell):
+#   (a) receipt exact full-text match -> machine bell, consume receipt, epoch-
+#       check as today (stale -> suppress).
+#   (b) receipt missing/unreadable/expired -> shape fallback: the line starts
+#       with the persisted template prefix -> treat as bell, fail OPEN on
+#       staleness (process it), audit the degraded path.
+#   (c) legacy '[CORTEX-WAKE] … {g..}' line -> recognized + epoch-checked as
+#       today (transition safety).
+#   (d) none -> normal user prompt.
+# Failure direction (mirrors wake_token_current): never DROP a genuine wake; a
+# swallowed user message is the only unacceptable outcome, so the receipt path
+# is EXACT-match only.
+
+def wake_bell_template(cfg: dict | None = None) -> str:
+    cx = (cfg or config.load()).get("cortex", {}) or {}
+    return str(cx.get("wake_bell_template") or "☀️ {hm}")
+
+
+def _receipt_ttl_sec(cfg: dict | None = None) -> float:
+    cx = (cfg or config.load()).get("cortex", {}) or {}
+    try:
+        return float(cx.get("receipt_ttl_min", 15)) * 60.0
+    except (TypeError, ValueError):
+        return 15 * 60.0
+
+
+def _load_wake_receipt() -> dict | None:
+    """Read the pending bell receipt from wake_state (no consume). None when
+    absent/unreadable/expired past receipt_ttl_min."""
+    try:
+        d = _wake_state_load(_cortex_wake_state_path())
+    except Exception:
+        return None
+    r = d.get("wake_receipt")
+    if not isinstance(r, dict) or not r.get("text"):
+        return None
+    raw = r.get("ts")
+    if raw:
+        try:
+            ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            from datetime import timezone as _tz
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_tz.utc)
+            if (datetime.now(_tz.utc) - ts).total_seconds() > _receipt_ttl_sec():
+                return None
+        except (ValueError, TypeError):
+            pass
+    return r
+
+
+def _consume_wake_receipt() -> None:
+    """Drop the pending receipt under the flock (consume-once). Best-effort."""
+    p = _cortex_wake_state_path()
+    try:
+        with _wake_state_lock(p):
+            d = _wake_state_load(p)
+            if d.pop("wake_receipt", None) is not None:
+                _wake_state_save(p, d)
+    except Exception:
+        pass
+
+
+def _receipt_matches(prompt: str, receipt: dict) -> bool:
+    """Exact full-text match of the on-screen bell against the receipt text,
+    tolerating the ear envelope/decoration wrapper (the ear delivers the line
+    wrapped as '<event>☀️ HH:MM'). Line-by-line exact compare of the unwrapped
+    text — never a substring, so a user message quoting the bell text mid-line
+    is not swallowed."""
+    text = str(receipt.get("text") or "").strip()
+    if not text:
+        return False
+    for line in prompt.splitlines() or [prompt]:
+        if _strip_envelope(line) == text:
+            return True
+    return False
+
+
+_ENVELOPE_TRAIL_RE = _re.compile(r"(?:\s*</?[a-z][a-z0-9_-]*>){0,3}\s*$")
+
+
+def _strip_envelope(line: str) -> str:
+    """Drop the ear-Monitor envelope tags around a delivered line (leading
+    <event>/<task-notification> and their trailing closers) for an exact compare."""
+    head = _ENVELOPE_LEAD_RE.sub("", line, count=1)
+    head = _ENVELOPE_TRAIL_RE.sub("", head, count=1)
+    return head.strip()
+
+
+def match_wake_bell(prompt: str) -> tuple[str, tuple[int, str] | None, bool] | None:
+    """Classify a cortex-window prompt as a wake bell. Returns
+    (kind, token, degraded) or None (not a bell):
+      kind='receipt' -> exact receipt match; token=(gen,state_id) or None;
+                        caller consumes the receipt + epoch-checks (suppress stale).
+      kind='shape'   -> receipt missing but the line starts with the template
+                        prefix; token=None, degraded=True; caller fails OPEN.
+      kind='legacy'  -> old '[CORTEX-WAKE] … {g..}' line; token parsed; epoch-check.
+    A blank template prefix disables the shape fallback (never matches on empty)."""
+    if not prompt:
+        return None
+    # (a) receipt exact match
+    receipt = _load_wake_receipt()
+    if receipt is not None and _receipt_matches(prompt, receipt):
+        gen = receipt.get("gen")
+        state_id = receipt.get("state_id")
+        token = (int(gen), str(state_id)) if gen is not None and state_id else None
+        return ("receipt", token, False)
+    # (c) legacy inline-marker line (checked before shape: a legacy line also
+    # would not match the new prefix, and it carries a real epoch token).
+    legacy = wake_marker()
+    if legacy and _line_starts_with(prompt, legacy):
+        return ("legacy", parse_gen_token(prompt), False)
+    # (b) shape fallback: match the on-screen line against the template shape.
+    #   - template WITH an {hm} placeholder -> '<prefix> HH:MM' (whole line), so
+    #     an ordinary user message merely OPENING with the prefix emoji is NOT
+    #     swallowed — only the near-exact bell shape is (documented accepted
+    #     residue: a user typing the literal '<prefix> HH:MM' with no live receipt).
+    #   - fully STATIC template (no {hm}) -> exact match of the static text.
+    tmpl = (receipt.get("template") if receipt else None) or wake_bell_template()
+    if _line_matches_bell_shape(prompt, str(tmpl)):
+        return ("shape", None, True)
+    return None
+
+
+def _line_matches_bell_shape(prompt: str, template: str) -> bool:
+    """True iff ANY line of *prompt* matches the bell *template* shape after
+    tolerating the ear envelope wrapper. A template with an '{hm}' placeholder
+    matches '<prefix> HH:MM' (whole line); a fully static template (no {hm})
+    matches its literal text exactly. Blank prefix on an {hm} template disables
+    the fallback (never matches on empty)."""
+    if "{hm}" in template:
+        prefix = template.split("{hm}", 1)[0].strip()
+        if not prefix:
+            return False
+        rx = _re.compile(rf"^{_re.escape(prefix)}\s*\d{{1,2}}:\d{{2}}$")
+        return any(rx.match(_strip_envelope(l)) for l in (prompt.splitlines() or [prompt]))
+    static = template.strip()
+    if not static:
+        return False
+    return any(_strip_envelope(l) == static for l in (prompt.splitlines() or [prompt]))
+
+
 def wake_token_current(token: tuple[int, str] | None) -> bool:
     """True if a wake line's (gen, state_id) token still matches the live epoch.
     token=None (legacy line) -> True (process as before). A stale token (a newer
@@ -1063,9 +1207,13 @@ def is_machine_line(prompt: str) -> bool:
     # Line-start (not substring): a machine wake bell / tuck-in always opens its
     # line with the marker; a real user prompt quoting it mid-sentence ("did the
     # [NEW ROUND] path fire?") stays a user message.
-    m = wake_marker()
-    if m and _line_starts_with(p, m):
-        return True
+    # New wake bell = human text: recognized via the receipt sidecar / template
+    # prefix (match_wake_bell), plus the legacy marker line for transition.
+    try:
+        if match_wake_bell(p) is not None:
+            return True
+    except Exception:
+        pass
     tm = tuck_in_marker()
     if tm and _line_starts_with(p, tm):
         return True
