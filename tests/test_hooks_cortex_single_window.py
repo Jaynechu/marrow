@@ -193,6 +193,53 @@ def test_gate_schedule_wakeup_denied_cortex_empty_registration(cortex_env, tmp_p
     assert cortex_bridge.cortex_gate_pretool(inp)
 
 
+# --- P16 follow-up: arm-deny copy split by registration state -----------------
+# EMPTY reg -> /ct-wake self-heal hint (claiming an empty slot is safe).
+# MISMATCH -> retired/takeover wording, NO /ct-wake (its takeover claim is
+# unconditional; pointing a zombie at it would dethrone the healthy resident).
+
+def test_arm_deny_wake_signal_empty_registration_hints_ct_wake(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")  # no registration
+    signal_log = str(home / "state" / "wake_signal.log")
+    inp = {"transcript_path": tpath, "tool_name": "Monitor",
+           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
+    reason = cortex_bridge.cortex_gate_pretool(inp)
+    assert "/ct-wake" in reason
+
+
+def test_arm_deny_wake_signal_mismatch_omits_ct_wake(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")
+    _write_ws(home, cortex_claude_sid="other-sid")
+    signal_log = str(home / "state" / "wake_signal.log")
+    inp = {"transcript_path": tpath, "tool_name": "Monitor",
+           "tool_input": {"command": f"tail -n 0 -f {signal_log}"}}
+    reason = cortex_bridge.cortex_gate_pretool(inp)
+    assert "/ct-wake" not in reason
+    assert "other-si" in reason  # takeover_text carries the registered sid
+
+
+def test_arm_deny_schedule_wakeup_empty_registration_hints_ct_wake(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")  # no registration
+    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
+           "tool_input": {}}
+    reason = cortex_bridge.cortex_gate_pretool(inp)
+    assert "/ct-wake" in reason
+
+
+def test_arm_deny_schedule_wakeup_mismatch_omits_ct_wake(cortex_env, tmp_path):
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "abc")
+    _write_ws(home, cortex_claude_sid="other-sid")
+    inp = {"transcript_path": tpath, "tool_name": "ScheduleWakeup",
+           "tool_input": {}}
+    reason = cortex_bridge.cortex_gate_pretool(inp)
+    assert "/ct-wake" not in reason
+    assert "other-si" in reason
+
+
 def test_claim_registration_if_pending_succeeds_with_current_token(cortex_env, tmp_path):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "newsid")

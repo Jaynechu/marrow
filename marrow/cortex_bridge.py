@@ -446,8 +446,28 @@ _ARM_DENY_FALLBACK = (
     "Run /ct-wake to claim registration first.")
 
 
+_RETIRED_TEXT_FALLBACK = (
+    "This cortex window has been retired by a newer window — "
+    "stay silent, only write the handoff.")
+
+
+def _retired_deny_reason() -> str:
+    return takeover_text(registered_claude_sid()) or _RETIRED_TEXT_FALLBACK
+
+
 def _arm_deny_reason() -> str:
     return arm_deny_text() or _ARM_DENY_FALLBACK
+
+
+def _arm_deny_by_registration() -> str:
+    """Arm-gate deny copy split by registration state. EMPTY registration ->
+    the /ct-wake self-heal hint (arm_deny_text): claiming an empty slot is
+    safe. MISMATCH (another window holds it) -> the retired/takeover wording,
+    NO /ct-wake hint: /ct-wake's takeover claim is unconditional, so pointing
+    a retired zombie at it would dethrone the healthy resident."""
+    if registered_claude_sid():
+        return _retired_deny_reason()
+    return _arm_deny_reason()
 
 # Bash command substrings that invoke a cortex module — a retired window must
 # not drive these either. "-m cortex.ctl wake" is the narrow /ct-wake
@@ -535,7 +555,7 @@ def cortex_gate_pretool(inp: dict) -> str | None:
         # the wake_signal ear is fail-CLOSED (may_arm_ear): an empty
         # registration (post-rotate) denies EVERY window, not just mismatches.
         if _monitor_targets_wake_signal(inp) and not may_arm_ear(tpath):
-            return _arm_deny_reason()
+            return _arm_deny_by_registration()
 
         # Check 1: cortex-window-only tool gate.
         if not os.environ.get("MARROW_CORTEX"):
@@ -544,22 +564,18 @@ def cortex_gate_pretool(inp: dict) -> str | None:
         # empty registration denies them even before a mismatch exists. The
         # other liveness tools keep the fail-open is_registered_window path.
         if tool in _EAR_ARM_TOOLS and not may_arm_ear(tpath):
-            return _arm_deny_reason()
+            return _arm_deny_by_registration()
         if is_registered_window(tpath):
             return None  # this IS the registered window -> nothing denied
 
         if tool in _GATE_DENY_TOOLS:
-            return takeover_text(registered_claude_sid()) or (
-                "This cortex window has been retired by a newer window — "
-                "stay silent, only write the handoff.")
+            return _retired_deny_reason()
         if tool == "Bash":
             command = str((inp.get("tool_input") or {}).get("command") or "")
             if _is_ctl_wake_bash(command):
                 return None  # takeover already claimed above -> now registered
             if any(s in command for s in _GATE_DENY_BASH_SUBSTR):
-                return takeover_text(registered_claude_sid()) or (
-                    "This cortex window has been retired by a newer window — "
-                    "stay silent, only write the handoff.")
+                return _retired_deny_reason()
         return None
     except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
         return None
