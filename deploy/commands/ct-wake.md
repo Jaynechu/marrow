@@ -1,0 +1,5 @@
+---
+description: Cortex — wake the resident window now.
+---
+
+⚙️ [CMD ct-wake] Read `venv_python` and `repo_root` from `[cortex]` in `~/.config/marrow/config.toml` (fall back to marrow's `config.default.toml` if a key is blank/missing). Run `<venv_python> -m cortex.ctl wake` with cwd `<repo_root>` via Bash and report its one-line output in plain words (already-awake no-op / ear wake / resumed or spawned fresh). Do not spawn or resume any window yourself — the CLI owns the wake pipeline.
