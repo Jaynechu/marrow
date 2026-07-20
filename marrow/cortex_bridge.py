@@ -395,7 +395,8 @@ def _lie_down_doc() -> str:
         "Always handoff before rotate or night mode; Always run TaskList and "
         "TaskStop for all background tasks, including monitor and subagents.")
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
-            f'rotate to next window - lie_down(next_wake_min=N, rotate=True); '
+            f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
+            f'[0=rotate now]; '
             f'Activate night mode - lie_down(next_wake_min=N, mode="night") '
             f'[N={night_min}-{night_max}]; '
             f'{tail}')
