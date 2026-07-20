@@ -286,7 +286,7 @@ def test_is_machine_line_new_bell_shape(cortex_env):
     assert cortex_bridge.is_machine_line("☀️ 早安") is False
 
 
-_ZWJ_STATIC = "🧚‍♀️ 笨鸭换岗成功"  # multi-codepoint ZWJ emoji + CJK, fully static
+_ZWJ_STATIC = "[🧚‍♀️ 笨鸭换岗成功]"  # bracketed multi-codepoint ZWJ emoji + CJK, static
 
 
 def test_match_wake_bell_static_zwj_receipt_exact(cortex_env):
@@ -312,6 +312,30 @@ def test_match_wake_bell_static_zwj_shape_fallback(cortex_env, monkeypatch):
     # not the exact static text -> not a bell (falls through to user reset)
     assert cortex_bridge.match_wake_bell(f"是 {_ZWJ_STATIC} 吗？") is None
     assert cortex_bridge.match_wake_bell("🧚‍♀️ 早安") is None
+
+
+def test_match_wake_bell_bracketed_hm_shape_fallback(cortex_env, monkeypatch):
+    """A bracketed {hm} template '[<prefix> HH:MM]' matches the full bracketed
+    on-screen line via shape fallback — the suffix after {hm} (the ']') is
+    honored, not dropped (regression: hardcoded '$' after the time missed it)."""
+    monkeypatch.setattr(cortex_bridge, "wake_bell_template",
+                        lambda cfg=None: "[☀️ {hm}]")
+    kind, tok, degraded = cortex_bridge.match_wake_bell("[☀️ 09:05]")
+    assert kind == "shape" and tok is None and degraded is True
+    # missing the closing bracket -> not the bell shape
+    assert cortex_bridge.match_wake_bell("☀️ 09:05") is None
+
+
+def test_is_machine_line_bracketed_bell(cortex_env):
+    """The bracketed static bell classifies as a machine line via the receipt
+    exact match; a real user line merely quoting it stays user speech."""
+    home, _ = cortex_env
+    _put_receipt(home, text=_ZWJ_STATIC, gen=5, state_id="dead",
+                 template_prefix=_ZWJ_STATIC)
+    ws = _ws(home); ws["wake_receipt"]["template"] = _ZWJ_STATIC
+    (home / "wake_state.json").write_text(json.dumps(ws))
+    assert cortex_bridge.is_machine_line(_ZWJ_STATIC) is True
+    assert cortex_bridge.is_machine_line(f"是 {_ZWJ_STATIC} 吗？") is False
 
 
 # --- reset actions ------------------------------------------------------------

@@ -106,20 +106,25 @@ def test_real_machine_line_with_emoji_still_dropped():
     assert _rows(recs) == []
 
 
-def test_new_human_text_wake_bell_dropped_from_memory():
-    """The new visible bell ('☀️ HH:MM') carries no inline marker — it must still
+def test_new_human_text_wake_bell_dropped_from_memory(monkeypatch):
+    """An {hm} bell template ('☀️ HH:MM') carries no inline marker — it must still
     be dropped from ingestion via the wake_bell_template shape match. A real user
     line merely opening with the emoji ('☀️ 早安') is kept."""
+    from marrow import config as _config
+    monkeypatch.setattr(_config, "load",
+                        lambda: {"cortex": {"wake_bell_template": "☀️ {hm}"}})
+    transcript._wake_bell_row_re._cache = None  # bust the per-template cache
     recs = [_user("☀️ 06:00"), _user("☀️ 09:05"),
             _user("☀️ 早安"), _user("☀️ good morning at 09:05")]
     contents = [r["content"] for r in _rows(recs)]
     assert contents == ["☀️ 早安", "☀️ good morning at 09:05"]
+    transcript._wake_bell_row_re._cache = None  # leave clean for other tests
 
 
 def test_static_zwj_wake_bell_dropped_from_memory(monkeypatch):
     """A fully STATIC ZWJ-emoji bell template drops ONLY the exact bell text; a
     message merely containing/quoting it is kept. Multi-codepoint intact."""
-    static = "🧚‍♀️ 笨鸭换岗成功"
+    static = "[🧚‍♀️ 笨鸭换岗成功]"
     from marrow import config as _config
     monkeypatch.setattr(_config, "load",
                         lambda: {"cortex": {"wake_bell_template": static}})

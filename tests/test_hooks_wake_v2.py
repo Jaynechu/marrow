@@ -162,8 +162,10 @@ def test_wake_bell_shape_fallback_fires_wake_branch(tmp_path, monkeypatch, capsy
     called = {"reset": False}
     monkeypatch.setattr(cortex_bridge, "_cortex_user_wake_reset",
                         lambda inp: called.__setitem__("reset", True))
+    # No receipt on disk -> shape fallback matches the config template exactly
+    # (default = the bracketed static bell).
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/t/s.jsonl",
-                         "prompt": "☀️ 14:00"})
+                         "prompt": "[🧚‍♀️ 笨鸭换岗成功]"})
     assert hooks.main(["user_prompt_submit"]) == 0
     assert _ctx(capsys) == "read me and act"  # wake branch fired
     assert called["reset"] is False           # NOT a user message

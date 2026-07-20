@@ -786,10 +786,16 @@ def _line_matches_bell_shape(prompt: str, template: str) -> bool:
     matches its literal text exactly. Blank prefix on an {hm} template disables
     the fallback (never matches on empty)."""
     if "{hm}" in template:
-        prefix = template.split("{hm}", 1)[0].strip()
+        head, tail = template.split("{hm}", 1)
+        prefix = head.strip()
+        suffix = tail.strip()
         if not prefix:
             return False
-        rx = _re.compile(rf"^{_re.escape(prefix)}\s*\d{{1,2}}:\d{{2}}$")
+        # Honor whatever wraps {hm} on BOTH sides (e.g. a bracketed template
+        # '[<prefix> HH:MM]'): build the anchor from prefix AND suffix rather
+        # than hardcoding a bare end-of-line, so a fully-bracketed bell matches.
+        rx = _re.compile(
+            rf"^{_re.escape(prefix)}\s*\d{{1,2}}:\d{{2}}\s*{_re.escape(suffix)}$")
         return any(rx.match(_strip_envelope(l)) for l in (prompt.splitlines() or [prompt]))
     static = template.strip()
     if not static:
