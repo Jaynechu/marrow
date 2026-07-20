@@ -55,9 +55,31 @@ def test_parse_is_error_raises():
         LLMClient._parse_claude(_json_out("boom", is_error=True), "json")
 
 
-def test_parse_empty_raises():
-    with pytest.raises(LLMError, match="empty result"):
-        LLMClient._parse_claude(_json_out(""), "json")
+def test_parse_empty_result_no_error_returns_blank():
+    # Empty result field with is_error=false is a benign completion (a turn
+    # that ended on a tool_use with no trailing prose). Must NOT raise — this
+    # crashed cortex headless wakes. The cortex wake path ignores text entirely.
+    assert LLMClient._parse_claude(_json_out(""), "json") == ""
+
+
+def test_parse_empty_result_is_error_still_raises():
+    with pytest.raises(LLMError, match="is_error"):
+        LLMClient._parse_claude(_json_out("", is_error=True), "json")
+
+
+def test_parse_empty_result_salvages_last_assistant_text():
+    # Turn ends on a tool_use so `result` is blank, but the last assistant
+    # event carried spoken text — salvage it instead of returning "".
+    out = "\n".join([
+        json.dumps({"type": "system"}),
+        json.dumps({"type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "spoken"}]}}),
+        json.dumps({"type": "assistant",
+                    "message": {"content": [
+                        {"type": "tool_use", "name": "Bash", "input": {}}]}}),
+        json.dumps({"type": "result", "result": "", "is_error": False}),
+    ])
+    assert LLMClient._parse_claude(out, "stream-json") == "spoken"
 
 
 def test_retry_absorbs_transient_miss_no_alert(monkeypatch):

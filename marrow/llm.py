@@ -68,6 +68,20 @@ def _claude_bin() -> str:
     return b
 
 
+def _assistant_text(ev: dict) -> str:
+    """Concatenate the text blocks of one stream-json `assistant` event.
+    Used to salvage the last spoken text when the trailing result event
+    carries a blank `result` (turn ended on a tool_use). Returns "" if the
+    event has no text block."""
+    msg = ev.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if not isinstance(content, list):
+        return ""
+    parts = [b.get("text", "") for b in content
+             if isinstance(b, dict) and b.get("type") == "text"]
+    return "".join(parts).strip()
+
+
 def _kill_group(pgid: int, sig: int) -> None:
     """Kill the whole process group so claude's spawned descendants die
     with it, not just the direct child (orphan leak on timeout)."""
@@ -424,6 +438,7 @@ class LLMClient:
 
     @staticmethod
     def _parse_claude(out: str, fmt: str) -> str:
+        salvaged = ""  # last assistant text block (stream-json fallback)
         if fmt == "stream-json":
             rec = None
             for line in out.splitlines():
@@ -436,6 +451,10 @@ class LLMClient:
                     continue
                 if ev.get("type") == "result":
                     rec = ev
+                elif ev.get("type") == "assistant":
+                    txt = _assistant_text(ev)
+                    if txt:
+                        salvaged = txt
             if rec is None:
                 raise LLMError("claude_cli stream-json: no result event")
         else:
@@ -454,7 +473,13 @@ class LLMClient:
                 f"claude_cli refusal (stop_reason): {str(rec.get('result'))[:120]}")
         text = rec.get("result")
         if not text:
-            raise LLMError("claude_cli: empty result")
+            # No error/refusal but a blank result field: a turn that ended on a
+            # tool_use with no trailing prose leaves `result` empty. Salvage the
+            # last assistant text block; if the turn was genuinely text-free,
+            # return "" — a benign completion the caller handles (the cortex
+            # headless wake ignores text entirely, using only session_id). This
+            # replaced an unconditional LLMError that crashed such wakes.
+            return salvaged
         low = text.lower().lstrip()
         if any(low.startswith(fp) for fp in _REFUSAL_FINGERPRINTS):
             raise LLMError(f"claude_cli refusal (fingerprint): {text[:120]}")
