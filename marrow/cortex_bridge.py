@@ -392,8 +392,9 @@ def _lie_down_doc() -> str:
     night_max = int(_cortex_toml_section("night", "floor_max", 360))
     cx = config.load().get("cortex", {}) or {}
     tail = cx.get("lie_down_doc_tail") or (
-        "Always handoff before rotate or night mode; Always run TaskList and "
-        "TaskStop for all background tasks, including monitor and subagents.")
+        "Always handoff before rotate or night mode; "
+        "Always run TaskList and TaskStop before rotate, "
+        "esp. persistent monitor and subagents.")
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
             f'[N=0-{day_max}, 0=rotate now]; '
