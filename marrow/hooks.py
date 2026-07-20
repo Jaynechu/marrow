@@ -1425,18 +1425,6 @@ def session_end() -> int:
     if not tpath:
         return 0
 
-    # Cortex window really closing (not /clear, which also fires SessionEnd
-    # but leaves the window alive): end the wake now instead of waiting for
-    # a 20-min fallback to discover the dead window. Best-effort, never
-    # blocks the rest of session_end.
-    if cortex_bridge.is_cortex_session(tpath):
-        reason = inp.get("reason")
-        if reason != "clear":
-            try:
-                cortex_bridge.cortex_window_closed(tpath)
-            except Exception:  # noqa: BLE001 — never block session_end
-                pass
-
     cwd = inp.get("cwd") or ""
     early_sid = (inp.get("session_id") or "").strip()
     db = config.db_path()
