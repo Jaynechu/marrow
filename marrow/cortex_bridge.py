@@ -396,7 +396,7 @@ def _lie_down_doc() -> str:
         "TaskStop for all background tasks, including monitor and subagents.")
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
-            f'[0=rotate now]; '
+            f'[N=0-{day_max}, 0=rotate now]; '
             f'Activate night mode - lie_down(next_wake_min=N, mode="night") '
             f'[N={night_min}-{night_max}]; '
             f'{tail}')
