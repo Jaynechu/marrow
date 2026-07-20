@@ -1,9 +1,7 @@
-"""Single-active-window registration (P14 Fix 3, P17): cortex_claude_sid is a
-SEPARATE registration key from wake_state's session_id/transcript (iTerm
-liveness — untouched by this suite). Covers the CAS registration primitives,
-the /ct-wake takeover claim, cortex-session identity (env OR registered
-resident), and the UserPromptSubmit wake-branch early-return / deathbed-turn /
-handoff-landed notify. P17 removed all PreToolUse tool denies.
+"""Cortex-window hook behavior: env-marker session identity (the conversation
+is the identity), the PreToolUse no-deny path, and the UserPromptSubmit
+wake-branch human-bell recognition (receipt exact-match / shape fallback /
+epoch staleness) plus the user-wake reset on an ordinary chat turn.
 """
 from __future__ import annotations
 
@@ -59,9 +57,6 @@ def cortex_env(tmp_path, monkeypatch):
             "wake_audit_log_file": "wake_audit.log",
             "handoff_file": "handoff.md",
             "wake_signal_log_file": "state/wake_signal.log",
-            "takeover_text": "⚙️ [RETIRED] A new cortex window has taken over "
-                             "(sid {new_sid}). Retire now.",
-            "handoff_landed_text": "previous window handoff landed",
         },
         "outbox": {"inject_header": "📮 Message from {channel}·{sid4} {time}"},
         "recall": {"exclude_cwds": []},
@@ -87,29 +82,7 @@ def _jsonl(tmp_path, name):
     return str(p)
 
 
-# --- registration primitives (cortex_bridge helpers) --------------------------
-
-def test_is_registered_window_no_registration_is_tolerant(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    assert cortex_bridge.is_registered_window(tpath) is True
-
-
-def test_is_registered_window_matches_registered_sid(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="abc")
-    assert cortex_bridge.is_registered_window(tpath) is True
-
-
-def test_is_registered_window_mismatch_is_false(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "abc")
-    _write_ws(home, cortex_claude_sid="other-sid")
-    assert cortex_bridge.is_registered_window(tpath) is False
-
-
-# --- P17: cortex-session identity (env OR registered resident) ----------------
+# --- cortex-session identity (env marker = conversation identity) -------------
 
 def test_is_cortex_session_env_only_true(cortex_env):
     """MARROW_CORTEX set -> cortex session regardless of transcript."""
@@ -117,50 +90,11 @@ def test_is_cortex_session_env_only_true(cortex_env):
     assert cortex_bridge.is_cortex_session("/anything.jsonl") is True
 
 
-def test_is_cortex_session_manual_registered_window_true(cortex_env, tmp_path, monkeypatch):
-    """A manually opened window lacks the env marker but IS the registered
-    resident (took office via /ct-wake) -> recognised as full cortex."""
-    home, _ = cortex_env
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "manual")
-    _write_ws(home, cortex_claude_sid="manual")
-    assert cortex_bridge.is_cortex_session(tpath) is True
-
-
 def test_is_cortex_session_cli_window_not_cortex(cortex_env, tmp_path, monkeypatch):
-    """A plain cli window: no env, not the registered sid -> never cortex,
-    even when another window holds registration."""
+    """A plain cli window: no env marker -> never cortex."""
     home, _ = cortex_env
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     tpath = _jsonl(tmp_path, "cli")
-    _write_ws(home, cortex_claude_sid="the-real-cortex")
-    assert cortex_bridge.is_cortex_session(tpath) is False
-
-
-def test_is_cortex_session_no_registration_no_env_not_cortex(cortex_env, tmp_path, monkeypatch):
-    """Fail-CLOSED on empty registration: a cli window with no registration
-    recorded must never be misclassified as cortex (would break kickout/replay)."""
-    home, _ = cortex_env
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "cli")  # no cortex_claude_sid written
-    assert cortex_bridge.is_cortex_session(tpath) is False
-
-
-def test_is_cortex_session_disabled_with_stale_registration_not_cortex(
-        cortex_env, tmp_path, monkeypatch):
-    """P2 fix: [cortex].enabled=false + a stale matching cortex_claude_sid left
-    in wake_state + no env marker -> must NOT be cortex. A disabled install must
-    never resurrect cortex hook paths (replay/outbox/kickout/marker interception)
-    off a leftover registration."""
-    home, _ = cortex_env
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "manual")
-    _write_ws(home, cortex_claude_sid="manual")
-    real = config.load
-    disabled = dict(real())
-    disabled["cortex"] = dict(disabled["cortex"])
-    disabled["cortex"]["enabled"] = False
-    monkeypatch.setattr(config, "load", lambda: disabled)
     assert cortex_bridge.is_cortex_session(tpath) is False
 
 
@@ -171,269 +105,12 @@ def test_is_cortex_session_no_tpath_no_env_not_cortex(cortex_env, monkeypatch):
     assert cortex_bridge.is_cortex_session(None) is False
 
 
-# --- registration CAS primitives ----------------------------------------------
+# --- PreToolUse hook integration: cortex tools never denied -------------------
 
-def test_claim_registration_if_pending_succeeds_with_current_token(cortex_env, tmp_path):
+def test_pretool_cortex_lie_down_not_denied(cortex_env, tmp_path, monkeypatch, capsys):
+    """A cortex window's lie_down is not blocked by the PreToolUse gate."""
     home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "newsid")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-a")
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
-    assert ok is True
-    d = _ws(home)
-    assert d["cortex_claude_sid"] == "newsid"
-    assert "cortex_registration_pending" not in d
-    assert "cortex_registration_token" not in d
-    assert "cortex_registered_at" in d
-
-
-def test_claim_registration_if_pending_survives_unrelated_gen_advances(cortex_env, tmp_path):
-    """07-20 live bug (3rd round): gen keeps advancing from ordinary unrelated
-    traffic (another handshake, a wait() call, a user message) throughout the
-    real minutes-long gap between handshake mint and claim. The nonce is
-    independent of gen -> the claim still lands after N such advances."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "resumesid")
-    _write_ws(home, gen=655, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-resume")
-    # Simulate unrelated gen churn between mint and claim (commit_wait, another
-    # handshake, a user reset — none of them touch the registration token).
-    for g in (656, 657, 658):
-        d = _ws(home)
-        d["gen"] = g
-        _write_ws(home, **d)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-resume")
-    assert ok is True
-    d = _ws(home)
-    assert d["cortex_claude_sid"] == "resumesid"
-    assert d["cortex_resident_pid"] is not None
-
-
-def test_claim_registration_if_pending_fails_stale_token(cortex_env, tmp_path):
-    """A claim from a SUPERSEDED spawn (a newer handshake minted since,
-    overwriting the nonce) must still be rejected."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "newsid")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-current")
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-old")
-    assert ok is False
-    assert "cortex_claude_sid" not in _ws(home)
-    log = (home / "wake_audit.log").read_text()
-    assert "claim\trefuse" in log and "stale_token" in log
-
-
-def test_claim_registration_if_pending_fails_when_not_pending(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "newsid")
-    _write_ws(home, gen=5, state_id="cafe")  # no pending flag, no token
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
-    assert ok is False
-    assert "cortex_claude_sid" not in _ws(home)
-    log = (home / "wake_audit.log").read_text()
-    assert "claim\trefuse" in log and "no_pending" in log
-
-
-def test_claim_registration_if_pending_fails_no_token_arg(cortex_env, tmp_path):
-    """No token presented at all (None/empty) -> refuse, audited distinctly."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "newsid")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-a")
-    ok = cortex_bridge.claim_registration_if_pending(tpath, None)
-    assert ok is False
-    log = (home / "wake_audit.log").read_text()
-    assert "claim\trefuse" in log and "no_reg_token" in log
-
-
-def test_claim_registration_refuses_live_foreign_resident(cortex_env, tmp_path, monkeypatch):
-    """P18 mirror: a live recorded resident pid NOT in the caller's chain -> the
-    spawn claim is refused (no write), audit refuse line present. Same ONE RULE
-    as cortex.wake_state, byte-compatible mirror in marrow."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "intruder")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-a",
-              cortex_resident_pid=4321, cortex_claude_sid="live-resident")
-    monkeypatch.setattr(cortex_bridge, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(cortex_bridge, "_chains_to_ancestor", lambda pid, anc: False)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
-    assert ok is False
-    d = _ws(home)
-    assert d["cortex_claude_sid"] == "live-resident"  # untouched
-    audit = (home / "wake_audit.log").read_text()
-    assert "claim\trefuse" in audit
-
-
-def test_claim_registration_grants_and_records_resident_pid(cortex_env, tmp_path, monkeypatch):
-    """P18 mirror grant: dead/no recorded resident -> claim writes sid + records
-    THIS window's own claude pid, audit grant line present."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "freshwin")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-a")
-    monkeypatch.setattr(cortex_bridge, "_claude_ancestor_pid", lambda p=None: 6666)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
-    assert ok is True
-    d = _ws(home)
-    assert d["cortex_claude_sid"] == "freshwin"
-    assert d["cortex_resident_pid"] == 6666
-    assert "claim\tgrant" in (home / "wake_audit.log").read_text()
-
-
-def test_claim_registration_refuses_when_resident_pid_unresolved(cortex_env, tmp_path, monkeypatch):
-    """07-20 live incident, root cause: pgrep excludes its own ancestors, so this
-    hook could never resolve its own claude pid -> resident_pid=None reached the
-    claim and used to silently GRANT with no pid recorded (fail-open inversion,
-    audit showed 'claim grant ... resident_pid=None'). Fixed: resident_pid=None
-    is now a HARD refuse, audited distinctly (no_pid) — never a silent
-    grant-without-a-pid."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "ghostwin")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-a")
-    monkeypatch.setattr(cortex_bridge, "_claude_ancestor_pid", lambda p=None: None)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
-    assert ok is False
-    d = _ws(home)
-    assert "cortex_claude_sid" not in d  # nothing written
-    log = (home / "wake_audit.log").read_text()
-    assert "claim\trefuse" in log and "no_pid" in log
-
-
-def test_claude_ancestor_pid_resolves_real_process_tree():
-    """REAL-TREE proof (no monkeypatch): _claude_ancestor_pid must resolve an
-    actual live `claude` pid via the real pgrep/ps walk — this is the exact
-    function whose `pgrep -x claude` (missing `-a`) silently excluded its own
-    ancestors and caused every real-world claim to record resident_pid=None."""
-    import subprocess
-    pid = cortex_bridge._claude_ancestor_pid()
-    if pid is None:
-        pytest.skip("not running inside a claude process tree")
-    comm = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
-                          capture_output=True, text=True).stdout.strip()
-    assert comm == "claude"
-
-
-def test_claim_registration_dead_recorded_resident_is_claimable(cortex_env, tmp_path, monkeypatch):
-    """A dead recorded resident (kill -0 fails) = office claimable -> grant."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "successor")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
-              cortex_registration_token="tok-a",
-              cortex_resident_pid=4321, cortex_claude_sid="dead-one")
-    monkeypatch.setattr(cortex_bridge, "_pid_alive", lambda pid: False)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
-    assert ok is True
-    assert _ws(home)["cortex_claude_sid"] == "successor"
-
-
-def test_stage_registration_claim_writes_pending_claim_not_registration(cortex_env, tmp_path):
-    """P17 stage-then-promote: staging must NEVER touch cortex_claude_sid —
-    only cortex's cmd_wake (the sole promoter) may do that."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "newwindow")
-    _write_ws(home, cortex_claude_sid="oldwindow")
-    ok = cortex_bridge.stage_registration_claim(tpath)
-    assert ok is True
-    d = _ws(home)
-    assert d["cortex_claude_sid"] == "oldwindow"  # untouched
-    assert d["pending_claim"]["sid"] == "newwindow"
-    assert "ts" in d["pending_claim"]
-
-
-def test_stage_registration_claim_noop_when_already_self(cortex_env, tmp_path):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "samewindow")
-    _write_ws(home, cortex_claude_sid="samewindow", cortex_registered_at="2020-01-01T00:00:00+00:00")
-    ok = cortex_bridge.stage_registration_claim(tpath)
-    assert ok is True
-    d = _ws(home)
-    # Already the live registration -> nothing staged, stamp untouched.
-    assert "pending_claim" not in d
-    assert d["cortex_registered_at"] == "2020-01-01T00:00:00+00:00"
-
-
-def test_takeover_text_renders_new_sid(cortex_env):
-    text = cortex_bridge.takeover_text("abcdef1234567890")
-    assert text is not None
-    assert "abcdef12" in text  # first 8 chars
-
-
-def test_handoff_written_since_takeover_false_without_stamp(cortex_env):
-    assert cortex_bridge.handoff_written_since_takeover() is False
-
-
-def test_handoff_written_since_takeover_true_after_touch(cortex_env):
-    home, _ = cortex_env
-    from datetime import datetime, timedelta, timezone
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    _write_ws(home, cortex_registered_at=past)
-    (home / "handoff.md").write_text("## window section\ncontent")
-    assert cortex_bridge.handoff_written_since_takeover() is True
-
-
-def test_handoff_written_since_takeover_false_when_stale(cortex_env):
-    """A handoff written BEFORE the takeover stamp does not count (must be
-    touched at/after the takeover, not merely exist)."""
-    home, _ = cortex_env
-    from datetime import datetime, timedelta, timezone
-    (home / "handoff.md").write_text("stale content")
-    future = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
-    _write_ws(home, cortex_registered_at=future)
-    assert cortex_bridge.handoff_written_since_takeover() is False
-
-
-def test_notify_handoff_landed_once_is_one_shot(cortex_env, monkeypatch):
-    home, db = cortex_env
-    from datetime import datetime, timedelta, timezone
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    _write_ws(home, cortex_registered_at=past)
-    sent = []
-    from marrow import outbox as _outbox
-    monkeypatch.setattr(_outbox, "send", lambda *a, **k: sent.append((a, k)) or {"ok": True})
-    cortex_bridge.notify_handoff_landed_once()
-    cortex_bridge.notify_handoff_landed_once()
-    assert len(sent) == 1  # second call is a no-op (same registered_at stamp)
-
-
-# --- PreToolUse hook integration: /ct-wake claim staging -----------------------
-
-def test_pretool_stages_claim_without_touching_registration(cortex_env, tmp_path, monkeypatch):
-    """P17: the PreToolUse hook stages pending_claim only — cortex_claude_sid
-    stays whatever it was until cmd_wake (cortex side) promotes or discards it."""
-    home, db = cortex_env
-    tpath = _jsonl(tmp_path, "newcaller")
-    _write_ws(home, cortex_claude_sid="oldresident")
-    _stdin(monkeypatch, {
-        "transcript_path": tpath, "session_id": "s1", "tool_name": "Bash",
-        "tool_input": {"command": "/venv/bin/python -m cortex.ctl wake"},
-    })
-    assert hooks.main(["pretool_use"]) == 0
-    d = _ws(home)
-    assert d["cortex_claude_sid"] == "oldresident"  # untouched by the hook
-    assert d["pending_claim"]["sid"] == "newcaller"
-
-
-def test_pretool_stage_claim_then_allows_call(cortex_env, tmp_path, monkeypatch, capsys):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "newcaller")
-    _write_ws(home, cortex_claude_sid="oldresident")
-    _stdin(monkeypatch, {
-        "transcript_path": tpath, "session_id": "s1", "tool_name": "Bash",
-        "tool_input": {"command": "/venv/bin/python -m cortex.ctl wake"},
-    })
-    assert hooks.main(["pretool_use"]) == 0
-    hso = _hso(capsys)
-    assert hso.get("permissionDecision") != "deny"
-
-
-def test_pretool_retired_window_lie_down_not_denied(cortex_env, tmp_path, monkeypatch, capsys):
-    """P17: no tool denies. A retired window's lie_down is no longer blocked by
-    the PreToolUse gate (the stop-before-close discipline lives cortex-side)."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="registered-elsewhere")
+    tpath = _jsonl(tmp_path, "resident")
     _stdin(monkeypatch, {
         "transcript_path": tpath, "session_id": "s1",
         "tool_name": "mcp__marrow__lie_down", "tool_input": {"next_wake_min": 30},
@@ -442,11 +119,10 @@ def test_pretool_retired_window_lie_down_not_denied(cortex_env, tmp_path, monkey
     assert _hso(capsys).get("permissionDecision") != "deny"
 
 
-def test_pretool_retired_window_monitor_not_denied(cortex_env, tmp_path, monkeypatch, capsys):
-    """P17: arming a Monitor on the wake-signal path is no longer denied."""
+def test_pretool_cortex_monitor_not_denied(cortex_env, tmp_path, monkeypatch, capsys):
+    """Arming a Monitor on the wake-signal path is not denied."""
     home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="registered-elsewhere")
+    tpath = _jsonl(tmp_path, "resident")
     signal_log = str(home / "state" / "wake_signal.log")
     _stdin(monkeypatch, {
         "transcript_path": tpath, "session_id": "s1", "tool_name": "Monitor",
@@ -456,29 +132,12 @@ def test_pretool_retired_window_monitor_not_denied(cortex_env, tmp_path, monkeyp
     assert _hso(capsys).get("permissionDecision") != "deny"
 
 
-def test_pretool_plain_cli_ctl_wake_never_claims(cortex_env, tmp_path, monkeypatch):
-    """Plain cli window (no MARROW_CORTEX) running /ct-wake keeps original
-    semantics — never stages a claim, never registers itself."""
-    home, _ = cortex_env
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    tpath = _jsonl(tmp_path, "cliwindow")
-    _write_ws(home, cortex_claude_sid="the-resident")
-    _stdin(monkeypatch, {
-        "transcript_path": tpath, "session_id": "s1", "tool_name": "Bash",
-        "tool_input": {"command": "/venv/bin/python -m cortex.ctl wake"},
-    })
-    assert hooks.main(["pretool_use"]) == 0
-    d = _ws(home)
-    assert d["cortex_claude_sid"] == "the-resident"  # unchanged
-    assert "pending_claim" not in d
-
-
-# --- UserPromptSubmit wake-branch: early-return / deathbed / handoff-landed ---
+# --- UserPromptSubmit wake-branch: receipt bell + note injection --------------
 
 def test_wake_turn_registered_window_gets_normal_payload(cortex_env, tmp_path, monkeypatch, capsys):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "resident")
-    _write_ws(home, cortex_claude_sid="resident")
+    _write_ws(home)
     (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
@@ -495,7 +154,7 @@ def test_wake_turn_receipt_bell_injects_note_and_consumes_receipt(cortex_env, tm
     home, _ = cortex_env
     from datetime import datetime, timezone
     tpath = _jsonl(tmp_path, "resident")
-    _write_ws(home, cortex_claude_sid="resident", gen=5, state_id="cafe",
+    _write_ws(home, gen=5, state_id="cafe",
               wake_receipt={"text": "☀️ 09:00", "gen": 5, "state_id": "cafe",
                             "rearm": False,
                             "ts": datetime.now(timezone.utc).isoformat(),
@@ -515,7 +174,7 @@ def test_wake_turn_shape_fallback_injects_note_when_receipt_missing(cortex_env, 
     OPEN: the note is still injected (never drop a genuine wake)."""
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "resident")
-    _write_ws(home, cortex_claude_sid="resident")  # no receipt
+    _write_ws(home)  # no receipt
     (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
@@ -532,7 +191,7 @@ def test_wake_turn_receipt_stale_epoch_suppressed(cortex_env, tmp_path, monkeypa
     from datetime import datetime, timezone
     tpath = _jsonl(tmp_path, "resident")
     # Live epoch gen=9 but the receipt token is gen=5 -> stale.
-    _write_ws(home, cortex_claude_sid="resident", gen=9, state_id="cafe",
+    _write_ws(home, gen=9, state_id="cafe",
               wake_receipt={"text": "☀️ 09:00", "gen": 5, "state_id": "cafe",
                             "rearm": False,
                             "ts": datetime.now(timezone.utc).isoformat(),
@@ -546,99 +205,10 @@ def test_wake_turn_receipt_stale_epoch_suppressed(cortex_env, tmp_path, monkeypa
     assert _ctx(capsys) == ""  # suppressed
 
 
-def test_wake_turn_retired_window_gets_takeover_text_not_note(cortex_env, tmp_path, monkeypatch, capsys):
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="new-resident")
-    (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    _stdin(monkeypatch, {
-        "session_id": "s1", "transcript_path": tpath,
-        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
-    })
-    assert hooks.main(["user_prompt_submit"]) == 0
-    ctx = _ctx(capsys)
-    assert "note body here" not in ctx
-    assert "RETIRED" in ctx
-
-
-def test_wake_turn_retired_window_after_handoff_goes_silent(cortex_env, tmp_path, monkeypatch, capsys):
-    home, _ = cortex_env
-    from datetime import datetime, timedelta, timezone
-    tpath = _jsonl(tmp_path, "retired")
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    _write_ws(home, cortex_claude_sid="new-resident", cortex_registered_at=past)
-    (home / "handoff.md").write_text("## retired window section\ndone")
-    (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    _stdin(monkeypatch, {
-        "session_id": "s1", "transcript_path": tpath,
-        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
-    })
-    assert hooks.main(["user_prompt_submit"]) == 0
-    assert _ctx(capsys) == ""  # fully silent
-
-
-def test_wake_turn_retired_window_no_cursor_or_outbox_claim(cortex_env, tmp_path, monkeypatch, capsys):
-    """Scenario matrix: resume retired window -> no zombie side effects (no
-    note claim / cursor advance). Verified via no crash + no payload; the
-    early-return happens before outbox.deliver/wakeup_note_text run."""
-    home, db = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="new-resident")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    calls = []
-    from marrow import outbox as _outbox
-    monkeypatch.setattr(_outbox, "deliver", lambda *a, **k: calls.append(1))
-    _stdin(monkeypatch, {
-        "session_id": "s1", "transcript_path": tpath,
-        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
-    })
-    assert hooks.main(["user_prompt_submit"]) == 0
-    assert calls == []  # outbox never touched on the retired branch
-
-
-def test_wake_turn_handoff_landing_sends_notify(cortex_env, tmp_path, monkeypatch, capsys):
-    home, _ = cortex_env
-    from datetime import datetime, timedelta, timezone
-    tpath = _jsonl(tmp_path, "retired")
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    _write_ws(home, cortex_claude_sid="new-resident", cortex_registered_at=past)
-    (home / "handoff.md").write_text("## retired window section\ndone")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    sent = []
-    from marrow import outbox as _outbox
-    monkeypatch.setattr(_outbox, "send", lambda *a, **k: sent.append(a) or {"ok": True})
-    _stdin(monkeypatch, {
-        "session_id": "s1", "transcript_path": tpath,
-        "prompt": "☀️ 09:00",  # human-text bell -> shape fallback (no receipt)
-    })
-    assert hooks.main(["user_prompt_submit"]) == 0
-    assert len(sent) == 1
-    assert sent[0][0] == "ct"
-
-
-def test_chat_turn_retired_window_no_user_wake_reset(cortex_env, tmp_path, monkeypatch, capsys):
-    """Scenario matrix: chat in retired window -> read-only. A real (non-machine)
-    chat message must not flip awake / bump gen on the shared wake_state."""
-    home, _ = cortex_env
-    tpath = _jsonl(tmp_path, "retired")
-    _write_ws(home, cortex_claude_sid="new-resident", awake=False)
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    _stdin(monkeypatch, {
-        "session_id": "s1", "transcript_path": tpath,
-        "prompt": "hey are you there?",
-    })
-    assert hooks.main(["user_prompt_submit"]) == 0
-    d = _ws(home)
-    assert d.get("awake") is False  # unchanged -> no zombie wake flip
-    assert "user_replied_this_wake" not in d
-
-
 def test_chat_turn_registered_window_still_resets(cortex_env, tmp_path, monkeypatch, capsys):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "resident")
-    _write_ws(home, cortex_claude_sid="resident", awake=False)
+    _write_ws(home, awake=False)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath,
