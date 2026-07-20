@@ -768,6 +768,19 @@ def _load_wake_receipt() -> dict | None:
     return r
 
 
+def pending_registration_token() -> str | None:
+    """The CURRENT wake receipt's registration_token nonce (minted by cortex's
+    start_registration_handshake, independent of gen), or None. Must be read
+    BEFORE _consume_wake_receipt() drops the receipt — hooks.py calls this
+    ahead of the consume so claim_registration_if_pending still has it despite
+    the receipt itself being gone by the time the claim actually runs."""
+    r = _load_wake_receipt()
+    if not r:
+        return None
+    tok = r.get("registration_token")
+    return str(tok) if tok else None
+
+
 def _consume_wake_receipt() -> None:
     """Drop the pending receipt under the flock (consume-once). Best-effort."""
     p = _cortex_wake_state_path()
@@ -1404,8 +1417,13 @@ def _claude_ancestor_pid(caller_pid: int | None = None) -> int | None:
 
 def _resident_alive_under_lock(d: dict, caller_pid: int) -> bool:
     """THE ONE RULE (mirror of cortex.wake_state._resident_alive_under_lock, same
-    file/lock, byte-compatible): True iff recorded resident pid alive AND not in
-    the caller's process chain. No recorded pid = no resident (False)."""
+    file/lock, byte-compatible): True iff office is REGISTERED (cortex_claude_sid
+    set) AND the recorded resident pid is alive AND not in the caller's process
+    chain. No registration (rotated/retired window) OR no recorded pid = no
+    resident (False) — a rotated window's stale pid must never read as a live
+    resident here either (07-20 live incident: cmd_wake false on-duty)."""
+    if not d.get("cortex_claude_sid"):
+        return False
     pid = d.get("cortex_resident_pid")
     try:
         pid = int(pid) if pid is not None else None
@@ -1418,20 +1436,39 @@ def _resident_alive_under_lock(d: dict, caller_pid: int) -> bool:
     return True
 
 
-def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | None) -> bool:
+def claim_registration_if_pending(tpath: str | None, reg_token: str | None) -> bool:
     """Rotate/fresh-spawn handshake claim: called from the wake-marker
-    UserPromptSubmit branch when the wake line carries a cancellation-epoch
-    token. Only succeeds while a registration handshake is PENDING and
-    `token` still matches the live epoch (both checked + written under one
-    strict-lock hold — true CAS, fail-closed on any lock/parse trouble).
-    Writes cortex_claude_sid = this window's own claude sid, clears pending.
+    UserPromptSubmit branch. Only succeeds while a registration handshake is
+    PENDING and `reg_token` still matches the CURRENTLY pending
+    cortex_registration_token nonce (checked + written under one strict-lock
+    hold — true CAS, fail-closed on any lock/parse trouble). Writes
+    cortex_claude_sid = this window's own claude sid, clears pending.
+
+    07-20 live bug (3rd round): this used to validate against the wake line's
+    (gen, state_id) alarm token instead — gen advances on ordinary unrelated
+    traffic (another spawn's handshake, a session's own wait() call, a real
+    user message elsewhere) throughout the real minutes-long gap between
+    handshake mint and this claim actually running (claude startup + --resume
+    history replay), so the strict gen-equality check was stale by the time it
+    ran almost every time: cortex_resident_pid was never re-recorded, and every
+    reconcile tick kept treating the live window as unregistered forever. The
+    nonce is single-flight and independent of gen (minted fresh by every
+    start_registration_handshake, overwriting any previous nonce) — it
+    survives any number of unrelated gen advances, while a claim from a
+    SUPERSEDED spawn (a newer handshake minted since) still correctly fails
+    because the nonce it carries no longer matches the current one.
+
+    Every rejection branch is now audited (`claim`/`refuse`) with a distinct
+    reason — a silent rejection here is exactly why this bug took three rounds
+    to diagnose live.
 
     `resident_pid=None` (07-20 live incident: pgrep excluding its own ancestors
     left the caller unable to resolve its own pid) is a HARD refuse, never a
     silent grant-without-a-pid — mirrors cortex.wake_state.claim_office's fix:
     a registration with no recorded pid can never be judged alive later, which
     is the exact fail-open hole that let a fresh spawn clobber a live resident."""
-    if token is None or not tpath:
+    if not reg_token or not tpath:
+        _wake_audit("claim", "refuse", f"tpath={tpath} no_reg_token")
         return False
     sid = _claude_sid_of(tpath)
     caller_pid = os.getpid()
@@ -1445,9 +1482,15 @@ def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | No
             d = _wake_state_load(p)
             _ws_ensure_epoch(d)
             if not d.get("cortex_registration_pending"):
+                _wake_audit("claim", "refuse",
+                            f"via=spawn sid={sid} caller_pid={caller_pid} no_pending")
                 return False
-            gen, state_id = token
-            if int(d.get("gen", -1)) != int(gen) or str(d.get("state_id") or "") != str(state_id):
+            live_token = d.get("cortex_registration_token")
+            if not live_token or str(live_token) != str(reg_token):
+                # A superseded spawn (a newer handshake minted since, or the
+                # nonce field predates this fix and is simply absent) -> reject.
+                _wake_audit("claim", "refuse",
+                            f"via=spawn sid={sid} caller_pid={caller_pid} stale_token")
                 return False
             # THE ONE RULE (mirror): a live foreign resident holds office -> refuse
             # (no write), audit the refusal.
@@ -1457,6 +1500,7 @@ def claim_registration_if_pending(tpath: str | None, token: tuple[int, str] | No
             d["cortex_claude_sid"] = sid
             d["cortex_resident_pid"] = int(resident_pid)
             d.pop("cortex_registration_pending", None)
+            d.pop("cortex_registration_token", None)
             _stamp_registration_change(d)
             _wake_state_save(p, d)
             _wake_audit("claim", "grant", f"via=spawn sid={sid} resident_pid={resident_pid}")

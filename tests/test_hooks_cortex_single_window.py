@@ -176,31 +176,74 @@ def test_is_cortex_session_no_tpath_no_env_not_cortex(cortex_env, monkeypatch):
 def test_claim_registration_if_pending_succeeds_with_current_token(cortex_env, tmp_path):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "newsid")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-a")
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
     assert ok is True
     d = _ws(home)
     assert d["cortex_claude_sid"] == "newsid"
     assert "cortex_registration_pending" not in d
+    assert "cortex_registration_token" not in d
     assert "cortex_registered_at" in d
 
 
+def test_claim_registration_if_pending_survives_unrelated_gen_advances(cortex_env, tmp_path):
+    """07-20 live bug (3rd round): gen keeps advancing from ordinary unrelated
+    traffic (another handshake, a wait() call, a user message) throughout the
+    real minutes-long gap between handshake mint and claim. The nonce is
+    independent of gen -> the claim still lands after N such advances."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "resumesid")
+    _write_ws(home, gen=655, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-resume")
+    # Simulate unrelated gen churn between mint and claim (commit_wait, another
+    # handshake, a user reset — none of them touch the registration token).
+    for g in (656, 657, 658):
+        d = _ws(home)
+        d["gen"] = g
+        _write_ws(home, **d)
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-resume")
+    assert ok is True
+    d = _ws(home)
+    assert d["cortex_claude_sid"] == "resumesid"
+    assert d["cortex_resident_pid"] is not None
+
+
 def test_claim_registration_if_pending_fails_stale_token(cortex_env, tmp_path):
+    """A claim from a SUPERSEDED spawn (a newer handshake minted since,
+    overwriting the nonce) must still be rejected."""
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "newsid")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, (4, "cafe"))
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-current")
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-old")
     assert ok is False
     assert "cortex_claude_sid" not in _ws(home)
+    log = (home / "wake_audit.log").read_text()
+    assert "claim\trefuse" in log and "stale_token" in log
 
 
 def test_claim_registration_if_pending_fails_when_not_pending(cortex_env, tmp_path):
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "newsid")
-    _write_ws(home, gen=5, state_id="cafe")  # no pending flag
-    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    _write_ws(home, gen=5, state_id="cafe")  # no pending flag, no token
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
     assert ok is False
     assert "cortex_claude_sid" not in _ws(home)
+    log = (home / "wake_audit.log").read_text()
+    assert "claim\trefuse" in log and "no_pending" in log
+
+
+def test_claim_registration_if_pending_fails_no_token_arg(cortex_env, tmp_path):
+    """No token presented at all (None/empty) -> refuse, audited distinctly."""
+    home, _ = cortex_env
+    tpath = _jsonl(tmp_path, "newsid")
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-a")
+    ok = cortex_bridge.claim_registration_if_pending(tpath, None)
+    assert ok is False
+    log = (home / "wake_audit.log").read_text()
+    assert "claim\trefuse" in log and "no_reg_token" in log
 
 
 def test_claim_registration_refuses_live_foreign_resident(cortex_env, tmp_path, monkeypatch):
@@ -210,10 +253,11 @@ def test_claim_registration_refuses_live_foreign_resident(cortex_env, tmp_path, 
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "intruder")
     _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-a",
               cortex_resident_pid=4321, cortex_claude_sid="live-resident")
     monkeypatch.setattr(cortex_bridge, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(cortex_bridge, "_chains_to_ancestor", lambda pid, anc: False)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
     assert ok is False
     d = _ws(home)
     assert d["cortex_claude_sid"] == "live-resident"  # untouched
@@ -226,9 +270,10 @@ def test_claim_registration_grants_and_records_resident_pid(cortex_env, tmp_path
     THIS window's own claude pid, audit grant line present."""
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "freshwin")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True)
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-a")
     monkeypatch.setattr(cortex_bridge, "_claude_ancestor_pid", lambda p=None: 6666)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
     assert ok is True
     d = _ws(home)
     assert d["cortex_claude_sid"] == "freshwin"
@@ -245,9 +290,10 @@ def test_claim_registration_refuses_when_resident_pid_unresolved(cortex_env, tmp
     grant-without-a-pid."""
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "ghostwin")
-    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True)
+    _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-a")
     monkeypatch.setattr(cortex_bridge, "_claude_ancestor_pid", lambda p=None: None)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
     assert ok is False
     d = _ws(home)
     assert "cortex_claude_sid" not in d  # nothing written
@@ -274,9 +320,10 @@ def test_claim_registration_dead_recorded_resident_is_claimable(cortex_env, tmp_
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "successor")
     _write_ws(home, gen=5, state_id="cafe", cortex_registration_pending=True,
+              cortex_registration_token="tok-a",
               cortex_resident_pid=4321, cortex_claude_sid="dead-one")
     monkeypatch.setattr(cortex_bridge, "_pid_alive", lambda pid: False)
-    ok = cortex_bridge.claim_registration_if_pending(tpath, (5, "cafe"))
+    ok = cortex_bridge.claim_registration_if_pending(tpath, "tok-a")
     assert ok is True
     assert _ws(home)["cortex_claude_sid"] == "successor"
 

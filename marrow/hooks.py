@@ -1810,6 +1810,11 @@ def user_prompt_submit() -> int:
         _bell = cortex_bridge.match_wake_bell(_prompt)
         if _bell is not None:
             _kind, _tok, _degraded = _bell
+            # Captured BEFORE the receipt is consumed below — the registration
+            # claim runs later (after the staleness check) and needs the nonce,
+            # but by then _consume_wake_receipt() has already dropped it.
+            _reg_tok = (cortex_bridge.pending_registration_token()
+                       if _kind == "receipt" else None)
             if _kind == "receipt":
                 cortex_bridge._consume_wake_receipt()
             if _degraded:
@@ -1829,7 +1834,7 @@ def user_prompt_submit() -> int:
             # "not yet registered" and the retired branch is taken instead
             # (fail-closed toward silence, never toward a false wake payload).
             try:
-                if cortex_bridge.claim_registration_if_pending(tpath, _tok):
+                if cortex_bridge.claim_registration_if_pending(tpath, _reg_tok):
                     # This window just claimed registration (rotate/fresh spawn)
                     # and has not armed its own ear yet — every surviving tail is
                     # a zombie from the retired window. Sweep them (mirrors the
