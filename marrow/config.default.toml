@@ -344,7 +344,7 @@ wake_signal_log_file = "state/wake_signal.log"
 # send time; the hook exact-matches the on-screen line against that receipt.
 # {hm} = local HH:MM. The static prefix (text before {hm}) is the shape the
 # consumer falls back to when the receipt is missing/unreadable (fail-open).
-wake_bell_template = "[🧚‍♀️ 笨鸭换岗成功]"
+wake_bell_template = "[☀️ {hm}]"
 # Receipt time-to-live (minutes): a pending receipt older than this is ignored
 # (stale hygiene). Must match cortex [wake].receipt_ttl_min.
 receipt_ttl_min = 15
