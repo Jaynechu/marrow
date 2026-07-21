@@ -203,12 +203,12 @@ def test_spawn_prompt_head_is_headless_even_with_haiku_assistant(tmp_path):
 
 def test_sonnet_assistant_with_normal_user_content_is_not_headless(tmp_path):
     jl = _w(tmp_path / "s.jsonl", [
-        _user("你是褚屿忱，你要以第一人称写一篇日记"),
+        _user("你是褚言澈，你要以第一人称写一篇日记"),
         _asst("claude-sonnet-4-6"),
     ])
     assert transcript.is_headless(jl) is False
     assert [r["content"] for r in transcript.clean(jl)] == [
-        "你是褚屿忱，你要以第一人称写一篇日记", "reply"]
+        "你是褚言澈，你要以第一人称写一篇日记", "reply"]
 
 
 def test_haiku_assistant_with_normal_user_content_is_not_headless(tmp_path):
