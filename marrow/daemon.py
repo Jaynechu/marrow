@@ -279,10 +279,9 @@ def tl(
 ) -> dict:
     """Summarise each session into tl lines.
     Pass PARTS (timerange/user_word/assistant_word/body/importance) ONLY - code assemble rows.
-    - Casual chat: when topic/location/mood change or task/activity done, add one for previous turns.
+    - Casual chat (all tg/wx sessions + NY cli): add new tls to narrate our conversation - every 1-2 hours.
     - Coding/study sessions: keep 1 tl each session - update only when things changed.
     - Each session edits its own tl ONLY — never touch other sessions'; overlap is expected.
-    - Frequency: every 1-2h or 10-20 turns - you can skip even when hook nudges you.
     - query: look up rows/event_id by match and/or date. update/clear: address a row
       by event_id, OR by match (+optional date). e.g. update match='千层' date='2026-07-05'."""
     if action not in _TL_ACTIONS:
