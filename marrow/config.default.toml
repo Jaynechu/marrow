@@ -327,7 +327,7 @@ force_tokens = 150000
 handoff_deny_text = "Write your handoff note first — call lie_down again after saving it."
 # lie_down tool description tail (C9), appended after the four rendered clamp
 # numbers. User-final copy — do not reword.
-lie_down_doc_tail = "Always handoff before rotate or night mode; Always run TaskList and TaskStop for all background tasks, including monitor and subagents."
+lie_down_doc_tail = "Always handoff before rotate or night mode; Always run TaskList and TaskStop before rotate, esp. persistent monitor and subagents. NOTE: Never stop cortex wake signal monitor when you lie_down - ONLY stop before rotate."
 # Wake pipeline (v2). The ear is a Monitor tailing wake_signal_log_file; cortex
 # appends the human-text bell line to it, which surfaces as a user turn. Paths
 # for the note and signal log default to <home>/<file> (override with an
