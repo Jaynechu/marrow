@@ -967,9 +967,9 @@ def test_git_force_push_disabled_via_config(env, monkeypatch, capsys):
     assert out.get("permissionDecision") != "deny"
 
 
-# -- git revert-type authorship guard ("ask", 🤡 message) ---------------------
+# -- git revert-type authorship guard ("ask", BLOCKED message) ----------------
 
-_ROBOT = "🤡"
+_ROBOT = "BLOCKED"
 
 
 def test_git_revert_reset_hard_asks(env, monkeypatch, capsys):
