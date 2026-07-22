@@ -54,6 +54,25 @@ state_dir = "~/.config/marrow/state"
 # flat count; calendar/GFS rotation is DESIGN-Pending.
 keep = 14
 
+[drift]
+# Reference-matcher tuning for drift_sweep. All lists deep-merge onto the
+# built-in defaults so a fork can extend without editing code.
+# Directory names never scanned for references (added to the built-in set:
+# .git, __pycache__, node_modules, venvs, backups, archives, worktrees).
+# Handoff/day archive rotation dirs belong here — an archived snapshot's refs
+# point at the still-live file, so the only correct verdict is reject.
+exclude_dirs = ["handoff_archive", "day_archive"]
+# Filename substrings that mark a snapshot/export/fixture artifact. A file
+# whose name contains any of these never produces refs (html exports, eval
+# baseline/fixture json, rendered dir-tree snapshots, .gitignore data lists).
+exclude_name_parts = [
+    ".html", ".htm", "baseline", "fixture", ".gitignore",
+    "dir_tree", "package-lock", "yarn.lock", ".min.js", ".min.css",
+]
+# Max refs kept per rename. Beyond this the pending record is truncated and
+# marked so one runaway rename cannot balloon into a multi-MB pending file.
+ref_cap = 200
+
 [llm]
 # Selection chain. Callers pass intent only.
 # claude_cli isolation (--setting-sources "" --strict-mcp-config) is built in,
