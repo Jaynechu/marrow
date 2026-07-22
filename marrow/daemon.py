@@ -278,6 +278,8 @@ def tl(
     date: Annotated[str | None, Field(description="Optional YYYY-MM-DD, backdates the row.")] = None,
 ) -> dict:
     """Summarise each session into tl lines.
+    Call tl BEFORE composing your final reply — tool calls first, prose last.
+    Never re-print text already output this turn; if the reply was sent before tl, end with a one-line closer, not a repeat.
     Pass PARTS (timerange/user_word/assistant_word/body/importance) ONLY - code assemble rows.
     - Casual chat (all tg/wx sessions + NY cli): add new tls to narrate our conversation - every 1-2 hours.
     - Coding/study sessions: keep 1 tl each session - update only when things changed.
