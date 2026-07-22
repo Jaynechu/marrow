@@ -384,19 +384,14 @@ _DB = config.db_path()
 def _lie_down_doc() -> str:
     """C9 (user-final): lie_down description with all four clamp numbers rendered
     from cortex config — day bounds [wake].next_wake_min/max, night bounds
-    [night].floor_min/max. Never hardcoded in the string. Tail sentence is
-    configurable via [cortex].lie_down_doc_tail (marrow config.toml)."""
+    [night].floor_min/max. Never hardcoded in the string. Tail sentence lives
+    ONLY in config.default.toml under [cortex].lie_down_doc_tail."""
     day_min = int(_cortex_toml_section("wake", "next_wake_min", 21))
     day_max = int(_cortex_toml_section("wake", "next_wake_max", 240))
     night_min = int(_cortex_toml_section("night", "floor_min", 120))
     night_max = int(_cortex_toml_section("night", "floor_max", 360))
     cx = config.load().get("cortex", {}) or {}
-    tail = cx.get("lie_down_doc_tail") or (
-        "Always handoff before rotate or night mode; "
-        "Always run TaskList and TaskStop before rotate, "
-        "esp. persistent monitor and subagents. "
-        "NOTE: Never stop cortex wake signal monitor when you lie_down "
-        "- ONLY stop before rotate.")
+    tail = cx.get("lie_down_doc_tail", "")
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
             f'[N=0-{day_max}, 0=rotate now]; '
@@ -453,7 +448,11 @@ def register(marrow_tool, db: str | None = None) -> None:
 def _cortex_lie_down_deny(inp: dict) -> str | None:
     """Deny lie_down until the handoff is written this window, when the
     session asked to rotate OR the window is at the fuse line (force_tokens).
-    A plain lie_down under the line is allowed. Cortex window only. None = allow."""
+    A plain lie_down under the line is allowed. Cortex window only. None = allow.
+    Deny text lives ONLY in config.default.toml under [cortex].handoff_deny_text;
+    the "handoff required" fallback below only fires if that key is missing,
+    since the caller treats any falsy return as allow (gate would silently
+    disable on an empty string)."""
     if not os.environ.get("MARROW_CORTEX"):
         return None
     if inp.get("tool_name") != "mcp__marrow__lie_down":
@@ -482,8 +481,7 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
             written = False
     if written:
         return None
-    return (cx.get("handoff_deny_text")
-            or "Write your handoff first, then call lie_down again.")
+    return cx.get("handoff_deny_text") or "handoff required"
 
 
 # The one tool that does NOT restore the wait quota (F5): calling wait() is the
