@@ -394,7 +394,9 @@ def _lie_down_doc() -> str:
     tail = cx.get("lie_down_doc_tail") or (
         "Always handoff before rotate or night mode; "
         "Always run TaskList and TaskStop before rotate, "
-        "esp. persistent monitor and subagents.")
+        "esp. persistent monitor and subagents. "
+        "NOTE: Never stop cortex wake signal monitor when you lie_down "
+        "- ONLY stop before rotate.")
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
             f'[N=0-{day_max}, 0=rotate now]; '

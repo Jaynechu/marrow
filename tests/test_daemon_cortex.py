@@ -406,9 +406,11 @@ def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
     ld = m._tool_manager._tools["lie_down"].description
     assert "N=21-240" in ld and 'N=120-360' in ld
     assert 'mode="night"' in ld and "rotate=True" in ld
-    assert ("Always handoff before rotate or night mode; Always run TaskList "
-            "and TaskStop for all background tasks, including monitor and "
-            "subagents.") in ld
+    assert ("Always handoff before rotate or night mode; "
+            "Always run TaskList and TaskStop before rotate, "
+            "esp. persistent monitor and subagents. "
+            "NOTE: Never stop cortex wake signal monitor when you lie_down "
+            "- ONLY stop before rotate.") in ld
     assert "20-min auto timer" in m._tool_manager._tools["wait"].description
     assert "N=1-20" in m._tool_manager._tools["wait"].description
 
