@@ -38,6 +38,16 @@ monitor = ""
 db_pages = ""
 # State dir for db-page hashes. Empty = <DATA_DIR>/state.
 db_pages_state = ""
+# Vault root. Empty = disabled; drives db_pages/daybrief/sticker defaults.
+# e.g. "~/Documents/my-vault"
+ny_root = ""
+# Drift-sweep working dirs + rendered file-tree snapshot.
+drift_pending_dir = "~/.config/marrow/drift_pending"
+drift_backup_dir = "~/.config/marrow/drift_backup"
+dir_tree_md = "~/.config/marrow/dir_tree.md"
+# Watcher/pipeline logs + runtime state.
+logs_dir = "~/.config/marrow/logs"
+state_dir = "~/.config/marrow/state"
 
 [backup]
 # Daily DB snapshots to retain each side (local + offsite). Conservative
