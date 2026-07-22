@@ -2479,7 +2479,7 @@ def _backup_guard_deny(inp: dict) -> str | None:
         cwd = inp.get("cwd") or ""
         if _bg_category(tool_name, ti, cwd) != "deny":
             return None
-        return hooks_cfg.get("backup_guard_deny_message") or _BG_DENY_MSG
+        return _BG_DENY_MSG
     except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
         return None
 
@@ -2505,7 +2505,7 @@ def _backup_guard_line(inp: dict) -> str | None:
             cat = "remind"  # downgraded — no deny gate, surface the reminder
         if cat != "remind":
             return None
-        return hooks_cfg.get("backup_guard_message") or _BG_REMIND_MSG
+        return _BG_REMIND_MSG
     except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
         return None
 
@@ -2513,8 +2513,8 @@ def _backup_guard_line(inp: dict) -> str | None:
 # ── git force-push guard (PreToolUse) — hard deny ─────────────────────────────
 # Force push rewrites remote history: a hard deny, no escape hatch, no worktree
 # exemption. Tokenized per shell segment so a commit -m "...--force..." message
-# can never false-positive. Config: [hooks].git_force_push_guard (default true)
-# + git_force_push_guard_message override.
+# can never false-positive. Config: [hooks].git_force_push_guard (default true).
+# Message is mechanism-defining copy (_GIT_FORCE_PUSH_MSG).
 _GIT_FORCE_PUSH_MSG = (
     "BLOCKED — force push rewrites remote history and can permanently destroy "
     "commits. Never force push. If the remote rejected your push, stop and "
@@ -2547,7 +2547,7 @@ def _git_force_push_matches(cmd: str) -> bool:
 
 def _git_force_push_guard(inp: dict) -> str | None:
     """Force-push deny reason, or None. Config: [hooks].git_force_push_guard
-    (default true) + git_force_push_guard_message. Fail-open: any error → None."""
+    (default true). Fail-open: any error → None."""
     try:
         if not isinstance(inp, dict) or inp.get("tool_name") != "Bash":
             return None
@@ -2557,7 +2557,7 @@ def _git_force_push_guard(inp: dict) -> str | None:
         cmd = (inp.get("tool_input") or {}).get("command", "") or ""
         if not isinstance(cmd, str) or not _git_force_push_matches(cmd):
             return None
-        return hooks_cfg.get("git_force_push_guard_message") or _GIT_FORCE_PUSH_MSG
+        return _GIT_FORCE_PUSH_MSG
     except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
         return None
 
@@ -2583,7 +2583,10 @@ _GIT_REVERT_DEFAULT_PATTERNS = [
     r"\bgit\s+worktree\s+remove\b",
 ]
 
-_GIT_REVERT_MSG = "🤡 狗男人又要乱搞你git里的东西了，是否同意？"
+_GIT_REVERT_MSG = (
+    "BLOCKED — git revert/reset requested. Confirm with the user before "
+    "proceeding."
+)
 
 
 # Split on shell control operators (&&, ||, ;, |, &, newline) so pattern

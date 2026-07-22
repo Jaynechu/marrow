@@ -406,10 +406,8 @@ def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
     ld = m._tool_manager._tools["lie_down"].description
     assert "N=21-240" in ld and 'N=120-360' in ld
     assert 'mode="night"' in ld and "rotate=True" in ld
-    # Tail sentence lives only in config.default.toml — assert the
-    # config-sourced value, never a hardcoded duplicate here.
-    tail = config.load().get("cortex", {}).get("lie_down_doc_tail", "")
-    assert tail and tail in ld
+    # Tail sentence is mechanism-defining copy in code.
+    assert cortex_bridge._LIE_DOWN_DOC_TAIL in ld
     assert "20-min auto timer" in m._tool_manager._tools["wait"].description
     assert "N=1-20" in m._tool_manager._tools["wait"].description
 
@@ -437,11 +435,10 @@ def test_switch_off_lie_down_deny_inactive(monkeypatch):
 
 def test_arm_ear_text_substitutes_signal_log(monkeypatch, tmp_path):
     """arm_ear_text substitutes {signal_log} with the path resolved under home."""
-    _force_enabled(monkeypatch, True, extra={
-        "home": str(tmp_path),
-        "arm_ear_text": "arm: tail {signal_log}",
-    })
-    assert cortex_bridge.arm_ear_text() == f"arm: tail {tmp_path/'state'/'wake_signal.log'}"
+    _force_enabled(monkeypatch, True, extra={"home": str(tmp_path)})
+    out = cortex_bridge.arm_ear_text()
+    assert str(tmp_path / "state" / "wake_signal.log") in out
+    assert "{signal_log}" not in out
 
 
 def test_arm_ear_text_absolute_override(monkeypatch, tmp_path):
@@ -450,16 +447,8 @@ def test_arm_ear_text_absolute_override(monkeypatch, tmp_path):
     _force_enabled(monkeypatch, True, extra={
         "home": str(tmp_path),
         "wake_signal_log_file": str(log),
-        "arm_ear_text": "tail {signal_log}",
     })
-    assert cortex_bridge.arm_ear_text() == f"tail {log}"
-
-
-def test_arm_ear_text_blank_returns_none(monkeypatch, tmp_path):
-    """Blank arm text -> None (caller injects nothing)."""
-    _force_enabled(monkeypatch, True,
-                   extra={"home": str(tmp_path), "arm_ear_text": ""})
-    assert cortex_bridge.arm_ear_text() is None
+    assert str(log) in cortex_bridge.arm_ear_text()
 
 
 def test_wakeup_note_text_reads_file(monkeypatch, tmp_path):
@@ -484,18 +473,10 @@ def test_wakeup_note_text_empty_returns_none(monkeypatch, tmp_path):
 
 def test_rearm_text_substitutes_signal_log(monkeypatch, tmp_path):
     """rearm_text substitutes {signal_log}."""
-    _force_enabled(monkeypatch, True, extra={
-        "home": str(tmp_path),
-        "rearm_text": "rearm: tail {signal_log}",
-    })
-    assert cortex_bridge.rearm_text() == f"rearm: tail {tmp_path/'state'/'wake_signal.log'}"
-
-
-def test_rearm_text_blank_returns_none(monkeypatch, tmp_path):
-    """Blank rearm text -> None."""
-    _force_enabled(monkeypatch, True,
-                   extra={"home": str(tmp_path), "rearm_text": ""})
-    assert cortex_bridge.rearm_text() is None
+    _force_enabled(monkeypatch, True, extra={"home": str(tmp_path)})
+    out = cortex_bridge.rearm_text()
+    assert str(tmp_path / "state" / "wake_signal.log") in out
+    assert "{signal_log}" not in out
 
 
 def test_is_monitor_death_matches_notification():

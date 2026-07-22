@@ -381,17 +381,25 @@ def say() -> dict:
 _DB = config.db_path()
 
 
+# lie_down tool-description tail (C9). Mechanism-defining copy — appended after
+# the four rendered clamp numbers.
+_LIE_DOWN_DOC_TAIL = (
+    "Always handoff before rotate or night mode; Always run TaskList and "
+    "TaskStop before rotate, esp. persistent monitor and subagents. NOTE: Never "
+    "stop cortex wake signal monitor when you lie_down - ONLY stop before rotate."
+)
+
+
 def _lie_down_doc() -> str:
     """C9 (user-final): lie_down description with all four clamp numbers rendered
     from cortex config — day bounds [wake].next_wake_min/max, night bounds
-    [night].floor_min/max. Never hardcoded in the string. Tail sentence lives
-    ONLY in config.default.toml under [cortex].lie_down_doc_tail."""
+    [night].floor_min/max. Never hardcoded in the string. Tail sentence is
+    mechanism-defining copy (_LIE_DOWN_DOC_TAIL)."""
     day_min = int(_cortex_toml_section("wake", "next_wake_min", 21))
     day_max = int(_cortex_toml_section("wake", "next_wake_max", 240))
     night_min = int(_cortex_toml_section("night", "floor_min", 120))
     night_max = int(_cortex_toml_section("night", "floor_max", 360))
-    cx = config.load().get("cortex", {}) or {}
-    tail = cx.get("lie_down_doc_tail", "")
+    tail = _LIE_DOWN_DOC_TAIL
     return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
             f'[N=0-{day_max}, 0=rotate now]; '
@@ -444,15 +452,18 @@ def register(marrow_tool, db: str | None = None) -> None:
 # _window_tokens_from_transcript stays in hooks.py (shared with the all-session
 # _usage_threshold_context); it is imported lazily where needed below.
 
+# lie_down handoff deny reason (mechanism-defining copy).
+_HANDOFF_DENY_TEXT = (
+    "Write your handoff note first — call lie_down again after saving it."
+)
+
 
 def _cortex_lie_down_deny(inp: dict) -> str | None:
     """Deny lie_down until the handoff is written this window, when the
     session asked to rotate OR the window is at the fuse line (force_tokens).
     A plain lie_down under the line is allowed. Cortex window only. None = allow.
-    Deny text lives ONLY in config.default.toml under [cortex].handoff_deny_text;
-    the "handoff required" fallback below only fires if that key is missing,
-    since the caller treats any falsy return as allow (gate would silently
-    disable on an empty string)."""
+    Deny text is mechanism-defining copy (_HANDOFF_DENY_TEXT); the caller treats
+    any falsy return as allow, so the constant is never empty."""
     if not os.environ.get("MARROW_CORTEX"):
         return None
     if inp.get("tool_name") != "mcp__marrow__lie_down":
@@ -481,7 +492,7 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
             written = False
     if written:
         return None
-    return cx.get("handoff_deny_text") or "handoff required"
+    return _HANDOFF_DENY_TEXT
 
 
 # The one tool that does NOT restore the wait quota (F5): calling wait() is the
@@ -565,53 +576,57 @@ def _cortex_path(key: str, default_name: str) -> Path:
     return p if p.is_absolute() else _cortex_home() / raw
 
 
+# Wake-ear guidance lines (mechanism-defining copy). {signal_log} is substituted
+# at render time with the resolved absolute path.
+_ARM_EAR_TEXT = (
+    "Important: Set a persistent monitor first: Monitor(command: "
+    "\"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", "
+    "persistent: true); keep it alive for the entire session!"
+)
+_RESUME_EAR_TEXT = (
+    "⏯️ The session has been resumed - re-arm a fresh monitor (Monitor(command: "
+    "\"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", "
+    "persistent: true)). Continue the conversation as normal."
+)
+_RETIRED_EAR_TEXT = (
+    "⏯️ This is an archived session - ignore all task/monitor. Do not call any "
+    "tool."
+)
+
+
 def arm_ear_text() -> str | None:
     """SessionStart arm line for a fresh cortex window: the one-shot reminder to
     start the ear tail. {signal_log} is substituted with the resolved absolute
-    path (config-routed). None when disabled/blanked so the caller injects
-    nothing."""
+    path (config-routed). None on any error so the caller injects nothing."""
     try:
-        cx = config.load().get("cortex", {}) or {}
-        tmpl = str(cx.get("arm_ear_text") or "").strip()
-        if not tmpl:
-            return None
         signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return tmpl.replace("{signal_log}", str(signal_log))
+        return _ARM_EAR_TEXT.replace("{signal_log}", str(signal_log))
     except Exception:
         return None
 
 
 def resume_ear_text() -> str | None:
-    """SessionStart line for a RESUMED cortex window ([cortex].resume_ear_text):
-    drop stale pre-resume task notifications and re-arm a fresh ear tail. The
-    fresh-window counterpart is arm_ear_text. {signal_log} substituted with the
-    resolved absolute path. None when disabled/blanked so the caller injects
-    nothing."""
+    """SessionStart line for a RESUMED cortex window: drop stale pre-resume task
+    notifications and re-arm a fresh ear tail. The fresh-window counterpart is
+    arm_ear_text. {signal_log} substituted with the resolved absolute path. None
+    on any error so the caller injects nothing."""
     try:
-        cx = config.load().get("cortex", {}) or {}
-        tmpl = str(cx.get("resume_ear_text") or "").strip()
-        if not tmpl:
-            return None
         signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return tmpl.replace("{signal_log}", str(signal_log))
+        return _RESUME_EAR_TEXT.replace("{signal_log}", str(signal_log))
     except Exception:
         return None
 
 
 def retired_ear_text() -> str | None:
     """SessionStart line for a RESUMED cortex window that is NO LONGER the
-    resident ([cortex].retired_ear_text): a newer cortex has taken over, or this
-    window was rotated out and is being reopened only to read history. Tells the
-    model to stay an archive/read-only window — arm nothing, touch no wake_state.
-    {signal_log} substituted with the resolved absolute path. None when
-    disabled/blanked so the caller injects nothing."""
+    resident: a newer cortex has taken over, or this window was rotated out and is
+    being reopened only to read history. Tells the model to stay an archive/
+    read-only window — arm nothing, touch no wake_state. {signal_log} substituted
+    with the resolved absolute path. None on any error so the caller injects
+    nothing."""
     try:
-        cx = config.load().get("cortex", {}) or {}
-        tmpl = str(cx.get("retired_ear_text") or "").strip()
-        if not tmpl:
-            return None
         signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return tmpl.replace("{signal_log}", str(signal_log))
+        return _RETIRED_EAR_TEXT.replace("{signal_log}", str(signal_log))
     except Exception:
         return None
 
@@ -855,17 +870,21 @@ def _mirror_wakeup_note(text: str) -> None:
         pass
 
 
+# Rearm guidance when the ear Monitor dies mid-window (mechanism-defining copy).
+_REARM_TEXT = (
+    "Monitor is off — rearm now: Monitor(command: \"tail -n 0 -f {signal_log}\", "
+    "description: \"cortex wake signal\", persistent: true); then investigate why "
+    "it died."
+)
+
+
 def rearm_text() -> str | None:
-    """Rearm line injected when the ear Monitor dies mid-window ([cortex].
-    rearm_text). {signal_log} substituted with the resolved absolute path. None
-    when blanked so the caller injects nothing."""
+    """Rearm line injected when the ear Monitor dies mid-window. {signal_log}
+    substituted with the resolved absolute path. None on any error so the caller
+    injects nothing."""
     try:
-        cx = config.load().get("cortex", {}) or {}
-        tmpl = str(cx.get("rearm_text") or "").strip()
-        if not tmpl:
-            return None
         signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return tmpl.replace("{signal_log}", str(signal_log))
+        return _REARM_TEXT.replace("{signal_log}", str(signal_log))
     except Exception:
         return None
 
@@ -1708,17 +1727,24 @@ def _user_active_within(ws: dict, minutes: int) -> bool:
     return age < minutes * 60
 
 
+# Window-occupancy 亮牌 nudge (mechanism-defining copy). show_tokens is the
+# off-switch (<= 0 = inert).
+_SHOW_TEXT = (
+    "Context ≥120k - If not actively chatting with user, handoff within 3 turns "
+    "and lie_down(rotate=True) to clear (rotate unlocks a short next_wake, "
+    "≥16min). If mid-conversation: carry on, the 150k fuse is the backstop."
+)
+
+
 def _cortex_show_context(tpath: str) -> str:
     """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (12万
     soft, ahead of the 15万 fuse). Suppressed when user is chatting
     (user_replied_this_wake). Empty for normal sessions, below threshold,
-    or with the text blanked out."""
+    or when show_tokens <= 0 (the off-switch)."""
     if not os.environ.get("MARROW_CORTEX"):
         return ""
     cr = config.load().get("cortex_rotate", {}) or {}
-    text = (cr.get("show_text") or "").strip()
-    if not text:
-        return ""
+    text = _SHOW_TEXT
     show = int(cr.get("show_tokens", 100_000) or 0)
     if show <= 0:
         return ""

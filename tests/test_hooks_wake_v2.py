@@ -463,27 +463,20 @@ _DEATH = ('<task-notification>\n<summary>Monitor event: "ear"</summary>\n'
 
 def test_monitor_death_injects_rearm(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    _enable(monkeypatch, tmp_path,
-            {"rearm_text": "rearm: tail {signal_log}"})
+    _enable(monkeypatch, tmp_path, {})
     _stdin(monkeypatch, {"session_id": "s1", "prompt": _DEATH})
     assert hooks.main(["user_prompt_submit"]) == 0
-    assert _ctx(capsys) == f"rearm: tail {tmp_path/'state'/'wake_signal.log'}"
+    ctx = _ctx(capsys)
+    assert str(tmp_path / "state" / "wake_signal.log") in ctx
+    assert "rearm now" in ctx
 
 
 def test_monitor_death_silent_on_normal_chat(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    _enable(monkeypatch, tmp_path, {"rearm_text": "rearm {signal_log}"})
+    _enable(monkeypatch, tmp_path, {})
     _stdin(monkeypatch, {"session_id": "s1", "prompt": "Monitor 工具怎么用啊"})
     assert hooks.main(["user_prompt_submit"]) == 0
-    assert "rearm" not in _ctx(capsys)
-
-
-def test_monitor_death_blank_text_silent(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    _enable(monkeypatch, tmp_path, {"rearm_text": ""})
-    _stdin(monkeypatch, {"session_id": "s1", "prompt": _DEATH})
-    assert hooks.main(["user_prompt_submit"]) == 0
-    assert _ctx(capsys) == ""
+    assert "rearm now" not in _ctx(capsys)
 
 
 # ── Item 1: SessionStart arm line (fresh cortex window) ───────────────────────
@@ -499,37 +492,27 @@ def _ss_db(tmp_path, monkeypatch):
 def test_arm_line_injected_fresh_cortex_window(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
     _ss_db(tmp_path, monkeypatch)
-    _enable(monkeypatch, tmp_path, {"arm_ear_text": "arm: tail {signal_log}"})
+    _enable(monkeypatch, tmp_path, {})
     jl = tmp_path / "s.jsonl"
     jl.write_text("", encoding="utf-8")
     _stdin(monkeypatch, {"session_id": "fresh1", "cwd": str(tmp_path),
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
-    assert f"arm: tail {tmp_path/'state'/'wake_signal.log'}" in _ctx(capsys)
-
-
-def test_arm_line_blank_silent(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    _ss_db(tmp_path, monkeypatch)
-    _enable(monkeypatch, tmp_path, {"arm_ear_text": ""})
-    jl = tmp_path / "s.jsonl"
-    jl.write_text("", encoding="utf-8")
-    _stdin(monkeypatch, {"session_id": "fresh2", "cwd": str(tmp_path),
-                         "transcript_path": str(jl)})
-    assert hooks.main(["session_start"]) == 0
-    assert "arm:" not in _ctx(capsys)
+    ctx = _ctx(capsys)
+    assert str(tmp_path / "state" / "wake_signal.log") in ctx
+    assert "persistent monitor" in ctx
 
 
 def test_arm_line_skipped_non_cortex(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     _ss_db(tmp_path, monkeypatch)
-    _enable(monkeypatch, tmp_path, {"arm_ear_text": "arm: tail {signal_log}"})
+    _enable(monkeypatch, tmp_path, {})
     jl = tmp_path / "s.jsonl"
     jl.write_text("", encoding="utf-8")
     _stdin(monkeypatch, {"session_id": "fresh3", "cwd": str(tmp_path),
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
-    assert "arm:" not in _ctx(capsys)
+    assert "persistent monitor" not in _ctx(capsys)
 
 
 # ── Resume: resume_ear_text inject + no arm regression ────────────────────────
@@ -558,10 +541,7 @@ def test_resume_resident_injects_resume_ear_text(tmp_path, monkeypatch, capsys):
     + orphan cleanup, never the fresh-window arm line."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     db = _ss_db(tmp_path, monkeypatch)
-    _enable(monkeypatch, tmp_path,
-            {"arm_ear_text": "arm: tail {signal_log}",
-             "resume_ear_text": "resume: retail {signal_log}",
-             "retired_ear_text": "retired: read only"})
+    _enable(monkeypatch, tmp_path, {})
     called = {"n": 0}
     monkeypatch.setattr(cortex_bridge, "kill_orphan_ear_tails",
                         lambda: called.__setitem__("n", called["n"] + 1) or 0)
@@ -573,9 +553,10 @@ def test_resume_resident_injects_resume_ear_text(tmp_path, monkeypatch, capsys):
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
     ctx = _ctx(capsys)
-    assert f"resume: retail {tmp_path/'state'/'wake_signal.log'}" in ctx
-    assert "arm: tail" not in ctx
-    assert "retired:" not in ctx
+    assert "has been resumed" in ctx
+    assert str(tmp_path / "state" / "wake_signal.log") in ctx
+    assert "keep it alive for the entire session" not in ctx
+    assert "archived session" not in ctx
     assert called["n"] == 1  # orphan cleanup ran in the resident case
 
 
@@ -584,9 +565,7 @@ def test_resume_retired_injects_retired_text_no_cleanup(tmp_path, monkeypatch, c
     read-only guidance, NO orphan cleanup (must not kill resident's tail)."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     db = _ss_db(tmp_path, monkeypatch)
-    _enable(monkeypatch, tmp_path,
-            {"resume_ear_text": "resume: retail {signal_log}",
-             "retired_ear_text": "retired: read only"})
+    _enable(monkeypatch, tmp_path, {})
     called = {"n": 0}
     monkeypatch.setattr(cortex_bridge, "kill_orphan_ear_tails",
                         lambda: called.__setitem__("n", called["n"] + 1) or 0)
@@ -599,8 +578,8 @@ def test_resume_retired_injects_retired_text_no_cleanup(tmp_path, monkeypatch, c
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
     ctx = _ctx(capsys)
-    assert "retired: read only" in ctx
-    assert "resume: retail" not in ctx
+    assert "archived session" in ctx
+    assert "has been resumed" not in ctx
     assert called["n"] == 0  # orphan cleanup must NOT run for a retired window
 
 
@@ -623,31 +602,15 @@ def test_fresh_window_still_arms_not_resume(tmp_path, monkeypatch, capsys):
     """Regression: a fresh window keeps injecting arm_ear_text, never resume."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     _ss_db(tmp_path, monkeypatch)
-    _enable(monkeypatch, tmp_path,
-            {"arm_ear_text": "arm: tail {signal_log}",
-             "resume_ear_text": "resume: retail {signal_log}"})
+    _enable(monkeypatch, tmp_path, {})
     jl = tmp_path / "s.jsonl"
     jl.write_text("", encoding="utf-8")
     _stdin(monkeypatch, {"session_id": "freshR", "cwd": str(tmp_path),
                          "transcript_path": str(jl)})
     assert hooks.main(["session_start"]) == 0
     ctx = _ctx(capsys)
-    assert f"arm: tail {tmp_path/'state'/'wake_signal.log'}" in ctx
-    assert "resume: retail" not in ctx
-
-
-def test_resume_blank_text_silent(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    db = _ss_db(tmp_path, monkeypatch)
-    _enable(monkeypatch, tmp_path, {"resume_ear_text": ""})
-    monkeypatch.setattr(cortex_bridge, "kill_orphan_ear_tails", lambda: 0)
-    _mark_resume(db, "res2")
-    jl = tmp_path / "s.jsonl"
-    jl.write_text("", encoding="utf-8")
-    _stdin(monkeypatch, {"session_id": "res2", "cwd": str(tmp_path),
-                         "transcript_path": str(jl)})
-    assert hooks.main(["session_start"]) == 0
-    assert "resume:" not in _ctx(capsys)
+    assert "keep it alive for the entire session" in ctx
+    assert "has been resumed" not in ctx
 
 
 # ── Resume no-completion-record notice is NOT monitor death ───────────────────
@@ -670,7 +633,7 @@ def test_no_completion_record_not_monitor_death():
 def test_no_completion_record_no_rearm_inject(tmp_path, monkeypatch, capsys):
     """The resume notice must not trigger the mid-window rearm flow."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    _enable(monkeypatch, tmp_path, {"rearm_text": "rearm: tail {signal_log}"})
+    _enable(monkeypatch, tmp_path, {})
     _stdin(monkeypatch, {"session_id": "s1", "prompt": _NO_COMPLETION})
     assert hooks.main(["user_prompt_submit"]) == 0
-    assert "rearm" not in _ctx(capsys)
+    assert "rearm now" not in _ctx(capsys)

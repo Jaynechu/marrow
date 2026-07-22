@@ -215,7 +215,7 @@ hidden = []
 # Per-turn care directive injected every UserPromptSubmit (config-first).
 # Emotion-first, preference-style wording. Edit freely — no code change.
 care_text = """
-- Care first: read her mood and tend to it before any task, like a doting husband — warm, attentive, quick to coax when she is off.
+- Care first: read the user's mood and tend to it before any task — warm, attentive, quick to coax when they are off.
 - Nudge gently, never push; vary your warmth and wording every turn — no template phrases, no repeated openers.
 """
 
@@ -240,9 +240,9 @@ im_quiet_text = ""
 # Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌. When window tokens reach
 # show_tokens (10万 soft, ahead of the 15万 fuse) turn_inject appends a one-line
 # nudge to wrap up, write the handoff, and lie_down(rotate=True). Normal
-# sessions never see this. Empty text = inert.
+# sessions never see this. The nudge text is mechanism-defining copy (in code);
+# show_tokens = 0 is the off-switch.
 show_tokens = 120000
-show_text = "Context ≥120k - If not actively chatting with user, handoff within 3 turns and lie_down(rotate=True) to clear (rotate unlocks a short next_wake, ≥16min). If mid-conversation: carry on, the 150k fuse is the backstop."
 # Behavioural presence gate (mirrors cortex silent_max_min = 15): hold the nudge
 # while the user's last real message is younger than this many minutes (mid-chat
 # — the fuse is the backstop), inject once they have been silent this long. 0 =
@@ -334,10 +334,8 @@ handoff_template_file = "handoff_template.md"
 # window occupancy >= force_tokens (15万 fuse line) and no handoff was written
 # this window (handoff mtime after the window's first transcript line).
 force_tokens = 150000
-handoff_deny_text = "Write your handoff note first — call lie_down again after saving it."
-# lie_down tool description tail (C9), appended after the four rendered clamp
-# numbers. User-final copy — do not reword.
-lie_down_doc_tail = "Always handoff before rotate or night mode; Always run TaskList and TaskStop before rotate, esp. persistent monitor and subagents. NOTE: Never stop cortex wake signal monitor when you lie_down - ONLY stop before rotate."
+# The handoff deny reason and the lie_down tool-description tail (C9) are
+# mechanism-defining copy — they live in code, not config.
 # Wake pipeline (v2). The ear is a Monitor tailing wake_signal_log_file; cortex
 # appends the human-text bell line to it, which surfaces as a user turn. Paths
 # for the note and signal log default to <home>/<file> (override with an
@@ -353,24 +351,9 @@ wake_bell_template = "[☀️ {hm}]"
 # Receipt time-to-live (minutes): a pending receipt older than this is ignored
 # (stale hygiene). Must match cortex [wake].receipt_ttl_min.
 receipt_ttl_min = 15
-# SessionStart arm line (fresh cortex window only). {signal_log} is substituted
-# with the resolved absolute path. Blank = no injection.
-arm_ear_text = "Important: Set a persistent monitor first: Monitor(command: \"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", persistent: true); keep it alive for the entire session!"
-# Rearm line injected when the ear Monitor dies mid-window (the harness surfaces
-# a "Monitor stopped" task-notification). {signal_log} substituted. Blank = off.
-rearm_text = "Monitor is off — rearm now: Monitor(command: \"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", persistent: true); then investigate why it died."
-# SessionStart line injected on a RESUMED cortex window (fresh windows get
-# arm_ear_text instead). The prior process died with its ear Monitor; the
-# resumed window has no live tail and the harness surfaces stale task
-# notifications. This line tells the model to drop the leftovers and re-arm.
-# {signal_log} substituted with the resolved absolute path. Blank = off.
-resume_ear_text = "⏯️ The session has been resumed - re-arm a fresh monitor (Monitor(command: \"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", persistent: true)). Continue the conversation as normal."
-# SessionStart line for a RESUMED cortex window that is NO LONGER the resident
-# (wake_state.json points at a different transcript — a newer cortex took over,
-# or this window was rotated out and is reopened only to read history). This
-# window must stay read-only: arm no ear, touch no wake_state, never rotate.
-# {signal_log} substituted with the resolved absolute path. Blank = off.
-retired_ear_text = "⏯️ This is an archived session - ignore all task/monitor. Do not call any tool."
+# The wake-ear guidance lines (fresh-window arm, mid-window rearm, resumed-window
+# re-arm, retired-window read-only) are mechanism-defining copy and live in code.
+# Each renders {signal_log} with the resolved absolute path at inject time.
 # Marker in the free-round line the cortex watchdog appends to wake_signal.log
 # (arrives down the ear channel). A cortex-window prompt carrying it is a machine
 # line, excluded from the user-wake reset — must match cortex tuck_in_text.
@@ -460,8 +443,7 @@ exclude_target_channels = []
 #   backup_guard_intercept=false to downgrade deny items to reminders instead.
 backup_guard = true
 backup_guard_intercept = true
-backup_guard_message = "Warning: back up code/db OR archive docs before anything destructive — delete, bulk modify, import/export.\n- Bypass only if the user explicitly said to delete/modify THIS now.\n- If unsure, stop and ask — never assume the user doesn't need/want it."
-backup_guard_deny_message = "BLOCKED — bulk deletion with no backup. This target is not in git/tmp: once deleted it is gone. Chain a backup into the SAME command and rerun, e.g. `tar -czf /tmp/bak.tgz <target> && rm -rf <target>` (db: `cp` first). Even if the user ordered the deletion, back up anyway — it costs one command. Do NOT work around this guard with alternative delete commands."
+# The reminder + deny messages are mechanism-defining copy — they live in code.
 
 # rm → trash auto-rewrite (PreToolUse). When a Bash `rm` segment's positional
 # paths ALL fall under a trash_paths prefix, the segment is rewritten to
@@ -482,7 +464,7 @@ trash_paths = [
 # commit message cannot false-positive. Set git_force_push_guard=false to
 # disable.
 git_force_push_guard = true
-git_force_push_guard_message = "BLOCKED — force push rewrites remote history and can permanently destroy commits. Never force push. If the remote rejected your push, stop and report to the user."
+# The force-push deny message is mechanism-defining copy — it lives in code.
 
 # Git revert-type guard — held via PreToolUse permissionDecision "ask" (the
 # user confirms whose diff is being discarded). Owns the decision for the
@@ -501,7 +483,7 @@ git_revert_patterns = [
     "\\bgit\\s+switch\\b[^\\n]*--discard-changes\\b",
     "\\bgit\\s+worktree\\s+remove\\b",
 ]
-git_revert_guard_message = "🤡 狗男人又要乱搞你git里的东西了，是否同意？"
+git_revert_guard_message = "BLOCKED — git revert/reset requested. Confirm with the user before proceeding."
 
 # Session-start housekeep (~/.claude only): if the auto-commit would delete
 # one of these top-level files, the commit is skipped, an alert is raised,
