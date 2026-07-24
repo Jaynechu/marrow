@@ -374,6 +374,18 @@ def _shell_kick(shell: str) -> bool:
         return False
 
 
+def shell_direct(text: str, shell: str = "tg") -> dict:
+    """Directed kick: leave `text` in the shell's ledger (pending_note) and poke
+    its host. The host claims the text on its next pass and feeds it as that
+    round's turn — asleep shells wake for it, live ones take it next turn. Host
+    down = the text still lands on the host's next recompute tick."""
+    body = (text or "").strip()
+    if not body:
+        return {"ok": False, "error": "empty direction"}
+    shell_state_write({"pending_note": body}, shell=shell)
+    return {"ok": True, "shell": shell, "kicked": _shell_kick(shell)}
+
+
 def _lie_down_shell(shell: str, next_wake_min: float) -> dict:
     """lie_down for a non-cli shell: the host owns the timing, so this only
     writes the wake ledger (<shell_state_dir>/<shell>.json) and kicks the host.
@@ -1257,7 +1269,7 @@ def _wake_state_save(p: Path, data: dict) -> None:
 # The non-cli shells' ledger, written by their host (tg bridge). The cli shell
 # keeps wake_state.json. Same flock + atomic-replace protocol as above.
 
-_SHELL_STATE_KEYS = ("session_id", "next_wake_at", "last_note_ts")
+_SHELL_STATE_KEYS = ("session_id", "next_wake_at", "last_note_ts", "pending_note")
 
 
 def _shell_state_path(shell: str | None = None) -> Path:

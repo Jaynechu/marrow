@@ -543,6 +543,49 @@ def test_tg_lie_down_survives_a_dead_host(monkeypatch, tmp_path):
     assert cortex_bridge.shell_state_read("tg")["next_wake_at"]
 
 
+def test_shell_direct_writes_pending_note_and_kicks(monkeypatch, tmp_path):
+    """T10 directed kick: the text lands in the ledger, then the host is poked."""
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    kicks = []
+    monkeypatch.setattr(cortex_bridge, "_shell_kick",
+                        lambda shell: kicks.append(shell) or True)
+    out = cortex_bridge.shell_direct("  go check the diary  ")
+    assert out == {"ok": True, "shell": "tg", "kicked": True}
+    assert kicks == ["tg"]
+    assert cortex_bridge.shell_state_read("tg")["pending_note"] == "go check the diary"
+
+
+def test_shell_direct_rejects_empty_text_without_kicking(monkeypatch, tmp_path):
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    monkeypatch.setattr(cortex_bridge, "_shell_kick",
+                        lambda shell: pytest.fail("must not kick"))
+    assert cortex_bridge.shell_direct("   ")["ok"] is False
+    assert cortex_bridge.shell_state_read("tg") == {}
+
+
+def test_shell_direct_survives_a_dead_host(monkeypatch, tmp_path):
+    """Host down -> kicked False, text still queued for its recompute tick."""
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells"),
+                          "shell_socket": str(tmp_path / "absent.sock")})
+    out = cortex_bridge.shell_direct("wake up")
+    assert out["ok"] is True and out["kicked"] is False
+    assert cortex_bridge.shell_state_read("tg")["pending_note"] == "wake up"
+
+
+def test_cli_shell_direct_command(monkeypatch, tmp_path, capsys):
+    """mw shell-direct <text> — the slash-command entry point."""
+    from marrow import cli
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
+    assert cli.main(["shell-direct", "go", "check", "the", "diary"]) == 0
+    assert "kicked=True" in capsys.readouterr().out
+    assert cortex_bridge.shell_state_read("tg")["pending_note"] == "go check the diary"
+
+
 def test_shell_kick_wire_format_is_one_shell_line(monkeypatch, tmp_path):
     """The datagram must match synapse_core.scheduler.send_kick: "<shell>\\n"
     over an AF_UNIX stream socket. Real socket, short path (macOS 104-byte cap)."""
