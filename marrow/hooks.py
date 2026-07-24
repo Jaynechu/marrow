@@ -2881,15 +2881,6 @@ def pretool_use() -> int:
             })
             return 0
 
-        # Cortex F5 activity feed — any cortex tool call other than wait()
-        # restores the round's wait quota (no consecutive empty waits). Never
-        # blocks; runs before the lie_down gate below.
-        try:
-            if cortex_bridge.enabled():
-                cortex_bridge._cortex_round_activity(inp)
-        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
-            pass
-
         # Cortex lie_down nudge — non-blocking additionalContext on every cortex
         # lie_down call (rotate arg selects the rotate copy). Rides alongside the
         # deny below when both fire; otherwise emitted on its own (lie_down is not

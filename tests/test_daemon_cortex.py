@@ -354,28 +354,27 @@ def test_switch_on_registers_wish_only(monkeypatch):
     names = set(m._tool_manager._tools.keys())
     assert "wish" in names
     assert "first" not in names and "goal" not in names
-    assert "lie_down" not in names and "wait" not in names and "say" not in names
+    assert "lie_down" not in names and "say" not in names
 
 
-def test_switch_on_cortex_session_registers_wish_and_cortex_trio(monkeypatch):
-    """enabled=true AND cortex session (_CORTEX) => wish + lie_down/wait/say
-    register; first/goal stay pending (not registered)."""
+def test_switch_on_cortex_session_registers_wish_and_cortex_pair(monkeypatch):
+    """enabled=true AND cortex session (_CORTEX) => wish + lie_down/say
+    register (wait retired T1); first/goal stay pending (not registered)."""
     _force_enabled(monkeypatch, True)
     m, mt = _fresh_mcp()
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     names = set(m._tool_manager._tools.keys())
-    assert {"wish", "lie_down", "wait", "say"} <= names
+    assert {"wish", "lie_down", "say"} <= names
+    assert "wait" not in names
     assert "first" not in names and "goal" not in names
 
 
 def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_path):
-    """C9/C10: lie_down + wait descriptions render clamp numbers from cortex.toml
-    at register(), never hardcoded. A shared cortex.toml supplies the values,
-    including the nested [wake.watchdog].silent_max_min auto-timer length."""
+    """C9: lie_down description renders clamp numbers from cortex.toml at
+    register(), never hardcoded."""
     (tmp_path / "cortex.toml").write_text(
-        "[wake]\nwait_min = 2\nwait_max = 18\nnext_wake_min = 25\n"
-        "next_wake_max = 200\n[wake.watchdog]\nsilent_max_min = 12\n"
+        "[wake]\nnext_wake_min = 25\nnext_wake_max = 200\n"
         "[night]\nfloor_min = 90\nfloor_max = 300\n")
     monkeypatch.setattr(cortex_bridge.config, "db_path",
                         lambda: str(tmp_path / "marrow.db"))
@@ -384,19 +383,13 @@ def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_pat
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     ld = m._tool_manager._tools["lie_down"].description
-    wd = m._tool_manager._tools["wait"].description
     assert "N=25-200" in ld and 'N=90-300' in ld
-    assert "N=2-18" in wd
-    assert "no consecutive empty waits" in wd
-    assert "12-min auto timer" in wd  # rendered from [wake.watchdog].silent_max_min
-    assert "expiry brings the 3-choice menu" in wd
     # No stale hardcoded ranges leaked in.
-    assert "16-55" not in wd and "90-360" not in ld
+    assert "16-55" not in ld
 
 
 def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
-    """No cortex.toml -> tolerant defaults (day 21-240, wait 1-20, night 120-360,
-    auto timer 20)."""
+    """No cortex.toml -> tolerant defaults (day 21-240, night 120-360)."""
     monkeypatch.setattr(cortex_bridge.config, "db_path",
                         lambda: str(tmp_path / "marrow.db"))  # no cortex.toml here
     _force_enabled(monkeypatch, True)
@@ -408,8 +401,6 @@ def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
     assert 'mode="night"' in ld and "rotate=True" in ld
     # Tail sentence is mechanism-defining copy in code.
     assert cortex_bridge._LIE_DOWN_DOC_TAIL in ld
-    assert "20-min auto timer" in m._tool_manager._tools["wait"].description
-    assert "N=1-20" in m._tool_manager._tools["wait"].description
 
 
 def test_switch_off_show_context_gated_empty(monkeypatch, tmp_path):

@@ -207,11 +207,10 @@ def _read_gen(tmp_path):
     return d.get("gen")
 
 
-def test_tuck_in_line_injects_menu_not_note(tmp_path, monkeypatch, capsys):
+def test_tuck_in_line_injects_nothing_no_double_note(tmp_path, monkeypatch, capsys):
     """A [NEW ROUND] free-round line carries its diff-mode note inline (visible in
-    the ear Monitor event); the hook must NOT re-inject the note (no duplicate),
-    but DOES inject the C2 menu body covertly via additionalContext (never on
-    screen)."""
+    the ear Monitor event); the hook must NOT re-inject the note (no duplicate).
+    T2: the covert C2 menu is retired — the marker turn now injects nothing."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("FROZEN note", encoding="utf-8")
     _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]"})
@@ -220,19 +219,7 @@ def test_tuck_in_line_injects_menu_not_note(tmp_path, monkeypatch, capsys):
     assert hooks.main(["user_prompt_submit"]) == 0
     ctx = _ctx(capsys)
     assert "FROZEN note" not in ctx     # note NOT re-injected (no double note)
-    assert "3 choices" in ctx           # C2 menu injected covertly
-    assert "lie_down" in ctx
-
-
-def test_tuck_in_menu_blank_injects_nothing(tmp_path, monkeypatch, capsys):
-    """[cortex].tuck_in_menu_text = "" -> marker-only round, hook injects nothing."""
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    _enable(monkeypatch, tmp_path,
-            {"tuck_in_marker": "[NEW ROUND]", "tuck_in_menu_text": ""})
-    _stdin(monkeypatch, {"session_id": "s1",
-                         "prompt": "note\n⏳ [NEW ROUND] 15 min"})
-    assert hooks.main(["user_prompt_submit"]) == 0
-    assert _ctx(capsys) == ""
+    assert ctx == ""                    # marker-only round, nothing covert injected
 
 
 # ── Item 4: FUSE / CTL covert body inject (marker on screen, body via hook) ────
