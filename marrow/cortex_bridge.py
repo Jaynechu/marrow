@@ -1632,36 +1632,87 @@ def maybe_morning_kick_cli() -> None:
     kick_cortex("morning")
 
 
-_HANDOFF_DATE_RE = _re.compile(
-    r"\[(\d{4}-\d{2}-\d{2})\]|(\d{4}-\d{2}-\d{2})\s*$")
+_HANDOFF_LOG_DATE_RE = _re.compile(r"^###\s*(\d{4}-\d{2}-\d{2})\b")
+_HANDOFF_UNCHECKED_RE = _re.compile(r"^\s*(?:-\s*)?\[\s*\]")
+_HANDOFF_HEADING_RE = _re.compile(r"^#{1,6}\s")
 
 
-def _handoff_l1_date(text: str) -> str | None:
-    """L1 date: `[YYYY-MM-DD]` bracketed or a bare trailing YYYY-MM-DD.
-    None if L1 is missing/unparsable (e.g. the literal template placeholder)."""
-    l1 = text.splitlines()[0] if text else ""
-    m = _HANDOFF_DATE_RE.search(l1)
-    if not m:
+def _handoff_headings() -> tuple[str, str, str]:
+    """(todo, activity, carry) headings — the sole code<->template contract."""
+    cx = config.load().get("cortex", {}) or {}
+    return (
+        cx.get("handoff_todo_heading") or "## 待办",
+        cx.get("handoff_activity_heading") or "## 日志",
+        cx.get("handoff_carry_heading") or "### 前情",
+    )
+
+
+def _section_span(lines: list[str], heading: str) -> tuple[int, int] | None:
+    """Index of *heading* to the next heading (exclusive). None if absent.
+    End = EOF when no later heading exists."""
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip() == heading.strip():
+            start = i
+            break
+    if start is None:
         return None
-    date_str = m.group(1) or m.group(2)
-    try:
-        datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        return None
-    return date_str
+    for j in range(start + 1, len(lines)):
+        if _HANDOFF_HEADING_RE.match(lines[j]):
+            return start, j
+    return start, len(lines)
+
+
+def _handoff_page_range(old_text: str) -> tuple[str | None, str]:
+    """(start_date, end_date) for the archive name. start = first
+    `### YYYY-MM-DD` in the page's log; end = today (rotate day)."""
+    end = datetime.now(config.get_tz()).date().isoformat()
+    for ln in old_text.splitlines():
+        m = _HANDOFF_LOG_DATE_RE.match(ln)
+        if m:
+            return m.group(1), end
+    return None, end
+
+
+def _handoff_archive_stem(shell: str, old_text: str) -> str:
+    """{shell}-{date} single day, {shell}-{date~date} range."""
+    start, end = _handoff_page_range(old_text)
+    if start is None or start == end:
+        return f"{shell}-{end}"
+    s_md, e_md = start[5:], end[5:]  # strip year for the range tail
+    return f"{shell}-{start}~{e_md}" if start[:4] == end[:4] else f"{shell}-{start}~{end}"
+
+
+def _build_fresh_page(template_text: str, todos: list[str], carry: list[str]) -> str:
+    """Fresh template with carried unchecked todos merged into the todo section
+    and the last activity lines placed under the carry heading."""
+    todo_h, _act_h, carry_h = _handoff_headings()
+    lines = template_text.splitlines()
+
+    if todos:
+        span = _section_span(lines, todo_h)
+        if span is not None:
+            _s, e = span
+            lines[e:e] = todos
+            # recompute after insert so the carry heading index stays valid
+    if carry:
+        span = _section_span(lines, carry_h)
+        if span is not None:
+            s, _e = span
+            lines[s + 1:s + 1] = carry
+    return "\n".join(lines) + ("\n" if template_text.endswith("\n") else "")
 
 
 def _cortex_page_turn(p: Path, old_text: str) -> None:
-    """Archive a stale handoff.md and replace it with a fresh dated copy of the
-    template. Best-effort: any failure leaves the stale file in place (the
-    NEXT SessionStart will retry the page-turn)."""
+    """Archive the full page and replace it with a fresh template carrying
+    unchecked todos + the last handoff_carry_lines activity lines. Best-effort:
+    any failure leaves the file in place (the next SessionStart retries)."""
     cx = config.load().get("cortex", {}) or {}
-    home = (cx.get("home") or "~/.config/marrow/cortex")
-    home_p = Path(home).expanduser()
+    home_p = Path(cx.get("home") or "~/.config/marrow/cortex").expanduser()
     archive_dir = home_p / (cx.get("handoff_archive_dir") or "handoff_archive")
-    template_name = cx.get("handoff_template_file") or "handoff_template.md"
-    template_p = home_p / template_name
-    old_date = _handoff_l1_date(old_text)
+    template_p = home_p / (cx.get("handoff_template_file") or "handoff_template.md")
+    carry_n = int(cx.get("handoff_carry_lines", 10) or 0)
+    todo_h, act_h, _carry_h = _handoff_headings()
     try:
         old_mtime = p.stat().st_mtime
     except OSError:
@@ -1669,19 +1720,39 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
     try:
         template_text = template_p.read_text(encoding="utf-8")
     except OSError:
-        return  # no template to copy from — leave the stale file in place
+        return  # no template — leave the file in place
+
+    old_lines = old_text.splitlines()
+    # Unchecked todo lines from the old todo section.
+    todos: list[str] = []
+    span = _section_span(old_lines, todo_h)
+    if span is not None:
+        s, e = span
+        todos = [ln for ln in old_lines[s + 1:e]
+                 if _HANDOFF_UNCHECKED_RE.match(ln)]
+    # Last N non-blank activity lines from the old activity section
+    # (activity_heading to EOF; sub-headings excluded, their content kept).
+    carry: list[str] = []
+    if carry_n > 0:
+        for i, ln in enumerate(old_lines):
+            if ln.strip() == act_h.strip():
+                body = [x for x in old_lines[i + 1:]
+                        if x.strip() and not _HANDOFF_HEADING_RE.match(x)]
+                carry = body[-carry_n:]
+                break
+
     try:
         archive_dir.mkdir(parents=True, exist_ok=True)
-        dest = archive_dir / f"{old_date}.md"
+        stem = _handoff_archive_stem(_cortex_shell_id(), old_text)
+        dest = archive_dir / f"{stem}.md"
         n = 1
         while dest.exists():
             n += 1
-            dest = archive_dir / f"{old_date}-{n}.md"
+            dest = archive_dir / f"{stem}-{n}.md"
         shutil.move(str(p), str(dest))
 
-        today = datetime.now(config.get_tz()).date().isoformat()
-        new_text = template_text.replace("[YYYY-MM-DD]", f"[{today}]")
-        p.write_text(new_text, encoding="utf-8")
+        p.write_text(_build_fresh_page(template_text, todos, carry),
+                     encoding="utf-8")
         # Backdate mtime so _cortex_lie_down_deny's "written this window" gate
         # doesn't wrongly read the fresh copy as this window's own handoff.
         os.utime(p, (old_mtime, old_mtime))
@@ -1690,24 +1761,31 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
 
 
 def _cortex_handoff_page_turn_if_stale() -> None:
-    """Daily file side effect for a fresh cortex window: a stale (before-today)
-    L1 date triggers archive + fresh dated template copy for tomorrow's read.
-    No parsable date or unreadable file -> no-op. No content is returned; the
-    user's cortex CLAUDE.md `@handoff.md` import is the sole read path now."""
+    """Line-count page-turn side effect for a fresh cortex window: own handoff
+    over handoff_max_lines -> archive + fresh template carrying todos/activity.
+    First cli run migrates a legacy handoff.md -> handoff-cli.md (one-time mv).
+    Under the line cap or unreadable -> no-op. No content returned; the cortex
+    CLAUDE.md memory import is the sole read path."""
     p = _cortex_handoff_path()
     if p is None:
         return
+    # One-time legacy migration: handoff.md -> handoff-cli.md (cli only).
+    if _cortex_shell_id() == "cli" and not p.exists():
+        legacy = p.parent / "handoff.md"
+        if legacy.exists():
+            try:
+                shutil.move(str(legacy), str(p))
+            except OSError:
+                pass
     try:
-        text = p.read_text(encoding="utf-8").strip()
+        text = p.read_text(encoding="utf-8")
     except OSError:
         return
-    if not text:
+    if not text.strip():
         return
-    date_str = _handoff_l1_date(text)
-    if date_str is None:
-        return
-    today = datetime.now(config.get_tz()).date().isoformat()
-    if date_str < today:
+    cx = config.load().get("cortex", {}) or {}
+    max_lines = int(cx.get("handoff_max_lines", 150) or 0)
+    if max_lines > 0 and len(text.splitlines()) > max_lines:
         _cortex_page_turn(p, text)
 
 

@@ -348,28 +348,52 @@ def test_allow_rotate_after_metadata_transcript(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# daily handoff page-turn
+# line-count handoff page-turn (T5)
 # --------------------------------------------------------------------------- #
 
-def _page_turn_setup(tmp_path, monkeypatch, l1_date=None, template="# Title [YYYY-MM-DD]\n\nbody"):
-    """Home dir with handoff.md (given L1 date) + a template file. Patches
-    config.load() cortex section so home/template/archive_dir resolve here."""
+_TEMPLATE = "\n".join([
+    "# 手帐",
+    "## 待办",
+    "> ONLY before rotate",
+    "## 日志",
+    "### 前情",
+    "### YYYY-MM-DD",
+    "- HH:mm: <one line>",
+]) + "\n"
+
+
+def _handoff_body(todos, log_lines, log_date="2026-07-01"):
+    """Build a handoff page with the given todos + activity lines."""
+    lines = ["# 手帐", "## 待办", "> ONLY before rotate"]
+    lines += todos
+    lines += ["## 日志", "### 前情", f"### {log_date}"]
+    lines += log_lines
+    return "\n".join(lines) + "\n"
+
+
+def _page_setup(tmp_path, monkeypatch, content, shell="1"):
+    """Home dir with handoff-cli.md + template. Routes cortex config here and
+    sets the shell env so _cortex_handoff_path resolves handoff-<shell>.md."""
+    monkeypatch.setenv("MARROW_CORTEX", shell)
     home = tmp_path / "cortex_home"
     home.mkdir(parents=True, exist_ok=True)
-    hp = home / "handoff.md"
-    l1 = f"# Title [{l1_date}]" if l1_date else "# Title"
-    hp.write_text(f"{l1}\nyesterday's content", encoding="utf-8")
-    (home / "handoff_template.md").write_text(template, encoding="utf-8")
-    monkeypatch.setattr(cortex_bridge, "_cortex_handoff_path", lambda: hp)
+    name = "handoff-tg.md" if shell == "tg" else "handoff-cli.md"
+    hp = home / name
+    hp.write_text(content, encoding="utf-8")
+    (home / "handoff_template.md").write_text(_TEMPLATE, encoding="utf-8")
     real_load = config.load
 
     def _patched_load():
-        cfg = real_load()
-        cfg = dict(cfg)
+        cfg = dict(real_load())
         cx = dict(cfg.get("cortex", {}))
         cx["home"] = str(home)
         cx["handoff_archive_dir"] = "handoff_archive"
         cx["handoff_template_file"] = "handoff_template.md"
+        cx["handoff_max_lines"] = 150
+        cx["handoff_carry_lines"] = 10
+        cx["handoff_todo_heading"] = "## 待办"
+        cx["handoff_activity_heading"] = "## 日志"
+        cx["handoff_carry_heading"] = "### 前情"
         cfg["cortex"] = cx
         return cfg
 
@@ -378,53 +402,88 @@ def _page_turn_setup(tmp_path, monkeypatch, l1_date=None, template="# Title [YYY
 
 
 def test_page_turn_returns_no_content(tmp_path, monkeypatch):
-    """SessionStart must not surface handoff content — the page-turn is a pure
-    side effect; the user's cortex CLAUDE.md `@handoff.md` import is the read
-    path now."""
-    home, hp = _page_turn_setup(tmp_path, monkeypatch, l1_date="2026-07-01")
+    body = _handoff_body(["[] a"], [f"- x{i}" for i in range(200)])
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
     assert cortex_bridge._cortex_handoff_page_turn_if_stale() is None
 
 
-def test_page_turn_same_day_noop(tmp_path, monkeypatch):
-    today = datetime.now(config.get_tz()).date().isoformat()
-    home, hp = _page_turn_setup(tmp_path, monkeypatch, l1_date=today)
+def test_page_turn_under_cap_noop(tmp_path, monkeypatch):
+    body = _handoff_body(["[] keep"], [f"- x{i}" for i in range(140)])
+    assert len(body.splitlines()) < 150
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
     cortex_bridge._cortex_handoff_page_turn_if_stale()
     assert hp.exists()
-    assert "yesterday's content" in hp.read_text(encoding="utf-8")
+    assert "[] keep" in hp.read_text(encoding="utf-8")
     assert not (home / "handoff_archive").exists()
 
 
-def test_page_turn_cross_day_archives_and_refreshes(tmp_path, monkeypatch):
+def test_page_turn_over_cap_archives_and_carries(tmp_path, monkeypatch):
+    todos = ["[] survive", "[x] done", "[ ] survive2"]
+    logs = [f"- HH:mm: line{i}" for i in range(160)]
+    body = _handoff_body(todos, logs)
+    assert len(body.splitlines()) > 150
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
     old_mtime = time.time() - 86400
-    home, hp = _page_turn_setup(tmp_path, monkeypatch, l1_date="2026-07-01")
     os.utime(hp, (old_mtime, old_mtime))
     cortex_bridge._cortex_handoff_page_turn_if_stale()
-    # archive file exists, holds the OLD content
-    archived = home / "handoff_archive" / "2026-07-01.md"
+
+    # archive: range name, holds the whole old page
+    archived = home / "handoff_archive" / f"cli-2026-07-01~{datetime.now(config.get_tz()).strftime('%m-%d')}.md"
     assert archived.exists()
-    assert "yesterday's content" in archived.read_text(encoding="utf-8")
-    # new file has today's date
-    today = datetime.now(config.get_tz()).date().isoformat()
+    assert "line0" in archived.read_text(encoding="utf-8")
+
     new_text = hp.read_text(encoding="utf-8")
-    assert f"[{today}]" in new_text
-    assert "yesterday's content" not in new_text
-    # new file mtime is in the past (backdated, not "written this window")
+    # unchecked todos survive, checked dropped
+    assert "[] survive" in new_text
+    assert "[ ] survive2" in new_text
+    assert "[x] done" not in new_text
+    # last 10 activity lines carried under 前情
+    assert "line159" in new_text
+    assert "line149" not in new_text
+    # backdated mtime (not "written this window")
     assert hp.stat().st_mtime <= old_mtime + 1
 
 
-def test_page_turn_unparsable_date_no_op(tmp_path, monkeypatch):
-    home, hp = _page_turn_setup(tmp_path, monkeypatch, l1_date=None)
+def test_page_turn_single_day_archive_name(tmp_path, monkeypatch):
+    logs = [f"- l{i}" for i in range(160)]
+    today = datetime.now(config.get_tz()).date().isoformat()
+    body = _handoff_body([], logs, log_date=today)
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
     cortex_bridge._cortex_handoff_page_turn_if_stale()
-    assert hp.exists()
-    assert not (home / "handoff_archive").exists()
-    assert "yesterday's content" in hp.read_text(encoding="utf-8")
+    assert (home / "handoff_archive" / f"cli-{today}.md").exists()
 
 
 def test_page_turn_collision_suffix(tmp_path, monkeypatch):
-    home, hp = _page_turn_setup(tmp_path, monkeypatch, l1_date="2026-07-01")
+    logs = [f"- l{i}" for i in range(160)]
+    today = datetime.now(config.get_tz()).date().isoformat()
+    body = _handoff_body([], logs, log_date=today)
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
     archive_dir = home / "handoff_archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
-    (archive_dir / "2026-07-01.md").write_text("existing", encoding="utf-8")
+    (archive_dir / f"cli-{today}.md").write_text("existing", encoding="utf-8")
     cortex_bridge._cortex_handoff_page_turn_if_stale()
-    assert (archive_dir / "2026-07-01.md").read_text(encoding="utf-8") == "existing"
-    assert (archive_dir / "2026-07-01-2.md").exists()
+    assert (archive_dir / f"cli-{today}.md").read_text(encoding="utf-8") == "existing"
+    assert (archive_dir / f"cli-{today}-2.md").exists()
+
+
+def test_page_turn_legacy_migration(tmp_path, monkeypatch):
+    """First cli run: legacy handoff.md migrates to handoff-cli.md before any
+    page-turn check."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    home = tmp_path / "cortex_home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "handoff.md").write_text(_handoff_body(["[] t"], ["- l"]), encoding="utf-8")
+    (home / "handoff_template.md").write_text(_TEMPLATE, encoding="utf-8")
+    real_load = config.load
+
+    def _patched_load():
+        cfg = dict(real_load())
+        cx = dict(cfg.get("cortex", {}))
+        cx["home"] = str(home)
+        cfg["cortex"] = cx
+        return cfg
+
+    monkeypatch.setattr(config, "load", _patched_load)
+    cortex_bridge._cortex_handoff_page_turn_if_stale()
+    assert (home / "handoff-cli.md").exists()
+    assert not (home / "handoff.md").exists()
