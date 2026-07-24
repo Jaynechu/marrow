@@ -477,6 +477,126 @@ def test_shell_state_path_defaults_to_data_dir_and_env_shell(monkeypatch):
     assert p == config.DATA_DIR / "state" / "shells" / "tg.json"
 
 
+# ── T9: lie_down routing for a non-cli shell ──────────────────────────────────
+
+def _tg_lie_down_env(monkeypatch, tmp_path, sock=""):
+    """tg-shell window with its own state dir; cortex.toml supplies the clamp."""
+    (tmp_path / "cortex.toml").write_text("[wake]\nnext_wake_max = 240\n")
+    monkeypatch.setattr(cortex_bridge, "_cortex_toml_path",
+                        lambda: tmp_path / "cortex.toml")
+    _force_enabled(monkeypatch, True,
+                   extra={"shells": ["cli", "tg"], "shell_socket": sock,
+                          "shell_state_dir": str(tmp_path / "shells")})
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+
+
+def test_tg_lie_down_writes_ledger_and_kicks_without_running_cortex(
+        monkeypatch, tmp_path):
+    """T9: the tg shell host owns the timing — lie_down only writes
+    next_wake_at and pokes the socket. The cortex module is never spawned."""
+    _tg_lie_down_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(cortex_bridge.subprocess, "run",
+                        lambda *a, **k: pytest.fail("cortex module spawned"))
+    kicks = []
+    monkeypatch.setattr(cortex_bridge, "_shell_kick",
+                        lambda shell: kicks.append(shell) or True)
+
+    out = cortex_bridge.lie_down(next_wake_min=30)
+    assert out["ok"] is True and out["shell"] == "tg" and out["kicked"] is True
+    assert kicks == ["tg"]
+    from datetime import datetime
+    when = datetime.fromisoformat(
+        cortex_bridge.shell_state_read("tg")["next_wake_at"])
+    delta = (when - datetime.now(when.tzinfo)).total_seconds()
+    assert 29 * 60 < delta <= 30 * 60
+    assert out["next_wake"] == when.strftime("%H:%M")
+
+
+def test_tg_lie_down_zero_is_immediate(monkeypatch, tmp_path):
+    _tg_lie_down_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
+    cortex_bridge.lie_down(next_wake_min=0)
+    from datetime import datetime
+    when = datetime.fromisoformat(
+        cortex_bridge.shell_state_read("tg")["next_wake_at"])
+    assert abs((when - datetime.now(when.tzinfo)).total_seconds()) < 5
+
+
+def test_tg_lie_down_clamps_to_next_wake_max(monkeypatch, tmp_path):
+    _tg_lie_down_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
+    cortex_bridge.lie_down(next_wake_min=9999)
+    from datetime import datetime
+    when = datetime.fromisoformat(
+        cortex_bridge.shell_state_read("tg")["next_wake_at"])
+    delta = (when - datetime.now(when.tzinfo)).total_seconds()
+    assert 239 * 60 < delta <= 240 * 60
+
+
+def test_tg_lie_down_survives_a_dead_host(monkeypatch, tmp_path):
+    """Host down -> ledger still written, kicked=False, no raise (the host
+    picks the ledger up on its next recompute tick)."""
+    _tg_lie_down_env(monkeypatch, tmp_path,
+                     sock=str(tmp_path / "absent.sock"))
+    out = cortex_bridge.lie_down(next_wake_min=10)
+    assert out["ok"] is True and out["kicked"] is False
+    assert cortex_bridge.shell_state_read("tg")["next_wake_at"]
+
+
+def test_shell_kick_wire_format_is_one_shell_line(monkeypatch, tmp_path):
+    """The datagram must match synapse_core.scheduler.send_kick: "<shell>\\n"
+    over an AF_UNIX stream socket. Real socket, short path (macOS 104-byte cap)."""
+    import shutil
+    import socket
+    import tempfile
+    import threading
+    d = tempfile.mkdtemp(prefix="mwk", dir="/tmp")
+    try:
+        path = f"{d}/s.sock"
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+        got = []
+
+        def _accept():
+            conn, _ = srv.accept()
+            got.append(conn.recv(64))
+            conn.close()
+
+        t = threading.Thread(target=_accept, daemon=True)
+        t.start()
+        _force_enabled(monkeypatch, True, extra={"shell_socket": path})
+        assert cortex_bridge._shell_kick("tg") is True
+        t.join(timeout=5)
+        srv.close()
+        assert got == [b"tg\n"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_cli_lie_down_path_untouched_by_the_shell_route(env, monkeypatch, tmp_path):
+    """Regression: the cli shell still spawns cortex.lie_down and writes no
+    shell state file."""
+    _force_enabled(monkeypatch, True,
+                   extra={"venv_python": str(tmp_path / "py"),
+                          "repo_root": str(tmp_path / "repo"),
+                          "shell_state_dir": str(tmp_path / "shells")})
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    captured = {}
+
+    class _P:
+        returncode = 0
+        stdout = '{"next_wake": "10:30"}'
+        stderr = ""
+
+    monkeypatch.setattr(cortex_bridge.subprocess, "run",
+                        lambda cmd, cwd=None, **kw: captured.update(cmd=cmd) or _P())
+    out = cortex_bridge.lie_down(next_wake_min=20)
+    assert out["next_wake"] == "10:30"
+    assert captured["cmd"][1:3] == ["-m", "cortex.lie_down"]
+    assert not (tmp_path / "shells").exists()
+
+
 def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_path):
     """C9: lie_down description renders the clamp range from cortex.toml at
     register(), never hardcoded. T3: single 0-day_max band, night retired."""

@@ -327,6 +327,11 @@ shells = ["cli"]
 # last_note_ts), written by the shell's host. flock + atomic replace. The cli
 # shell keeps its own wake_state.json. Empty = <DATA_DIR>/state/shells.
 shell_state_dir = ""
+# Kick socket of the shell host (the tg bridge): lie_down from a non-cli shell
+# writes next_wake_at then pokes this socket so the host re-reads the ledger at
+# once. Must match the host's own setting. Keep it SHORT — macOS caps an
+# AF_UNIX path at 104 bytes. Empty = <DATA_DIR>/state/shells/tg.sock.
+shell_socket = ""
 # Cortex own notebook home (C3, Decided 07-03 pm) — cwd for the resumed
 # full-env session; own CLAUDE.md lives here, other sessions never read it.
 home = "~/.config/marrow/cortex"

@@ -31,9 +31,10 @@ import re as _re
 import shutil
 import subprocess
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 from pydantic import Field
 
@@ -345,6 +346,49 @@ def _run_cortex_module(module: str, extra_args: list[str] | None = None) -> dict
     return {"ok": True, "stdout": (p.stdout or "").strip()}
 
 
+def _shell_socket_path() -> Path:
+    """[cortex].shell_socket — the shell host's kick socket. Empty =
+    <DATA_DIR>/state/shells/tg.sock. Short by contract: macOS caps an AF_UNIX
+    path at 104 bytes."""
+    cx = config.load().get("cortex", {}) or {}
+    raw = str(cx.get("shell_socket") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return config.DATA_DIR / "state" / "shells" / "tg.sock"
+
+
+def _shell_kick(shell: str) -> bool:
+    """Poke a shell host's scheduler: one line "<shell>\\n" over its unix
+    stream socket (the wire format synapse_core.scheduler.send_kick writes).
+    Best-effort — a host that is down just means the ledger is read on its next
+    recompute tick. Never raises."""
+    import socket as _socket
+    p = _shell_socket_path()
+    try:
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+            s.settimeout(2.0)
+            s.connect(str(p))
+            s.sendall((shell + "\n").encode("utf-8"))
+        return True
+    except OSError:
+        return False
+
+
+def _lie_down_shell(shell: str, next_wake_min: float) -> dict:
+    """lie_down for a non-cli shell: the host owns the timing, so this only
+    writes the wake ledger (<shell_state_dir>/<shell>.json) and kicks the host.
+    Minutes are clamped to cortex's [wake].next_wake_max band; 0 = wake now."""
+    day_max = float(_cortex_toml_section("wake", "next_wake_max", 240))
+    mins = max(0.0, min(float(next_wake_min), day_max))
+    tz = ZoneInfo(config.load().get("core", {}).get("timezone", "UTC"))
+    when = datetime.now(tz) + timedelta(minutes=mins)
+    shell_state_write({"next_wake_at": when.isoformat()}, shell=shell)
+    kicked = _shell_kick(shell)
+    hm = when.strftime("%H:%M")
+    return {"ok": True, "shell": shell, "next_wake": hm, "kicked": kicked,
+            "text": f"next wake ≈ {hm}"}
+
+
 def lie_down(next_wake_min: float, rotate: bool = False,
              mode: str | None = None, human_override: bool = False) -> dict:
     # Description rendered from cortex config at register() (C9); see
@@ -352,6 +396,9 @@ def lie_down(next_wake_min: float, rotate: bool = False,
     # human_override = explicit minutes pierce the rotate clamp band (threaded
     # straight to cortex's --human-override).
     """lie_down(next_wake_min=N)."""
+    shell = _cortex_shell_id()
+    if shell != "cli":
+        return _lie_down_shell(shell, next_wake_min)
     args = ["--next-wake-min", str(next_wake_min)]
     if rotate:
         args += ["--rotate"]
