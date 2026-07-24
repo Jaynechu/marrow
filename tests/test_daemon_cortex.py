@@ -370,6 +370,113 @@ def test_switch_on_cortex_session_registers_wish_and_cortex_pair(monkeypatch):
     assert "first" not in names and "goal" not in names
 
 
+def _register_as(monkeypatch, shell_env, shells=None):
+    """register() under a given MARROW_CORTEX value (T8 shell id). shells=None
+    keeps the config default (["cli"])."""
+    extra = None if shells is None else {"shells": shells}
+    _force_enabled(monkeypatch, True, extra=extra)
+    if shell_env is None:
+        monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    else:
+        monkeypatch.setenv("MARROW_CORTEX", shell_env)
+    monkeypatch.setattr(cortex_bridge, "_CORTEX", shell_env is not None)
+    m, mt = _fresh_mcp()
+    cortex_bridge.register(mt)
+    return set(m._tool_manager._tools.keys())
+
+
+def test_shell_legacy_and_cli_register_lie_down_and_say(monkeypatch):
+    """T8: MARROW_CORTEX=1 (legacy) and =cli are the same shell — full cli kit."""
+    for value in ("1", "cli"):
+        names = _register_as(monkeypatch, value)
+        assert {"wish", "lie_down", "say"} <= names
+
+
+def test_shell_tg_registers_lie_down_without_say(monkeypatch):
+    """T8: say is cli-only; the tg shell still gets lie_down."""
+    names = _register_as(monkeypatch, "tg", shells=["cli", "tg"])
+    assert {"wish", "lie_down"} <= names
+    assert "say" not in names
+
+
+def test_shell_absent_from_shells_registers_no_cortex_tools(monkeypatch):
+    """T8: tg session while shells=["cli"] -> plain session (wish only)."""
+    names = _register_as(monkeypatch, "tg", shells=["cli"])
+    assert names == {"wish"}
+
+
+def test_empty_shells_disables_cortex_tools_for_cli(monkeypatch):
+    """T8: shells=[] switches every shell off; enabled stays the master switch."""
+    names = _register_as(monkeypatch, "cli", shells=[])
+    assert names == {"wish"}
+
+
+def test_shell_enabled_follows_env_and_config(monkeypatch):
+    """_shell_enabled: cortex env + listed shell id. Non-cortex always False."""
+    _force_enabled(monkeypatch, True, extra={"shells": ["cli", "tg"]})
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    assert cortex_bridge._shell_enabled() is False
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    assert cortex_bridge._shell_enabled() is True
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    assert cortex_bridge._shell_enabled() is True
+    _force_enabled(monkeypatch, True, extra={"shells": ["cli"]})
+    assert cortex_bridge._shell_enabled() is False
+
+
+def test_shell_gates_go_plain_when_shell_not_listed(monkeypatch):
+    """T8: a cortex-env session off the shells list takes no cortex branch."""
+    _force_enabled(monkeypatch, True, extra={"shells": ["cli"]})
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    inp = {"tool_name": "mcp__marrow__lie_down", "tool_input": {"rotate": True}}
+    assert cortex_bridge._cortex_lie_down_deny(inp) is None
+    assert cortex_bridge._cortex_lie_down_nudge(inp) is None
+    assert cortex_bridge._cortex_show_context("") == ""
+
+
+# ── per-shell state file ──────────────────────────────────────────────────────
+
+def test_shell_state_roundtrip_with_lock_file(monkeypatch, tmp_path):
+    """write -> read roundtrip; lock sibling created; only contract keys stored."""
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    p = cortex_bridge.shell_state_write(
+        {"session_id": "abc", "next_wake_at": "2026-07-25T10:00:00+00:00",
+         "last_note_ts": "2026-07-25T09:00:00+00:00", "junk": 1}, shell="tg")
+    assert p == tmp_path / "shells" / "tg.json"
+    assert (tmp_path / "shells" / "tg.lock").exists()
+    assert cortex_bridge.shell_state_read("tg") == {
+        "session_id": "abc", "next_wake_at": "2026-07-25T10:00:00+00:00",
+        "last_note_ts": "2026-07-25T09:00:00+00:00"}
+
+
+def test_shell_state_write_merges_and_drops_none(monkeypatch, tmp_path):
+    """Partial write keeps untouched keys; None drops its key; no temp residue."""
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    cortex_bridge.shell_state_write({"session_id": "abc", "next_wake_at": "t1"},
+                                    shell="tg")
+    cortex_bridge.shell_state_write({"next_wake_at": None, "last_note_ts": "t2"},
+                                    shell="tg")
+    assert cortex_bridge.shell_state_read("tg") == {"session_id": "abc",
+                                                    "last_note_ts": "t2"}
+    assert not list((tmp_path / "shells").glob("*.tmp.*"))
+
+
+def test_shell_state_read_missing_file(monkeypatch, tmp_path):
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    assert cortex_bridge.shell_state_read("tg") == {}
+
+
+def test_shell_state_path_defaults_to_data_dir_and_env_shell(monkeypatch):
+    """Empty shell_state_dir -> <DATA_DIR>/state/shells; shell=None -> env id."""
+    _force_enabled(monkeypatch, True, extra={"shell_state_dir": ""})
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    p = cortex_bridge._shell_state_path()
+    assert p == config.DATA_DIR / "state" / "shells" / "tg.json"
+
+
 def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_path):
     """C9: lie_down description renders the clamp range from cortex.toml at
     register(), never hardcoded. T3: single 0-day_max band, night retired."""

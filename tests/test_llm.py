@@ -563,7 +563,8 @@ def test_call_cortex_no_isolation_flags(monkeypatch, tmp_path):
     assert out == {"text": "hi there", "session_id": "sess-abc"}
     assert "--setting-sources" not in captured["cmd"]
     assert "--strict-mcp-config" not in captured["cmd"]
-    assert captured["env"]["MARROW_CORTEX"] == "1"
+    # T8: the env marker carries the shell id (legacy "1" still parses to cli).
+    assert captured["env"]["MARROW_CORTEX"] == "cli"
     assert captured["env"]["MARROW_CHANNEL"] == "ct"
     assert "MARROW_PIPELINE" not in captured["env"]
     assert captured["cwd"] == str(tmp_path)

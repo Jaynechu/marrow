@@ -61,6 +61,30 @@ def is_cortex_session(transcript_path: str | None = None) -> bool:
 # sets MARROW_CORTEX explicitly before spawn). Normal sessions never see them.
 _CORTEX = bool(os.environ.get("MARROW_CORTEX"))
 
+# Fallback when [cortex].shells is missing/malformed: the cli shell only.
+_DEFAULT_SHELLS = ("cli",)
+
+
+def _shells() -> list[str]:
+    """[cortex].shells — the shell ids that run as cortex shells. A shell absent
+    from the list runs plain: no cortex tools, no cortex hook branches."""
+    try:
+        raw = config.load().get("cortex", {}).get("shells")
+    except Exception:
+        raw = None
+    if not isinstance(raw, list):
+        raw = list(_DEFAULT_SHELLS)
+    return [str(s).strip().lower() for s in raw if str(s).strip()]
+
+
+def _shell_enabled() -> bool:
+    """True when this window is a cortex session (MARROW_CORTEX) AND its shell
+    id is listed in [cortex].shells. The per-shell switch every cortex hook
+    branch goes through."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return False
+    return _cortex_shell_id() in _shells()
+
 
 # ── wish ─────────────────────────────────────────────────────────────────────
 
@@ -404,7 +428,9 @@ def register(marrow_tool, db: str | None = None) -> None:
       - first / goal are PENDING — not registered anywhere yet (no injection
         mechanism wired; keep the functions + storage, just don't expose them);
       - lie_down / say register ONLY in a cortex session (_CORTEX, the
-        import-time MARROW_CORTEX capture — the original inner env gate).
+        import-time MARROW_CORTEX capture — the original inner env gate) whose
+        shell id is listed in [cortex].shells (shell resolved lazily here);
+        lie_down serves every listed shell, say the cli shell only.
     Idempotent per process (FastMCP tolerates re-adding the same tool name)."""
     global _DB
     if db is not None:
@@ -413,11 +439,15 @@ def register(marrow_tool, db: str | None = None) -> None:
         return
     marrow_tool()(wish)
     if _CORTEX:
+        shell = _cortex_shell_id()
+        if shell not in _shells():
+            return
         # Render the clamp numbers from cortex config into the tool description
         # at registration (C9) — never hardcoded in the docstring.
         lie_down.__doc__ = _lie_down_doc()
         marrow_tool()(lie_down)
-        marrow_tool()(say)
+        if shell == "cli":
+            marrow_tool()(say)
 
 
 # ── hooks: kickout immunity / lie_down deny / handoff page-turn / show 亮牌 ──────
@@ -436,7 +466,7 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
     A plain lie_down under the line is allowed. Cortex window only. None = allow.
     Deny text is mechanism-defining copy (_HANDOFF_DENY_TEXT); the caller treats
     any falsy return as allow, so the constant is never empty."""
-    if not os.environ.get("MARROW_CORTEX"):
+    if not _shell_enabled():
         return None
     if inp.get("tool_name") != "mcp__marrow__lie_down":
         return None
@@ -468,7 +498,7 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     """Non-blocking PreToolUse additionalContext for every cortex lie_down call:
     reminds the session to log/handoff. Never denies. rotate arg selects the
     rotate copy. Cortex window + lie_down only; None otherwise."""
-    if not os.environ.get("MARROW_CORTEX"):
+    if not _shell_enabled():
         return None
     if inp.get("tool_name") != "mcp__marrow__lie_down":
         return None
@@ -1176,6 +1206,48 @@ def _wake_state_save(p: Path, data: dict) -> None:
     os.replace(tmp, p)
 
 
+# ── per-shell state file (<shell_state_dir>/<shell>.json) ─────────────────────
+# The non-cli shells' ledger, written by their host (tg bridge). The cli shell
+# keeps wake_state.json. Same flock + atomic-replace protocol as above.
+
+_SHELL_STATE_KEYS = ("session_id", "next_wake_at", "last_note_ts")
+
+
+def _shell_state_path(shell: str | None = None) -> Path:
+    """<[cortex].shell_state_dir>/<shell>.json. Empty config value =
+    <marrow DATA_DIR>/state/shells. shell=None -> this window's shell id."""
+    cx = config.load().get("cortex", {}) or {}
+    raw = str(cx.get("shell_state_dir") or "").strip()
+    base = (Path(raw).expanduser() if raw
+            else config.DATA_DIR / "state" / "shells")
+    return base / f"{(shell or _cortex_shell_id())}.json"
+
+
+def shell_state_read(shell: str | None = None) -> dict:
+    """Read a shell's state file under the flock. Missing/corrupt file -> {}."""
+    p = _shell_state_path(shell)
+    with _wake_state_lock(p):
+        return _wake_state_load(p)
+
+
+def shell_state_write(data: dict, shell: str | None = None) -> Path:
+    """Merge the contract keys of `data` (_SHELL_STATE_KEYS) into the shell's
+    state file under the flock; a None value drops its key. Unknown keys are
+    ignored. Returns the file path."""
+    p = _shell_state_path(shell)
+    with _wake_state_lock(p):
+        d = _wake_state_load(p)
+        for k in _SHELL_STATE_KEYS:
+            if k not in data:
+                continue
+            if data[k] is None:
+                d.pop(k, None)
+            else:
+                d[k] = data[k]
+        _wake_state_save(p, d)
+    return p
+
+
 
 def _clear_floor_deadline() -> None:
     """Clear the pending floor deadline (next_floor_due_at) on the single-row
@@ -1368,7 +1440,7 @@ def _cortex_user_wake_reset(inp: dict) -> None:
     alive. Fast + idempotent: already-awake + watchdog-alive collapses to cheap
     no-op writes. Cortex session only; the caller has already excluded machine
     lines (is_machine_line)."""
-    if not os.environ.get("MARROW_CORTEX"):
+    if not _shell_enabled():
         return
     p = _cortex_wake_state_path()
     tpath = inp.get("transcript_path") if isinstance(inp, dict) else None
@@ -1723,7 +1795,7 @@ def _cortex_show_context(tpath: str) -> str:
     soft, ahead of the 15万 fuse). Suppressed when user is chatting
     (user_replied_this_wake). Empty for normal sessions, below threshold,
     or when show_tokens <= 0 (the off-switch)."""
-    if not os.environ.get("MARROW_CORTEX"):
+    if not _shell_enabled():
         return ""
     cr = config.load().get("cortex_rotate", {}) or {}
     text = _SHOW_TEXT
@@ -1799,7 +1871,7 @@ def call_cortex(client, prompt: str, *, cwd: str | None = None,
                 max_tokens: int | None = None) -> dict:
     """Full-environment resumed session for cortex (C3, Decided 07-03):
     no isolation flags — persona/rules/MCP/agents load like a real
-    session. Always injects MARROW_CORTEX=1 (identity marker, e.g. B8
+    session. Always injects MARROW_CORTEX=cli (shell id + identity marker, e.g. B8
     kickout immunity) and MARROW_CHANNEL=ct so this session's turns get
     full marrow memory (events/recall/tl) attributed to the cortex
     channel, same as any other session. cwd defaults to [cortex].home;
@@ -1855,7 +1927,7 @@ def run_claude_cortex(client, spec: dict, model: str, prompt: str, *,
         cmd.extend(["--effort", effort])
     if resume_sid:
         cmd.extend(["--resume", resume_sid])
-    env = {**os.environ, "MARROW_CORTEX": "1", "MARROW_CHANNEL": "ct"}
+    env = {**os.environ, "MARROW_CORTEX": "cli", "MARROW_CHANNEL": "ct"}
     on_event = _cortex_stream_timer()
     cap_active = bool(max_tokens and max_tokens > 0)
     extra: dict = {}

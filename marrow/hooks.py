@@ -1347,7 +1347,7 @@ def session_start() -> int:
             # a resume skips). Content is no longer injected here — the user's
             # cortex CLAUDE.md `@handoff.md` imports it directly. Page-turn
             # (stale-date archive + fresh template) still runs as a side effect.
-            if cortex_bridge.enabled() and os.environ.get("MARROW_CORTEX"):
+            if cortex_bridge.enabled() and cortex_bridge._shell_enabled():
                 if not is_resume:
                     cortex_bridge._cortex_handoff_page_turn_if_stale()
                     # Arm the ear on a fresh cortex window: one-shot reminder to

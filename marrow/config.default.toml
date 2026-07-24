@@ -319,6 +319,14 @@ style = "叙述生动有趣，故事性强。文艺中带着搞笑。"
 [cortex]
 # Master switch: cortex is an optional autonomous-wake layer living in a separate repo; false = clean marrow, no cortex organs.
 enabled = false
+# Per-shell switch. A shell id (MARROW_CORTEX value; legacy "1" = cli) absent
+# from this list runs plain: no cortex tools, no cortex hook branches, no
+# heartbeat. lie_down serves every listed shell, say the cli shell only.
+shells = ["cli"]
+# Per-shell state files (<dir>/<shell>.json, keys session_id / next_wake_at /
+# last_note_ts), written by the shell's host. flock + atomic replace. The cli
+# shell keeps its own wake_state.json. Empty = <DATA_DIR>/state/shells.
+shell_state_dir = ""
 # Cortex own notebook home (C3, Decided 07-03 pm) — cwd for the resumed
 # full-env session; own CLAUDE.md lives here, other sessions never read it.
 home = "~/.config/marrow/cortex"
