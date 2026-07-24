@@ -386,19 +386,28 @@ def shell_direct(text: str, shell: str = "tg") -> dict:
     return {"ok": True, "shell": shell, "kicked": _shell_kick(shell)}
 
 
-def _lie_down_shell(shell: str, next_wake_min: float) -> dict:
+def _lie_down_shell(shell: str, next_wake_min: float,
+                    rotate: bool = False) -> dict:
     """lie_down for a non-cli shell: the host owns the timing, so this only
     writes the wake ledger (<shell_state_dir>/<shell>.json) and kicks the host.
-    Minutes are clamped to cortex's [wake].next_wake_max band; 0 = wake now."""
+    Minutes are clamped to cortex's [wake].next_wake_max band; 0 = wake now.
+
+    rotate=True adds the rotate_pending flag: the host claims it on the kicked
+    pass and respawns the resident session (same end-of-window semantics as the
+    cli shell's rotate) instead of feeding it a note. next_wake_at still stands,
+    so the fresh session sleeps until the wake booked here."""
     day_max = float(_cortex_toml_section("wake", "next_wake_max", 240))
     mins = max(0.0, min(float(next_wake_min), day_max))
     tz = ZoneInfo(config.load().get("core", {}).get("timezone", "UTC"))
     when = datetime.now(tz) + timedelta(minutes=mins)
-    shell_state_write({"next_wake_at": when.isoformat()}, shell=shell)
+    payload = {"next_wake_at": when.isoformat()}
+    if rotate:
+        payload["rotate_pending"] = True
+    shell_state_write(payload, shell=shell)
     kicked = _shell_kick(shell)
     hm = when.strftime("%H:%M")
     return {"ok": True, "shell": shell, "next_wake": hm, "kicked": kicked,
-            "text": f"next wake ≈ {hm}"}
+            "rotate": bool(rotate), "text": f"next wake ≈ {hm}"}
 
 
 def lie_down(next_wake_min: float, rotate: bool = False,
@@ -410,7 +419,7 @@ def lie_down(next_wake_min: float, rotate: bool = False,
     """lie_down(next_wake_min=N)."""
     shell = _cortex_shell_id()
     if shell != "cli":
-        return _lie_down_shell(shell, next_wake_min)
+        return _lie_down_shell(shell, next_wake_min, rotate)
     args = ["--next-wake-min", str(next_wake_min)]
     if rotate:
         args += ["--rotate"]
@@ -1269,7 +1278,8 @@ def _wake_state_save(p: Path, data: dict) -> None:
 # The non-cli shells' ledger, written by their host (tg bridge). The cli shell
 # keeps wake_state.json. Same flock + atomic-replace protocol as above.
 
-_SHELL_STATE_KEYS = ("session_id", "next_wake_at", "last_note_ts", "pending_note")
+_SHELL_STATE_KEYS = ("session_id", "next_wake_at", "last_note_ts", "pending_note",
+                     "rotate_pending")
 
 
 def _shell_state_path(shell: str | None = None) -> Path:

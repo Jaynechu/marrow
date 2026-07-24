@@ -543,6 +543,55 @@ def test_tg_lie_down_survives_a_dead_host(monkeypatch, tmp_path):
     assert cortex_bridge.shell_state_read("tg")["next_wake_at"]
 
 
+def test_tg_lie_down_rotate_flags_the_ledger_and_kicks(monkeypatch, tmp_path):
+    """rotate=True from a tg-shell window: the host is told to end the window,
+    and the wake it booked is written alongside so the fresh session sleeps
+    until then. Same semantics as the cli shell's rotate."""
+    _tg_lie_down_env(monkeypatch, tmp_path)
+    kicks = []
+    monkeypatch.setattr(cortex_bridge, "_shell_kick",
+                        lambda shell: kicks.append(shell) or True)
+
+    out = cortex_bridge.lie_down(next_wake_min=30, rotate=True)
+
+    assert out["ok"] is True and out["rotate"] is True and out["kicked"] is True
+    assert kicks == ["tg"]
+    st = cortex_bridge.shell_state_read("tg")
+    assert st["rotate_pending"] is True and st["next_wake_at"]
+
+
+def test_tg_lie_down_without_rotate_leaves_no_flag(monkeypatch, tmp_path):
+    _tg_lie_down_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
+    out = cortex_bridge.lie_down(next_wake_min=30)
+    assert out["rotate"] is False
+    assert "rotate_pending" not in cortex_bridge.shell_state_read("tg")
+
+
+def test_tg_rotate_deny_gate_matches_the_cli_shell(monkeypatch, tmp_path):
+    """The handoff mtime gate is shell-agnostic: a tg rotate without a handoff
+    written this window is refused before the tool ever runs."""
+    import json
+    import time
+    _tg_lie_down_env(monkeypatch, tmp_path)
+    jl = tmp_path / "w.jsonl"
+    jl.write_text("\n".join([
+        json.dumps({"timestamp": "2026-07-08T10:00:00+00:00", "type": "user"}),
+        json.dumps({"message": {"usage": {"input_tokens": 10_000}}}),
+    ]))
+    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
+           "tool_input": {"rotate": True}}
+
+    missing = tmp_path / "handoff-tg.md"
+    monkeypatch.setattr(cortex_bridge, "_cortex_handoff_path", lambda: missing)
+    assert cortex_bridge._cortex_lie_down_deny(inp) is not None
+
+    missing.write_text("log line", encoding="utf-8")
+    import os
+    os.utime(missing, (time.time(), time.time()))
+    assert cortex_bridge._cortex_lie_down_deny(inp) is None
+
+
 def test_shell_direct_writes_pending_note_and_kicks(monkeypatch, tmp_path):
     """T10 directed kick: the text lands in the ledger, then the host is poked."""
     _force_enabled(monkeypatch, True,
