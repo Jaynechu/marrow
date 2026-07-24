@@ -1,9 +1,8 @@
 """User-wake reset (Item 3): a real user message in a cortex window flips the
-session awake, marks the reply, clears silence state, restores the round's wait
-quota (F5: external trigger clears wait_spent — subsumes the old live-wait
-refund), clears the pending floor deadline + sentinel, and (re)spawns a
-watchdog. Machine lines (wake marker / monitor death / tuck-in) down the ear
-channel must NOT trigger it.
+session awake, marks the reply, resets the free-round silence cycle (drops any
+pending kick carrier + the last-injection marker), clears the pending floor
+deadline + sentinel, and (re)spawns a watchdog. Machine lines (wake marker /
+monitor death / tuck-in) down the ear channel must NOT trigger it.
 
 marrow venv cannot import cortex, so wake_state.json is manipulated directly —
 these tests exercise that direct path.
@@ -352,7 +351,6 @@ def test_reset_flips_awake_and_marks_reply(cortex_env):
     # key simply absent rather than explicitly None — .get() reads both the same.
     assert d.get("wake_log_id") is None
     assert d["transcript"] == "/x/y.jsonl"
-    assert "wait_spent" not in d  # fresh reset (no prior flag) -> absent
 
 
 def test_reset_logs_user_wake_row(cortex_env):
@@ -412,88 +410,23 @@ def test_reset_db_write_does_not_hold_wake_state_lock(cortex_env, monkeypatch):
     assert _ws(home)["wake_log_id"] == 42  # patch-back still binds the id
 
 
-def test_reset_clears_silence_and_sentinel(cortex_env, monkeypatch):
+def test_reset_clears_silence_cycle_and_sentinel(cortex_env, monkeypatch):
+    """A user arrival resets the free-round silence cycle: drops any pending
+    kick carrier + the last-injection marker, kills the sentinel."""
     home, _ = cortex_env
     (home / "wake_state.json").write_text(json.dumps({
-        "awake": True, "silence_wait_until": "2026-01-01T00:00:00+00:00",
+        "awake": True, "kick_round": True,
         "tuck_pending": "2026-01-01T00:00:00+00:00", "sentinel_pid": 12345,
-        "wait_spent": True,
     }))
     killed = []
     monkeypatch.setattr(cortex_bridge, "_kill_pid", lambda p: killed.append(p))
     cortex_bridge._cortex_user_wake_reset({"transcript_path": "/t.jsonl"})
     d = _ws(home)
-    assert "silence_wait_until" not in d
+    assert "kick_round" not in d
     assert "tuck_pending" not in d
     assert "sentinel_pid" not in d
-    # F5: external trigger restores the wait quota (clears wait_spent).
-    assert "wait_spent" not in d
     assert d["user_replied_this_wake"] is True
     assert 12345 in killed  # sentinel SIGTERM'd
-
-
-def test_reset_restores_wait_quota(cortex_env):
-    """F5: a user message is an external trigger -> wait_spent cleared so the
-    next wait() is allowed, regardless of whether the wait_until was still live
-    (the old live-vs-expired refund distinction is gone)."""
-    home, _ = cortex_env
-    (home / "wake_state.json").write_text(json.dumps({
-        "awake": True, "silence_wait_until": "2099-01-01T00:00:00+00:00",
-        "wait_spent": True,
-    }))
-    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/t.jsonl"})
-    d = _ws(home)
-    assert "silence_wait_until" not in d
-    assert "wait_spent" not in d  # quota restored
-
-
-def test_reset_restores_wait_quota_without_wait_until(cortex_env):
-    home, _ = cortex_env
-    (home / "wake_state.json").write_text(json.dumps({
-        "awake": True, "wait_spent": True,
-    }))
-    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/t.jsonl"})
-    d = _ws(home)
-    assert "wait_spent" not in d  # restored even with no live wait
-
-
-# --- F5 round-activity feed (pretool_use) -------------------------------------
-
-def test_round_activity_restores_quota_for_non_wait_tool(cortex_env):
-    home, _ = cortex_env
-    (home / "wake_state.json").write_text(json.dumps({
-        "awake": True, "wait_spent": True,
-    }))
-    cortex_bridge._cortex_round_activity({"tool_name": "Bash"})
-    assert "wait_spent" not in _ws(home)  # a tool call restored the quota
-
-
-def test_round_activity_wait_tool_does_not_restore(cortex_env):
-    home, _ = cortex_env
-    (home / "wake_state.json").write_text(json.dumps({
-        "awake": True, "wait_spent": True,
-    }))
-    cortex_bridge._cortex_round_activity({"tool_name": "mcp__marrow__wait"})
-    assert _ws(home)["wait_spent"] is True  # wait() is not activity
-
-
-def test_round_activity_noop_when_not_awake(cortex_env):
-    home, _ = cortex_env
-    (home / "wake_state.json").write_text(json.dumps({
-        "awake": False, "wait_spent": True,
-    }))
-    cortex_bridge._cortex_round_activity({"tool_name": "Bash"})
-    assert _ws(home)["wait_spent"] is True  # asleep -> untouched
-
-
-def test_round_activity_noop_without_cortex_env(cortex_env, monkeypatch):
-    home, _ = cortex_env
-    (home / "wake_state.json").write_text(json.dumps({
-        "awake": True, "wait_spent": True,
-    }))
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    cortex_bridge._cortex_round_activity({"tool_name": "Bash"})
-    assert _ws(home)["wait_spent"] is True  # not a cortex session -> untouched
 
 
 def test_reset_stamps_last_user_msg_ts(cortex_env):

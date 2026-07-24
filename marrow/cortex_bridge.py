@@ -362,12 +362,6 @@ def lie_down(next_wake_min: float, rotate: bool = False,
     return out
 
 
-def wait(minutes: float) -> dict:
-    # Description rendered from cortex config at register() (C10); see _wait_doc.
-    """wait(N)."""
-    return _run_cortex_module("cortex.wait", ["--minutes", str(minutes)])
-
-
 def say() -> dict:
     """Urgent only: quiet notification ping for her attention (no focus steal).
     Normal in-window talk needs no say — she reads when free."""
@@ -408,19 +402,6 @@ def _lie_down_doc() -> str:
             f'{tail}')
 
 
-def _wait_doc() -> str:
-    """C10 (user-final): wait description with the wait clamp numbers rendered
-    from cortex config [wake].wait_min/wait_max, and the idle-bar auto timer
-    length from [wake.watchdog].silent_max_min. Never hardcoded."""
-    lo = int(_cortex_toml_section("wake", "wait_min", 1))
-    hi = int(_cortex_toml_section("wake", "wait_max", 20))
-    auto = int(_cortex_toml_section("wake.watchdog", "silent_max_min", 20))
-    return (f"wait(N) [N={lo}-{hi}] — no consecutive empty waits; any activity "
-            f"(tool call, user reply, kick, note delivery) restores the quota "
-            f"and resets all other timers. A {auto}-min auto timer runs "
-            f"regardless — expiry brings the 3-choice menu.")
-
-
 def register(marrow_tool, db: str | None = None) -> None:
     """Install the cortex MCP tools onto the daemon when [cortex].enabled.
 
@@ -429,7 +410,7 @@ def register(marrow_tool, db: str | None = None) -> None:
       - wish registers for ALL sessions;
       - first / goal are PENDING — not registered anywhere yet (no injection
         mechanism wired; keep the functions + storage, just don't expose them);
-      - lie_down / wait / say register ONLY in a cortex session (_CORTEX, the
+      - lie_down / say register ONLY in a cortex session (_CORTEX, the
         import-time MARROW_CORTEX capture — the original inner env gate).
     Idempotent per process (FastMCP tolerates re-adding the same tool name)."""
     global _DB
@@ -439,12 +420,10 @@ def register(marrow_tool, db: str | None = None) -> None:
         return
     marrow_tool()(wish)
     if _CORTEX:
-        # Render the clamp numbers from cortex config into the tool descriptions
-        # at registration (C9/C10) — never hardcoded in the docstring.
+        # Render the clamp numbers from cortex config into the tool description
+        # at registration (C9) — never hardcoded in the docstring.
         lie_down.__doc__ = _lie_down_doc()
-        wait.__doc__ = _wait_doc()
         marrow_tool()(lie_down)
-        marrow_tool()(wait)
         marrow_tool()(say)
 
 
@@ -493,33 +472,6 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
     if written:
         return None
     return _HANDOFF_DENY_TEXT
-
-
-# The one tool that does NOT restore the wait quota (F5): calling wait() is the
-# "still waiting" action, not activity. Every other cortex tool clears
-# wait_spent so a wait may follow (play mode then wait again = allowed).
-_WAIT_TOOL_NAME = "mcp__marrow__wait"
-
-
-def _cortex_round_activity(inp: dict) -> None:
-    """F5 activity feed: any cortex tool call OTHER than wait() marks the round
-    active -> restore the wait quota (clear wait_spent) so a following wait is
-    allowed. Cortex session only; wait() itself is excluded (a consecutive empty
-    wait stays refused). Best-effort under the shared wake_state lock — never
-    blocks the tool. Runs in PreToolUse so the flag is cleared before the round's
-    wait() (if any) is evaluated."""
-    if not os.environ.get("MARROW_CORTEX"):
-        return
-    if not isinstance(inp, dict) or inp.get("tool_name") == _WAIT_TOOL_NAME:
-        return
-    p = _cortex_wake_state_path()
-    try:
-        with _wake_state_lock(p):
-            d = _wake_state_load(p)
-            if d.get("awake") and d.pop("wait_spent", None):
-                _wake_state_save(p, d)
-    except Exception:
-        pass
 
 
 def _window_spawn_epoch(tpath: str) -> float | None:
@@ -921,27 +873,11 @@ def tuck_in_marker() -> str:
     return str(cx.get("tuck_in_marker") or "[NEW ROUND]").strip()
 
 
-# C2 free-round menu body (user-final, verbatim). The cortex watchdog writes ONLY
-# the [NEW ROUND] marker to wake_signal.log; that marker line renders on screen in
-# the ear Monitor event. This menu body is injected INVISIBLY via UserPromptSubmit
-# additionalContext on the marker turn, so she never SEES the menu text in the
-# cortex window. Config-first: override via marrow [cortex].tuck_in_menu_text.
-_DEFAULT_TUCK_IN_MENU = (
-    "No need to wait in silence — 3 choices: "
-    "1) talk to her in session (second person) or msg another session  "
-    "2) do your own things — see Playbook  3) lie_down..."
-)
-
-
 def tuck_in_menu_text() -> str | None:
-    """The 3-choice free-round menu (C2) injected as additionalContext when the
-    cortex ear surfaces a [NEW ROUND] marker turn — the covert half that never
-    renders on screen. None/blank -> inject nothing (marker-only round)."""
-    cx = config.load().get("cortex", {}) or {}
-    if "tuck_in_menu_text" in cx:
-        txt = str(cx.get("tuck_in_menu_text") or "").strip()
-        return txt or None
-    return _DEFAULT_TUCK_IN_MENU
+    """Retired (T2): the free-round [NEW ROUND] line now carries its own
+    complete copy (cortex [wake].tuck_in_text) — no separate covert menu body is
+    injected on the marker turn anymore. Always None (marker-only round)."""
+    return None
 
 
 # ── Covert machine-marker bodies (FUSE / CTL). Cortex writes only the marker line
@@ -1409,12 +1345,11 @@ def _log_user_wake_row() -> int | None:
 
 def _cortex_user_wake_reset(inp: dict) -> None:
     """Real user message in a cortex window -> flip awake, kill the pending
-    alarm (floor deadline + sentinel), mark the user reply, and ensure a
-    watchdog is alive. F5: a user message is an external trigger that restores
-    the round's wait quota, so wait_spent is cleared unconditionally (the old
-    live-wait refund is subsumed — any activity resets the quota). Fast +
-    idempotent: already-awake + watchdog-alive collapses to cheap no-op
-    writes. Cortex session only; the caller has already excluded machine
+    alarm (floor deadline + sentinel), mark the user reply, reset the
+    free-round silence cycle (drop any pending kick carrier + last-injection
+    marker so it re-arms fresh from this message), and ensure a watchdog is
+    alive. Fast + idempotent: already-awake + watchdog-alive collapses to cheap
+    no-op writes. Cortex session only; the caller has already excluded machine
     lines (is_machine_line)."""
     if not os.environ.get("MARROW_CORTEX"):
         return
@@ -1462,10 +1397,10 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         # never counts an injected/machine turn as user presence.
         from datetime import timezone as _tz_u
         d["last_user_msg_ts"] = datetime.now(_tz_u.utc).isoformat()
-        d.pop("silence_wait_until", None)
-        # F5: external trigger restores the round's wait quota (subsumes the old
-        # live-wait refund — any activity clears wait_spent).
-        d.pop("wait_spent", None)
+        # A user arrival resets the free-round silence cycle: drop the pending
+        # kick carrier + the last-injection marker so the cycle re-arms fresh
+        # from this message.
+        d.pop("kick_round", None)
         d.pop("tuck_pending", None)
         # Clear the durable next-wake ledger too: a user arrival cancels any
         # scheduled alarm, so the tick reconcile must not later fire a stale
