@@ -340,21 +340,33 @@ repo_root = ""
 # read-only) instead of the frozen file; reflects current time + caller SID even
 # after a window rotation. Empty = disabled, static file only.
 render_module = ""
-# Handoff note file under <home>. Read via the cortex CLAUDE.md
-# `@handoff.md` memory import, not injected by SessionStart. Written by the
-# session. Daily file with lazy page-turn on a fresh cortex-window
-# SessionStart: a stale (yesterday-or-older) L1 date triggers archive to
-# <home>/<handoff_archive_dir>/ and replacement by a fresh copy of
-# <home>/<handoff_template_file>.
-handoff_file = "handoff.md"
+# Handoff note file under <home>. Read via the cortex CLAUDE.md memory import,
+# not injected by SessionStart. Written by the session. Per-shell rolling log:
+# {shell} is filled by code (cli/tg). Line-count page-turn on a fresh
+# cortex-window SessionStart: > handoff_max_lines triggers archive to
+# <home>/<handoff_archive_dir>/ + fresh <handoff_template_file>, carrying
+# unchecked todos + last handoff_carry_lines activity lines.
+handoff_file_pattern = "handoff-{shell}.md"
 handoff_archive_dir = "handoff_archive"
 handoff_template_file = "handoff_template.md"
+# Page-turn thresholds (toml-tunable).
+handoff_max_lines = 150
+handoff_carry_lines = 10
+# Template contract headings (the sole code<->template contract). todo section =
+# todo_heading to next heading (top of file); activity = activity_heading to EOF;
+# carry lines land under carry_heading.
+handoff_todo_heading = "## 待办"
+handoff_activity_heading = "## 日志"
+handoff_carry_heading = "### 前情"
 # lie_down PreToolUse guard: deny (write your handoff first) when rotate=True OR
 # window occupancy >= force_tokens (15万 fuse line) and no handoff was written
 # this window (handoff mtime after the window's first transcript line).
 force_tokens = 150000
-# The handoff deny reason and the lie_down tool-description tail (C9) are
-# mechanism-defining copy — they live in code, not config.
+# lie_down PreToolUse nudge (non-blocking additionalContext, every call).
+# {handoff} = the shell's own handoff path, filled by code. rotate arg selects
+# the rotate variant.
+lie_down_nudge_text = "Append one line to {handoff} if any activity. Skip if pure chat."
+lie_down_nudge_rotate_text = "Update {handoff} before rotate. Add todo if any."
 # Wake pipeline (v2). The ear is a Monitor tailing wake_signal_log_file; cortex
 # appends the human-text bell line to it, which surfaces as a user turn. Paths
 # for the note and signal log default to <home>/<file> (override with an

@@ -495,6 +495,25 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
     return _HANDOFF_DENY_TEXT
 
 
+def _cortex_lie_down_nudge(inp: dict) -> str | None:
+    """Non-blocking PreToolUse additionalContext for every cortex lie_down call:
+    reminds the session to log/handoff. Never denies. rotate arg selects the
+    rotate copy. Cortex window + lie_down only; None otherwise."""
+    if not os.environ.get("MARROW_CORTEX"):
+        return None
+    if inp.get("tool_name") != "mcp__marrow__lie_down":
+        return None
+    ti = inp.get("tool_input", {}) or {}
+    wants_rotate = bool(ti.get("rotate")) or ti.get("mode") == "night"
+    cx = config.load().get("cortex", {}) or {}
+    key = "lie_down_nudge_rotate_text" if wants_rotate else "lie_down_nudge_text"
+    text = cx.get(key)
+    if not text:
+        return None
+    p = _cortex_handoff_path()
+    return text.replace("{handoff}", str(p) if p is not None else "handoff")
+
+
 # The one tool that does NOT restore the wait quota (F5): calling wait() is the
 # "still waiting" action, not activity. Every other cortex tool clears
 # wait_spent so a wait may follow (play mode then wait again = allowed).
@@ -550,13 +569,21 @@ def _window_spawn_epoch(tpath: str) -> float | None:
         return None
 
 
+def _cortex_shell_id() -> str:
+    """This window's shell id, from MARROW_CORTEX. Legacy/truthy -> "cli";
+    explicit "tg" -> "tg". Used to name the per-shell handoff file."""
+    v = (os.environ.get("MARROW_CORTEX") or "").strip().lower()
+    return "tg" if v == "tg" else "cli"
+
+
 def _cortex_handoff_path():
-    """<[cortex].home>/<[cortex].handoff_file> — the handoff file a fresh cortex
-    window reads at SessionStart. None on config error."""
+    """<[cortex].home>/handoff-<shell>.md — the per-shell handoff file a fresh
+    cortex window reads at SessionStart. None on config error."""
     try:
         cx = config.load().get("cortex", {}) or {}
         home = (cx.get("home") or "~/.config/marrow/cortex")
-        name = (cx.get("handoff_file") or "handoff.md")
+        pattern = (cx.get("handoff_file_pattern") or "handoff-{shell}.md")
+        name = pattern.replace("{shell}", _cortex_shell_id())
         return Path(home).expanduser() / name
     except Exception:
         return None
