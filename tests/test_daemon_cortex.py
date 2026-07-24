@@ -371,11 +371,10 @@ def test_switch_on_cortex_session_registers_wish_and_cortex_pair(monkeypatch):
 
 
 def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_path):
-    """C9: lie_down description renders clamp numbers from cortex.toml at
-    register(), never hardcoded."""
+    """C9: lie_down description renders the clamp range from cortex.toml at
+    register(), never hardcoded. T3: single 0-day_max band, night retired."""
     (tmp_path / "cortex.toml").write_text(
-        "[wake]\nnext_wake_min = 25\nnext_wake_max = 200\n"
-        "[night]\nfloor_min = 90\nfloor_max = 300\n")
+        "[wake]\nnext_wake_max = 200\n")
     monkeypatch.setattr(cortex_bridge.config, "db_path",
                         lambda: str(tmp_path / "marrow.db"))
     _force_enabled(monkeypatch, True)
@@ -383,13 +382,13 @@ def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_pat
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     ld = m._tool_manager._tools["lie_down"].description
-    assert "N=25-200" in ld and 'N=90-300' in ld
+    assert "N=0-200" in ld
     # No stale hardcoded ranges leaked in.
     assert "16-55" not in ld
 
 
 def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
-    """No cortex.toml -> tolerant defaults (day 21-240, night 120-360)."""
+    """No cortex.toml -> tolerant default (day_max 240)."""
     monkeypatch.setattr(cortex_bridge.config, "db_path",
                         lambda: str(tmp_path / "marrow.db"))  # no cortex.toml here
     _force_enabled(monkeypatch, True)
@@ -397,8 +396,8 @@ def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     ld = m._tool_manager._tools["lie_down"].description
-    assert "N=21-240" in ld and 'N=120-360' in ld
-    assert 'mode="night"' in ld and "rotate=True" in ld
+    assert "N=0-240" in ld and "rotate=True" in ld
+    assert 'mode="night"' not in ld and "night mode" not in ld
     # Tail sentence is mechanism-defining copy in code.
     assert cortex_bridge._LIE_DOWN_DOC_TAIL in ld
 

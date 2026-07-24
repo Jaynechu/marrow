@@ -399,13 +399,13 @@ compact_markers = ["===== BEGIN ORIGINAL TRANSCRIPT", "===== END ORIGINAL TRANSC
 compact_marker_head_chars = 200
 # Line-start machine markers. Any transcript turn whose first non-space chars
 # begin with one of these is a cortex-injected machine line (wake bell, free
-# round, night close, fuse, ctl, slash-command body), NOT user/assistant speech,
+# round, fuse, ctl, slash-command body), NOT user/assistant speech,
 # so ingestion drops it from events/recall/tl. Exact line-start match only —
 # a real message merely quoting a marker keeps flowing. Emoji prefix (⚙️/⏳/☀️)
 # is tolerated automatically. (The wake bell is human text now — dropped from
 # ingestion via the template-shape match in transcript._is_wake_bell_row, not
 # an inline marker here.)
-machine_markers = ["[NEW ROUND]", "[TUCK-IN]", "[NIGHT]",
+machine_markers = ["[NEW ROUND]", "[TUCK-IN]",
                    "[FUSE]", "[CTL]", "[CMD"]
 # Audit log for destructive wake-state actions (sentinel kill / floor clear /
 # awake flip). Bare name resolves under cortex home. Never silently destroy a

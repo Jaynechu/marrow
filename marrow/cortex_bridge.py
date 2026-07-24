@@ -325,10 +325,8 @@ def lie_down(next_wake_min: float, rotate: bool = False,
              mode: str | None = None, human_override: bool = False) -> dict:
     # Description rendered from cortex config at register() (C9); see
     # _lie_down_doc. Kept minimal here — FastMCP reads __doc__ at registration.
-    # mode='night' = the night package (forces rotate, clamps N to the night
-    # band, sets the persistent night flag). Cleared by the morning kick.
-    # human_override = explicit minutes pierce the day/night/rotate clamp band
-    # (threaded straight to cortex's --human-override).
+    # human_override = explicit minutes pierce the rotate clamp band (threaded
+    # straight to cortex's --human-override).
     """lie_down(next_wake_min=N)."""
     args = ["--next-wake-min", str(next_wake_min)]
     if rotate:
@@ -376,29 +374,24 @@ _DB = config.db_path()
 
 
 # lie_down tool-description tail (C9). Mechanism-defining copy — appended after
-# the four rendered clamp numbers.
+# the rendered clamp numbers.
 _LIE_DOWN_DOC_TAIL = (
-    "Always handoff before rotate or night mode; Always run TaskList and "
+    "Always handoff before rotate; Always run TaskList and "
     "TaskStop before rotate, esp. persistent monitor and subagents. NOTE: Never "
     "stop cortex wake signal monitor when you lie_down - ONLY stop before rotate."
 )
 
 
 def _lie_down_doc() -> str:
-    """C9 (user-final): lie_down description with all four clamp numbers rendered
-    from cortex config — day bounds [wake].next_wake_min/max, night bounds
-    [night].floor_min/max. Never hardcoded in the string. Tail sentence is
+    """C9 (user-final): lie_down description with the clamp range rendered
+    from cortex config — [wake].next_wake_max (T3: 0-day_max for every hour,
+    night band retired). Never hardcoded in the string. Tail sentence is
     mechanism-defining copy (_LIE_DOWN_DOC_TAIL)."""
-    day_min = int(_cortex_toml_section("wake", "next_wake_min", 21))
     day_max = int(_cortex_toml_section("wake", "next_wake_max", 240))
-    night_min = int(_cortex_toml_section("night", "floor_min", 120))
-    night_max = int(_cortex_toml_section("night", "floor_max", 360))
     tail = _LIE_DOWN_DOC_TAIL
-    return (f'lie_down(next_wake_min=N) [N={day_min}-{day_max}]; '
+    return (f'lie_down(next_wake_min=N) [N=0-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
             f'[N=0-{day_max}, 0=rotate now]; '
-            f'Activate night mode - lie_down(next_wake_min=N, mode="night") '
-            f'[N={night_min}-{night_max}]; '
             f'{tail}')
 
 
@@ -451,10 +444,7 @@ def _cortex_lie_down_deny(inp: dict) -> str | None:
     tpath = inp.get("transcript_path") or ""
     cx = config.load().get("cortex", {}) or {}
     force = int(cx.get("force_tokens", 150_000) or 0)
-    # mode="night" forces rotate cortex-side (lie_down.py), so the hook never
-    # sees ti.rotate for a night package — treat night mode as rotate intent too,
-    # else the night four-piece skips the handoff gate.
-    wants_rotate = bool(ti.get("rotate")) or ti.get("mode") == "night"
+    wants_rotate = bool(ti.get("rotate"))
     from .hooks import _window_tokens_from_transcript
     occupancy = _window_tokens_from_transcript(tpath)
     if not wants_rotate and not (force > 0 and occupancy >= force):
@@ -483,7 +473,7 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     if inp.get("tool_name") != "mcp__marrow__lie_down":
         return None
     ti = inp.get("tool_input", {}) or {}
-    wants_rotate = bool(ti.get("rotate")) or ti.get("mode") == "night"
+    wants_rotate = bool(ti.get("rotate"))
     cx = config.load().get("cortex", {}) or {}
     key = "lie_down_nudge_rotate_text" if wants_rotate else "lie_down_nudge_text"
     text = cx.get(key)
@@ -946,7 +936,7 @@ def ctl_sleep_text(marker_line: str) -> str | None:
     ('mins=N rotate=true|false [human=true|false]'); this renders
     {mins}/{rotate}/{rotate_arg}/{human_arg} from them. human=true (an explicit
     /ct-sleep minutes choice) renders human_override=True into the lie_down(...)
-    call so it pierces the day/night/rotate clamp band end to end. Override
+    call so it pierces the rotate clamp band end to end. Override
     [cortex].ctl_sleep_text; blank/None -> inject nothing."""
     cx = config.load().get("cortex", {}) or {}
     if "ctl_sleep_text" in cx:
@@ -1011,7 +1001,7 @@ _ENVELOPE_LEAD_RE = _re.compile(r"^\s*(?:</?[a-z][a-z0-9_-]*>\s*){0,3}")
 
 def machine_markers() -> tuple[str, ...]:
     """Line-start machine-marker family ([cortex].machine_markers) — the wake
-    bell, free-round, night, fuse, ctl and ⚙️ [CMD ct-*] slash-command bodies.
+    bell, free-round, fuse, ctl and ⚙️ [CMD ct-*] slash-command bodies.
     Shared by the user-wake reset (below) and marrow.transcript ingestion."""
     cx = config.load().get("cortex", {}) or {}
     return tuple(str(m) for m in (cx.get("machine_markers") or []) if str(m))
@@ -1052,7 +1042,7 @@ def _starts_with_machine_marker(prompt: str) -> bool:
 
 def is_machine_line(prompt: str) -> bool:
     """True when the incoming cortex-window prompt is a machine line arriving
-    down the ear channel (wake bell / monitor death / free-round / night / fuse /
+    down the ear channel (wake bell / monitor death / free-round / fuse /
     ctl / slash-command body), NOT a real user message. The user-wake reset must
     fire ONLY on real user messages."""
     if not prompt:
@@ -1462,12 +1452,12 @@ def _cortex_user_wake_reset(inp: dict) -> None:
                     _wake_state_save(p, d2)
 
 
-# ── external wake (cortex.kick) — cli morning flag-pull (P6) ──────────────────
+# ── external wake (cortex.kick) ────────────────────────────────────────────────
 
 def _cortex_toml_path() -> Path:
     """cortex.toml lives beside marrow's config (shared config dir). Read
-    directly (marrow venv cannot import cortex) for the few kick knobs the cli
-    morning path needs."""
+    directly (marrow venv cannot import cortex) for the few knobs marrow needs
+    from cortex's own config."""
     return Path(config.db_path()).parent / "cortex.toml"
 
 
@@ -1475,8 +1465,8 @@ def _cortex_toml_section(section: str, key: str, default):
     """One value from cortex.toml [section] (dotted `section` walks nested TOML
     tables, e.g. "wake.watchdog" -> data["wake"]["watchdog"]). Tolerant: missing
     file/key -> default. marrow venv cannot import cortex, so the few numbers the
-    tool descriptions render (wait/lie_down clamps) are read straight from the
-    shared cortex.toml."""
+    tool descriptions render (lie_down clamps) are read straight from the shared
+    cortex.toml."""
     import tomllib
     try:
         p = _cortex_toml_path()
@@ -1493,43 +1483,10 @@ def _cortex_toml_section(section: str, key: str, default):
         return default
 
 
-def _cortex_night(key: str, default):
-    """One value from cortex.toml [night]. Tolerant: missing file/key -> default."""
-    return _cortex_toml_section("night", key, default)
-
-
-def _cortex_night_mode() -> bool:
-    """True when cortex wake_state carries the night flag (mode == 'night').
-    Absent / unreadable file -> False (day = no morning kick). The flag lifecycle
-    itself is P8; this only reads it."""
-    try:
-        d = _wake_state_load(_cortex_wake_state_path())
-        return str(d.get("mode") or "") == "night"
-    except Exception:
-        return False
-
-
-def _past_morning_start() -> bool:
-    """True when local time is at/after night.morning_start (default 06:00)."""
-    from zoneinfo import ZoneInfo
-    raw = str(_cortex_night("morning_start", "06:00") or "06:00")
-    try:
-        hh, mm = (int(x) for x in raw.split(":"))
-    except (ValueError, TypeError):
-        hh, mm = 6, 0
-    tz = str(config.load().get("core", {}).get("timezone")
-             or config.load().get("timezone") or "Australia/Melbourne")
-    try:
-        now = datetime.now(ZoneInfo(tz))
-    except Exception:
-        now = datetime.now()
-    return (now.hour, now.minute) >= (hh, mm)
-
-
 def kick_cortex(kind: str, note_id=None, minutes=None) -> None:
     """Fire cortex.kick as a detached, fire-and-forget subprocess in the cortex
     venv (marrow venv cannot import cortex). Never blocks the caller; any launch
-    failure is swallowed. `kind` in {reply, timeout, morning}."""
+    failure is swallowed. `kind` in {reply, timeout, note}."""
     py, root = _cortex_paths()
     if not py or not root:
         return
@@ -1550,21 +1507,6 @@ def kick_cortex(kind: str, note_id=None, minutes=None) -> None:
         )
     except OSError:
         pass
-
-
-def maybe_morning_kick_cli() -> None:
-    """cli morning flag-pull: a real user turn in a NON-cortex cli session, with
-    the cortex night flag set and local time past morning_start, pokes cortex to
-    clear the flag and return to day cadence. The caller has already excluded
-    machine/subagent turns and confirmed this is NOT the cortex session.
-    No-op unless enabled + configured + night + past morning_start."""
-    if not enabled():
-        return
-    if os.environ.get("MARROW_CORTEX"):
-        return  # cortex session takes its own reset path, not this
-    if not (_cortex_night_mode() and _past_morning_start()):
-        return
-    kick_cortex("morning")
 
 
 _HANDOFF_LOG_DATE_RE = _re.compile(r"^###\s*(\d{4}-\d{2}-\d{2})\b")
