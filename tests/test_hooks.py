@@ -970,7 +970,7 @@ def test_git_force_push_disabled_via_config(env, monkeypatch, capsys):
 # -- git revert-type authorship guard ("ask", enriched reason) ----------------
 
 # Headline marker of the default git_revert_guard_message template.
-_ROBOT = "🤡"
+_HEADLINE = "About to"  # shipped-default headline; live config may override
 
 
 @pytest.fixture(autouse=True)
@@ -985,7 +985,7 @@ def test_git_revert_reset_hard_asks(env, monkeypatch, capsys):
     assert rc == 0
     out = _out(capsys)["hookSpecificOutput"]
     assert out["permissionDecision"] == "ask"
-    assert _ROBOT in out["permissionDecisionReason"]
+    assert _HEADLINE in out["permissionDecisionReason"]
 
 
 def test_git_revert_reset_hard_in_commit_message_no_match(env, monkeypatch, capsys):
@@ -1059,7 +1059,7 @@ def test_git_worktree_remove_asks(env, monkeypatch, capsys):
     assert rc == 0
     out = _out(capsys)["hookSpecificOutput"]
     assert out["permissionDecision"] == "ask"
-    assert _ROBOT in out["permissionDecisionReason"]
+    assert _HEADLINE in out["permissionDecisionReason"]
 
 
 def test_git_worktree_remove_in_worktree_cwd_silent(env, monkeypatch, capsys):
@@ -1191,8 +1191,8 @@ def test_reason_restore_file_and_loc(env, monkeypatch):
     })
     monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
     out = _reason(monkeypatch, "git restore tests/test_wx_watch.py")
-    assert out.splitlines()[0].startswith("🤡")
-    assert "丢弃未提交的改动" in out
+    assert out.splitlines()[0].startswith("⚠️ About to")
+    assert "discard uncommitted changes" in out
     assert "Action: git restore" in out.splitlines()[1]
     assert "File: tests/test_wx_watch.py" in out
     assert "LOC:  +12 −35" in out
@@ -1215,7 +1215,7 @@ def test_reason_reset_hard_counts_commits(env, monkeypatch):
     })
     monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
     out = _reason(monkeypatch, "git reset --hard HEAD~3")
-    assert "工作区整个退回" in out
+    assert "roll the working tree all the way back" in out
     assert "Action: git reset --hard HEAD~3" in out
     assert "LOC:  +5 −7 (3 commits)" in out
 
@@ -1223,7 +1223,7 @@ def test_reason_reset_hard_counts_commits(env, monkeypatch):
 def test_reason_revert_uses_show_numstat(env, monkeypatch):
     _fake_git(monkeypatch, {"show --numstat --format= abc123": "3\t0\tf.py\n"})
     out = _reason(monkeypatch, "git revert --no-edit abc123")
-    assert "加一个反向提交" in out
+    assert "add an inverse commit" in out
     assert "File: f.py" in out and "LOC:  +3 −0" in out
 
 
@@ -1233,7 +1233,7 @@ def test_reason_branch_d_uses_default_branch_range(env, monkeypatch):
         "log --numstat --format= origin/main..feat": "9\t1\tx.py\n2\t0\ty.py\n",
     })
     out = _reason(monkeypatch, "git branch -D feat")
-    assert "强删分支" in out
+    assert "force-delete a branch" in out
     assert "Action: git branch -D feat" in out
     assert "File: x.py, y.py" in out and "LOC:  +11 −1" in out
 
@@ -1241,13 +1241,13 @@ def test_reason_branch_d_uses_default_branch_range(env, monkeypatch):
 def test_reason_stash_drop_uses_stash_show(env, monkeypatch):
     _fake_git(monkeypatch, {"stash show --numstat": "4\t4\ts.py\n"})
     out = _reason(monkeypatch, "git stash drop")
-    assert "丢掉暂存的改动" in out and "LOC:  +4 −4" in out
+    assert "drop stashed changes" in out and "LOC:  +4 −4" in out
 
 
 def test_reason_worktree_remove_counts_dirty(env, monkeypatch):
     _fake_git(monkeypatch, {"status --porcelain": " M a\n?? b\n"})
     out = _reason(monkeypatch, "git worktree remove /tmp/wt")
-    assert "删掉工作树目录" in out
+    assert "remove a worktree directory" in out
     assert "File: /tmp/wt (2 uncommitted)" in out
     assert "LOC:" not in out
 
@@ -1259,14 +1259,14 @@ def test_reason_clean_lists_would_remove(env, monkeypatch):
     })
     monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
     out = _reason(monkeypatch, "git clean -fd")
-    assert "删掉未跟踪的文件" in out
+    assert "delete untracked files" in out
     assert "File: a.txt, b/, c (+1)" in out
 
 
 def test_reason_degrades_to_action_when_git_fails(env, monkeypatch):
     # autouse _no_real_git already returns None for every git read
     out = _reason(monkeypatch, "git reset --hard")
-    assert out.splitlines() == ["🤡 狗男人又要工作区整个退回了!!!",
+    assert out.splitlines() == ["⚠️ About to roll the working tree all the way back — confirm?",
                                 "Action: git reset --hard"]
 
 
@@ -1274,7 +1274,7 @@ def test_reason_unclassifiable_uses_generic_label(env, monkeypatch):
     # Pattern matches but the git text is a quoted argument of another program
     # → no classification. Line 1 must still read whole, never "又要了".
     out = _reason(monkeypatch, 'python probe.py run "git reset --hard HEAD"')
-    assert out == "🤡 狗男人又要乱搞你git里的东西了!!!"
+    assert out == "⚠️ About to mess with your git state — confirm?"
     assert "又要了" not in out
 
 

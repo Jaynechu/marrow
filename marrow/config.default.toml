@@ -529,7 +529,7 @@ git_revert_patterns = [
 # Headline of the ask popup. `{action}` renders the human-readable phrase from
 # git_revert_action_labels below; the rest of the reason (Action/File/LOC/By)
 # is assembled by the guard and degrades to Action-only when git can't answer.
-git_revert_guard_message = "🤡 狗男人又要{action}了!!!"
+git_revert_guard_message = "⚠️ About to {action} — confirm?"
 # Per-op phrase for {action}: [hooks.git_revert_action_labels] at end of file.
 
 # Session-start housekeep (~/.claude only): if the auto-commit would delete
@@ -550,17 +550,17 @@ claude_json_snapshot_keep = 10
 # unclassifiable command uses the `unknown` entry.
 # Keep this table LAST in [hooks]: a TOML sub-table header ends the parent.
 [hooks.git_revert_action_labels]
-checkout-file = "丢弃未提交的改动"
-restore = "丢弃未提交的改动"
-switch-discard = "切分支并丢弃改动"
-reset-hard = "工作区整个退回"
-reset-soft = "撤销提交但保留改动"
-reset-mixed = "撤销提交但保留改动"
-revert = "加一个反向提交"
-branch-D = "强删分支"
-stash-drop = "丢掉暂存的改动"
-worktree-remove = "删掉工作树目录"
-clean = "删掉未跟踪的文件"
+checkout-file = "discard uncommitted changes"
+restore = "discard uncommitted changes"
+switch-discard = "switch branch and discard changes"
+reset-hard = "roll the working tree all the way back"
+reset-soft = "undo commits but keep the changes"
+reset-mixed = "undo commits but keep the changes"
+revert = "add an inverse commit"
+branch-D = "force-delete a branch"
+stash-drop = "drop stashed changes"
+worktree-remove = "remove a worktree directory"
+clean = "delete untracked files"
 # Fallback when the matched command can't be classified (e.g. the git text
 # sits inside a quoted argument) — keeps the sentence whole.
-unknown = "乱搞你git里的东西"
+unknown = "mess with your git state"
