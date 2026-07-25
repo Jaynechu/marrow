@@ -1223,6 +1223,19 @@ def shell_state_write(data: dict, shell: str | None = None) -> Path:
     return p
 
 
+def next_wake_at(shell: str) -> str | None:
+    """Raw next_wake_at ISO string for `shell`, or None when unset/no alarm.
+    cli reads the cortex wake_state.json ledger (same lock as hooks.py's read);
+    every other shell reads <shell_state_dir>/<shell>.json via shell_state_read."""
+    if shell == "cli":
+        p = _cortex_wake_state_path()
+        with _wake_state_lock(p):
+            d = _wake_state_load(p)
+    else:
+        d = shell_state_read(shell)
+    v = d.get("next_wake_at")
+    return str(v) if v else None
+
 
 def _daemon_socket_path() -> Path:
     """The cortex wake daemon's kick socket. cortex.toml [daemon].socket_path,
