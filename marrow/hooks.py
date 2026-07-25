@@ -1366,43 +1366,13 @@ def session_start() -> int:
                 pass
 
             # Cortex handoff: fresh window only (new process = fresh;
-            # a resume skips). Content is no longer injected here — the user's
-            # cortex CLAUDE.md `@handoff.md` imports it directly. Page-turn
-            # (stale-date archive + fresh template) still runs as a side effect.
-            if cortex_bridge.enabled() and cortex_bridge._shell_enabled():
-                if not is_resume:
-                    cortex_bridge._cortex_handoff_page_turn_if_stale()
-                    # Arm the ear on a fresh cortex window: one-shot reminder to
-                    # start the signal-log tail. Blank config text = no injection.
-                    _arm = cortex_bridge.arm_ear_text()
-                    if _arm:
-                        parts.append(_arm)
-                else:
-                    # Resumed cortex window. Decide in code (not model judgement)
-                    # whether it is still the active resident: compare the
-                    # resumed transcript against wake_state.json's `transcript`
-                    # pointer.
-                    if cortex_bridge.is_resident_session(tpath):
-                        # Resident resume: the prior process died with its ear
-                        # tail; the harness will surface stale pre-resume task
-                        # notifications. Kill orphan tails (none of ours armed
-                        # yet — safe only here) and inject re-arm guidance so the
-                        # model does not treat leftovers as a wake/rotate.
-                        try:
-                            cortex_bridge.kill_orphan_ear_tails()
-                        except Exception:
-                            pass
-                        _resume = cortex_bridge.resume_ear_text()
-                        if _resume:
-                            parts.append(_resume)
-                    else:
-                        # Retired window: a newer cortex took over (or this was
-                        # rotated out and reopened to read history). Arm nothing,
-                        # touch no wake_state, never kill the live resident's
-                        # tail — inject read-only/archive guidance instead.
-                        _retired = cortex_bridge.retired_ear_text()
-                        if _retired:
-                            parts.append(_retired)
+            # a resume skips). Nothing is injected here — the user's cortex
+            # CLAUDE.md `@handoff.md` imports the content directly, and wake
+            # delivery is typed straight into the window by the cortex daemon.
+            # Page-turn (stale-date archive + fresh template) is the only effect.
+            if (cortex_bridge.enabled() and cortex_bridge._shell_enabled()
+                    and not is_resume):
+                cortex_bridge._cortex_handoff_page_turn_if_stale()
 
             try:
                 from . import schedule as _sched
@@ -1743,23 +1713,12 @@ def user_prompt_submit() -> int:
     if _is_worktree_session(cwd or "") or is_subagent:
         return 0
 
-    # Cortex wake-turn / monitor-death injections (cortex window only). The ear
-    # Monitor tails the wake-signal log and surfaces a marker line as a user turn
-    # (wake), or the harness surfaces a "Monitor stopped" task-notification when
-    # the ear dies. Both are handled here and stop before recall; ordinary chat
+    # Cortex wake-turn injections (cortex window only). The cortex daemon types
+    # the wake bell / machine marker straight into the window as a user turn;
+    # each shape is handled here and stops before recall, while ordinary chat
     # turns fall through untouched. Text + paths are config-routed.
     if cortex_bridge.is_cortex_session(tpath):
         _prompt = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
-        # Monitor death → rearm the ear. Checked first: the death notification is
-        # a distinct harness shape, never a wake marker.
-        if cortex_bridge.is_monitor_death(_prompt):
-            _re_txt = cortex_bridge.rearm_text()
-            if _re_txt:
-                json.dump({"hookSpecificOutput": {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": _re_txt,
-                }}, sys.stdout)
-            return 0
         # Free-round tuck-in ([NEW ROUND]) already carries its diff-mode note
         # INLINE (cortex watchdog D6) — the hook must NOT also turn-inject the
         # full note, or the round lands with a duplicate note (07-14 incident).

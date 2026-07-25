@@ -1,8 +1,8 @@
 """User-wake reset (Item 3): a real user message in a cortex window flips the
 session awake, marks the reply, resets the free-round silence cycle (drops any
-pending kick carrier + the last-injection marker), clears the pending floor
-deadline + sentinel, and (re)spawns a watchdog. Machine lines (wake marker /
-monitor death / tuck-in) down the ear channel must NOT trigger it.
+pending kick carrier + the last-injection marker), kills the pending
+sentinel, (re)spawns a watchdog and kicks the wake daemon. Machine lines
+(wake marker / tuck-in) must NOT trigger it.
 
 marrow venv cannot import cortex, so wake_state.json is manipulated directly —
 these tests exercise that direct path.
@@ -60,7 +60,7 @@ def test_is_machine_line_excludes_markers(cortex_env):
     assert cortex_bridge.is_machine_line(
         "⏳ [TUCK-IN] It's been 20 mins — choose again") is True
     assert cortex_bridge.is_machine_line(
-        "<task-notification>Monitor stopped — foo</task-notification>") is True
+        "<task-notification>background shell exited</task-notification>") is True
     assert cortex_bridge.is_machine_line("hey are you there?") is False
     assert cortex_bridge.is_machine_line("") is True
 
@@ -480,28 +480,51 @@ def test_reset_already_awake_preserves_awake_since(cortex_env):
     assert d["user_replied_this_wake"] is True
 
 
-def test_reset_clears_floor_deadline(cortex_env):
-    home, db = cortex_env
-    conn = sqlite3.connect(db)
-    conn.execute("CREATE TABLE ct_pacemaker_state (id INTEGER PRIMARY KEY, "
-                 "state TEXT, updated_at TEXT)")
-    conn.execute(
-        "INSERT INTO ct_pacemaker_state (id, state, updated_at) VALUES (1, ?, '')",
-        (json.dumps({"next_floor_due_at": "2026-07-11T05:00:00+10:00",
-                     "last_wake_at": "x"}),))
-    conn.commit()
-    conn.close()
+def test_reset_kicks_the_daemon_socket(cortex_env, monkeypatch):
+    """After the state write the reset sends one `<shell>\\n` kick to the
+    daemon socket — notification only, on top of every existing step."""
+    sent = []
+    monkeypatch.setattr(cortex_bridge, "_daemon_socket_path",
+                        lambda: cortex_env[0] / "state" / "cortex-daemon.sock")
+
+    class _Sock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def settimeout(self, t):
+            sent.append(("timeout", t))
+
+        def connect(self, path):
+            sent.append(("connect", path))
+
+        def sendall(self, data):
+            sent.append(("send", data))
+
+    import socket as _s
+    monkeypatch.setattr(_s, "socket", lambda *a, **k: _Sock())
     cortex_bridge._cortex_user_wake_reset({})
-    conn = sqlite3.connect(db)
-    row = conn.execute("SELECT state FROM ct_pacemaker_state WHERE id=1").fetchone()
-    conn.close()
-    obj = json.loads(row[0])
-    assert obj["next_floor_due_at"] is None  # pending alarm cleared
-    assert obj["last_wake_at"] == "x"  # other keys untouched
+    assert ("connect", str(cortex_env[0] / "state" / "cortex-daemon.sock")) in sent
+    assert ("send", b"cli\n") in sent
+    # State write still happened — the kick is additive, not a replacement.
+    assert _ws(cortex_env[0])["awake"] is True
+
+
+def test_reset_survives_a_missing_daemon_socket(cortex_env):
+    """No daemon listening -> silent no-op, reset completes normally."""
+    cortex_bridge._cortex_user_wake_reset({})  # must not raise
+    assert _ws(cortex_env[0])["awake"] is True
+
+
+def test_daemon_socket_path_defaults_under_cortex_home(cortex_env):
+    home, _ = cortex_env
+    assert cortex_bridge._daemon_socket_path() == home / "state" / "cortex-daemon.sock"
 
 
 def test_reset_missing_table_no_crash(cortex_env):
-    # No ct_pacemaker_state table -> _clear_floor_deadline swallows the error.
+    # No ct_pacemaker_state table anywhere -> the reset no longer touches it.
     cortex_bridge._cortex_user_wake_reset({})  # must not raise
 
 
@@ -566,7 +589,7 @@ def test_reset_writes_audit_log(cortex_env, monkeypatch):
     log = (home / "wake_audit.log").read_text()
     lines = [l for l in log.splitlines() if l.strip()]
     actions = {l.split("\t")[1] for l in lines}
-    assert {"awake_flip", "sentinel_kill", "floor_clear"} <= actions
+    assert {"awake_flip", "sentinel_kill"} <= actions
     # Trigger reason (first 80 chars of the message) is recorded.
     assert any("hey are you awake?" in l for l in lines)
     # sentinel line carries the killed pid.
@@ -582,7 +605,7 @@ def test_reset_audit_no_sentinel_line_when_absent(cortex_env):
     actions = {l.split("\t")[1] for l in lines}
     assert "sentinel_kill" not in actions  # no pid -> no kill line
     assert "awake_flip" not in actions     # already awake -> no flip line
-    assert "floor_clear" in actions        # floor clear always attempted
+    assert "user_reset_gen" in actions     # epoch bump always audited
 
 
 # --- cancellation epoch (gen) -------------------------------------------------

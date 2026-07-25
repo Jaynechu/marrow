@@ -707,7 +707,7 @@ def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_pat
 
 
 def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
-    """No cortex.toml -> tolerant default (day_max 240)."""
+    """No cortex.toml -> tolerant default (day_max 360, T3 clamp)."""
     monkeypatch.setattr(cortex_bridge.config, "db_path",
                         lambda: str(tmp_path / "marrow.db"))  # no cortex.toml here
     _force_enabled(monkeypatch, True)
@@ -715,10 +715,10 @@ def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     ld = m._tool_manager._tools["lie_down"].description
-    assert "N=0-240" in ld and "rotate=True" in ld
+    assert "N=0-360" in ld and "rotate=True" in ld
     assert 'mode="night"' not in ld and "night mode" not in ld
-    # Tail sentence is mechanism-defining copy in code.
-    assert cortex_bridge._LIE_DOWN_DOC_TAIL in ld
+    # Retired tail copy (Monitor-era TaskStop drill) must be gone.
+    assert "TaskStop" not in ld and "monitor" not in ld.lower()
 
 
 def test_switch_off_show_context_gated_empty(monkeypatch, tmp_path):
@@ -742,24 +742,6 @@ def test_switch_off_lie_down_deny_inactive(monkeypatch):
 
 # ── wake v2 (Item 1-3) ────────────────────────────────────────────────────────
 
-def test_arm_ear_text_substitutes_signal_log(monkeypatch, tmp_path):
-    """arm_ear_text substitutes {signal_log} with the path resolved under home."""
-    _force_enabled(monkeypatch, True, extra={"home": str(tmp_path)})
-    out = cortex_bridge.arm_ear_text()
-    assert str(tmp_path / "state" / "wake_signal.log") in out
-    assert "{signal_log}" not in out
-
-
-def test_arm_ear_text_absolute_override(monkeypatch, tmp_path):
-    """An absolute wake_signal_log_file override is used as-is."""
-    log = tmp_path / "custom.log"
-    _force_enabled(monkeypatch, True, extra={
-        "home": str(tmp_path),
-        "wake_signal_log_file": str(log),
-    })
-    assert str(log) in cortex_bridge.arm_ear_text()
-
-
 def test_wakeup_note_text_reads_file(monkeypatch, tmp_path):
     """wakeup_note_text returns the note file contents (stripped)."""
     (tmp_path / "wakeup_note.md").write_text("  do the thing  ", encoding="utf-8")
@@ -778,32 +760,6 @@ def test_wakeup_note_text_empty_returns_none(monkeypatch, tmp_path):
     (tmp_path / "wakeup_note.md").write_text("   \n", encoding="utf-8")
     _force_enabled(monkeypatch, True, extra={"home": str(tmp_path)})
     assert cortex_bridge.wakeup_note_text() is None
-
-
-def test_rearm_text_substitutes_signal_log(monkeypatch, tmp_path):
-    """rearm_text substitutes {signal_log}."""
-    _force_enabled(monkeypatch, True, extra={"home": str(tmp_path)})
-    out = cortex_bridge.rearm_text()
-    assert str(tmp_path / "state" / "wake_signal.log") in out
-    assert "{signal_log}" not in out
-
-
-def test_is_monitor_death_matches_notification():
-    """Fires on the harness Monitor-stopped task-notification shape."""
-    prompt = ('<task-notification>\n<task-id>bwkjxl09h</task-id>\n'
-              '<summary>Monitor event: "ear"</summary>\n'
-              '<event>[Monitor stopped — too much output.]</event>\n'
-              '</task-notification>')
-    assert cortex_bridge.is_monitor_death(prompt) is True
-
-
-def test_is_monitor_death_silent_on_normal_chat():
-    """Never fires on ordinary chat, or on a live (non-stopped) monitor event."""
-    assert cortex_bridge.is_monitor_death("聊聊天，顺便说下 Monitor 怎么用") is False
-    assert cortex_bridge.is_monitor_death("") is False
-    live = ('<task-notification>\n<summary>Monitor event: "ear"</summary>\n'
-            '<event>[CORTEX-WAKE] 2026-07-11 wake</event>\n</task-notification>')
-    assert cortex_bridge.is_monitor_death(live) is False
 
 
 def test_boot_rules_helpers_removed():

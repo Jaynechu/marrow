@@ -465,26 +465,14 @@ def say() -> dict:
 _DB = config.db_path()
 
 
-# lie_down tool-description tail (C9). Mechanism-defining copy — appended after
-# the rendered clamp numbers.
-_LIE_DOWN_DOC_TAIL = (
-    "Always handoff before rotate; Always run TaskList and "
-    "TaskStop before rotate, esp. persistent monitor and subagents. NOTE: Never "
-    "stop cortex wake signal monitor when you lie_down - ONLY stop before rotate."
-)
-
-
 def _lie_down_doc() -> str:
     """C9 (user-final): lie_down description with the clamp range rendered
     from cortex config — [wake].next_wake_max (T3: 0-day_max for every hour,
-    night band retired). Never hardcoded in the string. Tail sentence is
-    mechanism-defining copy (_LIE_DOWN_DOC_TAIL)."""
-    day_max = int(_cortex_toml_section("wake", "next_wake_max", 240))
-    tail = _LIE_DOWN_DOC_TAIL
+    night band retired). Never hardcoded in the string."""
+    day_max = int(_cortex_toml_section("wake", "next_wake_max", 360))
     return (f'lie_down(next_wake_min=N) [N=0-{day_max}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
-            f'[N=0-{day_max}, 0=rotate now]; '
-            f'{tail}')
+            f'[N=0-{day_max}, 0=rotate now]')
 
 
 def register(marrow_tool, db: str | None = None) -> None:
@@ -640,80 +628,6 @@ def _cortex_path(key: str, default_name: str) -> Path:
     raw = (cx.get(key) or default_name)
     p = Path(raw).expanduser()
     return p if p.is_absolute() else _cortex_home() / raw
-
-
-# Wake-ear guidance lines (mechanism-defining copy). {signal_log} is substituted
-# at render time with the resolved absolute path.
-_ARM_EAR_TEXT = (
-    "Important: Set a persistent monitor first: Monitor(command: "
-    "\"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", "
-    "persistent: true); keep it alive for the entire session!"
-)
-_RESUME_EAR_TEXT = (
-    "⏯️ The session has been resumed - re-arm a fresh monitor (Monitor(command: "
-    "\"tail -n 0 -f {signal_log}\", description: \"cortex wake signal\", "
-    "persistent: true)). Continue the conversation as normal."
-)
-_RETIRED_EAR_TEXT = (
-    "⏯️ This is an archived session - ignore all task/monitor. Do not call any "
-    "tool."
-)
-
-
-def arm_ear_text() -> str | None:
-    """SessionStart arm line for a fresh cortex window: the one-shot reminder to
-    start the ear tail. {signal_log} is substituted with the resolved absolute
-    path (config-routed). None on any error so the caller injects nothing."""
-    try:
-        signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return _ARM_EAR_TEXT.replace("{signal_log}", str(signal_log))
-    except Exception:
-        return None
-
-
-def resume_ear_text() -> str | None:
-    """SessionStart line for a RESUMED cortex window: drop stale pre-resume task
-    notifications and re-arm a fresh ear tail. The fresh-window counterpart is
-    arm_ear_text. {signal_log} substituted with the resolved absolute path. None
-    on any error so the caller injects nothing."""
-    try:
-        signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return _RESUME_EAR_TEXT.replace("{signal_log}", str(signal_log))
-    except Exception:
-        return None
-
-
-def retired_ear_text() -> str | None:
-    """SessionStart line for a RESUMED cortex window that is NO LONGER the
-    resident: a newer cortex has taken over, or this window was rotated out and is
-    being reopened only to read history. Tells the model to stay an archive/
-    read-only window — arm nothing, touch no wake_state. {signal_log} substituted
-    with the resolved absolute path. None on any error so the caller injects
-    nothing."""
-    try:
-        signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return _RETIRED_EAR_TEXT.replace("{signal_log}", str(signal_log))
-    except Exception:
-        return None
-
-
-def is_resident_session(transcript_path: str | None) -> bool:
-    """True when the given transcript is the active resident cortex, per
-    wake_state.json's `transcript` pointer. Deterministic — no model judgement.
-
-    MATCH (resident): the recorded transcript equals this one, OR no transcript
-    is recorded yet (no newer cortex has claimed residency).
-    NO MATCH (retired): wake_state records a DIFFERENT transcript — a newer
-    cortex took over, or this window was rotated out. On any read failure defaults
-    to True (resident) so a transient error never silently retires a live window."""
-    try:
-        d = _wake_state_load(_cortex_wake_state_path())
-    except Exception:
-        return True
-    state_tpath = d.get("transcript")
-    if not state_tpath or not transcript_path:
-        return True
-    return str(state_tpath) == str(transcript_path)
 
 
 def _render_note_fresh(transcript_path: str | None) -> str | None:
@@ -936,49 +850,6 @@ def _mirror_wakeup_note(text: str) -> None:
         pass
 
 
-# Rearm guidance when the ear Monitor dies mid-window (mechanism-defining copy).
-_REARM_TEXT = (
-    "Monitor is off — rearm now: Monitor(command: \"tail -n 0 -f {signal_log}\", "
-    "description: \"cortex wake signal\", persistent: true); then investigate why "
-    "it died."
-)
-
-
-def rearm_text() -> str | None:
-    """Rearm line injected when the ear Monitor dies mid-window. {signal_log}
-    substituted with the resolved absolute path. None on any error so the caller
-    injects nothing."""
-    try:
-        signal_log = _cortex_path("wake_signal_log_file", "wake_signal.log")
-        return _REARM_TEXT.replace("{signal_log}", str(signal_log))
-    except Exception:
-        return None
-
-
-# Monitor-death signature (Item 3). Verified against live cortex/synapse
-# transcripts (~/.claude/projects/**/*.jsonl): a Monitor that exits or is
-# killed arrives as a user-turn wrapped in <task-notification>…</task-notification>
-# whose <event> body is `[Monitor stopped — …]`. Matching on both the
-# task-notification wrapper AND the literal "Monitor stopped" event marker is
-# conservative — normal chat never contains this harness-generated pair.
-def is_monitor_death(prompt: str) -> bool:
-    """True when the incoming prompt is the harness notification for a Monitor
-    (the ear tail) that stopped. Conservative two-token match — never fires on
-    ordinary chat.
-
-    Explicitly excludes the on-resume "No completion record was found for this
-    background shell command" notice: the harness emits it for every background
-    shell that outlived the prior process (the ear tail among them), and its
-    correct handling is the resume_ear_text re-arm at SessionStart, NOT the
-    mid-window rearm flow. Treating it as a death fires a spurious wake/rotate.
-    """
-    if not prompt:
-        return False
-    if "No completion record was found" in prompt:
-        return False
-    return "<task-notification>" in prompt and "Monitor stopped" in prompt
-
-
 def tuck_in_marker() -> str:
     """Marker inside the free-round line the cortex watchdog appends to
     wake_signal.log (surfaces down the ear channel). A prompt carrying it is a
@@ -1167,8 +1038,6 @@ def is_machine_line(prompt: str) -> bool:
     tm = tuck_in_marker()
     if tm and _line_starts_with(p, tm):
         return True
-    if is_monitor_death(p):
-        return True
     if _starts_with_machine_marker(p):
         return True
     if is_compact_injection(p):
@@ -1319,39 +1188,35 @@ def shell_state_write(data: dict, shell: str | None = None) -> Path:
 
 
 
-def _clear_floor_deadline() -> None:
-    """Clear the pending floor deadline (next_floor_due_at) on the single-row
-    ct_pacemaker_state JSON. Semantics: cortex triggers._floor_trigger treats
-    None as DUE (fail-safe = a spurious wake, heartbeat preserved). Net effect
-    is still correct — the awake gate blocks any signal while awake, and the
-    user-wake reset that calls this also flips awake=true, so the next lie_down
-    redraws a fresh floor before None could fire a wake."""
-    import sqlite3
-    dbp = config.db_path()
+def _daemon_socket_path() -> Path:
+    """The cortex wake daemon's kick socket. cortex.toml [daemon].socket_path,
+    or <cortex home>/state/cortex-daemon.sock when unset — same resolution as
+    cortex.config.daemon_socket_path (marrow's venv cannot import cortex)."""
+    raw = str(_cortex_toml_section("daemon", "socket_path", "") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return _cortex_home() / "state" / "cortex-daemon.sock"
+
+
+def _notify_daemon() -> None:
+    """Best-effort kick to the cortex wake daemon so it re-reads the ledger
+    immediately instead of waiting for its next tick. Pure notification: never
+    replaces a state write, and a missing socket / dead daemon is a silent
+    no-op. Stdlib socket only."""
+    import socket as _socket
+    shell = str(_cortex_toml_section("daemon", "shell", "cli") or "cli")
     try:
-        conn = sqlite3.connect(dbp, timeout=30)
-    except sqlite3.Error:
-        return
+        timeout = float(_cortex_toml_section("daemon", "kick_timeout_sec", 1.0))
+    except (TypeError, ValueError):
+        timeout = 1.0
     try:
-        row = conn.execute(
-            "SELECT state FROM ct_pacemaker_state WHERE id = 1").fetchone()
-        if not row:
-            return
-        try:
-            obj = _json_ws.loads(row[0])
-        except (ValueError, TypeError):
-            return
-        if obj.get("next_floor_due_at") is None:
-            return
-        obj["next_floor_due_at"] = None
-        conn.execute(
-            "UPDATE ct_pacemaker_state SET state = ? WHERE id = 1",
-            (_json_ws.dumps(obj),))
-        conn.commit()
-    except sqlite3.Error:
+        path = _daemon_socket_path()
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(str(path))
+            s.sendall((shell + "\n").encode("utf-8"))
+    except (OSError, ValueError):
         pass
-    finally:
-        conn.close()
 
 
 def _kill_pid(pid_val) -> None:
@@ -1366,43 +1231,6 @@ def _kill_pid(pid_val) -> None:
         os.kill(pid, _signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         pass
-
-
-def kill_orphan_ear_tails() -> int:
-    """Kill leftover ear-tail processes (`tail … -f <signal_log>`) whose owning
-    cc session already exited. Called at resume SessionStart: the resumed window
-    has not armed its own tail yet, so every match at this instant is an orphan
-    from the dead prior process. Match is narrowed to the exact resolved
-    signal-log path (pgrep -f) so unrelated tails are never touched; our own pid
-    is skipped defensively. Best-effort — returns the count signalled for kill,
-    0 on any failure (missing pgrep, no matches, disabled path)."""
-    try:
-        signal_log = str(_cortex_path("wake_signal_log_file", "wake_signal.log"))
-    except Exception:
-        return 0
-    if not signal_log:
-        return 0
-    try:
-        proc = subprocess.run(
-            ["pgrep", "-f", f"-f {signal_log}"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return 0
-    if proc.returncode not in (0, 1):
-        return 0
-    killed = 0
-    me = os.getpid()
-    for raw in (proc.stdout or "").split():
-        try:
-            pid = int(raw)
-        except ValueError:
-            continue
-        if pid <= 0 or pid == me:
-            continue
-        _kill_pid(pid)
-        killed += 1
-    return killed
 
 
 def _pid_alive(pid_val) -> bool:
@@ -1504,7 +1332,7 @@ def _log_user_wake_row() -> int | None:
 
 def _cortex_user_wake_reset(inp: dict) -> None:
     """Real user message in a cortex window -> flip awake, kill the pending
-    alarm (floor deadline + sentinel), mark the user reply, reset the
+    alarm (next_wake_at ledger + sentinel), mark the user reply, reset the
     free-round silence cycle (drop any pending kick carrier + last-injection
     marker so it re-arms fresh from this message), and ensure a watchdog is
     alive. Fast + idempotent: already-awake + watchdog-alive collapses to cheap
@@ -1571,13 +1399,14 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         _wake_audit("awake_flip", trigger, "false->true")
     if old_gen is not None:
         _wake_audit("user_reset_gen", trigger, f"gen {old_gen}->{new_gen}")
-    # Kill the pending alarm: floor deadline + the exact-time sentinel.
+    # Kill the pending alarm: the exact-time sentinel.
     if sentinel_pid is not None:
         _wake_audit("sentinel_kill", trigger, f"pid={sentinel_pid}")
-    _wake_audit("floor_clear", trigger, "next_floor_due_at->None")
-    _clear_floor_deadline()
     _kill_pid(sentinel_pid)
     _spawn_watchdog_if_absent()
+    # Notify-only: the alarm was already cancelled by the state write above;
+    # this just tells a live daemon to re-read now instead of on its next tick.
+    _notify_daemon()
     # BUG A wake-row log, done OUTSIDE the wake-state lock (P2 fix, see above):
     # log this user-triggered wake as its own ct_wake_log row so the wakeup
     # note's "Last wake" counts it. Best-effort — bind wake_log_id back only if
