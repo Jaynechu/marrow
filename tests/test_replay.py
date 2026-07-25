@@ -500,6 +500,72 @@ def test_cortex_noise_advance_never_rewinds_baseline(tmp_path, monkeypatch):
     assert _baseline(ws) == "2026-07-17T10:05:00Z"
 
 
+# ── cortex path: row-id tie-break on a shared timestamp ─────────────────────
+
+def test_cortex_same_second_real_after_noise_not_skipped(tmp_path, monkeypatch):
+    # THE bug: a noise row @T advances the cursor to T; a REAL row landing
+    # later but sharing the exact same timestamp string must still be
+    # delivered, not skipped forever by a strict `timestamp > T` compare.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0,
+                                                   "per_msg_chars": 500})
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T12:00:00Z")
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    assert _baseline(ws) == "2026-07-17T12:00:00Z"
+    state = json.loads(ws.read_text())
+    assert isinstance(state.get("last_note_row_id"), int)
+    assert state.get("last_note_row_ts") == "2026-07-17T12:00:00Z"
+    _ev(db, SID_OTHER, "user", "same-second real talk", ts="2026-07-17T12:00:00Z")
+    out = hooks._replay_context("ctsid0000", "ct")
+    assert "same-second real talk" in out
+    # delivered once — a third read sees nothing new
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+
+
+def test_cortex_same_second_noise_chain_advances_row_cursor(tmp_path, monkeypatch):
+    # two same-second noise rows across separate batches: the id half of the
+    # cursor must move past the second one too (ts is unchanged, so only the
+    # id bound tracks it), or it sits in the window forever.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0,
+                                                   "per_msg_chars": 500})
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T14:00:00Z")
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    row_id_1 = json.loads(ws.read_text())["last_note_row_id"]
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T14:00:00Z")
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    state = json.loads(ws.read_text())
+    assert state["last_note_ts"] == "2026-07-17T14:00:00Z"
+    assert state["last_note_row_id"] > row_id_1
+    # a real event at the same second, arriving after both noise rows, still
+    # shows — proves the id bound actually tracked the second noise row too
+    _ev(db, SID_OTHER, "user", "finally real", ts="2026-07-17T14:00:00Z")
+    assert "finally real" in hooks._replay_context("ctsid0000", "ct")
+
+
+def test_cortex_migrates_timestamp_only_state(tmp_path, monkeypatch):
+    # pre-fix state on disk carries only last_note_ts (no row-id cursor yet).
+    # The first read after upgrade must resolve the row id from the DB,
+    # exclude what predates it, deliver what's new, and persist the paired
+    # row-id cursor for next time.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0,
+                                                   "per_msg_chars": 500})
+    _ev(db, SID_OTHER, "user", "already delivered", ts="2026-07-17T13:00:00Z")
+    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T13:00:00Z"}))
+    _ev(db, SID_OTHER, "user", "new after migration", ts="2026-07-17T13:05:00Z")
+    out = hooks._replay_context("ctsid0000", "ct")
+    assert "new after migration" in out
+    assert "already delivered" not in out
+    state = json.loads(ws.read_text())
+    assert state.get("last_note_ts") == "2026-07-17T13:05:00Z"
+    assert isinstance(state.get("last_note_row_id"), int)
+    assert state.get("last_note_row_ts") == "2026-07-17T13:05:00Z"
+
+
 def test_replay_context_cursor_unaffected_by_noise(tmp_path, monkeypatch):
     # per-sid path uses rows[-1]["id"], not the render cutoff: an all-noise
     # batch still advances the cursor past it.
