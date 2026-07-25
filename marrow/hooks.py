@@ -2693,7 +2693,9 @@ def _git_revert_parse(seg: str) -> dict | None:
     elif sub == "clean":
         action = "clean"
         paths = list(pos)
-    keep = [t for t in toks[:i + 1]] + [t for t in rest if t not in paths]
+    # `--` only separated the path operands that were just dropped — keeping it
+    # would trail a bare separator on the human-facing Action line.
+    keep = toks[:i + 1] + [t for t in rest if t not in paths and t != "--"]
     return {"action": action, "cmd": " ".join(keep), "refs": pos,
             "paths": paths, "repo": repo_dir}
 
@@ -2729,7 +2731,7 @@ def _git_revert_impact(parsed: dict, cwd: str) -> dict:
             log = _git_read(cwd, ["log", "--oneline", f"{ref}..HEAD"])
             n = len([x for x in (log or "").splitlines() if x.strip()])
             if n:
-                out["note"] = f"({n} commits)"
+                out["note"] = f"({n} commit{'s' if n > 1 else ''})"
         if out["ts"] is None:
             out["ts"] = _commit_ts(cwd, "HEAD")
     elif action == "revert":

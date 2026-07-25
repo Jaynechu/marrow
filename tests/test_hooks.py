@@ -1198,11 +1198,12 @@ def test_reason_restore_file_and_loc(env, monkeypatch):
     assert "LOC:  +12 −35" in out
 
 
-def test_reason_checkout_treeish_keeps_dashdash_in_action(env, monkeypatch):
+def test_reason_checkout_treeish_drops_dashdash_from_action(env, monkeypatch):
     _fake_git(monkeypatch, {"diff --numstat -- a.py": "1\t2\ta.py\n"})
     monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
     out = _reason(monkeypatch, "git checkout HEAD~1 -- a.py")
-    assert "Action: git checkout HEAD~1 --" in out
+    action = out.splitlines()[1]
+    assert action == "Action: git checkout HEAD~1"
     assert "File: a.py" in out
     assert "LOC:  +1 −2" in out
 
