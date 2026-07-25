@@ -577,8 +577,7 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     text = cx.get(key)
     if not text:
         return None
-    p = _cortex_handoff_path()
-    return text.replace("{handoff}", str(p) if p is not None else "handoff")
+    return _fill_handoff(text)
 
 
 def _window_spawn_epoch(tpath: str) -> float | None:
@@ -988,13 +987,6 @@ def tuck_in_marker() -> str:
     return str(cx.get("tuck_in_marker") or "[NEW ROUND]").strip()
 
 
-def tuck_in_menu_text() -> str | None:
-    """Retired (T2): the free-round [NEW ROUND] line now carries its own
-    complete copy (cortex [wake].tuck_in_text) — no separate covert menu body is
-    injected on the marker turn anymore. Always None (marker-only round)."""
-    return None
-
-
 # ── Covert machine-marker bodies (FUSE / CTL). Cortex writes only the marker line
 #    to wake_signal.log; the ear Monitor surfaces just the marker, and these full
 #    instruction bodies are injected INVISIBLY via UserPromptSubmit additionalContext
@@ -1004,9 +996,8 @@ _FUSE_MARKER = "[FUSE]"
 _CTL_MARKER = "[CTL]"
 
 _DEFAULT_FUSE_PROMPT = (
-    "Summarise this whole session into one section and append it to handoff.md — "
-    "follow the format and style of the preceding sections. Call "
-    "lie_down(rotate=True) when done."
+    "Session context fused. Update {handoff} before rotate. Add todo if any. "
+    "lie_down(rotate=True)"
 )
 
 _DEFAULT_CTL_SLEEP = (
@@ -1020,12 +1011,22 @@ _CTL_ARGS_RE = _re.compile(
 def fuse_prompt_text() -> str | None:
     """FUSE instruction body injected as additionalContext when the cortex ear
     surfaces a [FUSE] marker turn. Override [cortex].fuse_prompt_text; blank/None
-    -> inject nothing (marker-only)."""
+    -> inject nothing (marker-only). {handoff} = this shell's own handoff path."""
     cx = config.load().get("cortex", {}) or {}
     if "fuse_prompt_text" in cx:
         txt = str(cx.get("fuse_prompt_text") or "").strip()
-        return txt or None
-    return _DEFAULT_FUSE_PROMPT
+        if not txt:
+            return None
+    else:
+        txt = _DEFAULT_FUSE_PROMPT
+    return _fill_handoff(txt)
+
+
+def _fill_handoff(text: str) -> str:
+    """Render {handoff} as this shell's own handoff path (shared by the lie_down
+    nudge + the FUSE body); bare "handoff" when the path is unresolvable."""
+    p = _cortex_handoff_path()
+    return text.replace("{handoff}", str(p) if p is not None else "handoff")
 
 
 def ctl_sleep_text(marker_line: str) -> str | None:

@@ -226,14 +226,17 @@ def test_tuck_in_line_injects_nothing_no_double_note(tmp_path, monkeypatch, caps
 
 def test_fuse_marker_injects_body_covertly(tmp_path, monkeypatch, capsys):
     """A ⚙️ [FUSE] marker turn (bare or ear-wrapped) injects the FUSE body via
-    additionalContext — the body never rode the log line."""
+    additionalContext — the body never rode the log line. {handoff} renders as
+    this shell's own handoff path (cli here)."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     _enable(monkeypatch, tmp_path, {})
     _stdin(monkeypatch, {"session_id": "s1",
                          "prompt": '<event>⚙️ [FUSE]</event>'})
     assert hooks.main(["user_prompt_submit"]) == 0
     ctx = _ctx(capsys)
-    assert "handoff.md" in ctx and "lie_down(rotate=True)" in ctx
+    assert str(tmp_path / "handoff-cli.md") in ctx
+    assert "{handoff}" not in ctx
+    assert "lie_down(rotate=True)" in ctx
 
 
 def test_fuse_blank_body_injects_nothing(tmp_path, monkeypatch, capsys):

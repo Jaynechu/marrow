@@ -418,8 +418,7 @@ compact_marker_head_chars = 200
 # is tolerated automatically. (The wake bell is human text now — dropped from
 # ingestion via the template-shape match in transcript._is_wake_bell_row, not
 # an inline marker here.)
-machine_markers = ["[NEW ROUND]", "[TUCK-IN]",
-                   "[FUSE]", "[CTL]", "[CMD"]
+machine_markers = ["[NEW ROUND]", "[FUSE]", "[CTL]", "[CMD"]
 # Audit log for destructive wake-state actions (sentinel kill / floor clear /
 # awake flip). Bare name resolves under cortex home. Never silently destroy a
 # scheduled alarm again.

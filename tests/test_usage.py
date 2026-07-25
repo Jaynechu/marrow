@@ -464,3 +464,16 @@ def test_page_turn_legacy_migration(tmp_path, monkeypatch):
     cortex_bridge._cortex_handoff_page_turn_if_stale()
     assert (home / "handoff-cli.md").exists()
     assert not (home / "handoff.md").exists()
+
+
+def test_page_turn_post_migration_is_noop(tmp_path, monkeypatch):
+    """Legacy handoff.md gone + handoff-cli.md present (steady state): the
+    migration branch is skipped and an under-cap page is left byte-untouched."""
+    body = _handoff_body(["[] t"], ["- l"])
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
+    before = hp.stat().st_mtime
+    cortex_bridge._cortex_handoff_page_turn_if_stale()
+    assert hp.read_text(encoding="utf-8") == body
+    assert hp.stat().st_mtime == before
+    assert not (home / "handoff.md").exists()
+    assert not (home / "handoff_archive").exists()
