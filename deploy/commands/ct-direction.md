@@ -1,4 +1,3 @@
-<!-- DRAFT: copy pending user review (T6 gate) -->
 ---
 description: Cortex — send a direction to the tg shell.
 ---
