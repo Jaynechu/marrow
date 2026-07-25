@@ -317,12 +317,29 @@ def test_match_wake_bell_bracketed_hm_shape_fallback(cortex_env, monkeypatch):
     """A bracketed {hm} template '[<prefix> HH:MM]' matches the full bracketed
     on-screen line via shape fallback — the suffix after {hm} (the ']') is
     honored, not dropped (regression: hardcoded '$' after the time missed it)."""
+    # Both producer shapes are shape-fallback candidates -> pin both, else the
+    # other template's default would match on its own.
     monkeypatch.setattr(cortex_bridge, "wake_bell_template",
+                        lambda cfg=None: "[☀️ {hm}]")
+    monkeypatch.setattr(cortex_bridge, "spawn_opener_template",
                         lambda cfg=None: "[☀️ {hm}]")
     kind, tok, degraded = cortex_bridge.match_wake_bell("[☀️ 09:05]")
     assert kind == "shape" and tok is None and degraded is True
     # missing the closing bracket -> not the bell shape
     assert cortex_bridge.match_wake_bell("☀️ 09:05") is None
+
+
+def test_match_wake_bell_shape_fallback_covers_both_templates(cortex_env, monkeypatch):
+    """With no receipt, BOTH producer shapes are recognized: the resident bell
+    AND the fresh-spawn opener (they are separate config keys now)."""
+    monkeypatch.setattr(cortex_bridge, "wake_bell_template",
+                        lambda cfg=None: "⏰ {hm} 醒了")
+    monkeypatch.setattr(cortex_bridge, "spawn_opener_template",
+                        lambda cfg=None: "[🧚 shift change]")
+    assert cortex_bridge.match_wake_bell("⏰ 09:05 醒了")[0] == "shape"
+    assert cortex_bridge.match_wake_bell("[🧚 shift change]")[0] == "shape"
+    # neither shape -> ordinary user speech
+    assert cortex_bridge.match_wake_bell("⏰ 早安") is None
 
 
 def test_is_machine_line_bracketed_bell(cortex_env):

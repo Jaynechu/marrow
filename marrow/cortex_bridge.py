@@ -672,8 +672,17 @@ def _render_note_fresh(transcript_path: str | None) -> str | None:
 # is EXACT-match only.
 
 def wake_bell_template(cfg: dict | None = None) -> str:
+    """Template of the bell TYPED into a live resident cortex window."""
     cx = (cfg or config.load()).get("cortex", {}) or {}
-    return str(cx.get("wake_bell_template") or "☀️ {hm}")
+    return str(cx.get("wake_bell_template") or "⏰ {hm}")
+
+
+def spawn_opener_template(cfg: dict | None = None) -> str:
+    """Template of the first prompt baked into a FRESHLY SPAWNED cortex window
+    (cortex [wake].spawn_opener_template). A distinct shape from the resident
+    bell, so the receipt-less shape fallback must accept both."""
+    cx = (cfg or config.load()).get("cortex", {}) or {}
+    return str(cx.get("spawn_opener_template") or "☀️ {hm}")
 
 
 def _receipt_ttl_sec(cfg: dict | None = None) -> float:
@@ -769,9 +778,13 @@ def match_wake_bell(prompt: str) -> tuple[str, tuple[int, str] | None, bool] | N
     #     swallowed — only the near-exact bell shape is (documented accepted
     #     residue: a user typing the literal '<prefix> HH:MM' with no live receipt).
     #   - fully STATIC template (no {hm}) -> exact match of the static text.
-    tmpl = (receipt.get("template") if receipt else None) or wake_bell_template()
-    if _line_matches_bell_shape(prompt, str(tmpl)):
-        return ("shape", None, True)
+    # Two producer shapes exist (resident bell + fresh-spawn opener); with no
+    # usable receipt BOTH are candidates, else the receipt's own template wins.
+    cands = [receipt.get("template")] if receipt and receipt.get("template") else []
+    cands += [wake_bell_template(), spawn_opener_template()]
+    for tmpl in cands:
+        if tmpl and _line_matches_bell_shape(prompt, str(tmpl)):
+            return ("shape", None, True)
     return None
 
 
@@ -848,6 +861,29 @@ def _mirror_wakeup_note(text: str) -> None:
         atomic_write(str(path), text)
     except Exception:
         pass
+
+
+def free_round_note_text() -> str | None:
+    """Read + CONSUME the invisible free-round payload cortex staged before it
+    typed the ⏳ marker (cortex wake_state.free_round_note_path). Same
+    marker->body pattern as the wake bell: only the short marker line is on
+    screen, the note itself is injected as additionalContext.
+
+    Consume-once (the file is deleted on read) and TTL-guarded by
+    receipt_ttl_min: a payload whose marker turn never arrived (window died
+    between staging and the prompt landing) is dropped instead of surfacing on
+    an unrelated later round. None when absent/empty/stale."""
+    p = _cortex_path("free_round_note_file", "free_round_note.md")
+    try:
+        text = p.read_text(encoding="utf-8").strip()
+        fresh = (datetime.now().timestamp() - p.stat().st_mtime) <= _receipt_ttl_sec()
+    except OSError:
+        return None
+    try:
+        p.unlink()
+    except OSError:
+        pass
+    return text if (text and fresh) else None
 
 
 def tuck_in_marker() -> str:

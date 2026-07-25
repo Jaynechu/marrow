@@ -385,13 +385,22 @@ lie_down_nudge_rotate_text = "Update {handoff} before rotate. Add todo if any."
 # for the note and signal log default to <home>/<file> (override with an
 # absolute path).
 wakeup_note_file = "wakeup_note.md"
+# Invisible free-round payload: cortex stages the rendered note here and types
+# only the short ⏳ marker; this hook injects the body on that marker turn and
+# deletes the file. Must match cortex [paths].free_round_note_file.
+free_round_note_file = "free_round_note.md"
 wake_signal_log_file = "state/wake_signal.log"
-# Visible bell = human text only. Must match cortex [wake].wake_bell_template.
-# The producer writes the exact rendered text into the wake_state receipt at
-# send time; the hook exact-matches the on-screen line against that receipt.
-# {hm} = local HH:MM. The static prefix (text before {hm}) is the shape the
-# consumer falls back to when the receipt is missing/unreadable (fail-open).
-wake_bell_template = "[☀️ {hm}]"
+# Visible wake lines = human text only. The producer writes the exact rendered
+# text + the template it used into the wake_state receipt at send time; the hook
+# exact-matches the on-screen line against that receipt. {hm} = local HH:MM. The
+# static prefix (text before {hm}) is the shape the consumer falls back to when
+# the receipt is missing/unreadable (fail-open) — BOTH templates are candidates.
+#   spawn_opener_template = first prompt of a freshly spawned cortex window
+#     (must match cortex [wake].spawn_opener_template).
+#   wake_bell_template = line typed into a live resident window
+#     (must match cortex [wake].wake_bell_template).
+spawn_opener_template = "[☀️ {hm}]"
+wake_bell_template = "⏰ {hm}"
 # Receipt time-to-live (minutes): a pending receipt older than this is ignored
 # (stale hygiene). Must match cortex [wake].receipt_ttl_min.
 receipt_ttl_min = 15
