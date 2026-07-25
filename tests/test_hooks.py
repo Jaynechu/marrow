@@ -495,17 +495,17 @@ def _hook_out(capsys):
 def test_backup_guard_rm_single_file_whitelisted_no_trigger(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash", {"command": "rm /tmp/foo.txt"})
     assert rc == 0
-    out = _out(capsys)
-    assert "permissionDecision" not in out["hookSpecificOutput"]
-    assert _BG_MSG not in out["hookSpecificOutput"]["additionalContext"]
+    out = _hook_out(capsys)
+    assert "permissionDecision" not in out
+    assert _BG_MSG not in out.get("additionalContext", "")
 
 
 def test_backup_guard_git_status_no_trigger(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash", {"command": "git status"})
     assert rc == 0
-    out = _out(capsys)
-    assert "permissionDecision" not in out["hookSpecificOutput"]
-    assert _BG_MSG not in out["hookSpecificOutput"]["additionalContext"]
+    out = _hook_out(capsys)
+    assert "permissionDecision" not in out
+    assert _BG_MSG not in out.get("additionalContext", "")
 
 
 # -- Silent: whitelist + same-command backup ----------------------------------
@@ -513,26 +513,26 @@ def test_backup_guard_git_status_no_trigger(env, monkeypatch, capsys):
 def test_backup_guard_rm_rf_tmp_silent(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf /tmp/foo"})
     assert rc == 0
-    out = _out(capsys)
-    assert "permissionDecision" not in out["hookSpecificOutput"]
-    assert _BG_MSG not in out["hookSpecificOutput"]["additionalContext"]
+    out = _hook_out(capsys)
+    assert "permissionDecision" not in out
+    assert _BG_MSG not in out.get("additionalContext", "")
 
 
 def test_backup_guard_rm_rf_private_tmp_silent(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf /private/tmp/foo"})
     assert rc == 0
-    out = _out(capsys)
-    assert "permissionDecision" not in out["hookSpecificOutput"]
-    assert _BG_MSG not in out["hookSpecificOutput"]["additionalContext"]
+    out = _hook_out(capsys)
+    assert "permissionDecision" not in out
+    assert _BG_MSG not in out.get("additionalContext", "")
 
 
 def test_backup_guard_scratchpad_silent(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash",
                   {"command": "rm -rf /Users/x/project/scratchpad/old"})
     assert rc == 0
-    out = _out(capsys)
-    assert "permissionDecision" not in out["hookSpecificOutput"]
-    assert _BG_MSG not in out["hookSpecificOutput"]["additionalContext"]
+    out = _hook_out(capsys)
+    assert "permissionDecision" not in out
+    assert _BG_MSG not in out.get("additionalContext", "")
 
 
 def test_backup_guard_recursive_rm_with_tar_backup_silent(env, monkeypatch, capsys):
@@ -541,7 +541,7 @@ def test_backup_guard_recursive_rm_with_tar_backup_silent(env, monkeypatch, caps
     rc = _pretool(monkeypatch, "Bash",
                   {"command": "tar -czf /tmp/bak.tgz ~/projects/x && rm -rf ~/projects/x"})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
     assert _BG_MSG not in out.get("additionalContext", "")
     assert _BG_DENY_MSG not in out.get("additionalContext", "")
@@ -747,7 +747,7 @@ def test_backup_guard_settings_json_edit_now_silent(env, monkeypatch, capsys):
                   {"file_path": "/Users/x/.claude/settings.json", "old_string": "a",
                    "new_string": "b"})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
     assert _BG_MSG not in out.get("additionalContext", "")
 
@@ -772,9 +772,9 @@ def test_backup_guard_disabled_via_config(env, monkeypatch, capsys):
 
     rc = _pretool(monkeypatch, "Bash", {"command": "rm -rf ~/projects/x"})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
-    assert _BG_MSG not in out["additionalContext"]
+    assert _BG_MSG not in out.get("additionalContext", "")
 
 
 def test_backup_guard_fail_open_malformed_input(env, monkeypatch, capsys):
@@ -945,7 +945,7 @@ def test_git_force_push_commit_message_no_false_positive(env, monkeypatch, capsy
     rc = _pretool(monkeypatch, "Bash",
                   {"command": 'git commit -m "git push --force is dangerous"'})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert out.get("permissionDecision") != "deny"
 
 
@@ -953,7 +953,7 @@ def test_git_plain_push_and_commit_silent(env, monkeypatch, capsys):
     for cmd in ("git push origin main", "git commit -m wip", "git merge feature"):
         rc = _pretool(monkeypatch, "Bash", {"command": cmd})
         assert rc == 0
-        out = _out(capsys)["hookSpecificOutput"]
+        out = _hook_out(capsys)
         assert out.get("permissionDecision") is None, cmd
 
 
@@ -963,7 +963,7 @@ def test_git_force_push_disabled_via_config(env, monkeypatch, capsys):
     monkeypatch.setattr(config, "load", lambda: base_cfg)
     rc = _pretool(monkeypatch, "Bash", {"command": "git push --force origin main"})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert out.get("permissionDecision") != "deny"
 
 
@@ -993,7 +993,7 @@ def test_git_revert_reset_hard_in_commit_message_no_match(env, monkeypatch, caps
     rc = _pretool(monkeypatch, "Bash",
                   {"command": 'git commit -m "reset --hard in message"'})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert out.get("permissionDecision") != "ask"
     assert out.get("permissionDecision") != "deny"
 
@@ -1021,7 +1021,7 @@ def test_git_revert_checkout_branch_switch_no_dashdash_not_held(
     for cmd in ("git checkout some-branch", "git checkout -b newbranch"):
         rc = _pretool(monkeypatch, "Bash", {"command": cmd})
         assert rc == 0
-        out = _out(capsys)["hookSpecificOutput"]
+        out = _hook_out(capsys)
         assert out.get("permissionDecision") != "ask", cmd
 
 
@@ -1036,7 +1036,7 @@ def test_git_revert_restore_staged_only_is_safe(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash",
                   {"command": "git restore --staged marrow/hooks.py"})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
 
 
@@ -1070,7 +1070,7 @@ def test_git_worktree_remove_in_worktree_cwd_silent(env, monkeypatch, capsys):
     })
     rc = hooks.main(["pretool_use"])
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
 
 
@@ -1089,7 +1089,7 @@ def test_git_revert_compound_restore_staged_then_unsafe_restore_asks(
 def test_git_revert_restore_staged_alone_still_passes(env, monkeypatch, capsys):
     rc = _pretool(monkeypatch, "Bash", {"command": "git restore --staged a"})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
 
 
@@ -1106,7 +1106,7 @@ def test_git_revert_normal_git_commands_pass(env, monkeypatch, capsys):
                 "git commit -m wip", "git push origin main"):
         rc = _pretool(monkeypatch, "Bash", {"command": cmd})
         assert rc == 0
-        out = _out(capsys)["hookSpecificOutput"]
+        out = _hook_out(capsys)
         assert out.get("permissionDecision") != "ask", cmd
 
 
@@ -1121,7 +1121,7 @@ def test_git_revert_branch_cap_d_worktree_cwd_silent(env, monkeypatch, capsys):
     })
     rc = hooks.main(["pretool_use"])
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
 
 
@@ -1151,7 +1151,7 @@ def test_git_revert_relative_worktree_path_in_cmd_silent(env, monkeypatch, capsy
     )
     rc = _pretool(monkeypatch, "Bash", {"command": cmd})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert "permissionDecision" not in out
 
 
@@ -1161,7 +1161,7 @@ def test_git_revert_disabled_via_config(env, monkeypatch, capsys):
     monkeypatch.setattr(config, "load", lambda: base_cfg)
     rc = _pretool(monkeypatch, "Bash", {"command": "git reset --hard HEAD~1"})
     assert rc == 0
-    out = _out(capsys)["hookSpecificOutput"]
+    out = _hook_out(capsys)
     assert out.get("permissionDecision") != "ask"
 
 

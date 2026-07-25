@@ -3215,8 +3215,6 @@ def pretool_use() -> int:
                 except Exception:
                     pass
 
-        _literal = "[Path] Use paths with /, not bare filenames."
-
         guard_line: str | None = None
         try:
             guard_line = _backup_guard_line(inp)
@@ -3259,12 +3257,21 @@ def pretool_use() -> int:
                     target_path_str = args_only[-1]
 
         if not is_placement:
-            _emit(_literal)
+            # No placement guidance applies (read-only / non-placement op).
+            # The backup guard reminder (and any rm->trash rewrite) must
+            # still surface — orthogonal to placement/atlas coverage.
+            if guard_line is not None:
+                _emit_hso({"additionalContext": guard_line})
+            elif rewrite_updated is not None:
+                _emit_hso({})
             return 0
 
         # Resolve target path
         if not target_path_str:
-            _emit(_literal)
+            if guard_line is not None:
+                _emit_hso({"additionalContext": guard_line})
+            elif rewrite_updated is not None:
+                _emit_hso({})
             return 0
 
         target = Path(target_path_str).expanduser()
