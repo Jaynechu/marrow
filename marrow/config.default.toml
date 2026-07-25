@@ -467,7 +467,7 @@ wire_channels = ["tg", "wx"]
 # idle_gate_min: non-cortex sessions inject replay only when her last completed
 #   turn in that session is >= this many minutes old (catch-up on return, quiet
 #   during focused work). First turn = injects. 0 = every turn. Cortex is exempt
-#   (every turn, via the last_note_ts cursor shared with note.py).
+#   (every turn, via the last_note_row_id cursor shared with note.py).
 # exclude_target_channels: non-cortex sessions on these channels receive NOTHING.
 #   ct is NOT listed — the cortex window takes the note-aligned cursor path.
 #   Source ct events are excluded by the query itself.

@@ -139,7 +139,7 @@ def test_other_excluded_channel_still_blocked(tmp_path, monkeypatch):
     assert _cursor(SID_SELF) is None
 
 
-# ── cortex: shared last_note_ts cursor, ct now delivered on normal turn ──────
+# ── cortex: shared last_note_row_id cursor, ct delivered on normal turn ─────
 
 def _cortex_setup(monkeypatch, tmp_path, db):
     _setup(monkeypatch, tmp_path, db)
@@ -153,15 +153,16 @@ def test_cortex_receives_on_normal_turn(tmp_path, monkeypatch):
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db)
     _ev(db, SID_OTHER, "user", "she said hi", ts="2026-07-17T04:10:00Z")
-    _ev(db, SID_OTHER, "assistant", "he replied", ts="2026-07-17T04:11:00Z")
+    last_id = _ev(db, SID_OTHER, "assistant", "he replied",
+                  ts="2026-07-17T04:11:00Z")
     # cortex session channel is 'ct' — previously excluded, now delivered
     out = hooks._replay_context("ctsid0000", "ct")
     assert out.startswith("## Recent replay from other sessions")
     assert "she said hi" in out and "he replied" in out
-    # cursor advanced into wake_state.last_note_ts
+    # cursor advanced into wake_state.last_note_row_id
     import json
     d = json.loads(ws.read_text())
-    assert d["last_note_ts"] == "2026-07-17T04:11:00Z"
+    assert d["last_note_row_id"] == last_id
 
 
 def test_cortex_shared_cursor_no_double_feed(tmp_path, monkeypatch):
@@ -170,15 +171,15 @@ def test_cortex_shared_cursor_no_double_feed(tmp_path, monkeypatch):
     _ev(db, SID_OTHER, "user", "first msg", ts="2026-07-17T04:10:00Z")
     out1 = hooks._replay_context("ctsid0000", "ct")
     assert "first msg" in out1
-    # a subsequent note render (simulated: it reads timestamp > last_note_ts) must
+    # a subsequent note render (simulated: it reads id > last_note_row_id) must
     # not re-deliver the same event. Same query the note side uses.
     import json
-    since = json.loads(ws.read_text())["last_note_ts"]
+    since = json.loads(ws.read_text())["last_note_row_id"]
     conn = storage.connect(db)
     try:
         rows = conn.execute(
             "SELECT content FROM events WHERE role IN ('user','assistant') "
-            "AND COALESCE(channel,'') != 'ct' AND timestamp > ? ORDER BY id",
+            "AND COALESCE(channel,'') != 'ct' AND id > ? ORDER BY id",
             (since,)).fetchall()
     finally:
         conn.close()
@@ -188,13 +189,14 @@ def test_cortex_shared_cursor_no_double_feed(tmp_path, monkeypatch):
 
 
 def test_note_then_hook_no_double_feed(tmp_path, monkeypatch):
-    # note render advances last_note_ts first; the hook must not re-deliver.
+    # note render advances last_note_row_id first; the hook must not re-deliver.
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db)
-    _ev(db, SID_OTHER, "user", "delivered by note", ts="2026-07-17T04:10:00Z")
-    # simulate note render: stamp last_note_ts to the newest rendered ts
+    rid = _ev(db, SID_OTHER, "user", "delivered by note",
+              ts="2026-07-17T04:10:00Z")
+    # simulate note render: stamp the cursor to the newest rendered row id
     import json
-    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T04:10:00Z"}))
+    ws.write_text(json.dumps({"last_note_row_id": rid}))
     # hook on the next normal turn sees nothing new
     assert hooks._replay_context("ctsid0000", "ct") == ""
 
@@ -212,19 +214,20 @@ def test_cortex_excludes_ct_source(tmp_path, monkeypatch):
 def test_cortex_hook_never_rewinds_note_baseline(tmp_path, monkeypatch):
     # note.py advanced the shared baseline further than the hook's own render
     # would compute (smaller row-limit / stricter strip). The hook must NOT
-    # rewind last_note_ts and re-deliver already-consumed turns (the 18:38 bug).
+    # rewind last_note_row_id and re-deliver consumed turns (the 18:38 bug).
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db)
     _ev(db, SID_OTHER, "user", "old turn", ts="2026-07-17T04:05:00Z")
-    _ev(db, SID_OTHER, "assistant", "old reply", ts="2026-07-17T04:06:00Z")
+    last_id = _ev(db, SID_OTHER, "assistant", "old reply",
+                  ts="2026-07-17T04:06:00Z")
     import json
-    # note.py already consumed up to 04:06 (ahead of what a hook re-render of the
+    # note.py already consumed both rows (ahead of what a hook re-render of the
     # same rows would land on if it wrote unconditionally).
-    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T04:06:00Z"}))
-    # a new turn arrives, older than the baseline is impossible; verify the hook,
-    # seeing only <= baseline rows, delivers nothing and leaves the baseline put.
+    ws.write_text(json.dumps({"last_note_row_id": last_id}))
+    # verify the hook, seeing only <= cursor rows, delivers nothing and leaves
+    # the cursor put.
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    assert json.loads(ws.read_text())["last_note_ts"] == "2026-07-17T04:06:00Z"
+    assert json.loads(ws.read_text())["last_note_row_id"] == last_id
 
 
 def test_cortex_alternating_note_hook_no_repeat(tmp_path, monkeypatch):
@@ -235,7 +238,7 @@ def test_cortex_alternating_note_hook_no_repeat(tmp_path, monkeypatch):
     import json
 
     def _baseline():
-        return json.loads(ws.read_text()).get("last_note_ts")
+        return json.loads(ws.read_text()).get("last_note_row_id")
 
     # hook delivers turn A
     _ev(db, SID_OTHER, "user", "line A", ts="2026-07-17T04:10:00Z")
@@ -243,21 +246,21 @@ def test_cortex_alternating_note_hook_no_repeat(tmp_path, monkeypatch):
     assert "line A" in outA
     base1 = _baseline()
 
-    # note-side delivers turn B (stamps baseline forward itself)
-    _ev(db, SID_OTHER, "assistant", "line B", ts="2026-07-17T04:11:00Z")
-    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T04:11:00Z"}))
+    # note-side delivers turn B (stamps the cursor forward itself)
+    id_b = _ev(db, SID_OTHER, "assistant", "line B", ts="2026-07-17T04:11:00Z")
+    ws.write_text(json.dumps({"last_note_row_id": id_b}))
     assert _baseline() > base1
 
     # hook next turn: nothing new (B consumed by note) -> no repeat of A or B
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    assert _baseline() == "2026-07-17T04:11:00Z"
+    assert _baseline() == id_b
 
     # hook delivers turn C
-    _ev(db, SID_OTHER, "user", "line C", ts="2026-07-17T04:12:00Z")
+    id_c = _ev(db, SID_OTHER, "user", "line C", ts="2026-07-17T04:12:00Z")
     outC = hooks._replay_context("ctsid0000", "ct")
     assert "line C" in outC
     assert "line A" not in outC and "line B" not in outC
-    assert _baseline() == "2026-07-17T04:12:00Z"
+    assert _baseline() == id_c
 
 
 def test_cortex_concurrent_interleave_no_repeat_no_backward(tmp_path, monkeypatch):
@@ -269,9 +272,8 @@ def test_cortex_concurrent_interleave_no_repeat_no_backward(tmp_path, monkeypatc
 
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db)
-    for i in range(20):
-        _ev(db, SID_OTHER, "user", f"msg {i}",
-            ts=f"2026-07-17T05:{i:02d}:00Z")
+    row_ids = [_ev(db, SID_OTHER, "user", f"msg {i}",
+                   ts=f"2026-07-17T05:{i:02d}:00Z") for i in range(20)]
 
     delivered = []
     baselines = []
@@ -285,7 +287,7 @@ def test_cortex_concurrent_interleave_no_repeat_no_backward(tmp_path, monkeypatc
                 with lock:
                     delivered.append(out)
                     if ws.exists():
-                        b = json.loads(ws.read_text()).get("last_note_ts")
+                        b = json.loads(ws.read_text()).get("last_note_row_id")
                         if b:
                             baselines.append(b)
         except Exception as e:  # pragma: no cover
@@ -296,10 +298,10 @@ def test_cortex_concurrent_interleave_no_repeat_no_backward(tmp_path, monkeypatc
             for i in range(0, 20, 3):
                 with cortex_bridge._wake_state_lock(ws):
                     d = cortex_bridge._wake_state_load(ws)
-                    cur = d.get("last_note_ts")
-                    cand = f"2026-07-17T05:{i:02d}:00Z"
-                    if not cur or cand > cur:
-                        d["last_note_ts"] = cand
+                    cur = d.get("last_note_row_id")
+                    cand = row_ids[i]
+                    if not isinstance(cur, int) or cand > cur:
+                        d["last_note_row_id"] = cand
                         cortex_bridge._wake_state_save(ws, d)
         except Exception as e:  # pragma: no cover
             errors.append(e)

@@ -292,20 +292,17 @@ def _replay_drop_filters(cfg: dict):
 
 def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines: int = 0):
     """Group events into turns and render the P3 replay block. Returns
-    (block, rendered_cutoff, cutoff_row_id): block is '' when empty;
-    rendered_cutoff is the max timestamp of every SCANNED row — fold-dropped
-    and noise-dropped rows count too, so a diff-cursor caller never re-reads a
-    row that can only ever drop (it would stall the cursor forever).
-    cutoff_row_id is the max `id` among the SCANNED rows sharing that max
-    timestamp (rows arrive id-ascending, so it is always the last row whose ts
-    equals the cutoff) — a same-second sibling of the id-cursor caller's tie
-    break; None when rows carry no `id` column. A user event opens a turn;
+    (block, cutoff_row_id): block is '' when empty; cutoff_row_id is the max
+    `id` of every SCANNED row — fold-dropped and noise-dropped rows count too,
+    so a diff-cursor caller never re-reads a row that can only ever drop (it
+    would stall the cursor forever). None when rows carry no `id` column.
+    A user event opens a turn;
     consecutive user msgs stay in the same turn; the following assistant msgs
     close it. Overflow beyond max_turns
     folds to a count. `max_lines` (0 = no cap) further caps the rendered message
     lines to the newest N after turn-capping — an outer bound below max_turns
     for turns that carry many per-turn messages. Shared by the per-sid cursor
-    path and the cortex last_note_ts path.
+    path and the cortex row-id cursor path.
 
     Rows that are pure noise for another session — bare slash-command turns and
     bot status/system output matching [replay].drop_patterns — are skipped here,
@@ -315,19 +312,18 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
     slash_max, drop_pats = _replay_drop_filters(
         (config.load().get("replay", {}) or {}))
     turns: list[list[dict]] = []
-    cutoff = None
     cutoff_row_id = None
     for r in rows:
-        # cutoff counts every SCANNED row, dropped ones included: a dropped row
-        # is dropped deterministically on every re-read, so leaving it behind
-        # the cutoff would keep it inside the caller's query window forever.
-        ts = r["timestamp"]
-        if ts and (cutoff is None or ts >= cutoff):
-            cutoff = ts
-            try:
-                cutoff_row_id = r["id"]
-            except (KeyError, IndexError):
-                pass
+        # The cutoff counts every SCANNED row, dropped ones included: a dropped
+        # row is dropped deterministically on every re-read, so leaving it
+        # behind the cutoff would keep it inside the caller's query window
+        # forever.
+        try:
+            rid = r["id"]
+        except (KeyError, IndexError):
+            rid = None
+        if isinstance(rid, int) and (cutoff_row_id is None or rid > cutoff_row_id):
+            cutoff_row_id = rid
         content = transcript.strip_media_markers(r["content"])
         if not content:
             continue
@@ -350,7 +346,7 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
         else:
             turns[-1].append(item)
     if not turns:
-        return "", cutoff, cutoff_row_id
+        return "", cutoff_row_id
     kept = turns[-max_turns:]
     folded = len(turns) - len(kept)
     msg_lines = [
@@ -362,71 +358,53 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
     lines = [header, *msg_lines]
     if folded > 0:
         lines.append(f"+{folded} earlier turns")
-    return "\n".join(lines), cutoff, cutoff_row_id
+    return "\n".join(lines), cutoff_row_id
 
 
-def _replay_cortex_row_cursor(conn, d: dict, since_ts) -> int | None:
-    """Row-id half of the cortex replay cursor, tie-broken against `since_ts`
-    (wake_state.last_note_ts — the SAME field cortex's note.py reads/writes as
-    its own diff baseline, untouched by this cursor). since_ts alone cannot
-    tell two rows with an identical timestamp string apart, so a real event
-    landing after a same-second noise row that already advanced the cutoff
-    would be skipped forever under a strict `timestamp > since_ts` compare.
+def _replay_cortex_since_row_id(conn, d: dict) -> int | None:
+    """The cortex replay cursor: `wake_state.last_note_row_id`, the events row id
+    of the last row this window consumed. The SAME field cortex's note.py reads
+    and writes, so a turn delivered on either side is never re-delivered by the
+    other. `id` is AUTOINCREMENT insert order — the true replay order — and,
+    unlike a timestamp string, it tells two same-second rows apart, so a real
+    event landing in the same second as an already-consumed row is never skipped.
 
-    `last_note_row_id` (private to this cursor — nothing else reads it) is
-    trusted only when `last_note_row_ts` still matches the CURRENT since_ts,
-    i.e. it was written by our own last advance. Otherwise (first run after
-    this fix, or since_ts moved under us — note.py's own wake-open reseed)
-    it is resolved once from the DB: the newest row at exactly that
-    timestamp. None when since_ts is falsy or nothing matches (caller then
-    falls back to the plain `timestamp > since_ts` compare, pre-fix
-    behaviour, never worse)."""
+    Migration (one-time read): state carrying only the legacy `last_note_ts`
+    resolves to the newest row at-or-before that timestamp, so nothing already
+    shown re-appears and nothing unseen is skipped. None = no cursor yet (full
+    window)."""
+    v = d.get("last_note_row_id")
+    if isinstance(v, int):
+        return v
+    since_ts = d.get("last_note_ts")
     if not since_ts:
         return None
-    if d.get("last_note_row_ts") == since_ts and isinstance(d.get("last_note_row_id"), int):
-        return d["last_note_row_id"]
     try:
         row = conn.execute(
-            "SELECT id FROM events WHERE timestamp = ? ORDER BY id DESC LIMIT 1",
-            (since_ts,),
+            "SELECT MAX(id) AS id FROM events WHERE timestamp <= ?", (since_ts,)
         ).fetchone()
     except sqlite3.OperationalError:
         return None
-    return int(row["id"]) if row else None
+    return int(row["id"]) if row and row["id"] is not None else None
 
 
 def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int = 0) -> str:
-    """Cortex-window replay on a normal turn, sharing note.py's last_note_ts diff
-    cursor (wake_state.json) so a turn delivered here is never re-delivered by the
-    next note, and vice versa. Reads events newer than the baseline (excludes ct
-    source, matching note.py semantics), renders P3 format, advances last_note_ts
-    to the newest SCANNED ts under the shared wake-state flock — including rows
-    the noise filters dropped, so an all-noise batch still moves the baseline
-    instead of being re-read every turn. Advance is monotonic — never rewinds a
-    baseline that note.py (or a concurrent turn) already pushed forward.
-
-    The window query also tie-breaks on row id (see _replay_cortex_row_cursor):
-    same-timestamp rows are ordered by id, so a real event sharing its exact
-    timestamp string with an earlier noise-dropped row is never skipped. Only
-    this function's own id cursor (last_note_row_id/last_note_row_ts) is added
-    to state — last_note_ts itself keeps its exact prior value/semantics, so
-    note.py's own reader/writer of that field is unaffected."""
+    """Cortex-window replay on a normal turn, sharing note.py's last_note_row_id
+    diff cursor (wake_state.json) so a turn delivered here is never re-delivered by
+    the next note, and vice versa. Reads events newer than the cursor row id
+    (excludes ct source, matching note.py semantics), renders P3 format, advances
+    the cursor to the newest SCANNED row id under the shared wake-state flock —
+    including rows the noise filters dropped, so an all-noise batch still moves the
+    cursor instead of being re-read every turn. Advance is monotonic — never
+    rewinds a cursor that note.py (or a concurrent turn) already pushed forward."""
     p = cortex_bridge._cortex_wake_state_path()
     conn = storage.connect(config.db_path())
     try:
         with cortex_bridge._wake_state_lock(p):
             d = cortex_bridge._wake_state_load(p)
-            since_ts = d.get("last_note_ts")
-            since_row_id = _replay_cortex_row_cursor(conn, d, since_ts)
-            if since_ts and since_row_id is not None:
-                where_since = " AND (timestamp > ? OR (timestamp = ? AND id > ?))"
-                extra = (since_ts, since_ts, since_row_id)
-            elif since_ts:
-                where_since = " AND timestamp > ?"
-                extra = (since_ts,)
-            else:
-                where_since = ""
-                extra = ()
+            since_row_id = _replay_cortex_since_row_id(conn, d)
+            where_since = " AND id > ?" if since_row_id is not None else ""
+            extra = (since_row_id,) if since_row_id is not None else ()
             params = extra + (max_turns * 4,)
             try:
                 rows = conn.execute(
@@ -441,26 +419,16 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
             if not rows:
                 return ""
             rows = list(reversed(rows))  # chronological
-            block, cutoff, cutoff_row_id = _replay_render(
+            block, cutoff_row_id = _replay_render(
                 rows, header, max_turns, per_chars, max_lines)
             # Monotonic advance to the scanned cutoff — runs even when block is
             # '' (all rows dropped as noise), otherwise those rows sit inside
-            # the window on every later turn. Only moves forward, so a baseline
+            # the window on every later turn. Only moves forward, so a cursor
             # note.py or a concurrent cortex turn already pushed past is never
-            # rewound (double-deliver / 18:38 bug). Also extends the row-id
-            # bound alone when the cutoff ts is unchanged but new rows tied to
-            # it were scanned this batch (same-second follow-ups) — without
-            # this branch the id cursor would never move for a same-second
-            # run and those rows would replay again next turn.
-            advance_ts = cutoff and (not since_ts or str(cutoff) > str(since_ts))
-            advance_tie = (
-                cutoff and str(cutoff) == str(since_ts) and cutoff_row_id is not None
-                and (since_row_id is None or cutoff_row_id > since_row_id)
-            )
-            if advance_ts or advance_tie:
+            # rewound (double-deliver / 18:38 bug).
+            if cutoff_row_id is not None and (
+                    since_row_id is None or cutoff_row_id > since_row_id):
                 cortex_bridge._ws_ensure_epoch(d)
-                d["last_note_ts"] = cutoff
-                d["last_note_row_ts"] = cutoff
                 d["last_note_row_id"] = cutoff_row_id
                 cortex_bridge._wake_state_save(p, d)
             return block
@@ -512,7 +480,7 @@ def _replay_seed(conn, sid: str, header: str, max_turns: int, per_chars: int,
         _save_replay_cursor(sid, seed)
         return ""
     rows = list(reversed(rows))  # chronological
-    block, _, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
+    block, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
     max_id = rows[-1]["id"]
     _save_replay_cursor(sid, max_id)
     return block
@@ -531,7 +499,7 @@ def _replay_context(sid: str, channel: str, *, seed_ok: bool = False,
     moved. The cursor still only advances forward (to the rendered cutoff), so
     turn 1 never re-shows a line this seed already rendered.
 
-    Cortex windows (MARROW_CORTEX) take the last_note_ts diff cursor shared with
+    Cortex windows (MARROW_CORTEX) take the last_note_row_id diff cursor shared with
     note.py — the exclude_target_channels gate and the per-sid cursor never apply
     there. Every cortex turn is eligible (no idle gate)."""
     if not sid:
@@ -592,7 +560,7 @@ def _replay_context(sid: str, channel: str, *, seed_ok: bool = False,
 
     max_id = rows[-1]["id"]
 
-    block, _, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
+    block, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
 
     # Advance cursor on a render decision regardless of fold (ambient replay).
     _save_replay_cursor(sid, max_id)

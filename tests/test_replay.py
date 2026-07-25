@@ -430,7 +430,7 @@ def test_bad_drop_pattern_is_ignored(tmp_path, monkeypatch):
     assert "still talking" in hooks._replay_context(SID_SELF, "cli")
 
 
-# ── cortex path: dropped-noise rows must still advance last_note_ts ──────────
+# ── cortex path: dropped-noise rows must still advance last_note_row_id ─────
 
 def _cortex_setup(monkeypatch, tmp_path, db, replay_extra=None):
     _setup(monkeypatch, tmp_path, db, replay_extra)
@@ -440,39 +440,40 @@ def _cortex_setup(monkeypatch, tmp_path, db, replay_extra=None):
     return ws
 
 
-def _baseline(ws):
-    return json.loads(ws.read_text()).get("last_note_ts")
+def _row_cursor(ws):
+    return json.loads(ws.read_text()).get("last_note_row_id")
 
 
 def test_cortex_noise_newer_than_rendered_advances_cursor(tmp_path, monkeypatch):
-    # real row @T1 then noise row @T2 (T2 > T1): the cursor must land on T2,
+    # real row then noise row: the cursor must land on the noise row's id,
     # otherwise the noise row is re-selected and re-dropped on every turn.
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
                                                    "max_lines": 0,
                                                    "per_msg_chars": 500})
     _ev(db, SID_OTHER, "user", "real talk", ts="2026-07-17T08:00:00Z")
-    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T08:01:00Z")
+    noise_id = _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T08:01:00Z")
     out = hooks._replay_context("ctsid0000", "ct")
     assert "real talk" in out and "/info" not in out
-    assert _baseline(ws) == "2026-07-17T08:01:00Z"
+    assert _row_cursor(ws) == noise_id
     # next turn sees nothing new — the noise row left the window
     assert hooks._replay_context("ctsid0000", "ct") == ""
 
 
 def test_cortex_all_noise_batch_still_advances_cursor(tmp_path, monkeypatch):
-    # whole batch is noise -> empty block, but the baseline must still move to
-    # the newest scanned ts (the "stuck forever" regression).
+    # whole batch is noise -> empty block, but the cursor must still move to
+    # the newest scanned row id (the "stuck forever" regression).
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
                                                    "max_lines": 0,
                                                    "per_msg_chars": 500})
     _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T09:00:00Z")
-    _ev(db, SID_OTHER, "assistant", STATUS_LINE, ts="2026-07-17T09:00:30Z")
+    last_id = _ev(db, SID_OTHER, "assistant", STATUS_LINE,
+                  ts="2026-07-17T09:00:30Z")
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    assert _baseline(ws) == "2026-07-17T09:00:30Z"
+    assert _row_cursor(ws) == last_id
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    assert _baseline(ws) == "2026-07-17T09:00:30Z"
+    assert _row_cursor(ws) == last_id
 
 
 def test_cortex_empty_content_row_advances_cursor(tmp_path, monkeypatch):
@@ -481,89 +482,103 @@ def test_cortex_empty_content_row_advances_cursor(tmp_path, monkeypatch):
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
                                                    "max_lines": 0})
-    _ev(db, SID_OTHER, "user", '<image path="/x/y.png"/>',
-        ts="2026-07-17T09:30:00Z")
+    rid = _ev(db, SID_OTHER, "user", '<image path="/x/y.png"/>',
+              ts="2026-07-17T09:30:00Z")
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    assert _baseline(ws) == "2026-07-17T09:30:00Z"
+    assert _row_cursor(ws) == rid
 
 
 def test_cortex_noise_advance_never_rewinds_baseline(tmp_path, monkeypatch):
-    # a stale cutoff must never pull an already-advanced baseline backwards.
+    # a stale cutoff must never pull an already-advanced cursor backwards.
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
                                                    "max_lines": 0,
                                                    "per_msg_chars": 500})
     _ev(db, SID_OTHER, "user", "old real", ts="2026-07-17T10:00:00Z")
-    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T10:01:00Z")
-    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T10:05:00Z"}))
+    last_id = _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T10:01:00Z")
+    ws.write_text(json.dumps({"last_note_row_id": last_id + 50}))
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    assert _baseline(ws) == "2026-07-17T10:05:00Z"
+    assert _row_cursor(ws) == last_id + 50
 
 
-# ── cortex path: row-id tie-break on a shared timestamp ─────────────────────
+# ── cortex path: row-id cursor tells same-timestamp rows apart ──────────────
 
 def test_cortex_same_second_real_after_noise_not_skipped(tmp_path, monkeypatch):
-    # THE bug: a noise row @T advances the cursor to T; a REAL row landing
-    # later but sharing the exact same timestamp string must still be
-    # delivered, not skipped forever by a strict `timestamp > T` compare.
+    # THE bug: a noise row @T advances the cursor; a REAL row landing later but
+    # sharing the exact same timestamp string must still be delivered, not
+    # skipped forever by a strict `timestamp > T` compare.
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
                                                    "max_lines": 0,
                                                    "per_msg_chars": 500})
-    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T12:00:00Z")
+    noise_id = _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T12:00:00Z")
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    assert _baseline(ws) == "2026-07-17T12:00:00Z"
-    state = json.loads(ws.read_text())
-    assert isinstance(state.get("last_note_row_id"), int)
-    assert state.get("last_note_row_ts") == "2026-07-17T12:00:00Z"
-    _ev(db, SID_OTHER, "user", "same-second real talk", ts="2026-07-17T12:00:00Z")
+    assert _row_cursor(ws) == noise_id
+    real_id = _ev(db, SID_OTHER, "user", "same-second real talk",
+                  ts="2026-07-17T12:00:00Z")
     out = hooks._replay_context("ctsid0000", "ct")
     assert "same-second real talk" in out
+    assert _row_cursor(ws) == real_id
     # delivered once — a third read sees nothing new
     assert hooks._replay_context("ctsid0000", "ct") == ""
 
 
 def test_cortex_same_second_noise_chain_advances_row_cursor(tmp_path, monkeypatch):
-    # two same-second noise rows across separate batches: the id half of the
-    # cursor must move past the second one too (ts is unchanged, so only the
-    # id bound tracks it), or it sits in the window forever.
+    # two same-second noise rows across separate batches: the cursor must move
+    # past the second one too (ts is unchanged, so only the id tracks it), or
+    # it sits in the window forever.
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
                                                    "max_lines": 0,
                                                    "per_msg_chars": 500})
     _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T14:00:00Z")
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    row_id_1 = json.loads(ws.read_text())["last_note_row_id"]
-    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T14:00:00Z")
+    row_id_1 = _row_cursor(ws)
+    noise_2 = _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T14:00:00Z")
     assert hooks._replay_context("ctsid0000", "ct") == ""
-    state = json.loads(ws.read_text())
-    assert state["last_note_ts"] == "2026-07-17T14:00:00Z"
-    assert state["last_note_row_id"] > row_id_1
+    assert _row_cursor(ws) == noise_2 > row_id_1
     # a real event at the same second, arriving after both noise rows, still
-    # shows — proves the id bound actually tracked the second noise row too
+    # shows — proves the cursor actually tracked the second noise row too
     _ev(db, SID_OTHER, "user", "finally real", ts="2026-07-17T14:00:00Z")
     assert "finally real" in hooks._replay_context("ctsid0000", "ct")
 
 
 def test_cortex_migrates_timestamp_only_state(tmp_path, monkeypatch):
-    # pre-fix state on disk carries only last_note_ts (no row-id cursor yet).
-    # The first read after upgrade must resolve the row id from the DB,
-    # exclude what predates it, deliver what's new, and persist the paired
-    # row-id cursor for next time.
+    # legacy state on disk carries only last_note_ts (no row-id cursor yet).
+    # The first read after upgrade must resolve the row id from the DB
+    # (newest row at-or-before that ts), exclude what predates it, deliver
+    # what's new, and persist the row-id cursor for next time.
     db = _fresh_db(tmp_path)
     ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
                                                    "max_lines": 0,
                                                    "per_msg_chars": 500})
     _ev(db, SID_OTHER, "user", "already delivered", ts="2026-07-17T13:00:00Z")
     ws.write_text(json.dumps({"last_note_ts": "2026-07-17T13:00:00Z"}))
-    _ev(db, SID_OTHER, "user", "new after migration", ts="2026-07-17T13:05:00Z")
+    new_id = _ev(db, SID_OTHER, "user", "new after migration",
+                 ts="2026-07-17T13:05:00Z")
     out = hooks._replay_context("ctsid0000", "ct")
     assert "new after migration" in out
     assert "already delivered" not in out
-    state = json.loads(ws.read_text())
-    assert state.get("last_note_ts") == "2026-07-17T13:05:00Z"
-    assert isinstance(state.get("last_note_row_id"), int)
-    assert state.get("last_note_row_ts") == "2026-07-17T13:05:00Z"
+    assert _row_cursor(ws) == new_id
+    # second read: the persisted row id wins, nothing re-delivered
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+
+
+def test_cortex_migration_keeps_same_second_sibling_of_legacy_ts(tmp_path,
+                                                                 monkeypatch):
+    # legacy ts resolves to the NEWEST row at-or-before it, so a row sharing the
+    # legacy ts that was already delivered is not re-shown.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0,
+                                                   "per_msg_chars": 500})
+    _ev(db, SID_OTHER, "user", "shown A", ts="2026-07-17T15:00:00Z")
+    _ev(db, SID_OTHER, "user", "shown B same second", ts="2026-07-17T15:00:00Z")
+    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T15:00:00Z"}))
+    _ev(db, SID_OTHER, "user", "brand new", ts="2026-07-17T15:00:01Z")
+    out = hooks._replay_context("ctsid0000", "ct")
+    assert "brand new" in out
+    assert "shown A" not in out and "shown B same second" not in out
 
 
 def test_replay_context_cursor_unaffected_by_noise(tmp_path, monkeypatch):
