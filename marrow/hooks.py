@@ -1719,14 +1719,21 @@ def user_prompt_submit() -> int:
     # turns fall through untouched. Text + paths are config-routed.
     if cortex_bridge.is_cortex_session(tpath):
         _prompt = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
-        # Free-round tuck-in ([NEW ROUND]) already carries its diff-mode note
-        # INLINE (cortex watchdog D6) — the hook must NOT also turn-inject the
-        # full note, or the round lands with a duplicate note (07-14 incident).
-        # A tuck-in is a machine line but never a wake BELL, so this guard is
-        # checked before the wake-marker branch. The tuck-in falls through to
-        # the is_machine_line gate below (no user-wake reset either).
+        # Free-round tuck-in ([NEW ROUND]): only the short marker line is typed
+        # into the window; its diff-mode note (and any ct notes claimed for that
+        # round) were STAGED by cortex and are injected here COVERTLY, same as
+        # the wake bell — so the note never shows on screen and never doubles
+        # (consume-once read, 07-14 incident stays closed). A tuck-in is a
+        # machine line but never a wake BELL, so this branch is checked before
+        # the wake-marker branch, and it never triggers the user-wake reset.
         _tuck = cortex_bridge.tuck_in_marker()
         if _tuck and cortex_bridge.line_starts_with_marker(_prompt, _tuck):
+            _body = cortex_bridge.free_round_note_text()
+            if _body:
+                json.dump({"hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": _body,
+                }}, sys.stdout)
             return 0
         # FUSE / CTL machine-marker turns arriving down the ear channel: cortex
         # wrote ONLY the marker (+ CTL args) to wake_signal.log; the full

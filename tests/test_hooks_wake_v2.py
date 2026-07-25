@@ -206,19 +206,57 @@ def _read_gen(tmp_path):
     return d.get("gen")
 
 
-def test_tuck_in_line_injects_nothing_no_double_note(tmp_path, monkeypatch, capsys):
-    """A [NEW ROUND] free-round line carries its diff-mode note inline (visible in
-    the ear Monitor event); the hook must NOT re-inject the note (no duplicate).
-    T2: the covert C2 menu is retired — the marker turn now injects nothing."""
+def test_tuck_in_line_with_nothing_staged_injects_nothing(tmp_path, monkeypatch, capsys):
+    """A [NEW ROUND] marker turn with no staged payload injects nothing — and it
+    never falls back to the frozen wakeup note (no double note, 07-14)."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     (tmp_path / "wakeup_note.md").write_text("FROZEN note", encoding="utf-8")
     _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]"})
     _stdin(monkeypatch, {"session_id": "s1",
-                         "prompt": "📮 note inline\n\nNow: 14:00\n⏳ [NEW ROUND] 15 min"})
+                         "prompt": "⏳ [NEW ROUND] 15 min"})
     assert hooks.main(["user_prompt_submit"]) == 0
     ctx = _ctx(capsys)
-    assert "FROZEN note" not in ctx     # note NOT re-injected (no double note)
-    assert ctx == ""                    # marker-only round, nothing covert injected
+    assert "FROZEN note" not in ctx     # never the frozen note
+    assert ctx == ""
+
+
+def test_tuck_in_line_injects_staged_note_covertly(tmp_path, monkeypatch, capsys):
+    """Only the short ⏳ marker is typed into the window; the free-round note
+    cortex staged is injected as additionalContext (invisible), then CONSUMED so
+    a later marker turn can never replay it."""
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    staged = tmp_path / "free_round_note.md"
+    staged.write_text("📮 小道消息\nNow: 14:00", encoding="utf-8")
+    _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]"})
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "⏳ [NEW ROUND] 15 min"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    ctx = _ctx(capsys)
+    assert "小道消息" in ctx and "Now: 14:00" in ctx
+    assert not staged.exists()          # consume-once
+
+    # Second marker turn with nothing staged -> nothing injected (no replay).
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "⏳ [NEW ROUND] 15 min"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == ""
+
+
+def test_tuck_in_staged_note_expired_is_dropped(tmp_path, monkeypatch, capsys):
+    """A payload whose marker turn never arrived (window died between staging
+    and the prompt) is dropped past receipt_ttl_min instead of surfacing on an
+    unrelated later round."""
+    import os
+    import time
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    staged = tmp_path / "free_round_note.md"
+    staged.write_text("STALE payload", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(staged, (old, old))
+    _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]",
+                                    "receipt_ttl_min": 15})
+    _stdin(monkeypatch, {"session_id": "s1", "prompt": "⏳ [NEW ROUND] 15 min"})
+    assert hooks.main(["user_prompt_submit"]) == 0
+    assert _ctx(capsys) == ""
+    assert not staged.exists()          # dropped, not left to rot
 
 
 # ── Item 4: FUSE / CTL covert body inject (marker on screen, body via hook) ────
