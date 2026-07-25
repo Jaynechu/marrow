@@ -526,7 +526,11 @@ git_revert_patterns = [
     "\\bgit\\s+switch\\b[^\\n]*--discard-changes\\b",
     "\\bgit\\s+worktree\\s+remove\\b",
 ]
-git_revert_guard_message = "BLOCKED — git revert/reset requested. Confirm with the user before proceeding."
+# Headline of the ask popup. `{action}` renders the human-readable phrase from
+# git_revert_action_labels below; the rest of the reason (Action/File/LOC/By)
+# is assembled by the guard and degrades to Action-only when git can't answer.
+git_revert_guard_message = "🤡 狗男人又要{action}了!!!"
+# Per-op phrase for {action}: [hooks.git_revert_action_labels] at end of file.
 
 # Session-start housekeep (~/.claude only): if the auto-commit would delete
 # one of these top-level files, the commit is skipped, an alert is raised,
@@ -539,3 +543,24 @@ housekeep_protected_files = [
 # ~/.claude.json mcpServers snapshot: rolling backups kept in
 # ~/.config/marrow/backup/claude-json/, newest N retained.
 claude_json_snapshot_keep = 10
+
+# Human-readable phrase rendered into git_revert_guard_message's {action}.
+# Keys are stable action ids from the guard's parser — copy lives here, never
+# in code. A known id with no entry falls back to the id itself; an
+# unclassifiable command uses the `unknown` entry.
+# Keep this table LAST in [hooks]: a TOML sub-table header ends the parent.
+[hooks.git_revert_action_labels]
+checkout-file = "丢弃未提交的改动"
+restore = "丢弃未提交的改动"
+switch-discard = "切分支并丢弃改动"
+reset-hard = "工作区整个退回"
+reset-soft = "撤销提交但保留改动"
+reset-mixed = "撤销提交但保留改动"
+revert = "加一个反向提交"
+branch-D = "强删分支"
+stash-drop = "丢掉暂存的改动"
+worktree-remove = "删掉工作树目录"
+clean = "删掉未跟踪的文件"
+# Fallback when the matched command can't be classified (e.g. the git text
+# sits inside a quoted argument) — keeps the sentence whole.
+unknown = "乱搞你git里的东西"

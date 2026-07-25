@@ -922,12 +922,33 @@ def _categorize_porcelain(lines: list[str]) -> dict[str, list[str]]:
     return cats
 
 
-def _build_housekeep_commit_msg(cats: dict[str, list[str]], total: int) -> str:
-    """Subject line stays `auto: session-start housekeep (N files)`; body
-    lists files by category, deleted first and never truncated. Body caps
-    at ~2000 chars overall (added/modified may truncate, deleted never does).
+def _session_tag(sid: str | None, conn: sqlite3.Connection) -> str | None:
+    """`<channel>·<sid[:4]>` for the sessions row, or None when sid/channel
+    is unavailable — callers then emit their subject unchanged."""
+    if not sid:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT channel FROM sessions WHERE sid = ?", (sid,)
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    channel = (row[0] if row is not None else None) or ""  # Row or tuple
+    if not str(channel).strip():
+        return None
+    return f"{channel}·{sid[:4]}"
+
+
+def _build_housekeep_commit_msg(cats: dict[str, list[str]], total: int,
+                                tag: str | None = None) -> str:
+    """Subject `auto: session-start housekeep (N files)[ [tag]]` — the tag
+    stamps which session's window auto-committed the work. Body lists files
+    by category, deleted first and never truncated. Body caps at ~2000 chars
+    overall (added/modified may truncate, deleted never does).
     """
     subject = f"auto: session-start housekeep ({total} files)"
+    if tag:
+        subject += f" [{tag}]"
     body_lines: list[str] = []
     running = 0
     if cats["deleted"]:
@@ -973,6 +994,7 @@ def _git_housekeep_block(
     """
     try:
         lines: list[str] = []
+        tag = _session_tag(current_sid, conn)
 
         # Part A: ~/.claude auto-commit
         try:
@@ -1010,7 +1032,7 @@ def _git_housekeep_block(
                         )
                         subprocess.run(
                             ["git", "-C", str(claude_dir), "commit",
-                             "-m", _build_housekeep_commit_msg(cats, len(dirty))],
+                             "-m", _build_housekeep_commit_msg(cats, len(dirty), tag)],
                             capture_output=True, text=True, timeout=5, check=False,
                         )
                         lines.append(_build_housekeep_report_line("~/.claude", cats, len(dirty)))
@@ -1040,7 +1062,7 @@ def _git_housekeep_block(
                         )
                         subprocess.run(
                             ["git", "-C", sm_abs, "commit",
-                             "-m", _build_housekeep_commit_msg(sm_cats, len(sm_dirty))],
+                             "-m", _build_housekeep_commit_msg(sm_cats, len(sm_dirty), tag)],
                             capture_output=True, text=True, timeout=5, check=False,
                         )
                         lines.append(_build_housekeep_report_line(sm_path, sm_cats, len(sm_dirty)))
@@ -1059,7 +1081,7 @@ def _git_housekeep_block(
                     )
                     subprocess.run(
                         ["git", "-C", cwd, "commit",
-                         "-m", _build_housekeep_commit_msg(cats, len(dirty))],
+                         "-m", _build_housekeep_commit_msg(cats, len(dirty), tag)],
                         capture_output=True, text=True, timeout=5, check=False,
                     )
                     lines.append(_build_housekeep_report_line("cwd", cats, len(dirty)))
@@ -2618,6 +2640,306 @@ def _git_revert_matches(cmd: str) -> bool:
     return False
 
 
+# ── revert-guard reason enrichment ───────────────────────────────────────────
+# Last-resort {action} filler when config carries no `unknown` label (English
+# in code; the user-facing copy lives in git_revert_action_labels).
+_GIT_REVERT_UNKNOWN_ACTION = "touch your git history"
+
+# The ask reason must answer "whose work is about to be destroyed": a config
+# action phrase, the git op as invoked, the affected paths, the LOC delta and
+# an ownership verdict. Every step below is best-effort and read-only — any
+# failure degrades to a shorter reason; the guard's DECISION never changes.
+
+def _git_read(cwd: str, args: list[str], timeout: int = 3) -> str | None:
+    """Read-only `git -C <cwd> <args>`; None on failure or non-zero exit."""
+    if not cwd:
+        return None
+    try:
+        r = subprocess.run(["git", "-C", cwd, *args], capture_output=True,
+                           text=True, timeout=timeout, check=False)
+    except Exception:  # noqa: BLE001
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _numstat_parse(out: str | None) -> tuple[int, int, list[str]]:
+    """(added, deleted, paths) from `--numstat` output. Binary rows ('-')
+    count zero lines but still contribute their path."""
+    add = dele = 0
+    files: list[str] = []
+    for line in (out or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3 or not parts[2].strip():
+            continue
+        if parts[0].isdigit():
+            add += int(parts[0])
+        if parts[1].isdigit():
+            dele += int(parts[1])
+        p = parts[2].strip()
+        if p not in files:
+            files.append(p)
+    return add, dele, files
+
+
+def _git_revert_parse(seg: str) -> dict | None:
+    """Classify one matched shell segment.
+
+    Returns {action, cmd, refs, paths, repo}: `action` = stable id used for the
+    config label lookup, `cmd` = subcommand + flags + refs as invoked with path
+    operands dropped, `repo` = an explicit `git -C <dir>` target if present.
+    None when the segment doesn't parse as a git op.
+    """
+    import shlex
+    try:
+        toks = shlex.split(seg)
+    except Exception:  # noqa: BLE001 — unbalanced quotes
+        toks = seg.split()
+    while toks and toks[0] != "git":
+        toks = toks[1:]
+    if len(toks) < 2:
+        return None
+    i, repo_dir = 1, ""
+    while i < len(toks) and toks[i].startswith("-"):
+        if toks[i] in ("-C", "--git-dir", "--work-tree") and i + 1 < len(toks):
+            if toks[i] == "-C":
+                repo_dir = toks[i + 1]
+            i += 2
+            continue
+        i += 1
+    if i >= len(toks):
+        return None
+    sub, rest = toks[i], toks[i + 1:]
+    pos = [t for t in rest if not t.startswith("-")]
+    paths: list[str] = []
+    action = sub
+    if sub == "reset":
+        action = ("reset-hard" if "--hard" in rest
+                  else "reset-soft" if "--soft" in rest else "reset-mixed")
+    elif sub in ("checkout", "switch", "restore"):
+        action = ("switch-discard" if sub == "switch"
+                  else "restore" if sub == "restore" else "checkout-file")
+        if "--" in rest:
+            paths = [t for t in rest[rest.index("--") + 1:] if t != "--"]
+        elif sub == "restore":
+            paths = list(pos)
+    elif sub == "revert":
+        action = "revert"
+    elif sub == "branch":
+        action = "branch-D"
+    elif sub == "stash":
+        action = "stash-drop"
+    elif sub == "worktree":
+        action = "worktree-remove"
+        paths = pos[1:]  # after the `remove` verb
+    elif sub == "clean":
+        action = "clean"
+        paths = list(pos)
+    keep = [t for t in toks[:i + 1]] + [t for t in rest if t not in paths]
+    return {"action": action, "cmd": " ".join(keep), "refs": pos,
+            "paths": paths, "repo": repo_dir}
+
+
+def _git_default_branch(cwd: str) -> str:
+    head = (_git_read(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
+            or "").strip()
+    if head:
+        return head
+    for cand in ("main", "master"):
+        if _git_read(cwd, ["rev-parse", "--verify", "--quiet", cand]):
+            return cand
+    return "HEAD"
+
+
+def _git_revert_impact(parsed: dict, cwd: str) -> dict:
+    """{files, loc: (add, del) | None, note, ts: epoch | None} for the parsed
+    op. Empty-ish dict on anything unrecognised — caller degrades."""
+    action, paths, refs = parsed["action"], parsed["paths"], parsed["refs"]
+    out: dict = {"files": [], "loc": None, "note": "", "ts": None}
+    if action in ("checkout-file", "restore", "switch-discard"):
+        args = ["diff", "--numstat"] + (["--"] + paths if paths else [])
+        add, dele, files = _numstat_parse(_git_read(cwd, args))
+        out["files"] = paths or files
+        out["loc"] = (add, dele)
+        out["ts"] = _max_mtime(cwd, files or paths)
+    elif action.startswith("reset"):
+        add, dele, files = _numstat_parse(_git_read(cwd, ["diff", "--numstat", "HEAD"]))
+        out["files"], out["loc"] = files, (add, dele)
+        out["ts"] = _max_mtime(cwd, files)
+        ref = next((r for r in refs if r not in ("reset",)), "")
+        if ref and ref != "HEAD":
+            log = _git_read(cwd, ["log", "--oneline", f"{ref}..HEAD"])
+            n = len([x for x in (log or "").splitlines() if x.strip()])
+            if n:
+                out["note"] = f"({n} commits)"
+        if out["ts"] is None:
+            out["ts"] = _commit_ts(cwd, "HEAD")
+    elif action == "revert":
+        ref = next((r for r in refs if r != "revert"), "HEAD")
+        add, dele, files = _numstat_parse(
+            _git_read(cwd, ["show", "--numstat", "--format=", ref]))
+        out["files"], out["loc"] = files, (add, dele)
+        out["ts"] = _commit_ts(cwd, ref)
+    elif action == "branch-D":
+        br = next((r for r in refs if r != "branch"), "")
+        if br:
+            base = _git_default_branch(cwd)
+            add, dele, files = _numstat_parse(
+                _git_read(cwd, ["log", "--numstat", "--format=", f"{base}..{br}"]))
+            out["files"], out["loc"] = files, (add, dele)
+            out["ts"] = _commit_ts(cwd, br)
+    elif action == "stash-drop":
+        add, dele, files = _numstat_parse(_git_read(cwd, ["stash", "show", "--numstat"]))
+        out["files"], out["loc"] = files, (add, dele)
+    elif action == "worktree-remove":
+        target = paths[0] if paths else ""
+        st = _git_read(target, ["status", "--porcelain"]) if target else None
+        n = len([x for x in (st or "").splitlines() if x.strip()])
+        if target:
+            out["files"] = [target + (f" ({n} uncommitted)" if n else "")]
+    elif action == "clean":
+        listing = _git_read(cwd, ["clean", "-nd"] + (["--"] + paths if paths else []))
+        out["files"] = [x.split(" ", 2)[-1].strip()
+                        for x in (listing or "").splitlines()
+                        if x.startswith("Would remove")]
+        out["ts"] = _max_mtime(cwd, out["files"])
+    return out
+
+
+def _max_mtime(cwd: str, rel_paths: list[str]) -> float | None:
+    """Newest mtime among repo-relative paths, resolved from the repo root."""
+    if not rel_paths:
+        return None
+    root = (_git_read(cwd, ["rev-parse", "--show-toplevel"]) or "").strip() or cwd
+    best: float | None = None
+    for rp in rel_paths[:20]:
+        for base in (root, cwd):
+            try:
+                m = os.stat(os.path.join(base, rp)).st_mtime
+            except OSError:
+                continue
+            best = m if best is None or m > best else best
+            break
+    return best
+
+
+def _commit_ts(cwd: str, ref: str) -> float | None:
+    out = (_git_read(cwd, ["log", "-1", "--format=%ct", ref]) or "").strip()
+    try:
+        return float(out.splitlines()[0])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _iso_utc(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        try:
+            d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def _cwd_related(a: str | None, b: str | None) -> bool:
+    """Same directory, or one is an ancestor of the other."""
+    if not a or not b:
+        return False
+    a, b = a.rstrip("/"), b.rstrip("/")
+    return a == b or a.startswith(b + "/") or b.startswith(a + "/")
+
+
+def _git_revert_owner(sid: str, cwd: str, ts: float | None) -> str | None:
+    """Ownership verdict for a change made at *ts*. None = can't tell (the
+    caller omits the line rather than guessing)."""
+    if not sid or ts is None:
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{config.db_path()}?mode=ro", uri=True, timeout=2)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT sid, channel, cwd, created_at, last_active, ended_at "
+            "FROM sessions ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()
+        conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    cur = next((r for r in rows if r["sid"] == sid), None)
+    if cur is None:
+        return None
+    created = _iso_utc(cur["created_at"]) or _iso_utc(cur["last_active"])
+    if created is None:
+        return None
+    ts_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    try:
+        hhmm = ts_dt.astimezone(config.get_tz()).strftime("%H:%M")
+    except Exception:  # noqa: BLE001
+        hhmm = ts_dt.strftime("%H:%M")
+
+    def _covers(r) -> bool:
+        st = _iso_utc(r["created_at"])
+        en = _iso_utc(r["ended_at"]) or _iso_utc(r["last_active"])
+        return bool(st and en and st <= ts_dt <= en)
+
+    others = [r for r in rows
+              if r["sid"] != sid and _cwd_related(r["cwd"], cwd) and _covers(r)]
+    label = (f"{others[0]['channel'] or 'cli'}·{(others[0]['sid'] or '')[:4]}"
+             if others else "")
+    if ts_dt < created:
+        return (f"⚠️ Other Session {label} · {hhmm}" if label
+                else f"⚠️ Other Session · {hhmm}")
+    if others:
+        return f"⚠️ Overlapping with {label} · unclear"
+    return f"Current Session · {hhmm}"
+
+
+def _git_revert_reason(inp: dict, hooks_cfg: dict, cmd: str) -> str:
+    """Full ask reason: headline + Action/File/LOC/By. Degrades to headline +
+    Action, and to the bare headline, when git or the DB can't answer."""
+    template = hooks_cfg.get("git_revert_guard_message") or _GIT_REVERT_MSG
+    pats = hooks_cfg.get("git_revert_patterns") or _GIT_REVERT_DEFAULT_PATTERNS
+    labels = hooks_cfg.get("git_revert_action_labels") or {}
+    parsed = None
+    for seg in _GIT_REVERT_SEP_RE.split(cmd):
+        seg = seg.strip()
+        if seg and _git_revert_segment_matches(seg, pats):
+            parsed = _git_revert_parse(seg)
+            break
+    if not parsed:
+        # Matched the pattern but not classifiable (e.g. the git text sits
+        # inside a quoted argument). Generic label — never an empty {action}.
+        return template.replace(
+            "{action}", str(labels.get("unknown") or _GIT_REVERT_UNKNOWN_ACTION)
+        ).strip()
+    action = parsed["action"]
+    lines = [template.replace("{action}", str(labels.get(action) or action))]
+    lines.append(f"Action: {parsed['cmd']}")
+    cwd = parsed["repo"] or (inp.get("cwd") or "")
+    try:
+        imp = _git_revert_impact(parsed, cwd)
+    except Exception:  # noqa: BLE001 — degrade to headline + Action
+        return "\n".join(lines)
+    files = [f for f in imp.get("files") or [] if f]
+    if files:
+        shown = ", ".join(files[:3])
+        if len(files) > 3:
+            shown += f" (+{len(files) - 3})"
+        lines.append(f"File: {shown}")
+    loc = imp.get("loc")
+    if loc and (loc[0] or loc[1]):
+        note = f" {imp['note']}" if imp.get("note") else ""
+        lines.append(f"LOC:  +{loc[0]} −{loc[1]}{note}")
+    try:
+        owner = _git_revert_owner(inp.get("session_id") or "", cwd, imp.get("ts"))
+    except Exception:  # noqa: BLE001
+        owner = None
+    if owner:
+        lines.append(f"By:   {owner}")
+    return "\n".join(lines)
+
+
 def _git_revert_guard(inp: dict) -> str | None:
     """Git revert-type authorship gate.
 
@@ -2646,7 +2968,13 @@ def _git_revert_guard(inp: dict) -> str | None:
             or _is_worktree_session(cwd)
         ):
             return ""
-        return hooks_cfg.get("git_revert_guard_message") or _GIT_REVERT_MSG
+        reason = ""
+        try:
+            reason = _git_revert_reason(inp, hooks_cfg, cmd)
+        except Exception:  # noqa: BLE001 — enrichment is additive, never fatal
+            reason = ""
+        # Never return "" here — the caller reads "" as worktree-exempt allow.
+        return reason or hooks_cfg.get("git_revert_guard_message") or _GIT_REVERT_MSG
     except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
         return None
 

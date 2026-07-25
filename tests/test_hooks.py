@@ -967,9 +967,17 @@ def test_git_force_push_disabled_via_config(env, monkeypatch, capsys):
     assert out.get("permissionDecision") != "deny"
 
 
-# -- git revert-type authorship guard ("ask", BLOCKED message) ----------------
+# -- git revert-type authorship guard ("ask", enriched reason) ----------------
 
-_ROBOT = "BLOCKED"
+# Headline marker of the default git_revert_guard_message template.
+_ROBOT = "🤡"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_git(monkeypatch):
+    """Guard enrichment shells out to read-only git; keep the suite hermetic
+    by stubbing the single boundary. Individual tests re-patch with a map."""
+    monkeypatch.setattr(hooks, "_git_read", lambda *a, **kw: None)
 
 
 def test_git_revert_reset_hard_asks(env, monkeypatch, capsys):
@@ -1155,3 +1163,250 @@ def test_git_revert_disabled_via_config(env, monkeypatch, capsys):
     assert rc == 0
     out = _out(capsys)["hookSpecificOutput"]
     assert out.get("permissionDecision") != "ask"
+
+
+# -- revert-guard reason enrichment (Action / File / LOC / By) -----------------
+
+def _fake_git(monkeypatch, table):
+    """Route `_git_read(cwd, args)` by the args prefix. Unmatched → None."""
+    def _read(cwd, args, timeout=3):
+        key = " ".join(args)
+        for prefix, out in table.items():
+            if key.startswith(prefix):
+                return out
+        return None
+    monkeypatch.setattr(hooks, "_git_read", _read)
+
+
+def _reason(monkeypatch, cmd, cwd="/repo", sid="s1"):
+    inp = {"session_id": sid, "tool_name": "Bash", "cwd": cwd,
+           "tool_input": {"command": cmd}}
+    return hooks._git_revert_guard(inp)
+
+
+def test_reason_restore_file_and_loc(env, monkeypatch):
+    _fake_git(monkeypatch, {
+        "diff --numstat -- tests/test_wx_watch.py":
+            "12\t35\ttests/test_wx_watch.py\n",
+    })
+    monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
+    out = _reason(monkeypatch, "git restore tests/test_wx_watch.py")
+    assert out.splitlines()[0].startswith("🤡")
+    assert "丢弃未提交的改动" in out
+    assert "Action: git restore" in out.splitlines()[1]
+    assert "File: tests/test_wx_watch.py" in out
+    assert "LOC:  +12 −35" in out
+
+
+def test_reason_checkout_treeish_keeps_dashdash_in_action(env, monkeypatch):
+    _fake_git(monkeypatch, {"diff --numstat -- a.py": "1\t2\ta.py\n"})
+    monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
+    out = _reason(monkeypatch, "git checkout HEAD~1 -- a.py")
+    assert "Action: git checkout HEAD~1 --" in out
+    assert "File: a.py" in out
+    assert "LOC:  +1 −2" in out
+
+
+def test_reason_reset_hard_counts_commits(env, monkeypatch):
+    _fake_git(monkeypatch, {
+        "diff --numstat HEAD": "5\t7\tm.py\n",
+        "log --oneline HEAD~3..HEAD": "aaa x\nbbb y\nccc z\n",
+    })
+    monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
+    out = _reason(monkeypatch, "git reset --hard HEAD~3")
+    assert "工作区整个退回" in out
+    assert "Action: git reset --hard HEAD~3" in out
+    assert "LOC:  +5 −7 (3 commits)" in out
+
+
+def test_reason_revert_uses_show_numstat(env, monkeypatch):
+    _fake_git(monkeypatch, {"show --numstat --format= abc123": "3\t0\tf.py\n"})
+    out = _reason(monkeypatch, "git revert --no-edit abc123")
+    assert "加一个反向提交" in out
+    assert "File: f.py" in out and "LOC:  +3 −0" in out
+
+
+def test_reason_branch_d_uses_default_branch_range(env, monkeypatch):
+    _fake_git(monkeypatch, {
+        "symbolic-ref --short refs/remotes/origin/HEAD": "origin/main\n",
+        "log --numstat --format= origin/main..feat": "9\t1\tx.py\n2\t0\ty.py\n",
+    })
+    out = _reason(monkeypatch, "git branch -D feat")
+    assert "强删分支" in out
+    assert "Action: git branch -D feat" in out
+    assert "File: x.py, y.py" in out and "LOC:  +11 −1" in out
+
+
+def test_reason_stash_drop_uses_stash_show(env, monkeypatch):
+    _fake_git(monkeypatch, {"stash show --numstat": "4\t4\ts.py\n"})
+    out = _reason(monkeypatch, "git stash drop")
+    assert "丢掉暂存的改动" in out and "LOC:  +4 −4" in out
+
+
+def test_reason_worktree_remove_counts_dirty(env, monkeypatch):
+    _fake_git(monkeypatch, {"status --porcelain": " M a\n?? b\n"})
+    out = _reason(monkeypatch, "git worktree remove /tmp/wt")
+    assert "删掉工作树目录" in out
+    assert "File: /tmp/wt (2 uncommitted)" in out
+    assert "LOC:" not in out
+
+
+def test_reason_clean_lists_would_remove(env, monkeypatch):
+    _fake_git(monkeypatch, {
+        "clean -nd": "Would remove a.txt\nWould remove b/\nWould remove c\n"
+                     "Would remove d\n",
+    })
+    monkeypatch.setattr(hooks, "_max_mtime", lambda *a: None)
+    out = _reason(monkeypatch, "git clean -fd")
+    assert "删掉未跟踪的文件" in out
+    assert "File: a.txt, b/, c (+1)" in out
+
+
+def test_reason_degrades_to_action_when_git_fails(env, monkeypatch):
+    # autouse _no_real_git already returns None for every git read
+    out = _reason(monkeypatch, "git reset --hard")
+    assert out.splitlines() == ["🤡 狗男人又要工作区整个退回了!!!",
+                                "Action: git reset --hard"]
+
+
+def test_reason_unclassifiable_uses_generic_label(env, monkeypatch):
+    # Pattern matches but the git text is a quoted argument of another program
+    # → no classification. Line 1 must still read whole, never "又要了".
+    out = _reason(monkeypatch, 'python probe.py run "git reset --hard HEAD"')
+    assert out == "🤡 狗男人又要乱搞你git里的东西了!!!"
+    assert "又要了" not in out
+
+
+def test_reason_never_empty_when_enrichment_raises(env, monkeypatch):
+    monkeypatch.setattr(hooks, "_git_revert_reason",
+                        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("x")))
+    out = _reason(monkeypatch, "git reset --hard")
+    # "" would read as worktree-exempt in the caller — must fall back instead
+    assert out and out.strip()
+
+
+def test_guard_still_fail_open_on_config_error(env, monkeypatch):
+    monkeypatch.setattr(config, "load",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert _reason(monkeypatch, "git reset --hard") is None
+
+
+def test_worktree_exemption_skips_enrichment(env, monkeypatch):
+    called = []
+    monkeypatch.setattr(hooks, "_git_revert_reason",
+                        lambda *a, **kw: called.append(1) or "x")
+    out = _reason(monkeypatch, "git reset --hard",
+                  cwd="/Users/x/.claude/worktrees/agent-abc/marrow")
+    assert out == "" and called == []
+
+
+# -- By: ownership ------------------------------------------------------------
+
+def _seed_session(db, sid, channel, cwd, created, last_active, ended=None):
+    import sqlite3 as _s
+    conn = _s.connect(db)
+    conn.execute(
+        "INSERT OR REPLACE INTO sessions(sid, model, channel, cwd, created_at,"
+        " last_active, ended_at) VALUES(?,?,?,?,?,?,?)",
+        (sid, "opus", channel, cwd, created, last_active, ended))
+    conn.commit()
+    conn.close()
+
+
+def _iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_owner_current_session(env, monkeypatch):
+    db, _, _ = env
+    now = datetime.now(timezone.utc)
+    _seed_session(db, "s1", "cli", "/repo", _iso(now - timedelta(hours=1)),
+                  _iso(now))
+    ts = (now - timedelta(minutes=5)).timestamp()
+    assert hooks._git_revert_owner("s1", "/repo", ts).startswith("Current Session · ")
+
+
+def test_owner_other_session_named(env, monkeypatch):
+    db, _, _ = env
+    now = datetime.now(timezone.utc)
+    _seed_session(db, "s1", "cli", "/repo", _iso(now - timedelta(minutes=1)),
+                  _iso(now))
+    _seed_session(db, "9102aaaa-bbbb", "cli", "/repo/sub",
+                  _iso(now - timedelta(hours=5)), _iso(now - timedelta(minutes=10)),
+                  _iso(now - timedelta(minutes=10)))
+    ts = (now - timedelta(hours=1)).timestamp()
+    got = hooks._git_revert_owner("s1", "/repo", ts)
+    assert got.startswith("⚠️ Other Session cli·9102 · ")
+
+
+def test_owner_overlapping(env, monkeypatch):
+    db, _, _ = env
+    now = datetime.now(timezone.utc)
+    _seed_session(db, "s1", "cli", "/repo", _iso(now - timedelta(hours=5)),
+                  _iso(now))
+    _seed_session(db, "4a86aaaa-bbbb", "ct", "/repo", _iso(now - timedelta(hours=5)),
+                  _iso(now))
+    ts = (now - timedelta(hours=1)).timestamp()
+    assert hooks._git_revert_owner("s1", "/repo", ts) == (
+        "⚠️ Overlapping with ct·4a86 · unclear")
+
+
+def test_owner_unrelated_cwd_is_not_overlap(env, monkeypatch):
+    db, _, _ = env
+    now = datetime.now(timezone.utc)
+    _seed_session(db, "s1", "cli", "/repo", _iso(now - timedelta(hours=5)),
+                  _iso(now))
+    _seed_session(db, "4a86aaaa-bbbb", "ct", "/elsewhere",
+                  _iso(now - timedelta(hours=5)), _iso(now))
+    ts = (now - timedelta(hours=1)).timestamp()
+    assert hooks._git_revert_owner("s1", "/repo", ts).startswith("Current Session")
+
+
+def test_owner_omitted_when_unknown(env, monkeypatch):
+    assert hooks._git_revert_owner("", "/repo", 1.0) is None       # no sid
+    assert hooks._git_revert_owner("s1", "/repo", None) is None    # no timestamp
+    assert hooks._git_revert_owner("ghost", "/repo", 1.0) is None  # no row
+
+
+def test_reason_includes_by_line(env, monkeypatch):
+    db, _, _ = env
+    now = datetime.now(timezone.utc)
+    _seed_session(db, "s1", "cli", "/repo", _iso(now - timedelta(hours=1)),
+                  _iso(now))
+    _fake_git(monkeypatch, {"diff --numstat -- a.py": "1\t1\ta.py\n"})
+    monkeypatch.setattr(hooks, "_max_mtime",
+                        lambda *a: (now - timedelta(minutes=2)).timestamp())
+    out = _reason(monkeypatch, "git restore a.py")
+    assert out.splitlines()[-1].startswith("By:   Current Session · ")
+
+
+# -- housekeep commit subject stamp -------------------------------------------
+
+def _cats(**kw):
+    base = {"deleted": [], "renamed": [], "added": [], "modified": []}
+    base.update(kw)
+    return base
+
+
+def test_housekeep_subject_carries_session_tag(env):
+    msg = hooks._build_housekeep_commit_msg(_cats(modified=["a.py"]), 6, "cli·ab3a")
+    assert msg.splitlines()[0] == "auto: session-start housekeep (6 files) [cli·ab3a]"
+    assert msg.splitlines()[2] == "modified: a.py"
+
+
+def test_housekeep_subject_unchanged_without_tag(env):
+    msg = hooks._build_housekeep_commit_msg(_cats(modified=["a.py"]), 6, None)
+    assert msg.splitlines()[0] == "auto: session-start housekeep (6 files)"
+
+
+def test_session_tag_resolution(env):
+    db, _, _ = env
+    now = datetime.now(timezone.utc)
+    _seed_session(db, "ab3ac0de-1111", "cli", "/repo", _iso(now), _iso(now))
+    _seed_session(db, "nochan-2222", "", "/repo", _iso(now), _iso(now))
+    conn = storage.init_db(db)
+    assert hooks._session_tag("ab3ac0de-1111", conn) == "cli·ab3a"
+    assert hooks._session_tag("nochan-2222", conn) is None   # blank channel
+    assert hooks._session_tag("missing", conn) is None       # no row
+    assert hooks._session_tag(None, conn) is None
+    conn.close()
