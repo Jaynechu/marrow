@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 import json
 
-from marrow import config, hooks, storage
+from marrow import config, cortex_bridge, hooks, storage
 
 SID_SELF = "self1111-2222"
 SID_OTHER = "othr9999-8888"
@@ -428,3 +428,85 @@ def test_bad_drop_pattern_is_ignored(tmp_path, monkeypatch):
     hooks._replay_context(SID_SELF, "cli")
     _ev(db, SID_OTHER, "user", "still talking", ts="2026-07-17T07:20:00Z")
     assert "still talking" in hooks._replay_context(SID_SELF, "cli")
+
+
+# ── cortex path: dropped-noise rows must still advance last_note_ts ──────────
+
+def _cortex_setup(monkeypatch, tmp_path, db, replay_extra=None):
+    _setup(monkeypatch, tmp_path, db, replay_extra)
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    ws = tmp_path / "wake_state.json"
+    monkeypatch.setattr(cortex_bridge, "_cortex_wake_state_path", lambda: ws)
+    return ws
+
+
+def _baseline(ws):
+    return json.loads(ws.read_text()).get("last_note_ts")
+
+
+def test_cortex_noise_newer_than_rendered_advances_cursor(tmp_path, monkeypatch):
+    # real row @T1 then noise row @T2 (T2 > T1): the cursor must land on T2,
+    # otherwise the noise row is re-selected and re-dropped on every turn.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0,
+                                                   "per_msg_chars": 500})
+    _ev(db, SID_OTHER, "user", "real talk", ts="2026-07-17T08:00:00Z")
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T08:01:00Z")
+    out = hooks._replay_context("ctsid0000", "ct")
+    assert "real talk" in out and "/info" not in out
+    assert _baseline(ws) == "2026-07-17T08:01:00Z"
+    # next turn sees nothing new — the noise row left the window
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+
+
+def test_cortex_all_noise_batch_still_advances_cursor(tmp_path, monkeypatch):
+    # whole batch is noise -> empty block, but the baseline must still move to
+    # the newest scanned ts (the "stuck forever" regression).
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0,
+                                                   "per_msg_chars": 500})
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T09:00:00Z")
+    _ev(db, SID_OTHER, "assistant", STATUS_LINE, ts="2026-07-17T09:00:30Z")
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    assert _baseline(ws) == "2026-07-17T09:00:30Z"
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    assert _baseline(ws) == "2026-07-17T09:00:30Z"
+
+
+def test_cortex_empty_content_row_advances_cursor(tmp_path, monkeypatch):
+    # pure-media bubble: strip_media_markers leaves nothing, so it can never
+    # render for any caller — it must not pin the cursor either.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0})
+    _ev(db, SID_OTHER, "user", '<image path="/x/y.png"/>',
+        ts="2026-07-17T09:30:00Z")
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    assert _baseline(ws) == "2026-07-17T09:30:00Z"
+
+
+def test_cortex_noise_advance_never_rewinds_baseline(tmp_path, monkeypatch):
+    # a stale cutoff must never pull an already-advanced baseline backwards.
+    db = _fresh_db(tmp_path)
+    ws = _cortex_setup(monkeypatch, tmp_path, db, {"max_turns": 10,
+                                                   "max_lines": 0,
+                                                   "per_msg_chars": 500})
+    _ev(db, SID_OTHER, "user", "old real", ts="2026-07-17T10:00:00Z")
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T10:01:00Z")
+    ws.write_text(json.dumps({"last_note_ts": "2026-07-17T10:05:00Z"}))
+    assert hooks._replay_context("ctsid0000", "ct") == ""
+    assert _baseline(ws) == "2026-07-17T10:05:00Z"
+
+
+def test_replay_context_cursor_unaffected_by_noise(tmp_path, monkeypatch):
+    # per-sid path uses rows[-1]["id"], not the render cutoff: an all-noise
+    # batch still advances the cursor past it.
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "per_msg_chars": 500})
+    hooks._replay_context(SID_SELF, "cli")
+    last = _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T11:00:00Z")
+    assert hooks._replay_context(SID_SELF, "cli") == ""
+    assert _cursor(SID_SELF) == last

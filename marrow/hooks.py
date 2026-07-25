@@ -293,10 +293,11 @@ def _replay_drop_filters(cfg: dict):
 def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines: int = 0):
     """Group events into turns and render the P3 replay block. Returns
     (block, rendered_cutoff): block is '' when empty; rendered_cutoff is the max
-    timestamp of the rows that carried non-empty content (mirrors note.py's
-    _replay cutoff — the diff baseline advances on exactly what was rendered,
-    fold included). A user event opens a turn; consecutive user msgs stay in the
-    same turn; the following assistant msgs close it. Overflow beyond max_turns
+    timestamp of every SCANNED row — fold-dropped and noise-dropped rows count
+    too, so a diff-cursor caller never re-reads a row that can only ever drop
+    (it would stall the cursor forever). A user event opens a turn; consecutive
+    user msgs stay in the same turn; the following assistant msgs close it.
+    Overflow beyond max_turns
     folds to a count. `max_lines` (0 = no cap) further caps the rendered message
     lines to the newest N after turn-capping — an outer bound below max_turns
     for turns that carry many per-turn messages. Shared by the per-sid cursor
@@ -312,6 +313,12 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
     turns: list[list[dict]] = []
     cutoff = None
     for r in rows:
+        # cutoff counts every SCANNED row, dropped ones included: a dropped row
+        # is dropped deterministically on every re-read, so leaving it behind
+        # the cutoff would keep it inside the caller's query window forever.
+        ts = r["timestamp"]
+        if ts and (cutoff is None or ts > cutoff):
+            cutoff = ts
         content = transcript.strip_media_markers(r["content"])
         if not content:
             continue
@@ -319,9 +326,6 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
             continue
         if any(p.search(content) for p in drop_pats):
             continue
-        ts = r["timestamp"]
-        if ts and (cutoff is None or ts > cutoff):
-            cutoff = ts
         item = {
             "channel": r["channel"] or "?",
             "sid4": (r["session_id"] or "")[:4],
@@ -337,7 +341,7 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
         else:
             turns[-1].append(item)
     if not turns:
-        return "", None
+        return "", cutoff
     kept = turns[-max_turns:]
     folded = len(turns) - len(kept)
     msg_lines = [
@@ -357,9 +361,10 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
     cursor (wake_state.json) so a turn delivered here is never re-delivered by the
     next note, and vice versa. Reads events newer than the baseline (excludes ct
     source, matching note.py semantics), renders P3 format, advances last_note_ts
-    to the newest RENDERED ts (same cutoff note.py uses) under the shared
-    wake-state flock. Advance is monotonic — never rewinds a baseline that
-    note.py (or a concurrent turn) already pushed forward."""
+    to the newest SCANNED ts under the shared wake-state flock — including rows
+    the noise filters dropped, so an all-noise batch still moves the baseline
+    instead of being re-read every turn. Advance is monotonic — never rewinds a
+    baseline that note.py (or a concurrent turn) already pushed forward."""
     p = cortex_bridge._cortex_wake_state_path()
     conn = storage.connect(config.db_path())
     try:
@@ -382,11 +387,11 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
                 return ""
             rows = list(reversed(rows))  # chronological
             block, cutoff = _replay_render(rows, header, max_turns, per_chars, max_lines)
-            if not block:
-                return ""
-            # Monotonic advance to the rendered cutoff: only move forward, so a
-            # baseline note.py or a concurrent cortex turn already pushed past
-            # this point is never rewound (the double-deliver / 18:38-rewind bug).
+            # Monotonic advance to the scanned cutoff — runs even when block is
+            # '' (all rows dropped as noise), otherwise those rows sit inside
+            # the `timestamp > last_note_ts` window on every later turn. Only
+            # moves forward, so a baseline note.py or a concurrent cortex turn
+            # already pushed past is never rewound (double-deliver / 18:38 bug).
             if cutoff and (not since_ts or str(cutoff) > str(since_ts)):
                 cortex_bridge._ws_ensure_epoch(d)
                 d["last_note_ts"] = cutoff
