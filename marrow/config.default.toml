@@ -478,6 +478,21 @@ per_msg_chars = 250
 idle_gate_min = 20
 header = "## Recent replay from other sessions"
 exclude_target_channels = []
+# Render-layer noise filter (applies to every replay path). Rows are only hidden
+# from the replay block — nothing is deleted from events.
+# drop_slash_commands: hide turns that are a bare slash command (/clear, /info,
+#   /ct-wake ...). Matched only when the WHOLE trimmed message is one line, the
+#   command token holds no further "/" (so a pasted /Users/... path survives),
+#   and the message is shorter than slash_command_max_chars. A "/" inside a
+#   sentence is never matched.
+# slash_command_max_chars: length cap for the whole message above — anything
+#   longer is prose, not a command.
+# drop_patterns: regexes (re.search, case-sensitive) run over message content;
+#   a hit hides the row. For bot status/system output that carries no meaning
+#   for another session. Keep it precise — a false positive silences real talk.
+drop_slash_commands = true
+slash_command_max_chars = 40
+drop_patterns = ["\\|\\s*Health:\\S+\\s*\\|"]
 
 [hooks]
 # PreToolUse backup guard — stateless, two tiers (no state, no dedup).

@@ -259,6 +259,37 @@ def _replay_truncate(text: str, limit: int) -> str:
     return text[: max(limit - 1, 0)] + "…"
 
 
+_REPLAY_SLASH_HEAD = _re.compile(r"^/[A-Za-z][A-Za-z0-9_:.-]*$")
+
+
+def _replay_is_slash_command(text: str, max_chars: int) -> bool:
+    """True when the WHOLE trimmed message is a slash command (optionally with
+    short args) rather than prose that merely contains a '/'. Three guards keep
+    real messages out: single line only (a pasted path + question is multi-line),
+    the head token carries no further '/' (kills /Users/... file paths), and the
+    whole message stays under max_chars."""
+    t = (text or "").strip()
+    if not t.startswith("/") or "\n" in t or len(t) > max_chars:
+        return False
+    head = t.split(" ", 1)[0]
+    return bool(_REPLAY_SLASH_HEAD.match(head))
+
+
+def _replay_drop_filters(cfg: dict):
+    """Build (slash_max_chars_or_None, [compiled patterns]) from [replay] config.
+    Missing keys fall back to defaults; an unparsable pattern is skipped."""
+    slash_max = None
+    if cfg.get("drop_slash_commands", True):
+        slash_max = int(cfg.get("slash_command_max_chars", 40))
+    pats = []
+    for p in (cfg.get("drop_patterns", []) or []):
+        try:
+            pats.append(_re.compile(p))
+        except _re.error:
+            continue
+    return slash_max, pats
+
+
 def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines: int = 0):
     """Group events into turns and render the P3 replay block. Returns
     (block, rendered_cutoff): block is '' when empty; rendered_cutoff is the max
@@ -269,13 +300,24 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
     folds to a count. `max_lines` (0 = no cap) further caps the rendered message
     lines to the newest N after turn-capping — an outer bound below max_turns
     for turns that carry many per-turn messages. Shared by the per-sid cursor
-    path and the cortex last_note_ts path."""
+    path and the cortex last_note_ts path.
+
+    Rows that are pure noise for another session — bare slash-command turns and
+    bot status/system output matching [replay].drop_patterns — are skipped here,
+    the single outlet shared by every caller. A turn whose rows all drop never
+    exists, so it renders nothing and consumes no max_turns slot."""
     tz = config.get_tz()
+    slash_max, drop_pats = _replay_drop_filters(
+        (config.load().get("replay", {}) or {}))
     turns: list[list[dict]] = []
     cutoff = None
     for r in rows:
         content = transcript.strip_media_markers(r["content"])
         if not content:
+            continue
+        if slash_max is not None and _replay_is_slash_command(content, slash_max):
+            continue
+        if any(p.search(content) for p in drop_pats):
             continue
         ts = r["timestamp"]
         if ts and (cutoff is None or ts > cutoff):

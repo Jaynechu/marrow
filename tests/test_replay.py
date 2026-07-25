@@ -312,3 +312,119 @@ def test_session_start_seed_empty_db_seeds_zero(tmp_path, monkeypatch):
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert "## Recent replay from other sessions" not in ctx
     assert _cursor(SID_SELF) == 0
+
+
+# ── render-layer noise filter: slash commands + bot status output ───────────
+
+SLASH_CMDS = ["/info", "/clear", "/resume", "/status", "/new", "/ct-wake"]
+STATUS_LINE = ("Opus 5[high] | /Users/Gabrielle/.config/marrow/cortex | "
+               "Health:ok | 1c1e9d7e | 3h28m | 13%(5h) 17%(7d) | 120.5k")
+# Real messages that start with '/' or contain one — must survive.
+KEEP_MSGS = [
+    "/Users/Gabrielle/Desktop/tg-official-plugin-migration.md\n"
+    "你先看看你爹这个plugin写得怎么样",
+    "你是说/clear？我根本没有swap这个命令你在说哪个命令",
+    "别急，那就/grill开始brainstorm，想清楚才写",
+]
+
+
+def test_slash_command_turns_dropped(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0})
+    hooks._replay_context(SID_SELF, "cli")
+    for i, cmd in enumerate(SLASH_CMDS):
+        _ev(db, SID_OTHER, "user", cmd, ts=f"2026-07-17T06:0{i}:00Z")
+    # every row dropped -> nothing renders at all
+    assert hooks._replay_context(SID_SELF, "cli") == ""
+
+
+def test_slash_command_with_short_args_dropped(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "user", "/ct-direction 去看看日程", ts="2026-07-17T06:00:00Z")
+    assert hooks._replay_context(SID_SELF, "cli") == ""
+
+
+def test_real_messages_with_slash_survive(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0})
+    hooks._replay_context(SID_SELF, "cli")
+    for i, msg in enumerate(KEEP_MSGS):
+        _ev(db, SID_OTHER, "user", msg, ts=f"2026-07-17T06:1{i}:00Z")
+        _ev(db, SID_OTHER, "assistant", f"ack{i}", ts=f"2026-07-17T06:1{i}:30Z")
+    out = hooks._replay_context(SID_SELF, "cli")
+    assert "tg-official-plugin-migration.md" in out
+    assert "我根本没有swap这个命令" in out
+    assert "那就/grill开始brainstorm" in out
+
+
+def test_long_slash_prose_survives(tmp_path, monkeypatch):
+    # Single line starting with '/' but far past the length cap = prose.
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0})
+    hooks._replay_context(SID_SELF, "cli")
+    msg = "/grill 这个方案我觉得还是有问题，你先把 replay 的过滤规则讲清楚再动手写代码"
+    _ev(db, SID_OTHER, "user", msg, ts="2026-07-17T06:20:00Z")
+    assert "replay 的过滤规则" in hooks._replay_context(SID_SELF, "cli")
+
+
+def test_bot_status_line_dropped(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "per_msg_chars": 500})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "assistant", STATUS_LINE, ts="2026-07-17T06:30:00Z")
+    assert hooks._replay_context(SID_SELF, "cli") == ""
+
+
+def test_empty_turn_leaves_no_shell(tmp_path, monkeypatch):
+    # /info + its status reply = a whole turn of noise: no header, no bare
+    # "N:"/"Y:" line, nothing.
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "per_msg_chars": 500})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T06:40:00Z")
+    _ev(db, SID_OTHER, "assistant", STATUS_LINE, ts="2026-07-17T06:40:30Z")
+    out = hooks._replay_context(SID_SELF, "cli")
+    assert out == ""
+
+
+def test_dropped_turn_does_not_consume_turn_slot(tmp_path, monkeypatch):
+    # 3 turns, the middle one pure noise. max_turns=2 must keep BOTH real
+    # turns and print no fold line.
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 2, "max_lines": 0,
+                                       "per_msg_chars": 500})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "user", "q0", ts="2026-07-17T07:00:00Z")
+    _ev(db, SID_OTHER, "assistant", "a0", ts="2026-07-17T07:00:30Z")
+    _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T07:01:00Z")
+    _ev(db, SID_OTHER, "assistant", STATUS_LINE, ts="2026-07-17T07:01:30Z")
+    _ev(db, SID_OTHER, "user", "q1", ts="2026-07-17T07:02:00Z")
+    _ev(db, SID_OTHER, "assistant", "a1", ts="2026-07-17T07:02:30Z")
+    out = hooks._replay_context(SID_SELF, "cli")
+    assert "q0" in out and "a0" in out and "q1" in out and "a1" in out
+    assert "Health:ok" not in out
+    assert "earlier turns" not in out
+    assert len([ln for ln in out.splitlines() if ln.startswith("[")]) == 4
+
+
+def test_drop_disabled_keeps_slash_commands(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "drop_slash_commands": False,
+                                       "drop_patterns": []})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "user", "/clear", ts="2026-07-17T07:10:00Z")
+    assert "/clear" in hooks._replay_context(SID_SELF, "cli")
+
+
+def test_bad_drop_pattern_is_ignored(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "drop_patterns": ["([unclosed"]})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "user", "still talking", ts="2026-07-17T07:20:00Z")
+    assert "still talking" in hooks._replay_context(SID_SELF, "cli")
