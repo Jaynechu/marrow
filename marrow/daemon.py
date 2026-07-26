@@ -890,13 +890,13 @@ _MSG_ACTIONS = {"send", "list"}
 @marrow_tool()
 def msg(
     action: Annotated[str, Field(description="'send' a message, or 'list' your own recent outbox rows (debugging).")],
-    to: Annotated[str | None, Field(description="send only: tg | wx | cli | ct | session:<sid-prefix>. tg/wx = her phone (whitelisted senders only); cli = any cli session; ct = cortex; session:<prefix> resolves to exactly one live session (0 or many matches = refused).")] = None,
+    to: Annotated[str | None, Field(description="send only: tg | wx | cli | ct | session:<sid-prefix>. tg/wx = the resident session on that channel (whitelisted senders only); cli = any cli session; ct = cortex; session:<prefix> resolves to exactly one live session (0 or many matches = refused).")] = None,
     text: Annotated[str | None, Field(description="send only: message body (plain text). Required.")] = None,
-    watch_reply: Annotated[bool, Field(description="send only: be kicked awake the moment she replies on the target channel (default false).")] = False,
-    watch_timeout_min: Annotated[int | None, Field(description="send only: check back at N minutes: kicked only if no reply by then; if she already replied the watch clears silently (default none = no timeout watch).")] = None,
+    watch_reply: Annotated[bool, Field(description="send only: be kicked awake the moment the target channel replies (default false).")] = False,
+    watch_timeout_min: Annotated[int | None, Field(description="send only: check back at N minutes: kicked only if no reply by then; if the reply already landed the watch clears silently (default none = no timeout watch).")] = None,
     limit: Annotated[int, Field(ge=1, description="list only: max rows to return (default 20).")] = 20,
 ) -> dict | list[dict]:
-    """Leave a message across channels: to her phone (tg/wx, whitelisted senders) or covertly to another session (cli/ct). The resident session continues that conversation. Set watch_reply=true to be kicked awake the moment she replies; watch_timeout_min=N to check back at N minutes — kicked only if she hasn't replied by then.
+    """Send a message to another session (tg/wx/ct/cli). The msg is not visible to user - Only target channel can read and reply. Set watch_reply=true to be kicked awake the moment they reply.
     - 'send': needs `to` + `text`; tg/wx restricted to allowed sender channels.
     - 'list': your own pending/recent rows to confirm a send landed."""
     if action not in _MSG_ACTIONS:
