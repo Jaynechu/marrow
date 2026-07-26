@@ -407,6 +407,26 @@ def _replay_cortex_exclude_channels(shell: str) -> list[str]:
     return [str(c) for c in channels if str(c).strip()]
 
 
+def _shell_ledger_since_row_id(d: dict) -> int | None:
+    """Effective replay cursor of a non-cli shell ledger: the higher of
+    `last_note_row_id` (rows already delivered) and `pending_note_row_id` (the
+    cutoff of a note the shell host is feeding RIGHT NOW — it writes the pending
+    key before the feed and promotes it after). The fed turn's own hook runs
+    while that feed is still in flight, so counting the pending value is what
+    keeps it from re-replaying the rows the note is already showing. A failed
+    feed drops the pending key without promoting, leaving those rows replayable.
+
+    The ledger's `last_note_ts` key serves other purposes and is never a cursor
+    source. Neither key present -> None (full window, like cli's first read)."""
+    best = None
+    for key in ("last_note_row_id", "pending_note_row_id"):
+        v = d.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and (
+                best is None or v > best):
+            best = v
+    return best
+
+
 def _replay_cortex_scan(conn, since_row_id: int | None, exclude: list[str],
                         header: str, max_turns: int, per_chars: int,
                         max_lines: int) -> tuple[str, int | None]:
@@ -449,7 +469,10 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
     Cursor file is per shell: the cli shell keeps wake_state.json (legacy
     last_note_ts migration included); every other shell uses its own ledger
     <shell_state_dir>/<shell>.json, so two shells never consume each other's
-    batch. Same lock/atomic-replace protocol on both."""
+    batch. Same lock/atomic-replace protocol on both. A shell ledger's cursor is
+    the effective one (see _shell_ledger_since_row_id): an in-flight note's
+    pending cutoff counts as read, while the advance still writes only
+    last_note_row_id."""
     shell = cortex_bridge._cortex_shell_id()
     exclude = _replay_cortex_exclude_channels(shell)
     is_cli = shell == "cli"
@@ -464,10 +487,7 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
             if is_cli:
                 since_row_id = _replay_cortex_since_row_id(conn, d)
             else:
-                # Shell ledger: plain row-id cursor. Its `last_note_ts` key
-                # serves other purposes and is never a cursor source.
-                v = d.get("last_note_row_id")
-                since_row_id = v if isinstance(v, int) else None
+                since_row_id = _shell_ledger_since_row_id(d)
             block, cutoff_row_id = _replay_cortex_scan(
                 conn, since_row_id, exclude, header, max_turns, per_chars,
                 max_lines)

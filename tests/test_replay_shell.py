@@ -226,6 +226,69 @@ def test_two_shells_each_see_the_same_activity(tmp_path, monkeypatch):
     assert "ordinary session talking" in hooks._replay_context(SID_CT, "ct")
 
 
+# ── T4: an in-flight note's pending cutoff counts as read ───────────────────
+
+def _pending(p):
+    return json.loads(p.read_text()).get("pending_note_row_id") if p.exists() else None
+
+
+def test_pending_cutoff_higher_than_last_is_the_effective_cursor(tmp_path, monkeypatch):
+    # synapse writes pending_note_row_id before feeding a note; the fed turn's
+    # own hook must not re-replay what that note is already showing.
+    db = _fresh_db(tmp_path)
+    ws, ledger = _setup(monkeypatch, tmp_path, db, "tg")
+    old = _ev(db, SID_OTHER, "user", "already in the note",
+              ts="2026-07-26T12:00:00Z")
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"last_note_row_id": old - 1,
+                                  "pending_note_row_id": old}))
+    assert hooks._replay_context(SID_CT, "ct") == ""
+    # advance writes only last_note_row_id; the pending key is synapse's to clear
+    assert _pending(ledger) == old
+    new_id = _ev(db, SID_OTHER, "user", "landed after the note",
+                 ts="2026-07-26T12:05:00Z")
+    assert "landed after the note" in hooks._replay_context(SID_CT, "ct")
+    assert _cursor(ledger) == new_id
+    assert _pending(ledger) == old
+
+
+def test_pending_absent_leaves_the_cursor_read_unchanged(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    ws, ledger = _setup(monkeypatch, tmp_path, db, "tg")
+    old = _ev(db, SID_OTHER, "user", "before the cursor",
+              ts="2026-07-26T13:00:00Z")
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"last_note_row_id": old}))
+    new_id = _ev(db, SID_OTHER, "user", "after the cursor",
+                 ts="2026-07-26T13:05:00Z")
+    out = hooks._replay_context(SID_CT, "ct")
+    assert "after the cursor" in out and "before the cursor" not in out
+    assert _cursor(ledger) == new_id
+
+
+def test_advance_is_monotonic_against_the_effective_cursor(tmp_path, monkeypatch):
+    # a pending cutoff above every scanned row: nothing to advance to, and the
+    # lower last_note_row_id is left where it is.
+    db = _fresh_db(tmp_path)
+    ws, ledger = _setup(monkeypatch, tmp_path, db, "tg")
+    last = _ev(db, SID_OTHER, "user", "real talk", ts="2026-07-26T14:00:00Z")
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps({"last_note_row_id": last - 1,
+                                  "pending_note_row_id": last + 50}))
+    assert hooks._replay_context(SID_CT, "ct") == ""
+    assert _cursor(ledger) == last - 1
+    assert _pending(ledger) == last + 50
+
+
+def test_effective_cursor_helper_ignores_non_ints():
+    f = hooks._shell_ledger_since_row_id
+    assert f({}) is None
+    assert f({"last_note_row_id": 5}) == 5
+    assert f({"pending_note_row_id": 7}) == 7
+    assert f({"last_note_row_id": 9, "pending_note_row_id": 7}) == 9
+    assert f({"last_note_row_id": True, "pending_note_row_id": "x"}) is None
+
+
 def test_shell_state_keys_carry_the_row_id_cursor():
     assert "last_note_row_id" in cortex_bridge._SHELL_STATE_KEYS
     assert "pending_note_row_id" in cortex_bridge._SHELL_STATE_KEYS
