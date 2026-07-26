@@ -694,3 +694,82 @@ def test_wake_token_current_no_epoch_recorded_is_current(cortex_env):
     home, _ = cortex_env
     (home / "wake_state.json").write_text(json.dumps({}))
     assert cortex_bridge.wake_token_current((1, "x")) is True
+
+
+# --- shell scoping: a non-cli shell must not write the cli ledger --------------
+
+@pytest.fixture()
+def tg_shell(cortex_env, tmp_path, monkeypatch):
+    """cortex_env re-pointed at the tg shell: [cortex].shells lists tg and the
+    per-shell ledger lives under tmp."""
+    home, db = cortex_env
+    base = config.load()
+    shells_dir = tmp_path / "shells"
+    shells_dir.mkdir()
+    cx = {**base["cortex"], "shells": ["cli", "tg"],
+          "shell_state_dir": str(shells_dir)}
+    monkeypatch.setattr(config, "load", lambda: {**base, "cortex": cx})
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    return home, shells_dir
+
+
+def test_tg_turn_never_touches_cli_wake_state(tg_shell, monkeypatch):
+    """Root cause of the mid-sleep respawn: a tg-shell user message ran the cli
+    user-wake reset, which cleared wake_state.json's next_wake_at and flipped it
+    awake — cortex reconcile then read the deliberately closed cli window as an
+    "accidental close of awake window" and respawned it long before the booked
+    wake. The tg host cancels its OWN booked wake
+    (synapse_tg.shell.on_user_message), so marrow must leave the cli ledger
+    byte-for-byte alone."""
+    home, _ = tg_shell
+    seed = {"awake": False, "gen": 7, "state_id": "abc", "session_id": "S1",
+            "next_wake_at": "2026-07-26T20:02:00+10:00"}
+    (home / "wake_state.json").write_text(json.dumps(seed))
+    spawned = []
+    monkeypatch.setattr(cortex_bridge, "_spawn_watchdog_if_absent",
+                        lambda: spawned.append(1))
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/tg/t.jsonl",
+                                           "prompt": "醒着么"})
+    assert _ws(home) == seed   # alarm + epoch + awake untouched
+    assert spawned == []       # and no cli watchdog started from a tg turn
+
+
+def test_cli_turn_still_clears_the_booked_alarm(cortex_env):
+    """The cli shell keeps the original behaviour: its own user message cancels
+    the pending alarm and bumps the cancellation epoch."""
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({
+        "awake": False, "gen": 3, "state_id": "z",
+        "next_wake_at": "2026-07-26T20:02:00+10:00"}))
+    cortex_bridge._cortex_user_wake_reset({"transcript_path": "/t.jsonl",
+                                           "prompt": "hi"})
+    d = _ws(home)
+    assert "next_wake_at" not in d
+    assert d["awake"] is True
+    assert d["gen"] == 4
+
+
+def test_presence_state_cli_reads_wake_state(cortex_env):
+    home, _ = cortex_env
+    (home / "wake_state.json").write_text(json.dumps({
+        "last_user_msg_ts": "2026-07-26T09:00:00+00:00",
+        "transcript": "/cli/c.jsonl"}))
+    ws = cortex_bridge._shell_presence_state()
+    assert ws["last_user_msg_ts"] == "2026-07-26T09:00:00+00:00"
+    assert ws["transcript"] == "/cli/c.jsonl"
+
+
+def test_presence_state_tg_reads_its_own_ledger(tg_shell):
+    """The 120k nudge's presence gate + handoff header must judge a tg window off
+    the tg ledger (host-written last_user_ts / session_id), never off cli's."""
+    home, shells_dir = tg_shell
+    (home / "wake_state.json").write_text(json.dumps({
+        "last_user_msg_ts": "2020-01-01T00:00:00+00:00",
+        "transcript": "/cli/c.jsonl"}))
+    (shells_dir / "tg.json").write_text(json.dumps({
+        "last_user_ts": "2026-07-26T09:46:49+00:00",
+        "session_id": "d994b51d-bc04-48ea-a8d7-d72274e28bb3"}))
+    ws = cortex_bridge._shell_presence_state()
+    assert ws["last_user_msg_ts"] == "2026-07-26T09:46:49+00:00"
+    assert ws["transcript"] == "d994b51d-bc04-48ea-a8d7-d72274e28bb3.jsonl"
+    assert cortex_bridge._user_active_within(ws, 15) is False   # stamp is old

@@ -1386,8 +1386,15 @@ def _cortex_user_wake_reset(inp: dict) -> None:
     marker so it re-arms fresh from this message), and ensure a watchdog is
     alive. Fast + idempotent: already-awake + watchdog-alive collapses to cheap
     no-op writes. Cortex session only; the caller has already excluded machine
-    lines (is_machine_line)."""
-    if not _shell_enabled():
+    lines (is_machine_line).
+
+    cli shell ONLY. wake_state.json is the cli window's alarm; a non-cli shell
+    (tg/wx) is host-driven and its host already cancels its own booked wake on
+    every inbound user message (synapse_tg.shell.on_user_message). Writing here
+    from a tg turn cleared the CLI ledger's next_wake_at and flipped it awake, so
+    cortex reconcile then read the closed cli window as "accidental close of an
+    awake window" and respawned it mid-sleep."""
+    if not _shell_enabled() or _cortex_shell_id() != "cli":
         return
     p = _cortex_wake_state_path()
     tpath = inp.get("transcript_path") if isinstance(inp, dict) else None
@@ -1729,6 +1736,29 @@ def _user_active_within(ws: dict, minutes: int) -> bool:
     return age < minutes * 60
 
 
+def _shell_presence_state() -> dict:
+    """Presence + handoff-header view for THIS window's shell. cli reads
+    wake_state.json; a non-cli shell reads its OWN host-written ledger and is
+    normalised onto the same keys (the host writes last_user_ts / session_id), so
+    a tg window never judges presence off the cli shell's state. Missing/corrupt
+    -> {}."""
+    if _cortex_shell_id() == "cli":
+        try:
+            return _wake_state_load(_cortex_wake_state_path())
+        except Exception:
+            return {}
+    try:
+        st = shell_state_read()
+    except Exception:
+        return {}
+    out: dict = {}
+    if st.get("last_user_ts"):
+        out["last_user_msg_ts"] = st["last_user_ts"]
+    if st.get("session_id"):
+        out["transcript"] = f"{st['session_id']}.jsonl"
+    return out
+
+
 # Window-occupancy 亮牌 nudge (mechanism-defining copy). show_tokens is the
 # off-switch (<= 0 = inert).
 _SHOW_TEXT = (
@@ -1753,10 +1783,7 @@ def _cortex_show_context(tpath: str) -> str:
     from .hooks import _window_tokens_from_transcript
     if _window_tokens_from_transcript(tpath) < show:
         return ""
-    try:
-        ws = _wake_state_load(_cortex_wake_state_path())
-    except Exception:
-        ws = {}
+    ws = _shell_presence_state()
     # Presence gate: hold the nudge while the user's last real message is younger
     # than show_silent_min (mid-chat — the 150k fuse is the backstop). It retries
     # on a later turn while tokens stay over threshold. Falls back to the boolean
