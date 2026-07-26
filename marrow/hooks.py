@@ -388,39 +388,89 @@ def _replay_cortex_since_row_id(conn, d: dict) -> int | None:
     return int(row["id"]) if row and row["id"] is not None else None
 
 
+# Every cortex shell excludes its OWN channel from Replay: the cli shell talks
+# on 'ct', the tg shell on 'tg'. Mirror of cortex note.py
+# _DEFAULT_SHELL_REPLAY_EXCLUDE; cortex.toml [note].shell_replay_exclude wins
+# when set. Unknown/unmapped shell -> the unqualified ('ct') set.
+_DEFAULT_SHELL_REPLAY_EXCLUDE = {"cli": ["ct"], "tg": ["tg"]}
+_UNQUALIFIED_REPLAY_EXCLUDE = ["ct"]
+
+
+def _replay_cortex_exclude_channels(shell: str) -> list[str]:
+    """The channels a cortex `shell`'s replay must drop — its own self-talk."""
+    mapping = cortex_bridge._cortex_toml_section("note", "shell_replay_exclude", None)
+    if not isinstance(mapping, dict):
+        mapping = _DEFAULT_SHELL_REPLAY_EXCLUDE
+    channels = mapping.get(str(shell))
+    if channels is None:
+        return list(_UNQUALIFIED_REPLAY_EXCLUDE)
+    return [str(c) for c in channels if str(c).strip()]
+
+
+def _replay_cortex_scan(conn, since_row_id: int | None, exclude: list[str],
+                        header: str, max_turns: int, per_chars: int,
+                        max_lines: int) -> tuple[str, int | None]:
+    """Read the window newer than `since_row_id` (dropping `exclude` channels)
+    and render it. Returns (block, scanned cutoff row id); cutoff None = nothing
+    to advance to."""
+    where_ch = ""
+    ch_params: tuple = ()
+    if exclude:
+        where_ch = (" AND COALESCE(channel,'') NOT IN ("
+                    + ",".join("?" * len(exclude)) + ")")
+        ch_params = tuple(exclude)
+    where_since = " AND id > ?" if since_row_id is not None else ""
+    since_params = (since_row_id,) if since_row_id is not None else ()
+    try:
+        rows = conn.execute(
+            "SELECT id, session_id, role, content, timestamp, channel "
+            "FROM events WHERE role IN ('user','assistant')" + where_ch
+            + where_since + " ORDER BY id DESC LIMIT ?",
+            ch_params + since_params + (max_turns * 4,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return "", None
+    if not rows:
+        return "", None
+    rows = list(reversed(rows))  # chronological
+    return _replay_render(rows, header, max_turns, per_chars, max_lines)
+
+
 def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int = 0) -> str:
     """Cortex-window replay on a normal turn, sharing note.py's last_note_row_id
-    diff cursor (wake_state.json) so a turn delivered here is never re-delivered by
-    the next note, and vice versa. Reads events newer than the cursor row id
-    (excludes ct source, matching note.py semantics), renders P3 format, advances
-    the cursor to the newest SCANNED row id under the shared wake-state flock —
+    diff cursor so a turn delivered here is never re-delivered by the next note,
+    and vice versa. Reads events newer than the cursor row id (excluding this
+    shell's own channels, matching note.py semantics), renders P3 format, advances
+    the cursor to the newest SCANNED row id under the ledger's flock —
     including rows the noise filters dropped, so an all-noise batch still moves the
     cursor instead of being re-read every turn. Advance is monotonic — never
-    rewinds a cursor that note.py (or a concurrent turn) already pushed forward."""
-    p = cortex_bridge._cortex_wake_state_path()
+    rewinds a cursor that note.py (or a concurrent turn) already pushed forward.
+
+    Cursor file is per shell: the cli shell keeps wake_state.json (legacy
+    last_note_ts migration included); every other shell uses its own ledger
+    <shell_state_dir>/<shell>.json, so two shells never consume each other's
+    batch. Same lock/atomic-replace protocol on both."""
+    shell = cortex_bridge._cortex_shell_id()
+    exclude = _replay_cortex_exclude_channels(shell)
+    is_cli = shell == "cli"
+    p = (cortex_bridge._cortex_wake_state_path() if is_cli
+         else cortex_bridge._shell_state_path(shell))
     conn = storage.connect(config.db_path())
     try:
+        # Whole read-modify-write under one flock: the monotonic compare below
+        # is only sound against a cursor no one can move meanwhile.
         with cortex_bridge._wake_state_lock(p):
             d = cortex_bridge._wake_state_load(p)
-            since_row_id = _replay_cortex_since_row_id(conn, d)
-            where_since = " AND id > ?" if since_row_id is not None else ""
-            extra = (since_row_id,) if since_row_id is not None else ()
-            params = extra + (max_turns * 4,)
-            try:
-                rows = conn.execute(
-                    "SELECT id, session_id, role, content, timestamp, channel "
-                    "FROM events WHERE role IN ('user','assistant') "
-                    "AND COALESCE(channel,'') != 'ct'" + where_since
-                    + " ORDER BY id DESC LIMIT ?",
-                    params,
-                ).fetchall()
-            except sqlite3.OperationalError:
-                return ""
-            if not rows:
-                return ""
-            rows = list(reversed(rows))  # chronological
-            block, cutoff_row_id = _replay_render(
-                rows, header, max_turns, per_chars, max_lines)
+            if is_cli:
+                since_row_id = _replay_cortex_since_row_id(conn, d)
+            else:
+                # Shell ledger: plain row-id cursor. Its `last_note_ts` key
+                # serves other purposes and is never a cursor source.
+                v = d.get("last_note_row_id")
+                since_row_id = v if isinstance(v, int) else None
+            block, cutoff_row_id = _replay_cortex_scan(
+                conn, since_row_id, exclude, header, max_turns, per_chars,
+                max_lines)
             # Monotonic advance to the scanned cutoff — runs even when block is
             # '' (all rows dropped as noise), otherwise those rows sit inside
             # the window on every later turn. Only moves forward, so a cursor
@@ -428,7 +478,8 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
             # rewound (double-deliver / 18:38 bug).
             if cutoff_row_id is not None and (
                     since_row_id is None or cutoff_row_id > since_row_id):
-                cortex_bridge._ws_ensure_epoch(d)
+                if is_cli:
+                    cortex_bridge._ws_ensure_epoch(d)
                 d["last_note_row_id"] = cutoff_row_id
                 cortex_bridge._wake_state_save(p, d)
             return block

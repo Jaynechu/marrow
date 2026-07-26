@@ -1184,7 +1184,7 @@ def _wake_state_save(p: Path, data: dict) -> None:
 # keeps wake_state.json. Same flock + atomic-replace protocol as above.
 
 _SHELL_STATE_KEYS = ("session_id", "next_wake_at", "last_note_ts", "pending_note",
-                     "rotate_pending")
+                     "rotate_pending", "last_note_row_id", "pending_note_row_id")
 
 
 def _shell_state_path(shell: str | None = None) -> Path:
