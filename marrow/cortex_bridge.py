@@ -1761,22 +1761,22 @@ def _shell_presence_state() -> dict:
 # Window-occupancy 亮牌 nudge (mechanism-defining copy). show_tokens is the
 # off-switch (<= 0 = inert).
 _SHOW_TEXT = (
-    "Context ≥120k - If not actively chatting with user, handoff within 3 turns "
+    "Context ≥160k - If not actively chatting with user, handoff within 3 turns "
     "and lie_down(rotate=True) to clear (rotate unlocks a short next_wake, "
-    "≥16min). If mid-conversation: carry on, the 150k fuse is the backstop."
+    "≥16min). If mid-conversation: carry on, the 180k fuse is the backstop."
 )
 
 
 def _cortex_show_context(tpath: str) -> str:
-    """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (12万
-    soft, ahead of the 15万 fuse). Suppressed when user is chatting
+    """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (16万
+    soft, ahead of the 18万 cortex fuse). Suppressed when user is chatting
     (user_replied_this_wake). Empty for normal sessions, below threshold,
     or when show_tokens <= 0 (the off-switch)."""
     if not _shell_enabled():
         return ""
     cr = config.load().get("cortex_rotate", {}) or {}
     text = _SHOW_TEXT
-    show = int(cr.get("show_tokens", 100_000) or 0)
+    show = int(cr.get("show_tokens", 160_000) or 0)
     if show <= 0:
         return ""
     from .hooks import _window_tokens_from_transcript
@@ -1784,7 +1784,7 @@ def _cortex_show_context(tpath: str) -> str:
         return ""
     ws = _shell_presence_state()
     # Presence gate: hold the nudge while the user's last real message is younger
-    # than show_silent_min (mid-chat — the 150k fuse is the backstop). It retries
+    # than show_silent_min (mid-chat — the 180k fuse is the backstop). It retries
     # on a later turn while tokens stay over threshold. Falls back to the boolean
     # user_replied_this_wake when no timestamp is stored (legacy state / gate off).
     silent_min = int(cr.get("show_silent_min", 0) or 0)
