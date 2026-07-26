@@ -6,7 +6,7 @@ independent of cortex, so usage stays fresh even when cortex is off. Cortex's
 tick collector may also call it as a subprocess; either caller's write is an
 idempotent upsert, so overlap is harmless. Single writer of the usage kv every
 consumer (wakeup note render, SessionStart line, in-window threshold inject,
-dashboard) reads.
+daybrief Status block) reads.
 
 Writes:
 - five_hour_pct / seven_day_pct + *_reset_at: Anthropic OAuth /api/oauth/usage

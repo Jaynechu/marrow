@@ -854,7 +854,7 @@ _ALERT_ACTIONS = {"list", "resolve"}
 @marrow_tool()
 def alert(
     action: Annotated[str, Field(description="'list' unresolved alerts (newest first), or 'resolve' one by alert_id.")],
-    alert_id: Annotated[int | None, Field(description="resolve only: id of the alert to resolve (via `mw resolve`, which refreshes the dashboard and restarts the watcher if code changed). Required for resolve.")] = None,
+    alert_id: Annotated[int | None, Field(description="resolve only: id of the alert to resolve (via `mw resolve`, which refreshes daybrief/monitor and restarts the watcher if code changed). Required for resolve.")] = None,
 ) -> dict | list[dict]:
     """List or resolve alerts."""
     if action not in _ALERT_ACTIONS:
@@ -941,7 +941,6 @@ def _tombstone_deleted(conn, select_sql: str, params, reason: str) -> None:
 
 
 def _do_event_clear(before: str | None, after: str | None, last: int | None) -> dict:
-    import re
     import shutil
     from datetime import datetime, timezone
 
@@ -952,15 +951,6 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None) -> 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     backup = f"/tmp/marrow-backup-purge-{ts}.db"
     shutil.copy2(str(_DB), backup)
-
-    if not (time_filtered or last):
-        dash = Path.home() / "Desktop" / "NY" / "dashboard.md"
-        if dash.exists():
-            text = dash.read_text(encoding="utf-8")
-            text = re.sub(
-                r"(<!-- id:dashboard\.timeline -->)\n## Timeline\n.*?(?=\n<!-- id:)",
-                r"\1\n## Timeline\n_none_\n", text, flags=re.DOTALL)
-            dash.write_text(text, encoding="utf-8")
 
     conn = storage.connect(_DB)
     counts = {}

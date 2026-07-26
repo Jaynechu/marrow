@@ -20,7 +20,7 @@ from .md_index import MdIndex, _hash
 from .reconcile import emit_conflict_alerts, reconcile_timeline
 
 # Timeline zone id marker — lets md_index/watcher track the block by the same
-# `<!-- id:... -->` convention the dashboard uses. Stamped on the H2 line so
+# `<!-- id:... -->` convention the other subpages use. Stamped on the H2 line so
 # reconcile_timeline still locates `## Timeline` and Obsidian hides the comment.
 _TIMELINE_BLOCK_ID = "daybrief.timeline"
 
@@ -129,7 +129,7 @@ def _timeline_body(conn: sqlite3.Connection, existing: str | None,
                    absorbed: bool = False) -> str:
     """render_timeline output verbatim — H2 header, line anchors and trail all
     kept — with the id marker stamped and the render timestamp carried over an
-    unchanged block (carry_trail_t). Identical to the dashboard timeline zone.
+    unchanged block (carry_trail_t).
 
     absorbed=True (reconcile just wrote an edit into the DB) forces a fresh t=
     so the per-row db-win gate does not deadlock on the next reconcile."""
