@@ -563,6 +563,13 @@ housekeep_protected_files = [
     "CLAUDE.md", "settings.json", "keybindings.json", "statusline.py",
     "output-styles/ny.md",
 ]
+# Session-start housekeep split. Files with these extensions are docs/config
+# shaped and get committed unconditionally (`auto: docs housekeep (N files)`).
+# Everything else is only committed once its mtime is older than
+# housekeep_stale_hours (`auto: stale leftovers (N files)`) — fresher files are
+# left dirty because they are probably another live session's work in progress.
+housekeep_docs_extensions = [".md", ".toml", ".json", ".txt"]
+housekeep_stale_hours = 2
 
 # ~/.claude.json mcpServers snapshot: rolling backups kept in
 # ~/.config/marrow/backup/claude-json/, newest N retained.

@@ -979,6 +979,123 @@ def _housekeep_protected_files() -> list[str]:
         return _HOUSEKEEP_PROTECTED_DEFAULT
 
 
+# Docs/config-shaped files: committed unconditionally. Everything else waits
+# until it has gone quiet for `housekeep_stale_hours` (likely another live
+# session's WIP otherwise).
+_HOUSEKEEP_DOCS_EXTS_DEFAULT = [".md", ".toml", ".json", ".txt"]
+_HOUSEKEEP_STALE_HOURS_DEFAULT = 2.0
+
+
+def _housekeep_docs_exts() -> set[str]:
+    try:
+        exts = config.load().get("hooks", {}).get(
+            "housekeep_docs_extensions", _HOUSEKEEP_DOCS_EXTS_DEFAULT
+        )
+    except Exception:
+        exts = _HOUSEKEEP_DOCS_EXTS_DEFAULT
+    return {str(e).lower() for e in exts}
+
+
+def _housekeep_stale_hours() -> float:
+    try:
+        return float(config.load().get("hooks", {}).get(
+            "housekeep_stale_hours", _HOUSEKEEP_STALE_HOURS_DEFAULT
+        ))
+    except Exception:
+        return _HOUSEKEEP_STALE_HOURS_DEFAULT
+
+
+def _unquote_porcelain(path: str) -> str:
+    """Undo git's C-style quoting (`"caf\\303\\251.md"` → `café.md`)."""
+    p = path.strip()
+    if len(p) >= 2 and p[0] == '"' and p[-1] == '"':
+        try:
+            return (p[1:-1].encode("ascii").decode("unicode_escape")
+                    .encode("latin-1").decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return p[1:-1]
+    return p
+
+
+def _porcelain_paths(line: str) -> list[str]:
+    """Pathspec(s) for one porcelain line — renames yield old + new."""
+    raw = line[3:].strip()
+    if " -> " in raw:
+        old, new = raw.split(" -> ", 1)
+        return [_unquote_porcelain(old), _unquote_porcelain(new)]
+    return [_unquote_porcelain(raw)]
+
+
+def _split_housekeep_dirty(
+    repo: str, dirty: list[str], now: float | None = None
+) -> tuple[list[str], list[str], list[str]]:
+    """(docs, stale, fresh) porcelain lines.
+
+    docs = extension in `housekeep_docs_extensions` → always committable.
+    stale = other files whose mtime is older than `housekeep_stale_hours`,
+    plus anything with no mtime (deleted/renamed away).
+    fresh = the rest — left uncommitted, likely another live session's WIP.
+    """
+    exts = _housekeep_docs_exts()
+    cutoff = _housekeep_stale_hours() * 3600
+    now = time.time() if now is None else now
+    docs: list[str] = []
+    stale: list[str] = []
+    fresh: list[str] = []
+    for line in dirty:
+        if not line.strip():
+            continue
+        target = _porcelain_paths(line)[-1]
+        if Path(target).suffix.lower() in exts:
+            docs.append(line)
+            continue
+        try:
+            mtime = (Path(repo) / target).stat().st_mtime
+        except Exception:  # noqa: BLE001 — deleted/renamed/unreadable
+            stale.append(line)
+            continue
+        (stale if now - mtime >= cutoff else fresh).append(line)
+    return docs, stale, fresh
+
+
+def _commit_housekeep_groups(
+    repo: str, dirty: list[str], tag: str | None, label: str
+) -> list[str]:
+    """Commit the docs group and the stale group separately; report lines."""
+    docs, stale, fresh = _split_housekeep_dirty(repo, dirty)
+    out: list[str] = []
+    for group, subject, suffix in (
+        (docs, "docs housekeep", "docs"),
+        (stale, "stale leftovers", "stale"),
+    ):
+        if not group:
+            continue
+        cats = _categorize_porcelain(group)
+        paths: list[str] = []
+        for line in group:
+            paths.extend(_porcelain_paths(line))
+        subprocess.run(
+            ["git", "-C", repo, "add", "-A", "--"] + paths,
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        cr = subprocess.run(
+            ["git", "-C", repo, "commit",
+             "-m", _build_housekeep_commit_msg(cats, len(group), tag, subject),
+             "--"] + paths,
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if cr.returncode != 0:
+            out.append(f"{label} {suffix}: ⚠️ commit failed ({len(group)} files)")
+            continue
+        out.append(_build_housekeep_report_line(f"{label} {suffix}", cats, len(group)))
+    if fresh:
+        out.append(
+            f"{label}: skipped {len(fresh)} fresh file(s) "
+            f"(<{_housekeep_stale_hours():g}h — possibly a live session)"
+        )
+    return out
+
+
 def _categorize_porcelain(lines: list[str]) -> dict[str, list[str]]:
     """Bucket `git status --porcelain` lines into deleted/renamed/added/modified.
 
@@ -1022,13 +1139,14 @@ def _session_tag(sid: str | None, conn: sqlite3.Connection) -> str | None:
 
 
 def _build_housekeep_commit_msg(cats: dict[str, list[str]], total: int,
-                                tag: str | None = None) -> str:
-    """Subject `auto: session-start housekeep (N files)[ [tag]]` — the tag
-    stamps which session's window auto-committed the work. Body lists files
-    by category, deleted first and never truncated. Body caps at ~2000 chars
-    overall (added/modified may truncate, deleted never does).
+                                tag: str | None = None,
+                                kind: str = "session-start housekeep") -> str:
+    """Subject `auto: <kind> (N files)[ [tag]]` — the tag stamps which
+    session's window auto-committed the work. Body lists files by category,
+    deleted first and never truncated. Body caps at ~2000 chars overall
+    (added/modified may truncate, deleted never does).
     """
-    subject = f"auto: session-start housekeep ({total} files)"
+    subject = f"auto: {kind} ({total} files)"
     if tag:
         subject += f" [{tag}]"
     body_lines: list[str] = []
@@ -1108,16 +1226,8 @@ def _git_housekeep_block(
                             f"deleted: {', '.join(blocked)} (resolve manually)"
                         )
                     else:
-                        subprocess.run(
-                            ["git", "-C", str(claude_dir), "add", "-A"],
-                            capture_output=True, text=True, timeout=5, check=False,
-                        )
-                        subprocess.run(
-                            ["git", "-C", str(claude_dir), "commit",
-                             "-m", _build_housekeep_commit_msg(cats, len(dirty), tag)],
-                            capture_output=True, text=True, timeout=5, check=False,
-                        )
-                        lines.append(_build_housekeep_report_line("~/.claude", cats, len(dirty)))
+                        lines.extend(_commit_housekeep_groups(
+                            str(claude_dir), dirty, tag, "~/.claude"))
         except Exception:
             pass
 
@@ -1137,17 +1247,8 @@ def _git_housekeep_block(
                     )
                     sm_dirty = [l for l in sr.stdout.splitlines() if l.strip()]
                     if sm_dirty:
-                        sm_cats = _categorize_porcelain(sm_dirty)
-                        subprocess.run(
-                            ["git", "-C", sm_abs, "add", "-A"],
-                            capture_output=True, text=True, timeout=5, check=False,
-                        )
-                        subprocess.run(
-                            ["git", "-C", sm_abs, "commit",
-                             "-m", _build_housekeep_commit_msg(sm_cats, len(sm_dirty), tag)],
-                            capture_output=True, text=True, timeout=5, check=False,
-                        )
-                        lines.append(_build_housekeep_report_line(sm_path, sm_cats, len(sm_dirty)))
+                        lines.extend(_commit_housekeep_groups(
+                            sm_abs, sm_dirty, tag, sm_path))
 
                 # B2: top-level commit (picks up updated submodule pointers + own files)
                 r = subprocess.run(
@@ -1156,17 +1257,7 @@ def _git_housekeep_block(
                 )
                 dirty = [l for l in r.stdout.splitlines() if l.strip()]
                 if dirty:
-                    cats = _categorize_porcelain(dirty)
-                    subprocess.run(
-                        ["git", "-C", cwd, "add", "-A"],
-                        capture_output=True, text=True, timeout=5, check=False,
-                    )
-                    subprocess.run(
-                        ["git", "-C", cwd, "commit",
-                         "-m", _build_housekeep_commit_msg(cats, len(dirty), tag)],
-                        capture_output=True, text=True, timeout=5, check=False,
-                    )
-                    lines.append(_build_housekeep_report_line("cwd", cats, len(dirty)))
+                    lines.extend(_commit_housekeep_groups(cwd, dirty, tag, "cwd"))
         except Exception:
             pass
 
