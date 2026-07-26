@@ -192,139 +192,6 @@ def test_threshold_inject_agent_tokens_do_not_trigger(tmp_path, monkeypatch, cap
 
 
 # --------------------------------------------------------------------------- #
-# cortex lie_down deny guard
-# --------------------------------------------------------------------------- #
-
-def _handoff(tmp_path, monkeypatch, home_name="cortex", content="handoff-note", mtime=None):
-    home = tmp_path / home_name
-    home.mkdir(parents=True, exist_ok=True)
-    hp = home / "handoff.md"
-    hp.write_text(content, encoding="utf-8")
-    if mtime is not None:
-        import os
-        os.utime(hp, (mtime, mtime))
-    monkeypatch.setattr(cortex_bridge, "_cortex_handoff_path", lambda: hp)
-    return hp
-
-
-def _big_transcript(tmp_path, occupancy, spawn_ts="2026-07-08T10:00:00+00:00"):
-    jl = tmp_path / "big.jsonl"
-    jl.write_text("\n".join([
-        json.dumps({"timestamp": spawn_ts, "type": "user"}),
-        json.dumps({"message": {"usage": {"input_tokens": occupancy}}}),
-    ]))
-    return jl
-
-
-def test_deny_rotate_without_handoff(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    jl = _big_transcript(tmp_path, 10_000)
-    # no handoff file
-    monkeypatch.setattr(cortex_bridge, "_cortex_handoff_path", lambda: tmp_path / "none.md")
-    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
-           "tool_input": {"rotate": True}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is not None
-
-
-def test_allow_rotate_with_fresh_handoff(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    jl = _big_transcript(tmp_path, 10_000, spawn_ts="2026-07-08T10:00:00+00:00")
-    # handoff written after spawn (spawn epoch ~ 2026-07-08 10:00 UTC; use now)
-    _handoff(tmp_path, monkeypatch, mtime=time.time())
-    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
-           "tool_input": {"rotate": True}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is None
-
-
-def test_allow_plain_lie_down_small_window(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    jl = _big_transcript(tmp_path, 10_000)  # under force line, no rotate
-    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
-           "tool_input": {}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is None
-
-
-def test_deny_full_window_without_handoff(tmp_path, monkeypatch):
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    force = config.load()["cortex"]["force_tokens"]
-    jl = _big_transcript(tmp_path, force + 1)  # over the 150k fuse line
-    monkeypatch.setattr(cortex_bridge, "_cortex_handoff_path", lambda: tmp_path / "none.md")
-    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
-           "tool_input": {}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is not None
-
-
-def test_deny_skips_non_cortex(tmp_path, monkeypatch):
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    inp = {"tool_name": "mcp__marrow__lie_down", "tool_input": {"rotate": True}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is None
-
-
-# --------------------------------------------------------------------------- #
-# _window_spawn_epoch — real cortex transcripts open with timestamp-less
-# metadata lines; the timestamp appears further down.
-# --------------------------------------------------------------------------- #
-
-def test_spawn_epoch_skips_leading_metadata(tmp_path):
-    """First lines are metadata with no timestamp; spawn = the first timestamp
-    a few lines down, not the fallback."""
-    from datetime import datetime
-    c = lambda o: json.dumps(o, separators=(",", ":"))  # compact, like real transcripts
-    jl = tmp_path / "meta.jsonl"
-    jl.write_text("\n".join([
-        c({"type": "last-prompt", "content": "x"}),
-        c({"type": "mode"}),
-        c({"type": "permission-mode"}),
-        c({"type": "file-history-snapshot"}),
-        c({"timestamp": "2026-07-08T10:00:00+00:00", "type": "user"}),
-        c({"message": {"usage": {"input_tokens": 10}}}),
-    ]) + "\n")
-    expected = datetime.fromisoformat("2026-07-08T10:00:00+00:00").timestamp()
-    assert cortex_bridge._window_spawn_epoch(str(jl)) == expected
-
-
-def test_spawn_epoch_falls_back_to_birthtime_not_mtime(tmp_path):
-    """No timestamp anywhere → birthtime fallback, which must NOT grow as the
-    live file is appended to (mtime would)."""
-    jl = tmp_path / "no_ts.jsonl"
-    jl.write_text(json.dumps({"type": "mode"}) + "\n")
-    first = cortex_bridge._window_spawn_epoch(str(jl))
-    assert first is not None
-    time.sleep(0.02)
-    with open(jl, "a", encoding="utf-8") as f:
-        f.write(json.dumps({"type": "user"}) + "\n")
-    assert cortex_bridge._window_spawn_epoch(str(jl)) == first
-
-
-def test_spawn_epoch_missing_file_is_none():
-    assert cortex_bridge._window_spawn_epoch("/no/such/file.jsonl") is None
-
-
-def test_allow_rotate_after_metadata_transcript(tmp_path, monkeypatch):
-    """Deny-loop regression: a transcript with leading metadata + a spawn line,
-    handoff written after that spawn timestamp → guard allows."""
-    monkeypatch.setenv("MARROW_CORTEX", "1")
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    c = lambda o: json.dumps(o, separators=(",", ":"))  # compact, like real transcripts
-    jl = tmp_path / "meta_big.jsonl"
-    jl.write_text("\n".join([
-        c({"type": "last-prompt"}),
-        c({"type": "file-history-snapshot"}),
-        c({"timestamp": "2026-07-08T10:00:00+00:00", "type": "user"}),
-        c({"message": {"usage": {"input_tokens": 10_000}}}),
-    ]) + "\n")
-    spawn = datetime.fromisoformat("2026-07-08T10:00:00+00:00").timestamp()
-    _handoff(tmp_path, monkeypatch, mtime=spawn + 5)
-    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
-           "tool_input": {"rotate": True}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is None
-
-
-# --------------------------------------------------------------------------- #
 # line-count handoff page-turn (T5)
 # --------------------------------------------------------------------------- #
 
@@ -400,8 +267,6 @@ def test_page_turn_over_cap_archives_and_carries(tmp_path, monkeypatch):
     body = _handoff_body(todos, logs)
     assert len(body.splitlines()) > 150
     home, hp = _page_setup(tmp_path, monkeypatch, body)
-    old_mtime = time.time() - 86400
-    os.utime(hp, (old_mtime, old_mtime))
     cortex_bridge._cortex_handoff_page_turn_if_stale()
 
     # archive: range name, holds the whole old page
@@ -417,8 +282,6 @@ def test_page_turn_over_cap_archives_and_carries(tmp_path, monkeypatch):
     # last 10 activity lines carried under 前情
     assert "line159" in new_text
     assert "line149" not in new_text
-    # backdated mtime (not "written this window")
-    assert hp.stat().st_mtime <= old_mtime + 1
 
 
 def test_page_turn_single_day_archive_name(tmp_path, monkeypatch):

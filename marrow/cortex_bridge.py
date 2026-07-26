@@ -505,49 +505,9 @@ def register(marrow_tool, db: str | None = None) -> None:
             marrow_tool()(say)
 
 
-# ── hooks: kickout immunity / lie_down deny / handoff page-turn / show 亮牌 ──────
+# ── hooks: kickout immunity / lie_down nudge / handoff page-turn / show 亮牌 ────
 # _window_tokens_from_transcript stays in hooks.py (shared with the all-session
 # _usage_threshold_context); it is imported lazily where needed below.
-
-# lie_down handoff deny reason (mechanism-defining copy).
-_HANDOFF_DENY_TEXT = (
-    "Write your handoff note first — call lie_down again after saving it."
-)
-
-
-def _cortex_lie_down_deny(inp: dict) -> str | None:
-    """Deny lie_down until the handoff is written this window, when the
-    session asked to rotate OR the window is at the fuse line (force_tokens).
-    A plain lie_down under the line is allowed. Cortex window only. None = allow.
-    Deny text is mechanism-defining copy (_HANDOFF_DENY_TEXT); the caller treats
-    any falsy return as allow, so the constant is never empty."""
-    if not _shell_enabled():
-        return None
-    if inp.get("tool_name") != "mcp__marrow__lie_down":
-        return None
-    ti = inp.get("tool_input", {}) or {}
-    tpath = inp.get("transcript_path") or ""
-    cx = config.load().get("cortex", {}) or {}
-    force = int(cx.get("force_tokens", 150_000) or 0)
-    wants_rotate = bool(ti.get("rotate"))
-    from .hooks import _window_tokens_from_transcript
-    occupancy = _window_tokens_from_transcript(tpath)
-    if not wants_rotate and not (force > 0 and occupancy >= force):
-        return None  # plain lie_down under the line — allow
-    # Guard fires: require a handoff written after this window's spawn.
-    p = _cortex_handoff_path()
-    spawn = _window_spawn_epoch(tpath)
-    written = False
-    if p is not None and spawn is not None:
-        try:
-            written = p.stat().st_mtime >= spawn and bool(
-                p.read_text(encoding="utf-8").strip())
-        except OSError:
-            written = False
-    if written:
-        return None
-    return _HANDOFF_DENY_TEXT
-
 
 def _cortex_lie_down_nudge(inp: dict) -> str | None:
     """Non-blocking PreToolUse additionalContext for every cortex lie_down call:
@@ -565,34 +525,6 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     if not text:
         return None
     return _fill_handoff(text)
-
-
-def _window_spawn_epoch(tpath: str) -> float | None:
-    """Wall-clock start of this window = the first timestamp in the transcript
-    (a resume opens a new file; a fresh window's first line is its birth).
-    Leading metadata lines carry no timestamp, so scan up to the first ~50 lines
-    for one. Falls back to the file's birthtime (never mtime — the transcript is
-    a live file appended every turn), then None."""
-    if not tpath:
-        return None
-    try:
-        with open(tpath, encoding="utf-8") as f:
-            for i, line in enumerate(f):
-                if i >= 50:
-                    break
-                m = _re.search(r'"timestamp":"([^"]+)"', line)
-                if m:
-                    try:
-                        return datetime.fromisoformat(
-                            m.group(1).replace("Z", "+00:00")).timestamp()
-                    except ValueError:
-                        break
-    except OSError:
-        return None
-    try:
-        return os.stat(tpath).st_birthtime
-    except (OSError, AttributeError):
-        return None
 
 
 def _cortex_shell_id() -> str:
@@ -1617,10 +1549,6 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
     carry_n = int(cx.get("handoff_carry_lines", 10) or 0)
     todo_h, act_h, _carry_h = _handoff_headings()
     try:
-        old_mtime = p.stat().st_mtime
-    except OSError:
-        old_mtime = time.time()
-    try:
         template_text = template_p.read_text(encoding="utf-8")
     except OSError:
         return  # no template — leave the file in place
@@ -1656,9 +1584,6 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
 
         p.write_text(_build_fresh_page(template_text, todos, carry),
                      encoding="utf-8")
-        # Backdate mtime so _cortex_lie_down_deny's "written this window" gate
-        # doesn't wrongly read the fresh copy as this window's own handoff.
-        os.utime(p, (old_mtime, old_mtime))
     except OSError:
         pass
 

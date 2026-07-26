@@ -3403,33 +3403,15 @@ def pretool_use() -> int:
             return 0
 
         # Cortex lie_down nudge — non-blocking additionalContext on every cortex
-        # lie_down call (rotate arg selects the rotate copy). Rides alongside the
-        # deny below when both fire; otherwise emitted on its own (lie_down is not
-        # a placement op, so it falls out of the Write/Bash guidance path).
+        # lie_down call (rotate arg selects the rotate copy). Emitted on its own
+        # (lie_down is not a placement op, so it falls out of the Write/Bash
+        # guidance path). Never denies.
         lie_down_nudge: str | None = None
         try:
             if cortex_bridge.enabled():
                 lie_down_nudge = cortex_bridge._cortex_lie_down_nudge(inp)
         except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
             lie_down_nudge = None
-
-        # Cortex lie_down handoff gate — deny a rotate/full-window lie_down until
-        # the handoff is written this window. Plain lie_down passes.
-        lie_down_deny: str | None = None
-        try:
-            if cortex_bridge.enabled():
-                lie_down_deny = cortex_bridge._cortex_lie_down_deny(inp)
-        except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
-            lie_down_deny = None
-        if lie_down_deny:
-            fields = {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": lie_down_deny,
-            }
-            if lie_down_nudge:
-                fields["additionalContext"] = lie_down_nudge
-            _emit_hso(fields)
-            return 0
         if lie_down_nudge:
             _emit_hso({"additionalContext": lie_down_nudge})
             return 0

@@ -429,7 +429,6 @@ def test_shell_gates_go_plain_when_shell_not_listed(monkeypatch):
     _force_enabled(monkeypatch, True, extra={"shells": ["cli"]})
     monkeypatch.setenv("MARROW_CORTEX", "tg")
     inp = {"tool_name": "mcp__marrow__lie_down", "tool_input": {"rotate": True}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is None
     assert cortex_bridge._cortex_lie_down_nudge(inp) is None
     assert cortex_bridge._cortex_show_context("") == ""
 
@@ -568,30 +567,6 @@ def test_tg_lie_down_without_rotate_leaves_no_flag(monkeypatch, tmp_path):
     assert "rotate_pending" not in cortex_bridge.shell_state_read("tg")
 
 
-def test_tg_rotate_deny_gate_matches_the_cli_shell(monkeypatch, tmp_path):
-    """The handoff mtime gate is shell-agnostic: a tg rotate without a handoff
-    written this window is refused before the tool ever runs."""
-    import json
-    import time
-    _tg_lie_down_env(monkeypatch, tmp_path)
-    jl = tmp_path / "w.jsonl"
-    jl.write_text("\n".join([
-        json.dumps({"timestamp": "2026-07-08T10:00:00+00:00", "type": "user"}),
-        json.dumps({"message": {"usage": {"input_tokens": 10_000}}}),
-    ]))
-    inp = {"tool_name": "mcp__marrow__lie_down", "transcript_path": str(jl),
-           "tool_input": {"rotate": True}}
-
-    missing = tmp_path / "handoff-tg.md"
-    monkeypatch.setattr(cortex_bridge, "_cortex_handoff_path", lambda: missing)
-    assert cortex_bridge._cortex_lie_down_deny(inp) is not None
-
-    missing.write_text("log line", encoding="utf-8")
-    import os
-    os.utime(missing, (time.time(), time.time()))
-    assert cortex_bridge._cortex_lie_down_deny(inp) is None
-
-
 def test_shell_direct_writes_pending_note_and_kicks(monkeypatch, tmp_path):
     """T10 directed kick: the text lands in the ledger, then the host is poked."""
     _force_enabled(monkeypatch, True,
@@ -727,17 +702,6 @@ def test_switch_off_show_context_gated_empty(monkeypatch, tmp_path):
     invoked without MARROW_CORTEX it returns empty."""
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     assert cortex_bridge._cortex_show_context(str(tmp_path / "none.jsonl")) == ""
-
-
-def test_switch_off_lie_down_deny_inactive(monkeypatch):
-    """lie_down deny helper is inert without a cortex session; and enabled=false
-    means the PreToolUse call site never reaches it at all."""
-    _force_enabled(monkeypatch, False)
-    monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    inp = {"tool_name": "mcp__marrow__lie_down", "tool_input": {"rotate": True}}
-    assert cortex_bridge._cortex_lie_down_deny(inp) is None
-
-
 
 
 # ── wake v2 (Item 1-3) ────────────────────────────────────────────────────────

@@ -371,10 +371,6 @@ handoff_carry_lines = 10
 handoff_todo_heading = "## 待办"
 handoff_activity_heading = "## 日志"
 handoff_carry_heading = "### 前情"
-# lie_down PreToolUse guard: deny (write your handoff first) when rotate=True OR
-# window occupancy >= force_tokens (15万 fuse line) and no handoff was written
-# this window (handoff mtime after the window's first transcript line).
-force_tokens = 150000
 # lie_down PreToolUse nudge (non-blocking additionalContext, every call).
 # {handoff} = the shell's own handoff path, filled by code. rotate arg selects
 # the rotate variant.

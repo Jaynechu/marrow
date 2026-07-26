@@ -76,18 +76,18 @@ def test_nudge_rotate_uses_rotate_copy(tmp_path, monkeypatch, capsys):
     assert "before rotate" in hso["additionalContext"]
 
 
-def test_rotate_without_handoff_still_denied_with_nudge(tmp_path, monkeypatch, capsys):
+def test_rotate_without_handoff_is_nudged_never_denied(tmp_path, monkeypatch, capsys):
+    """No handoff on disk and rotate=True: the call is still ALLOWED (the deny
+    guard is gone) and carries only the rotate nudge."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _enable_cortex(monkeypatch, tmp_path / "cortex")
     jl = _big_transcript(tmp_path, 10_000)
-    # no handoff file exists -> deny gate fires
     _stdin(monkeypatch, {"tool_name": "mcp__marrow__lie_down",
                          "transcript_path": str(jl), "tool_input": {"rotate": True}})
     assert hooks.main(["pretool_use"]) == 0
     hso = _out(capsys)
-    assert hso["permissionDecision"] == "deny"
-    # nudge rides alongside the deny
+    assert "permissionDecision" not in hso
     assert "before rotate" in hso["additionalContext"]
 
 
