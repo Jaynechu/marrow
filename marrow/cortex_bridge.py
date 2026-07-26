@@ -147,7 +147,7 @@ def wish(
     section: Annotated[str | None, Field(description="Heading substring (## or ###, e.g. 心愿单/约定/种草) to insert the line at that section's end; omit to append at end of file.")] = None,
     due: Annotated[str | None, Field(description="Optional due tag appended as ' [<due>]' after the text (free-form, e.g. a date).")] = None,
 ) -> dict:
-    """Our wishlist — personal wishes & cravings (hers and yours), promises
+    """Our wishlist — personal wishes & cravings, promises
     made, and shared plans. e.g. 你说好请我喝奶茶 / 最近想买耳钉 / 约好周末去看海.
     Markdown structure (headings, subsections) is user-managed — this tool
     only adds lines, never edits existing content: ~/.config/marrow/cortex/wishlist.md."""
@@ -453,8 +453,7 @@ def lie_down(next_wake_min: float, rotate: bool = False,
 
 
 def say() -> dict:
-    """Urgent only: quiet notification ping for her attention (no focus steal).
-    Normal in-window talk needs no say — she reads when free."""
+    """Pop-up the window to seek attention. Use when you really want to find me."""
     return _run_cortex_module("cortex.say")
 
 
