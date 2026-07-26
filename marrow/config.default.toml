@@ -429,6 +429,32 @@ machine_markers = ["[NEW ROUND]", "[FUSE]", "[CTL]", "[CMD"]
 # scheduled alarm again.
 wake_audit_log_file = "state/wake_audit.log"
 
+# Circuit breaker ("main switch"): ONE persistent file that stops cortex
+# AUTONOMOUS activity (auto wake / spawn / fed round) for the shells it covers.
+# Bridges keep running, normal tg/wx chat is untouched, manual commands still
+# work. Survives every restart; only an explicit clear releases it.
+#
+# State file: <DATA_DIR>/breaker.json — {"scope": "all"|"cli"|"tg",
+# "reason": "auto_fuse"|"manual", "ts": "<iso>"}. File absent = breaker clear.
+# Fuse tally: <DATA_DIR>/fuse_events.json — {"events": [{"ts": "<iso>",
+# "shell": "cli"|"tg"}, ...]}, pruned to window_hours on every write.
+#
+# This is the ONLY place these numbers live — the cortex repo and the tg bridge
+# both read THIS file directly (no per-repo copies of the same threshold).
+[cortex.breaker]
+# false = fuses are still tallied, but a threshold breach never trips the
+# breaker automatically. Manual pause (ct-pause) always works regardless.
+enabled = true
+# Fuses (across ALL shells) inside window_hours that trip the breaker.
+fuse_threshold = 2
+# Rolling window for the fuse tally, in hours.
+window_hours = 24
+# Notification copy. {count} = fuses in window, {hours} = window_hours,
+# {scope} = all/cli/tg. Display text — customise freely.
+trip_message = "Circuit breaker tripped: fuse #{count} within {hours}h. Cortex autonomous activity paused ({scope}). Clear with ct-wake."
+pause_message = "Cortex autonomous activity paused ({scope}) — manual. Clear with ct-wake."
+clear_message = "Circuit breaker cleared — cortex autonomous activity resumed."
+
 [outbox]
 # Cross-channel message drop (msg MCP tool → outbox table → channel adapters).
 # daily_cap_user: user-facing notes/day (targets tg/wx), all senders combined.

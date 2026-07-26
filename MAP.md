@@ -117,7 +117,7 @@ Three runtimes:
 ### 6.1 Two gates
 - `[cortex].enabled` (config, default false) — "are the organs installed at all". `enabled()` reads it live. False = `register()` no-ops (zero tools reach the MCP schema) and every hook call site below short-circuits to inert. Clean install shows zero cortex behaviour.
 - `MARROW_CORTEX` (env) — "is this session a cortex shell", and WHICH: its value is the shell id (cli/tg; legacy "1" = cli, `_cortex_shell_id()`). Set at origin by `cortex_bridge.call_cortex`/`run_claude_cortex` (cli) or the shell's host (tg). `is_cortex_session()` reads it live (used by hook call sites); `_CORTEX` is an import-time capture of the same var, used only by `register()` to gate lie_down/say tool registration (module-load-time decision).
-- `[cortex].shells` (config, default `["cli"]`) — the per-shell switch (§6.7). `_shell_enabled()` = this window's shell id is listed; a shell absent from it runs plain (no cortex tools, no hook branches, no heartbeat).
+- `[cortex].shells` (config, default `["cli"]`) — DEVELOPER-LAYER per-shell wiring (§6.7). `_shell_enabled()` = this window's shell id is listed; a shell absent from it runs plain (no cortex tools, no hook branches, no heartbeat). NOT the operational pause/disable switch — that is the circuit breaker (§6.8).
 - Combined: enabled=true + no env → wish/first/goal register for all sessions, lie_down/say hidden. + env of a listed shell → lie_down too (say cli-only), hook branches active (page-turn, lie_down nudge, 亮牌).
 
 ### 6.2 Six MCP tools, registered via `register(marrow_tool, db)`
@@ -158,7 +158,7 @@ Three runtimes:
 - Deploy gotcha: outbox/msg code runs inside each session's resident daemon — live sessions must restart to pick up changes; kickstart only reaches watcher/bridges; hooks.py spawns fresh per call.
 
 ### 6.7 Shells (cli + tg)
-- A shell = one channel running the cortex loop. `[cortex].shells` (default `["cli"]`) is the authoritative list for tool registration + every hook gate; the tg bridge has its own `[cortex] shell_enabled` bool (synapse config) — both must be on for a full tg shell, either off = plain relay.
+- A shell = one channel running the cortex loop. `[cortex].shells` (default `["cli"]`) is the authoritative list for tool registration + every hook gate; the tg bridge has its own `[cortex] shell_enabled` bool (synapse config) — both must be on for a full tg shell, either off = plain relay. Both are developer-layer wiring; to pause or disable cortex use the circuit breaker (§6.8).
 - cli shell: state = cortex's `wake_state.json`, timing = cortex's scheduler-hosted wake daemon + per-wake watchdog (cortex/MAP.md §3-4).
 - Non-cli shell: state = `<[cortex].shell_state_dir>/<shell>.json` (default `<DATA_DIR>/state/shells`), keys `session_id` / `next_wake_at` / `last_note_ts` / `pending_note` / `rotate_pending` (`_SHELL_STATE_KEYS`); flock + atomic replace, same protocol as wake_state (`shell_state_read` / `shell_state_write`). Timing lives in the host (tg bridge scheduler), never here.
 - `lie_down` from a non-cli shell (`_lie_down_shell`): clamp minutes to cortex's `[wake].next_wake_max`, write `next_wake_at` (+ `rotate_pending` when rotate), kick the host socket (`[cortex].shell_socket`, default `<DATA_DIR>/state/shells/tg.sock` — macOS caps an AF_UNIX path at 104 bytes, keep it short). Host down = the ledger still stands, picked up on its next recompute.
@@ -166,6 +166,17 @@ Three runtimes:
 - Marrow does NOT write `session_id` (the MCP daemon is shared, no reliable per-call sid); the host owns that key.
 - User-wake reset is cli-only (non-cli shell returns early): `wake_state.json` is the cli window's alarm; the non-cli host cancels its own booked wake per inbound message (`synapse_tg.shell.on_user_message`).
 - Presence + handoff-header reads route through `_shell_presence_state()`: cli reads `wake_state.json`; a non-cli shell reads its own ledger, normalised (`last_user_ts` → `last_user_msg_ts`, `session_id` → `transcript`).
+
+### 6.8 Circuit breaker — the cortex main switch
+- ONE persistent file stops cortex AUTONOMOUS activity (auto wake / window spawn / fed round / watchdog reap) for the shells it covers. Bridges keep running, tg/wx chat is unaffected, manual commands still work. Survives every restart; only an explicit clear releases it. Covers both a short pause AND a long-term disable — no toml editing for either.
+- Marrow owns the CONFIG and the state-file location; the enforcement code lives in cortex (`cortex/breaker.py`, cortex/MAP.md §3.1) and the tg bridge (`synapse_core/breaker.py`, synapse/MAP.md §9.1). Neither imports the other — the JSON file IS the protocol.
+- **State file** `<DATA_DIR>/breaker.json`: `{"scope": "all"|"cli"|"tg", "reason": "auto_fuse"|"manual", "ts": "<local iso>"}`. File ABSENT = clear; corrupt / wrong shape / empty scope = read as clear + warning. flock on a `.lock` sibling, tmp+`os.replace` write.
+- **Fuse tally** `<DATA_DIR>/fuse_events.json`: `{"events": [{"ts": "<iso>", "shell": "cli"|"tg"}, ...]}`. Both shells append; pruned to `window_hours` on every write, so the post-write length is the rolling cross-shell count.
+- **Config `[cortex.breaker]`** (config.default.toml, the ONLY copy of these numbers): `enabled` (false = tally but never auto-trip) / `fuse_threshold` (2) / `window_hours` (24) / `trip_message` / `pause_message` / `clear_message`. Both helpers read `~/.config/marrow/config.toml` directly with tomllib and fall back to their own DEFAULTS.
+- **Auto trip**: the shell that fires the threshold-crossing fuse writes scope="all", reason="auto_fuse", then announces — cli via a raw `alerts` row (`critical`/`cortex_breaker_tripped`) + a pending `outbox` row target='tg'; tg via its AlertSink + a direct bot send.
+- **Commands**: `/ct-pause` → `cortex.ctl pause [--shell cli|tg]` (breaker on, default all shells, tg receipt, no alert row — a manual pause is not an incident; a live cli window goes down via the existing proxy `lie_down(force_slept="ct-pause")`). `/ct-wake` → `cortex.ctl wake` clears the whole file then wakes. `cortex.ctl resume` clears without waking. `cortex.ctl status` shows it.
+- Held alarms are NEVER consumed: every choke point sits before the ledger read-and-clear, so whatever was due fires on the first pass after a clear.
+- No MCP tool sets or clears the breaker — human + auto-trip only.
 
 ## 7. Scheduled jobs (launchd)
 
