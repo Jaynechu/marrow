@@ -564,16 +564,37 @@ def _cortex_path(key: str, default_name: str) -> Path:
     return p if p.is_absolute() else _cortex_home() / raw
 
 
-def _render_note_fresh(transcript_path: str | None) -> str | None:
+_CUTOFF_PREFIX = "cutoff_row_id="
+
+
+def _parse_render_cutoff(stderr: str | None) -> int | None:
+    """The row id from the LAST `cutoff_row_id=N` line of the renderer's stderr
+    (the events row its Replay block covered). Any other line is ignored; no
+    such line -> None (nothing rendered, or a renderer that reports none)."""
+    found = None
+    for line in (stderr or "").splitlines():
+        s = line.strip()
+        if not s.startswith(_CUTOFF_PREFIX):
+            continue
+        try:
+            found = int(s[len(_CUTOFF_PREFIX):].strip())
+        except ValueError:
+            continue
+    return found
+
+
+def _render_note_fresh(transcript_path: str | None) -> tuple[str | None, int | None]:
     """Fresh render via the cortex venv (config [cortex].render_module, e.g.
     cortex.note_render). Reflects the current time + the CALLER's transcript SID
-    even after a window rotation, unlike the frozen file. Unset module / any
-    failure / empty output -> None so the caller falls back to the static file."""
+    even after a window rotation, unlike the frozen file. Returns (text, replay
+    cutoff row id); unset module / any failure / empty output -> (None, None) so
+    the caller falls back to the static file. The render itself never advances a
+    cursor — the caller advances after a successful injection."""
     c = config.load().get("cortex", {})
     module = str(c.get("render_module") or "").strip()
     py, root = _cortex_paths()
     if not module or not py or not root:
-        return None
+        return None, None
     py = str(Path(py).expanduser())
     root = str(Path(root).expanduser())
     # --no-ct: the wake-branch hook delivers ct notes via outbox.deliver, so the
@@ -584,11 +605,13 @@ def _render_note_fresh(transcript_path: str | None) -> str | None:
     try:
         p = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=10)
     except (subprocess.SubprocessError, OSError):
-        return None
+        return None, None
     if p.returncode != 0:
-        return None
+        return None, None
     text = (p.stdout or "").strip()
-    return text or None
+    if not text:
+        return None, None
+    return text, _parse_render_cutoff(p.stderr)
 
 
 # ── wake bell: receipt sidecar (new) + shape fallback ─────────────────────────
@@ -768,21 +791,63 @@ def wake_token_current(token: tuple[int, str] | None) -> bool:
         return True
 
 
-def wakeup_note_text(transcript_path: str | None = None) -> str | None:
-    """Full text of the wakeup note. Tries a fresh render first (current time +
-    caller's transcript SID, correct after rotation); on any failure falls back
-    to the frozen file (config wakeup_note_file under home). None when both yield
-    nothing so the caller injects nothing."""
-    fresh = _render_note_fresh(transcript_path)
+def wakeup_note_payload(
+        transcript_path: str | None = None) -> tuple[str | None, int | None]:
+    """(note text, replay cutoff row id) for the wake-bell injection. Tries a
+    fresh render first (current time + caller's transcript SID, correct after
+    rotation); on any failure falls back to the frozen file (config
+    wakeup_note_file under home), which carries no cutoff. (None, None) when
+    both yield nothing so the caller injects nothing.
+
+    The cutoff is what the caller advances the shared replay cursor to — AFTER
+    the payload is injected (advance_cli_replay_cursor), never here."""
+    fresh, cutoff = _render_note_fresh(transcript_path)
     if fresh:
         _mirror_wakeup_note(fresh)
-        return fresh
+        return fresh, cutoff
     try:
         note = _cortex_path("wakeup_note_file", "wakeup_note.md")
         text = note.read_text(encoding="utf-8").strip()
-        return text or None
+        return (text or None), None
     except OSError:
-        return None
+        return None, None
+
+
+def wakeup_note_text(transcript_path: str | None = None) -> str | None:
+    """Text-only view of wakeup_note_payload (callers that never advance)."""
+    return wakeup_note_payload(transcript_path)[0]
+
+
+def advance_cli_replay_cursor(cutoff_row_id: int | None) -> None:
+    """Advance the cli shell's shared replay cursor (wake_state.last_note_row_id)
+    to the rows a just-INJECTED wakeup note showed. Mirrors cortex
+    wake_state.deliver_then_advance: advance only after a successful delivery,
+    monotonic (never rewinds a cursor note.py or a concurrent turn pushed
+    further), under the shared flock.
+
+    Without this, the wake-bell note's Replay (rendered read-only by
+    cortex.note_render) leaves the cursor untouched, so the same rows are
+    injected again — by turn_inject in the same turn and by the next turn's
+    replay. Non-cli shells own their own ledger, written by their feeder after
+    ITS feed, so this is a no-op there. Best-effort: a lock timeout skips the
+    advance (rows stay replayable) rather than writing unlocked."""
+    if not isinstance(cutoff_row_id, int) or isinstance(cutoff_row_id, bool):
+        return
+    if _cortex_shell_id() != "cli":
+        return
+    p = _cortex_wake_state_path()
+    try:
+        with _wake_state_lock(p, required=True):
+            d = _wake_state_load(p)
+            cur = d.get("last_note_row_id")
+            if isinstance(cur, int) and not isinstance(cur, bool) and (
+                    cur >= cutoff_row_id):
+                return
+            _ws_ensure_epoch(d)
+            d["last_note_row_id"] = int(cutoff_row_id)
+            _wake_state_save(p, d)
+    except Exception:
+        pass
 
 
 def _mirror_wakeup_note(text: str) -> None:
@@ -1046,11 +1111,22 @@ def _cortex_watchdog_pidfile() -> Path:
     return _cortex_path("watchdog_pidfile", "state/watchdog.pid")
 
 
+class WakeStateLockTimeout(RuntimeError):
+    """_wake_state_lock(required=True) could not take the lock in time."""
+
+
 @_contextlib.contextmanager
-def _wake_state_lock(p: Path):
+def _wake_state_lock(p: Path, *, required: bool = False):
     """Blocking exclusive flock on <wake_state>.lock, byte-compatible with
-    cortex.wake_state._flock (same sibling .lock, same protocol). Best-effort:
-    an unacquirable lock still proceeds (matches cortex's fallback).
+    cortex.wake_state._flock (same sibling .lock, same protocol). Best-effort by
+    default: an unacquirable lock still proceeds (matches cortex's fallback).
+
+    required=True raises WakeStateLockTimeout instead of proceeding unlocked —
+    for the replay read/advance paths, where an unlocked cursor read-modify-write
+    can lose an update and re-inject rows another writer already consumed.
+    Callers skip that round; the cursor is untouched, so its rows replay next
+    round.
+
     COUPLED: base = marrow [cortex].wake_state_file / [cortex].home. Cortex's
     side (wake_state.lock_path) resolves from cortex [paths].wake_state_file /
     [paths].cortex_home — override one without the other and the two lock files
@@ -1071,6 +1147,8 @@ def _wake_state_lock(p: Path):
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.02)
+        if required and not got:
+            raise WakeStateLockTimeout(str(lp))
         yield
     finally:
         if fd is not None:

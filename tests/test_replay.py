@@ -591,3 +591,92 @@ def test_replay_context_cursor_unaffected_by_noise(tmp_path, monkeypatch):
     last = _ev(db, SID_OTHER, "user", "/info", ts="2026-07-17T11:00:00Z")
     assert hooks._replay_context(SID_SELF, "cli") == ""
     assert _cursor(SID_SELF) == last
+
+
+# ── T3: a slash command drops its WHOLE turn, reply included ────────────────
+
+def test_slash_command_reply_is_dropped_with_its_turn(tmp_path, monkeypatch):
+    # The assistant answer to /ct-wake is prose (no drop_pattern hit) — before
+    # the whole-turn drop it survived as an orphan with nothing it answers.
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "per_msg_chars": 500})
+    hooks._replay_context(SID_SELF, "cli")
+    last = _ev(db, SID_OTHER, "user", "/ct-wake", ts="2026-07-17T16:00:00Z")
+    last = _ev(db, SID_OTHER, "assistant", "闹钟设好了，10 点叫你",
+               ts="2026-07-17T16:00:30Z")
+    assert hooks._replay_context(SID_SELF, "cli") == ""
+    # scanned-but-dropped rows still advance the cursor
+    assert _cursor(SID_SELF) == last
+
+
+def test_slash_turn_drop_stops_at_the_next_real_user_row(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "per_msg_chars": 500})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "user", "/status", ts="2026-07-17T16:10:00Z")
+    _ev(db, SID_OTHER, "assistant", "status reply prose", ts="2026-07-17T16:10:30Z")
+    _ev(db, SID_OTHER, "user", "real question", ts="2026-07-17T16:11:00Z")
+    _ev(db, SID_OTHER, "assistant", "real answer", ts="2026-07-17T16:11:30Z")
+    out = hooks._replay_context(SID_SELF, "cli")
+    assert "real question" in out and "real answer" in out
+    assert "status reply prose" not in out
+    assert len([ln for ln in out.splitlines() if ln.startswith("[")]) == 2
+
+
+def test_slash_flag_does_not_leak_into_the_next_batch(tmp_path, monkeypatch):
+    # A batch ENDING on a slash turn must not swallow the next batch's opening
+    # assistant row (the flag is per-render, not persisted).
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 10, "max_lines": 0,
+                                       "per_msg_chars": 500})
+    hooks._replay_context(SID_SELF, "cli")
+    _ev(db, SID_OTHER, "user", "/clear", ts="2026-07-17T16:20:00Z")
+    assert hooks._replay_context(SID_SELF, "cli") == ""
+    _ev(db, SID_OTHER, "assistant", "orphan-but-real reply",
+        ts="2026-07-17T16:21:00Z")
+    assert "orphan-but-real reply" in hooks._replay_context(SID_SELF, "cli")
+
+
+# ── T5: the 2-round / 4-line cap holds on every path, from config ───────────
+
+def _four_turns(db, base="2026-07-17T17:0"):
+    for i in range(4):
+        _ev(db, SID_OTHER, "user", f"q{i}", ts=f"{base}{i}:00Z")
+        _ev(db, SID_OTHER, "assistant", f"a{i}", ts=f"{base}{i}:30Z")
+
+
+def _msg_lines(out):
+    return [ln for ln in out.splitlines() if ln.startswith("[")]
+
+
+def test_turn_inject_path_caps_at_two_rounds_four_lines(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db)  # shipped [replay] defaults: 2 turns/4 lines
+    hooks._replay_context(SID_SELF, "cli")
+    _four_turns(db)
+    out = hooks._replay_context(SID_SELF, "cli")
+    assert len(_msg_lines(out)) == 4
+    assert "q3" in out and "q2" in out and "q1" not in out and "q0" not in out
+    # overflow is dropped from the render but the cursor still passes it
+    assert _cursor(SID_SELF) == 8
+
+
+def test_session_start_seed_caps_at_two_rounds_four_lines(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db)
+    _four_turns(db)
+    out = hooks._replay_context(SID_SELF, "cli", seed_ok=True)
+    assert len(_msg_lines(out)) == 4
+    assert "q3" in out and "q1" not in out
+
+
+def test_cap_comes_from_config_not_code(tmp_path, monkeypatch):
+    db = _fresh_db(tmp_path)
+    _setup(monkeypatch, tmp_path, db, {"max_turns": 1, "max_lines": 2})
+    hooks._replay_context(SID_SELF, "cli")
+    _four_turns(db, base="2026-07-17T18:0")
+    out = hooks._replay_context(SID_SELF, "cli")
+    assert len(_msg_lines(out)) == 2
+    assert "q3" in out and "q2" not in out

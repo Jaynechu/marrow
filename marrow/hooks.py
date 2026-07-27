@@ -306,13 +306,16 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
 
     Rows that are pure noise for another session — bare slash-command turns and
     bot status/system output matching [replay].drop_patterns — are skipped here,
-    the single outlet shared by every caller. A turn whose rows all drop never
-    exists, so it renders nothing and consumes no max_turns slot."""
+    the single outlet shared by every caller. A slash command drops its WHOLE
+    turn (the command line AND the assistant rows answering it), otherwise the
+    reply survives as an orphan with nothing it answers. A turn whose rows all
+    drop never exists, so it renders nothing and consumes no max_turns slot."""
     tz = config.get_tz()
     slash_max, drop_pats = _replay_drop_filters(
         (config.load().get("replay", {}) or {}))
     turns: list[list[dict]] = []
     cutoff_row_id = None
+    slash_turn = False  # inside a dropped slash-command turn
     for r in rows:
         # The cutoff counts every SCANNED row, dropped ones included: a dropped
         # row is dropped deterministically on every re-read, so leaving it
@@ -327,8 +330,14 @@ def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines:
         content = transcript.strip_media_markers(r["content"])
         if not content:
             continue
-        if slash_max is not None and _replay_is_slash_command(content, slash_max):
-            continue
+        is_user = r["role"] == "user"
+        if is_user:
+            # A user row always ends the previous slash turn: either it opens a
+            # new slash turn (drop it and its replies) or it opens a real one.
+            slash_turn = (slash_max is not None
+                          and _replay_is_slash_command(content, slash_max))
+        if slash_turn:
+            continue  # the command line, or an assistant row answering it
         if any(p.search(content) for p in drop_pats):
             continue
         item = {
@@ -481,8 +490,11 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
     conn = storage.connect(config.db_path())
     try:
         # Whole read-modify-write under one flock: the monotonic compare below
-        # is only sound against a cursor no one can move meanwhile.
-        with cortex_bridge._wake_state_lock(p):
+        # is only sound against a cursor no one can move meanwhile. A lock we
+        # cannot take (required=True) skips the whole round — proceeding
+        # unlocked would race another writer and re-inject its rows. Nothing is
+        # lost: the cursor stays put, so these rows replay next round.
+        with cortex_bridge._wake_state_lock(p, required=True):
             d = cortex_bridge._wake_state_load(p)
             if is_cli:
                 since_row_id = _replay_cortex_since_row_id(conn, d)
@@ -503,6 +515,8 @@ def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int =
                 d["last_note_row_id"] = cutoff_row_id
                 cortex_bridge._wake_state_save(p, d)
             return block
+    except cortex_bridge.WakeStateLockTimeout:
+        return ""
     finally:
         conn.close()
 
@@ -2024,7 +2038,7 @@ def user_prompt_submit() -> int:
                     "wake_line_stale", f"gen={_tok[0]}",
                     "suppressed (superseded epoch)")
                 return 0
-            _note = cortex_bridge.wakeup_note_text(tpath)
+            _note, _cutoff = cortex_bridge.wakeup_note_payload(tpath)
             # Merge any ct-targeted outbox notes into the wake payload — the
             # normal delivery path below never runs on a wake turn, so ct notes
             # must be consumed here (same atomic claim/consume ordering).
@@ -2040,6 +2054,10 @@ def user_prompt_submit() -> int:
                     "hookEventName": "UserPromptSubmit",
                     "additionalContext": _payload,
                 }}, sys.stdout)
+                # Deliver-then-advance: the note's Replay is rendered read-only,
+                # so only a real injection may move the shared cursor past the
+                # rows it showed. Without this the next turn replays them again.
+                cortex_bridge.advance_cli_replay_cursor(_cutoff)
             return 0
         # Real user message (NOT a machine line down the ear channel) → user-wake
         # reset: flip awake, kill the pending alarm + sentinel, spawn a watchdog.
@@ -3742,6 +3760,21 @@ def _usage_threshold_context(sid: str, tpath: str) -> str:
         return ""
 
 
+def _is_wake_bell_turn(prompt: str, tpath: str | None) -> bool:
+    """True on a cortex wake-bell turn. user_prompt_submit injects the wakeup
+    note on that turn and the note already carries its own Replay block, so
+    turn_inject (a SEPARATE hook command on the same event, order/parallelism
+    not guaranteed) must not render the same rows a second time in one turn.
+    Read-only: match_wake_bell peeks the receipt, never consumes it — and the
+    shape fallback still matches once user_prompt_submit has consumed it."""
+    if not prompt or not cortex_bridge.is_cortex_session(tpath):
+        return False
+    try:
+        return cortex_bridge.match_wake_bell(prompt) is not None
+    except Exception:
+        return False
+
+
 def turn_inject() -> int:
     """Inject current time + delta since last reply, plus the B8 kickout
     nudge (config [kickout]).
@@ -3764,6 +3797,14 @@ def turn_inject() -> int:
     tz = config.get_tz()
     now = datetime.now(timezone.utc).astimezone(tz)
     kickout_ctx = _kickout_context(channel, now, tpath)
+    # Wake turn: the wakeup note injected by user_prompt_submit already carries
+    # this turn's replay — skip ours instead of doubling it.
+    wake_turn = _is_wake_bell_turn(
+        (inp.get("prompt") or "") if isinstance(inp, dict) else "", tpath)
+
+    def _replay_fragment() -> str:
+        return "" if wake_turn else _replay_context(
+            sid, channel, transcript_path=tpath)
 
     def _sched_fragment() -> str:
         try:
@@ -3791,7 +3832,7 @@ def turn_inject() -> int:
         wx_sched = _sched_fragment()
         wx_tl = _tl_fragment()
         wx_kick = f"\n\n{kickout_ctx}" if kickout_ctx else ""
-        wx_replay = _replay_context(sid, channel, transcript_path=tpath)
+        wx_replay = _replay_fragment()
         wx_replay = f"\n\n{wx_replay}" if wx_replay else ""
         wx_own = _outbound_notes(sid, channel)
         wx_own = f"\n\n{wx_own}" if wx_own else ""
@@ -3850,7 +3891,7 @@ def turn_inject() -> int:
     show_full = f"\n\n{show_ctx}" if show_ctx else ""
     usage_ctx = _usage_threshold_context(sid, tpath)
     usage_full = f"\n\n{usage_ctx}" if usage_ctx else ""
-    replay_ctx = _replay_context(sid, channel, transcript_path=tpath)
+    replay_ctx = _replay_fragment()
     replay_full = f"\n\n{replay_ctx}" if replay_ctx else ""
     own_ctx = _outbound_notes(sid, channel)
     own_full = f"\n\n{own_ctx}" if own_ctx else ""
