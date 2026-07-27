@@ -239,76 +239,15 @@ class LLMClient:
         return result
 
     @staticmethod
-    def _add_event_usage(sink: dict, ev: dict) -> None:
-        """Fold one stream-json event's turn usage into the running per-wake
-        sink. Only assistant events carry message.usage; the trailing result
-        event and tool-result events add 0 (no double count).
-
-        A single API turn streams as MULTIPLE assistant lines (thinking
-        block, tool_use block, text block, ...) and every line repeats the
-        SAME usage under the SAME top-level `request_id` — summing them
-        naively over-counts real consumption ~Nx (live-confirmed 07-04).
-        Dedupe by request_id: a repeat request_id replaces (not adds to) its
-        prior contribution to the cumulative fields — "last-seen wins"
-        (the repeats are identical in practice, so this is a no-op delta,
-        but stays correct if they ever aren't). Events without a request_id
-        (only expected from synthetic/test input) are never deduped.
-
-        `in/out/cache_read/cache_write` are the cumulative deduped sums —
-        true consumption across the wake so far, used for the llm_call_cost
-        audit line. `window` is the CURRENT turn's context size
-        (input+cache_read+cache_creation), NOT cumulative — this is what the
-        per-wake cap compares against (Decided 07-04: matches the statusline
-        "total" figure the caller reasons with)."""
-        msg = ev.get("message")
-        usage = msg.get("usage") if isinstance(msg, dict) else None
-        if not isinstance(usage, dict):
-            return
-        sink["has_usage"] = True
-        i = usage.get("input_tokens") or 0
-        o = usage.get("output_tokens") or 0
-        cr = usage.get("cache_read_input_tokens") or 0
-        cw = usage.get("cache_creation_input_tokens") or 0
-        req_id = ev.get("request_id")
-        prior = sink["by_request"].get(req_id) if req_id is not None else None
-        if prior is not None:
-            pi, po, pcr, pcw = prior
-            sink["in"] += i - pi
-            sink["out"] += o - po
-            sink["cache_read"] += cr - pcr
-            sink["cache_write"] += cw - pcw
-        else:
-            sink["in"] += i
-            sink["out"] += o
-            sink["cache_read"] += cr
-            sink["cache_write"] += cw
-        if req_id is not None:
-            sink["by_request"][req_id] = (i, o, cr, cw)
-        sink["window"] = i + cr + cw
-
-    @staticmethod
-    def _sink_usage(sink: dict) -> dict:
-        return {"input_tokens": sink["in"], "output_tokens": sink["out"],
-                "cache_read_input_tokens": sink["cache_read"],
-                "cache_creation_input_tokens": sink["cache_write"]}
-
-    @staticmethod
     def _stream_subprocess(cmd: list[str], prompt: str, timeout: float,
                             env: dict, cwd: str | None = None,
-                            on_event=None, max_tokens: int | None = None,
-                            usage_sink: dict | None = None) -> str:
+                            on_event=None) -> str:
         """Spawn `cmd`, pipe one user message in via stdin, read stdout
         stream-json events until `result`. Process-group kill on timeout
         (SIGKILL) and on normal exit (SIGTERM->SIGKILL ladder) so claude's
         spawned descendants never leak. Returns the raw joined stdout lines.
         `on_event(ev, mono)` (optional) receives every parsed event plus a
-        synthetic {"type":"__spawned__"} right after Popen for latency probes.
-        `max_tokens`+`usage_sink` (optional) accumulate per-event usage
-        (deduped by request_id, see `_add_event_usage`) and break the stream
-        cleanly on breach (sink['capped']=True). Breach compares against
-        sink['window'] — the CURRENT turn's context size
-        (input+cache_read+cache_creation), not a cumulative sum across
-        turns (Decided 07-04: matches the statusline "total" figure)."""
+        synthetic {"type":"__spawned__"} right after Popen for latency probes."""
         msg = json.dumps({"type": "user", "message": {
             "role": "user", "content": prompt}})
         try:
@@ -356,11 +295,6 @@ class LLMClient:
                     on_event(ev, time.monotonic())
                 if ev.get("type") == "rate_limit_event":
                     _snapshot_rate_limit(ev)
-                if max_tokens is not None and usage_sink is not None:
-                    LLMClient._add_event_usage(usage_sink, ev)
-                    if usage_sink["window"] >= max_tokens:
-                        usage_sink["capped"] = True
-                        break
                 if ev.get("type") == "result":
                     break
         finally:
