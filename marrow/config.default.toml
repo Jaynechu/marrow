@@ -272,8 +272,6 @@ show_silent_min = 15
 # Agent tokens don't occupy the main window and don't drive triggering.
 threshold_start = 100000
 threshold_step = 50000
-# Global daily net budget the SessionStart "Net Token Used today" line reads.
-daily_budget = 1000000
 # usage_snapshot collector tick — runs inside the watcher (always alive,
 # independent of cortex) so 5h/7d/cdx numbers stay fresh even when cortex is
 # off. Cortex's own tick may also call it; the write is idempotent (upsert).
