@@ -1517,3 +1517,148 @@ def test_session_tag_resolution(env):
     assert hooks._session_tag("missing", conn) is None       # no row
     assert hooks._session_tag(None, conn) is None
     conn.close()
+
+
+# -- T8: no-`--` checkout classification + loss gate --------------------------
+
+def _git_repo_state(monkeypatch, *, tracked=(), dirty=()):
+    """Model the read-only git boundary as a tiny repo: `tracked` = paths in
+    the index (disk presence irrelevant), `dirty` = paths carrying
+    uncommitted work. Everything else answers None (unknown)."""
+    def _read(cwd, args, timeout=3):
+        if args[:1] == ["ls-files"]:
+            want = args[args.index("--") + 1:] if "--" in args else list(tracked)
+            return "".join(f"{p}\n" for p in tracked if p in want)
+        if args[:2] == ["status", "--porcelain"]:
+            want = args[args.index("--") + 1:] if "--" in args else list(dirty)
+            return "".join(f" M {p}\n" for p in dirty if p in want)
+        if args[:1] == ["diff"]:
+            return ""
+        return None
+    monkeypatch.setattr(hooks, "_git_read", _read)
+
+
+def test_t8_checkout_no_dashdash_modified_file_asks(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git checkout a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    out = _out(capsys)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
+    assert "File: a.py" in out["permissionDecisionReason"]
+
+
+def test_t8_checkout_no_dashdash_clean_file_silent(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=[])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git checkout a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert "permissionDecision" not in _hook_out(capsys)
+
+
+def test_t8_checkout_staged_only_change_asks(env, monkeypatch, capsys):
+    # `git add a.py` then `git checkout HEAD -- a.py`: nothing unstaged, but
+    # the staged work is still destroyed — porcelain reports it, so we ask.
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git checkout HEAD -- a.py"}, cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_t8_checkout_rmd_tracked_file_asks(env, monkeypatch, capsys):
+    # File deleted from disk but still in the index — no disk-presence bypass.
+    _git_repo_state(monkeypatch, tracked=["gone.py"], dirty=["gone.py"])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git checkout gone.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_t8_checkout_dash_C_form_asks(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git -C /repo checkout a.py"}, cwd="/elsewhere")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_t8_checkout_global_flag_form_asks(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git --work-tree=/repo checkout a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_t8_checkout_ambiguous_tracked_and_ref_asks(env, monkeypatch, capsys):
+    # `main` is both a branch and a tracked path — ambiguous, so ask.
+    _git_repo_state(monkeypatch, tracked=["main"], dirty=["main"])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git checkout main"},
+                  cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_t8_checkout_ref_only_and_new_branch_and_bare_silent(
+    env, monkeypatch, capsys
+):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    for cmd in ("git checkout main", "git checkout -b feat",
+                "git checkout -B feat", "git checkout --orphan feat",
+                "git checkout"):
+        rc = _pretool(monkeypatch, "Bash", {"command": cmd}, cwd="/repo")
+        assert rc == 0
+        assert "permissionDecision" not in _hook_out(capsys), cmd
+
+
+def test_t8_checkout_dashdash_form_regression_asks(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git checkout -- a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_t8_checkout_dashdash_form_clean_is_silent(env, monkeypatch, capsys):
+    # Decided: the legacy `--` form loses its clean-file popup on purpose.
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=[])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git checkout HEAD -- a.py"}, cwd="/repo")
+    assert rc == 0
+    assert "permissionDecision" not in _hook_out(capsys)
+
+
+def test_t8_restore_clean_target_is_silent(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=[])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git restore a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert "permissionDecision" not in _hook_out(capsys)
+
+
+def test_t8_checkout_compound_caught_per_segment(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "cd /repo && git checkout a.py"}, cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_t8_checkout_word_in_commit_message_no_match(env, monkeypatch, capsys):
+    _git_repo_state(monkeypatch, tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": 'git commit -m "git checkout a.py"'},
+                  cwd="/repo")
+    assert rc == 0
+    assert _hook_out(capsys).get("permissionDecision") != "ask"
+
+
+def test_t8_checkout_untracked_operand_silent(env, monkeypatch, capsys):
+    # Not in the index at all → git would error anyway; nothing to lose.
+    _git_repo_state(monkeypatch, tracked=[], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git checkout a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert "permissionDecision" not in _hook_out(capsys)

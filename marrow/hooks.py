@@ -2354,11 +2354,15 @@ def _git_force_push_guard(inp: dict) -> str | None:
 # cleanup (branch -D teardown, worktree remove) is exempt.
 _GIT_REVERT_DEFAULT_PATTERNS = [
     r"\bgit\s+reset\s+--hard\b",
-    # git checkout [<flags>|<tree-ish>]* -- <path> — an optional revision
-    # token (HEAD, a commit, a branch name — no leading dash) and/or flags
-    # may precede `--`. `git checkout <branch>` with no `--` (plain branch
-    # switch) is intentionally left unmatched.
-    r"\bgit\s+checkout\s+(?:\S+\s+)*?--\s+\S",
+    # Every `git checkout`, with or without `--`, and with global flags
+    # between `git` and the subcommand (`git -C <dir> checkout f`,
+    # `git --work-tree=… checkout f`). Only dash-tokens (plus the value of a
+    # value-taking global flag) may sit in between, so a `checkout` word
+    # inside a quoted argument of another subcommand can't drag it in.
+    # Branch switch vs file overwrite is decided in code, not here
+    # (_git_revert_loss_holds → _git_checkout_file_operands).
+    r"\bgit\s+(?:(?:-C|--git-dir|--work-tree|--namespace)\s+\S+\s+|-\S+\s+)*"
+    r"checkout\b",
     r"\bgit\s+restore\b",                            # worktree discard
     r"\bgit\s+clean\s+-\w*f",                        # -f / -fd
     r"\bgit\s+branch\s+-\w*D\w*\b",
@@ -2383,7 +2387,52 @@ _GIT_REVERT_MSG = (
 _GIT_REVERT_SEP_RE = _re.compile(r"&&|\|\||[;&|]|\n")
 
 
-def _git_revert_segment_matches(seg: str, pats: list) -> bool:
+def _git_path_tracked(cwd: str, path: str) -> bool:
+    """True when *path* is tracked in the index. Disk presence is irrelevant —
+    `git ls-files` still lists a tracked file that was rm'd, and checking it
+    out would resurrect it over the deletion."""
+    return bool((_git_read(cwd, ["ls-files", "--", path]) or "").strip())
+
+
+def _git_checkout_file_operands(pos: list, rest: list, cwd: str) -> list:
+    """Path operands of a no-`--` `git checkout` that would overwrite the
+    working tree. Tracked operands are file targets; an operand that is only a
+    ref is a branch switch (dropped). Tracked AND a valid ref is ambiguous —
+    kept, so the guard asks. `-b`/`-B`/`--orphan` (new branch) and a bare
+    `git checkout` yield nothing."""
+    if any(f in rest for f in ("-b", "-B", "--orphan")):
+        return []
+    return [t for t in pos if _git_path_tracked(cwd, t)]
+
+
+def _git_worktree_dirty(cwd: str, paths: list) -> bool:
+    """True when `git status --porcelain` reports anything for *paths* —
+    staged, unstaged or deleted. Unknown (git can't answer) → True: the guard
+    asks rather than silently letting a destructive op through."""
+    args = ["status", "--porcelain"] + (["--", *paths] if paths else [])
+    out = _git_read(cwd, args)
+    return True if out is None else bool(out.strip())
+
+
+def _git_revert_loss_holds(seg: str, cwd: str) -> bool:
+    """Loss gate for checkout/restore segments: hold only when uncommitted
+    work would actually be destroyed. A checkout with no file target (branch
+    switch, `-b`, bare) never holds; clean targets pass silently. Segments the
+    parser can't read hold, as before."""
+    parsed = _git_revert_parse(seg, cwd)
+    if not parsed:
+        return True
+    action = parsed["action"]
+    if action not in ("checkout-file", "restore"):
+        # The pattern hit a `checkout`/`restore` word inside another
+        # subcommand's argument (e.g. a commit message) — not the op itself.
+        return False
+    if action == "checkout-file" and not parsed["paths"]:
+        return False
+    return _git_worktree_dirty(parsed["repo"] or cwd, parsed["paths"])
+
+
+def _git_revert_segment_matches(seg: str, pats: list, cwd: str = "") -> bool:
     """True if one shell segment contains a git revert-type op.
     `git restore --staged` alone (unstage only, no worktree discard) is safe
     — evaluated within this segment only, never command-wide."""
@@ -2403,11 +2452,15 @@ def _git_revert_segment_matches(seg: str, pats: list) -> bool:
             continue
         if restore_safe and "restore" in p:
             continue  # safe unstage-only restore — don't hold on this pattern
+        if ("checkout" in p or "restore" in p) and not _git_revert_loss_holds(
+            seg, cwd
+        ):
+            continue  # nothing uncommitted at the targets — no loss to confirm
         return True
     return False
 
 
-def _git_revert_matches(cmd: str) -> bool:
+def _git_revert_matches(cmd: str, cwd: str = "") -> bool:
     """True if any shell segment of *cmd* contains a git revert-type op per
     config patterns."""
     if not cmd:
@@ -2417,7 +2470,7 @@ def _git_revert_matches(cmd: str) -> bool:
     ) or _GIT_REVERT_DEFAULT_PATTERNS
     for seg in _GIT_REVERT_SEP_RE.split(cmd):
         seg = seg.strip()
-        if seg and _git_revert_segment_matches(seg, pats):
+        if seg and _git_revert_segment_matches(seg, pats, cwd):
             return True
     return False
 
@@ -2463,7 +2516,7 @@ def _numstat_parse(out: str | None) -> tuple[int, int, list[str]]:
     return add, dele, files
 
 
-def _git_revert_parse(seg: str) -> dict | None:
+def _git_revert_parse(seg: str, cwd: str = "") -> dict | None:
     """Classify one matched shell segment.
 
     Returns {action, cmd, refs, paths, repo}: `action` = stable id used for the
@@ -2504,6 +2557,8 @@ def _git_revert_parse(seg: str) -> dict | None:
             paths = [t for t in rest[rest.index("--") + 1:] if t != "--"]
         elif sub == "restore":
             paths = list(pos)
+        elif sub == "checkout":
+            paths = _git_checkout_file_operands(pos, rest, repo_dir or cwd)
     elif sub == "revert":
         action = "revert"
     elif sub == "branch":
@@ -2686,10 +2741,11 @@ def _git_revert_reason(inp: dict, hooks_cfg: dict, cmd: str) -> str:
     pats = hooks_cfg.get("git_revert_patterns") or _GIT_REVERT_DEFAULT_PATTERNS
     labels = hooks_cfg.get("git_revert_action_labels") or {}
     parsed = None
+    hook_cwd = inp.get("cwd") or ""
     for seg in _GIT_REVERT_SEP_RE.split(cmd):
         seg = seg.strip()
-        if seg and _git_revert_segment_matches(seg, pats):
-            parsed = _git_revert_parse(seg)
+        if seg and _git_revert_segment_matches(seg, pats, hook_cwd):
+            parsed = _git_revert_parse(seg, hook_cwd)
             break
     if not parsed:
         # Matched the pattern but not classifiable (e.g. the git text sits
@@ -2739,13 +2795,13 @@ def _git_revert_guard(inp: dict) -> str | None:
         if not hooks_cfg.get("git_revert_guard", True):
             return None
         cmd = (inp.get("tool_input") or {}).get("command", "") or ""
-        if not isinstance(cmd, str) or not _git_revert_matches(cmd):
+        cwd = inp.get("cwd") or ""
+        if not isinstance(cmd, str) or not _git_revert_matches(cmd, cwd):
             return None
         # Worktree/agent cleanup teardown stays allowed. Use the same
         # `/.claude/worktrees/` path-substring test as the backup guard's
         # whitelist; also honour a live worktree-session detection when the cwd
         # resolves.
-        cwd = inp.get("cwd") or ""
         if (
             "/.claude/worktrees/" in cwd
             or ".claude/worktrees/" in cmd
