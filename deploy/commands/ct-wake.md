@@ -1,5 +1,5 @@
 ---
-description: Cortex — clear the circuit breaker and wake the resident window now.
+description: Cortex — wake the resident window now; Clear the circuit breaker.
 ---
 
 ⚙️ [CMD ct-wake] This is the **release** for `/ct-pause` and for an automatic fuse trip: it clears the cortex circuit breaker (whole file — all shells, manual or auto) and then wakes the resident window.
