@@ -5,7 +5,6 @@ import time
 import pytest
 
 from marrow.llm import LLMClient, LLMError
-from marrow import cortex_bridge
 
 CFG = {
     "llm": {
@@ -468,18 +467,7 @@ def test_log_usage_none_does_not_write(tmp_path, monkeypatch):
     assert written == []
 
 
-# --- Cortex full-env runner (C3) ---
-
-CORTEX_CFG = {
-    "llm": {
-        "default": "claude_cli",
-        "claude_cli": {"kind": "claude_cli", "mode": "stream", "timeout_s": 5},
-        "claude_cli_cortex": {"kind": "claude_cli_cortex", "timeout_s": 5},
-    },
-    "tiers": {"cheap": "claude-haiku", "top": "claude-opus"},
-    "cortex": {"home": "/tmp/does-not-matter-mocked", "tier": "top"},
-}
-
+# --- stream-json session id extraction ---
 
 def _cortex_stream_out(result, session_id="sess-abc"):
     rec = {"type": "result", "result": result, "is_error": False,
@@ -502,156 +490,6 @@ def test_extract_session_id_missing_returns_none():
 
 def test_extract_session_id_garbage_returns_none():
     assert LLMClient._extract_session_id("not json") is None
-
-
-def test_call_cortex_no_isolation_flags(monkeypatch, tmp_path):
-    c = LLMClient(CORTEX_CFG)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["cmd"] = cmd
-        captured["env"] = env
-        captured["cwd"] = cwd
-        return _cortex_stream_out("hi there")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    out = c.call_cortex("hello", cwd=str(tmp_path))
-    assert out == {"text": "hi there", "session_id": "sess-abc"}
-    assert "--setting-sources" not in captured["cmd"]
-    assert "--strict-mcp-config" not in captured["cmd"]
-    # T8: the env marker carries the shell id (legacy "1" still parses to cli).
-    assert captured["env"]["MARROW_CORTEX"] == "cli"
-    assert captured["env"]["MARROW_CHANNEL"] == "ct"
-    assert "MARROW_PIPELINE" not in captured["env"]
-    assert captured["cwd"] == str(tmp_path)
-    assert "--model" in captured["cmd"]
-    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "claude-opus"
-    assert "--permission-mode" in captured["cmd"]
-    assert captured["cmd"][captured["cmd"].index("--permission-mode") + 1] == "bypassPermissions"
-
-
-def test_call_cortex_model_override_bypasses_tier(monkeypatch, tmp_path):
-    cfg = {**CORTEX_CFG, "cortex": {**CORTEX_CFG["cortex"],
-                                     "model": "claude-opus-4-6"}}
-    c = LLMClient(cfg)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["cmd"] = cmd
-        return _cortex_stream_out("hi there")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello", cwd=str(tmp_path))
-    assert captured["cmd"][captured["cmd"].index("--model") + 1] == "claude-opus-4-6"
-
-
-def test_call_cortex_effort_flag_passed_when_set(monkeypatch, tmp_path):
-    cfg = {**CORTEX_CFG, "cortex": {**CORTEX_CFG["cortex"], "effort": "medium"}}
-    c = LLMClient(cfg)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["cmd"] = cmd
-        return _cortex_stream_out("hi there")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello", cwd=str(tmp_path))
-    assert "--effort" in captured["cmd"]
-    assert captured["cmd"][captured["cmd"].index("--effort") + 1] == "medium"
-
-
-def test_call_cortex_effort_flag_omitted_when_empty(monkeypatch, tmp_path):
-    c = LLMClient(CORTEX_CFG)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["cmd"] = cmd
-        return _cortex_stream_out("hi there")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello", cwd=str(tmp_path))
-    assert "--effort" not in captured["cmd"]
-
-
-def test_call_cortex_default_timeout_is_600(monkeypatch, tmp_path):
-    cfg = {**CORTEX_CFG, "llm": {**CORTEX_CFG["llm"],
-           "claude_cli_cortex": {"kind": "claude_cli_cortex"}}}
-    c = LLMClient(cfg)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["timeout"] = timeout
-        return _cortex_stream_out("ok")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello", cwd=str(tmp_path))
-    assert captured["timeout"] == 600
-
-
-def test_call_cortex_timeout_override(monkeypatch, tmp_path):
-    """Caller-supplied timeout overrides the provider default so the cortex
-    config is the single source of truth for the call budget."""
-    c = LLMClient(CORTEX_CFG)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["timeout"] = timeout
-        return _cortex_stream_out("ok")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello", cwd=str(tmp_path), timeout=123)
-    assert captured["timeout"] == 123
-
-
-def test_call_cortex_resume_sid_passes_resume_flag(monkeypatch, tmp_path):
-    c = LLMClient(CORTEX_CFG)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["cmd"] = cmd
-        return _cortex_stream_out("ok")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello", cwd=str(tmp_path), resume_sid="prior-sid")
-    assert "--resume" in captured["cmd"]
-    assert captured["cmd"][captured["cmd"].index("--resume") + 1] == "prior-sid"
-
-
-def test_call_cortex_fresh_omits_resume_flag(monkeypatch, tmp_path):
-    c = LLMClient(CORTEX_CFG)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["cmd"] = cmd
-        return _cortex_stream_out("ok")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello", cwd=str(tmp_path))
-    assert "--resume" not in captured["cmd"]
-
-
-def test_call_cortex_defaults_cwd_and_creates_dir(monkeypatch, tmp_path):
-    cfg = {**CORTEX_CFG, "cortex": {"home": str(tmp_path / "cortex_home"),
-                                     "tier": "top"}}
-    c = LLMClient(cfg)
-    captured = {}
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        captured["cwd"] = cwd
-        return _cortex_stream_out("ok")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c.call_cortex("hello")
-    assert captured["cwd"] == str(tmp_path / "cortex_home")
-    assert (tmp_path / "cortex_home").is_dir()
-
-
-def test_call_cortex_missing_provider_raises():
-    c = LLMClient({"llm": {"default": "claude_cli",
-                            "claude_cli": {"kind": "claude_cli"}},
-                    "tiers": {"cheap": "haiku"}})
-    with pytest.raises(LLMError, match="claude_cli_cortex"):
-        c.call_cortex("hello")
 
 
 def test_isolation_flags_still_present_on_default_stream(monkeypatch):
@@ -764,54 +602,3 @@ def test_sink_usage_maps_to_audit_fields():
     assert LLMClient._sink_usage(sink) == {
         "input_tokens": 1, "output_tokens": 2,
         "cache_read_input_tokens": 3, "cache_creation_input_tokens": 4}
-
-
-def test_run_claude_cortex_cap_breach_returns_capped(monkeypatch, tmp_path):
-    c = LLMClient(CORTEX_CFG)
-    monkeypatch.setattr(c, "_log_usage", lambda *a, **k: None)
-    cap_rows = []
-    monkeypatch.setattr(cortex_bridge, "_log_cortex_cap",
-                        lambda sink, cap, model: cap_rows.append((sink["window"], cap)))
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None,
-                    on_event=None, max_tokens=None, usage_sink=None):
-        LLMClient._add_event_usage(usage_sink, _assistant(input_tokens=max_tokens))
-        if usage_sink["window"] >= max_tokens:
-            usage_sink["capped"] = True
-        return ""  # killed mid-stream, no result event
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    out = c.call_cortex("hi", cwd=str(tmp_path), max_tokens=1000)
-    assert out["capped"] is True
-    assert out["session_id"] is None
-    assert out["total_tokens"] == 1000
-    assert cap_rows == [(1000, 1000)]
-
-
-def test_run_claude_cortex_cap_active_reports_window(monkeypatch, tmp_path):
-    c = LLMClient(CORTEX_CFG)
-    monkeypatch.setattr(c, "_log_usage", lambda *a, **k: None)
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None,
-                    on_event=None, max_tokens=None, usage_sink=None):
-        LLMClient._add_event_usage(
-            usage_sink, _assistant(input_tokens=100, output_tokens=50))
-        return _cortex_stream_out("done")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    out = c.call_cortex("hi", cwd=str(tmp_path), max_tokens=1000)
-    assert out["text"] == "done"
-    assert out["session_id"] == "sess-abc"
-    assert out["total_tokens"] == 100  # window = in+cache_read+cache_creation
-
-
-def test_call_cortex_cap_zero_disables_and_keeps_plain_shape(monkeypatch, tmp_path):
-    # max_tokens=0 -> cap inactive -> legacy return shape (no total_tokens)
-    c = LLMClient(CORTEX_CFG)
-
-    def fake_stream(cmd, prompt, timeout, env, cwd=None):
-        return _cortex_stream_out("ok")
-
-    monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    out = c.call_cortex("hi", cwd=str(tmp_path), max_tokens=0)
-    assert out == {"text": "ok", "session_id": "sess-abc"}

@@ -208,20 +208,6 @@ class LLMClient:
                     )
         raise LLMError(f"{role}: all providers failed; last: {last}")
 
-    def call_cortex(self, prompt: str, *, cwd: str | None = None,
-                     resume_sid: str | None = None,
-                     timeout: float | None = None,
-                     max_tokens: int | None = None) -> dict:
-        """Cross-repo entry point for the cortex runner. The cortex repo spawns
-        marrow's venv python and calls `LLMClient().call_cortex(...)`
-        (~/CC-Lab/cortex/cortex/wake.py) — this method name + signature are a
-        stable contract. Full-env resumed cortex session lives in cortex_bridge
-        (organs extracted there); this thin delegate keeps the caller working."""
-        from . import cortex_bridge
-        return cortex_bridge.call_cortex(
-            self, prompt, cwd=cwd, resume_sid=resume_sid,
-            timeout=timeout, max_tokens=max_tokens)
-
     def _run(self, spec: dict, model: str, prompt: str) -> str:
         kind = spec.get("kind")
         if kind == "claude_cli":
