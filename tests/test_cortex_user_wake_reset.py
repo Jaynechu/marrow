@@ -378,7 +378,8 @@ def test_reset_logs_user_wake_row(cortex_env):
     conn = sqlite3.connect(db)
     conn.execute(
         "CREATE TABLE ct_wake_log (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, "
-        "wake INTEGER, dry_run INTEGER, reasons TEXT, force_slept TEXT)")
+        "wake INTEGER, dry_run INTEGER, reasons TEXT, force_slept TEXT, "
+        "shell TEXT NOT NULL DEFAULT 'cli')")
     conn.commit()
     conn.close()
 
@@ -386,11 +387,13 @@ def test_reset_logs_user_wake_row(cortex_env):
 
     conn = sqlite3.connect(db)
     rows = conn.execute(
-        "SELECT id, reasons, force_slept FROM ct_wake_log WHERE wake=1").fetchall()
+        "SELECT id, reasons, force_slept, shell FROM ct_wake_log "
+        "WHERE wake=1").fetchall()
     conn.close()
     assert len(rows) == 1
     assert rows[0][1] == "user"
     assert rows[0][2] is None  # force_slept NULL -> auto-rate stats unaffected
+    assert rows[0][3] == "cli"  # stamped explicitly, not left to the DEFAULT
     assert _ws(home)["wake_log_id"] == rows[0][0]  # bound to the fresh row
 
 

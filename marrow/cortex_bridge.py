@@ -1341,8 +1341,8 @@ def _log_user_wake_row() -> int | None:
     try:
         ts = datetime.now(_tz.utc).isoformat()
         cur = conn.execute(
-            "INSERT INTO ct_wake_log (ts, wake, dry_run, reasons) "
-            "VALUES (?, 1, 0, 'user')", (ts,))
+            "INSERT INTO ct_wake_log (ts, wake, dry_run, reasons, shell) "
+            "VALUES (?, 1, 0, 'user', 'cli')", (ts,))
         conn.commit()
         return int(cur.lastrowid)
     except sqlite3.Error:
