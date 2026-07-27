@@ -29,7 +29,7 @@ nothing writes them now (tasks via cadence rem/cal; timeline via tl MCP).
 
 Three runtimes:
 - **hooks** — one-shot per CC lifecycle event, exit after injecting/spawning.
-- **watcher** — launchd persistent (KeepAlive); hosts SyncLoop(5s) + AtlasSweepLoop(60s) threads.
+- **watcher** — launchd persistent (KeepAlive); hosts SyncLoop(5s) + AtlasSweepLoop(60s) + UsageSnapshotLoop + EmbedLoop(300s, §4.2) threads. Any thread failing to start raises a critical/watcher `watcher_thread_start_failed` alert; the watcher keeps running without it.
 - **daemon** — stdio MCP, 12 action-dispatch tools (recall, atlas_lookup, event_embed, tl, sticker, sticker_admin, goal, wish, first, dim, alert, event_clear — full list §5.4), spawned by CC via .mcp.json, no plist; holds bge-m3 in memory. sticker_admin write actions call write_subpage after DB commit for immediate md sync.
 
 ### 1.2 Hooks registry (all in marrow/hooks.py)
@@ -73,7 +73,9 @@ Three runtimes:
 - Tables: events (recall_count/last_recalled_at v16; never aged) · tasks (legacy read-only, nothing writes) · milestones (pinned exempt) · memes (permanent, no aging; v27: +updated_at; v33: -context) · stickers · pit · diary (date PK, DELETE+INSERT rewrite; v17: +tl_line; v25: +tone +overview) · goose_bites (schema history only) · alerts · audit_log · affect (superseded_by NULL = live; affect_live view; v27: +updated_at) · entities (entities_live view; v27: +updated_at) · session_digests (v17: +kind/tl_line/life_lines; sid PK, date, text, ts; v26: +updated_at) · md_index (block hash + tombstone_at) · memes_reject_log · atlas · goals (v30) · ct_rate_limit (v31) · ct_first_tick (v32; +status v34) · 6×*_vec + *_vec_meta.
 
 ### 4.2 embedding (recall.py)
-- bge-m3 ONNX CPU singleton, 1024d, CLS-pool L2-norm, max_length 512. `recall:embed_pending` iterates 6 lanes (events/memes/entities/milestones/diary/tasks), batch 50/lane, so events backlog can't starve others; diary lane sweeps orphaned vec rows (rowid reuse after DELETE+INSERT).
+- bge-m3 ONNX CPU singleton, 1024d, CLS-pool L2-norm, max_length 512. `recall:embed_pending` iterates 7 lanes (events/memes/entities/milestones/diary/tasks/stickers), batch 50/lane, so events backlog can't starve others; diary lane sweeps orphaned vec rows (rowid reuse after DELETE+INSERT).
+- Auto-backfill: `watcher:EmbedLoop` ([embed_loop], tick 300s). Tick counts pending rows via `recall:pending_counts` (wraps each lane's pending_sql in COUNT, capped) — pure SQL, watcher never loads the model. Pending>0 → detached `mw embed` child (popen_detach) does the embedding and frees the model memory on exit; one child at a time (Popen handle + flock in the CLI). `fail_alert_streak` consecutive non-zero exits → warn/embed `embed_child_failed`.
+- Backlog watermark (last-line defence, fires even if the spawn path is broken): pending > `backlog_alert_count` OR oldest unembedded events.created_at older than `backlog_alert_hours` → one warn/embed `embed_backlog`; re-arms only after the backlog clears.
 
 ### 4.3 recall fusion (`recall:recall_fusion` / entry `recall:recall_with_config`)
 - Events: FTS5 (phrase-quoted, BM25-normalised) ∪ vec cosine, merged by id. Weighted sum: vec .55 · bm25 .30 · recency .15 · affect .10. Recency exp(-days/30) with floors: imp 5 / override → 0.5 · imp 3-4 → 0.18 · imp ≤2 → 0.
@@ -104,7 +106,7 @@ Three runtimes:
 - `atlas` — seed (INSERT OR IGNORE per root) → `atlas:atlas_sweep_fs` depth-walk stubs/deletes → `atlas:reconcile_atlas` md headings back to DB; retract logic drops stub-only rows outside seed coverage; out-of-root purge guard. Canonical render ~/Desktop/NY/db-pages/atlas.md only.
 
 ### 5.4 mw CLI + MCP tools (`cli.py` entry `~/.local/bin/mw`, `daemon.py` MCP)
-- CLI: mutation (set/rm/pin/add-alert/alerts-clear/tl-silence, no refresh) · `resolve <id>` (only mutation w/ auto-refresh) · session mgmt · display (show/ls/atlas/doctor) · system (refresh/drift/watcher/install). `mw refresh` = daybrief + monitor + subpages. Command hints for AI live in MCP tool descriptions (`daemon.py`).
+- CLI: mutation (set/rm/pin/add-alert/alerts-clear/tl-silence, no refresh) · `resolve <id>` (only mutation w/ auto-refresh) · session mgmt · display (show/ls/atlas/doctor) · system (refresh/drift/watcher/install/embed). `mw refresh` = daybrief + monitor + subpages. `mw embed` = drain the vector backfill queue (loads the model, flock-guarded, `--batch`/`--max-batches`); EmbedLoop spawns it, manual runs are safe. Command hints for AI live in MCP tool descriptions (`daemon.py`).
 - MCP tools (`daemon.py`), 12 total, action-dispatch (one tool + `action` param, replaces old per-verb tool naming, 07-05/06): recall · atlas_lookup · event_embed (fn `embed_pending`) · tl (add/update/clear) · sticker (search/pick) · sticker_admin (ingest/update/delete/pending) · goal (set/list/delete) · wish (append-only, `text`+optional `section`/`due` params, no action) · first (tick/untick/list, status=done|tried) · dim (upsert/query/delete; kind=person/pref/place/meme/milestone) · alert (list/resolve) · event_clear (was db_clear — events/FTS/vectors only). tl/goal/wish/first tools detailed in §6.
 
 ### 5.5 write arbitration

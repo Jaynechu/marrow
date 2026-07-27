@@ -106,6 +106,25 @@ model = "BAAI/bge-m3"
 id = "bge-m3"
 dim = 1024
 
+[embed_loop]
+# Watcher-hosted vector backfill. Each tick counts unembedded rows with cheap
+# SQL; if any are pending it spawns a short-lived `mw embed` child so the ONNX
+# model loads there and its memory is returned on exit — the watcher process
+# never loads the embedder. false = no automatic backfill (manual `mw embed` /
+# event_embed MCP tool only); the backlog alert goes quiet too.
+enabled = true
+tick_s = 300
+# Rows per lane per embed pass, and max passes per child run.
+batch = 50
+max_batches = 20
+# Backlog watermark — last-line defence, fires even if the spawn path is
+# broken. One warn/embed alert when pending rows exceed the count, or the
+# oldest unembedded event is older than the hours.
+backlog_alert_count = 100
+backlog_alert_hours = 6
+# Consecutive non-zero child exits before a warn/embed alert.
+fail_alert_streak = 3
+
 [recall]
 # FTS5 always on. Vector path active when embedding model files are present.
 vector = true
