@@ -355,50 +355,6 @@ def test_stream_subprocess_snapshots_rate_limit_event(tmp_path, monkeypatch):
     read_conn.close()
 
 
-def test_snapshot_window_tokens_writes_contract_key(tmp_path, monkeypatch):
-    from marrow import storage as stor
-
-    db = str(tmp_path / "test.db")
-    _real_connect = stor.connect
-    stor.init_db(db)
-    monkeypatch.setattr("marrow.llm.storage.connect",
-                        lambda path=None: _real_connect(db))
-    from marrow.llm import _snapshot_window_tokens
-
-    _snapshot_window_tokens(25734)
-    read_conn = _real_connect(db)
-    assert _kv(read_conn, "window_tokens") == "25734"
-    read_conn.close()
-
-
-def test_run_claude_cortex_snapshots_window_tokens(monkeypatch, tmp_path):
-    """_run_claude_cortex writes window_tokens from the cap sink on a
-    normal (non-capped) completion, reusing the already-computed figure."""
-    from marrow import storage as stor
-
-    db = str(tmp_path / "test.db")
-    _real_connect = stor.connect
-    stor.init_db(db)
-    monkeypatch.setattr("marrow.llm.storage.connect",
-                        lambda path=None: _real_connect(db))
-
-    turn_usage = {"input_tokens": 100, "output_tokens": 20,
-                  "cache_read_input_tokens": 5000, "cache_creation_input_tokens": 0}
-    events = [{"type": "assistant", "request_id": "r1",
-               "message": {"usage": turn_usage}}]
-    bin_ = _fake_claude_usage_stream(tmp_path, events, result="hi")
-    monkeypatch.setattr("marrow.llm._claude_bin", lambda: bin_)
-    c = LLMClient({"llm": {"claude_cli_cortex": {"kind": "claude_cli", "timeout_s": 5}},
-                   "tiers": {}, "cortex": {}})
-    out = cortex_bridge.run_claude_cortex(
-        c, {"kind": "claude_cli", "timeout_s": 5}, "m", "hi",
-        cwd=str(tmp_path), resume_sid=None, max_tokens=150000)
-    assert out.get("capped") is not True
-    read_conn = _real_connect(db)
-    assert _kv(read_conn, "window_tokens") == "5100"
-    read_conn.close()
-
-
 # --- Refusal sentinel tests (P0) ---
 
 def test_refusal_stop_reason_raises_json():

@@ -1817,7 +1817,7 @@ def run_claude_cortex(client, spec: dict, model: str, prompt: str, *,
     request_id) and terminates cleanly when the current turn's window
     size breaches the cap (capped=True). Env-driven stream-event timing
     is attached best-effort for wake-latency diagnosis."""
-    from .llm import _claude_bin, _snapshot_window_tokens
+    from .llm import _claude_bin
     timeout = timeout if timeout is not None else spec.get("timeout_s", 600)
     cmd = [_claude_bin(), "--output-format", "stream-json",
            "--input-format", "stream-json", "--verbose", "--model", model,
@@ -1844,7 +1844,6 @@ def run_claude_cortex(client, spec: dict, model: str, prompt: str, *,
         client._log_usage(client._sink_usage(sink), model, "stream-json",
                           window=sink["window"])
         _log_cortex_cap(sink, max_tokens, model)
-        _snapshot_window_tokens(sink["window"])
         return {"text": "", "session_id": None, "capped": True,
                 "total_tokens": sink["window"]}
     text = client._parse_claude(raw, "stream-json")
@@ -1856,7 +1855,6 @@ def run_claude_cortex(client, spec: dict, model: str, prompt: str, *,
         else:
             client._log_usage(client._extract_usage(raw, "stream-json"),
                              model, "stream-json")
-        _snapshot_window_tokens(sink["window"])
         return {"text": text, "session_id": session_id,
                 "total_tokens": sink["window"]}
     client._log_usage(client._extract_usage(raw, "stream-json"), model, "stream-json")

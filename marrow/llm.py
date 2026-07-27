@@ -161,15 +161,6 @@ def _snapshot_rate_limit(ev: dict) -> None:
     _write_kv_rows(rows)
 
 
-def _snapshot_window_tokens(window: int) -> None:
-    """Snapshot the current per-wake context window size (same figure the
-    cap logic compares against, see _add_event_usage) as ct_rate_limit's
-    `window_tokens` key — cortex bulletin's 5th contract field. Written
-    from the already-computed cap-tracking sink, no new computation."""
-    _write_kv_rows([("window_tokens", str(window))])
-
-
-
 class LLMClient:
     def __init__(self, cfg: dict | None = None, on_alert=None):
         self.cfg = cfg or config.load()
