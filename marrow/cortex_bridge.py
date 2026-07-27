@@ -739,11 +739,11 @@ def _line_matches_bell_shape(prompt: str, template: str) -> bool:
         # than hardcoding a bare end-of-line, so a fully-bracketed bell matches.
         rx = _re.compile(
             rf"^{_re.escape(prefix)}\s*\d{{1,2}}:\d{{2}}\s*{_re.escape(suffix)}$")
-        return any(rx.match(_strip_envelope(l)) for l in (prompt.splitlines() or [prompt]))
+        return any(rx.match(_strip_envelope(line)) for line in (prompt.splitlines() or [prompt]))
     static = template.strip()
     if not static:
         return False
-    return any(_strip_envelope(l) == static for l in (prompt.splitlines() or [prompt]))
+    return any(_strip_envelope(line) == static for line in (prompt.splitlines() or [prompt]))
 
 
 def wake_token_current(token: tuple[int, str] | None) -> bool:
