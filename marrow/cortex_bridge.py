@@ -347,10 +347,14 @@ def _run_cortex_module(module: str, extra_args: list[str] | None = None) -> dict
     return {"ok": True, "stdout": (p.stdout or "").strip()}
 
 
-def _shell_socket_path() -> Path:
-    """[cortex].shell_socket — the shell host's kick socket. Empty =
-    <DATA_DIR>/state/shells/tg.sock. Short by contract: macOS caps an AF_UNIX
-    path at 104 bytes."""
+def _shell_socket_path(shell: str) -> Path | None:
+    """[cortex].shell_socket — the tg host's kick socket. Empty =
+    <DATA_DIR>/state/shells/tg.sock. That single config value belongs to the tg
+    bridge, so any other shell has no socket: None (the caller skips the kick
+    and the host reads the ledger on its next tick). Short by contract: macOS
+    caps an AF_UNIX path at 104 bytes."""
+    if shell != "tg":
+        return None
     cx = config.load().get("cortex", {}) or {}
     raw = str(cx.get("shell_socket") or "").strip()
     if raw:
@@ -361,10 +365,12 @@ def _shell_socket_path() -> Path:
 def _shell_kick(shell: str) -> bool:
     """Poke a shell host's scheduler: one line "<shell>\\n" over its unix
     stream socket (the wire format synapse_core.scheduler.send_kick writes).
-    Best-effort — a host that is down just means the ledger is read on its next
-    recompute tick. Never raises."""
+    Best-effort — a host that is down, or a shell with no socket configured,
+    just means the ledger is read on its next recompute tick. Never raises."""
     import socket as _socket
-    p = _shell_socket_path()
+    p = _shell_socket_path(shell)
+    if p is None:
+        return False
     try:
         with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
             s.settimeout(2.0)
@@ -449,6 +455,8 @@ def lie_down(next_wake_min: float, rotate: bool = False,
     # straight to cortex's --human-override).
     """lie_down(next_wake_min=N)."""
     shell = _cortex_shell_id()
+    if not shell:
+        return {"ok": False, "error": "MARROW_CORTEX is not a valid shell id"}
     if shell != "cli":
         return _lie_down_shell(shell, next_wake_min, rotate)
     args = ["--next-wake-min", str(next_wake_min)]
@@ -558,21 +566,60 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     return _fill_handoff(text)
 
 
-def _cortex_shell_id() -> str:
-    """This window's shell id, from MARROW_CORTEX. Legacy/truthy -> "cli";
-    explicit "tg" -> "tg". Used to name the per-shell handoff file."""
+# MARROW_CORTEX values that mean "the default (cli) shell": unset, or the
+# legacy boolean marker from before the var carried a shell id.
+_LEGACY_CLI_MARKERS = frozenset({"1", "true", "yes", "on"})
+# A shell id names files (handoff-<shell>.md, <shell>.json) and is passed as a
+# subprocess argument, so it must be a bare token.
+_SHELL_ID_RE = _re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_bad_shell_id_warned: set[str] = set()
+
+
+def _warn_bad_shell_id(value: str) -> None:
+    """Alert once per process per bad MARROW_CORTEX value. Never raises."""
+    if value in _bad_shell_id_warned:
+        return
+    _bad_shell_id_warned.add(value)
+    try:
+        from . import repo
+        repo.add_alert(
+            "warn", "cortex_bad_shell_id", "cortex_bad_shell_id",
+            source="cortex_bridge.py",
+            message=f"MARROW_CORTEX={value!r} is not a valid shell id — "
+                    "cortex shell state refused for this window",
+            db=config.db_path(),
+        )
+    except Exception:  # noqa: BLE001 — a bad env var must not break the window
+        pass
+
+
+def _cortex_shell_id() -> str | None:
+    """This window's shell id, from MARROW_CORTEX. Unset or a legacy truthy
+    marker -> "cli"; any other value is the id itself ("tg"). A value that is
+    not a bare id token is refused (alert + None) instead of collapsing onto
+    cli — a malformed marker must never read or overwrite the cli shell's
+    ledger, handoff or replay state."""
     v = (os.environ.get("MARROW_CORTEX") or "").strip().lower()
-    return "tg" if v == "tg" else "cli"
+    if not v or v in _LEGACY_CLI_MARKERS:
+        return "cli"
+    if not _SHELL_ID_RE.match(v):
+        _warn_bad_shell_id(v)
+        return None
+    return v
 
 
 def _cortex_handoff_path():
     """<[cortex].home>/handoff-<shell>.md — the per-shell handoff file a fresh
-    cortex window reads at SessionStart. None on config error."""
+    cortex window reads at SessionStart. None on config error or unusable
+    shell id."""
+    shell = _cortex_shell_id()
+    if not shell:
+        return None
     try:
         cx = config.load().get("cortex", {}) or {}
         home = (cx.get("home") or "~/.config/marrow/cortex")
         pattern = (cx.get("handoff_file_pattern") or "handoff-{shell}.md")
-        name = pattern.replace("{shell}", _cortex_shell_id())
+        name = pattern.replace("{shell}", shell)
         return Path(home).expanduser() / name
     except Exception:
         return None
@@ -615,7 +662,10 @@ def _render_note_fresh(transcript_path: str | None,
     # --mirror: the renderer itself writes this shell's section of the on-disk
     # note (cortex owns that file format — see cortex/note_file.py), so marrow
     # never rewrites the whole file and never clobbers another shell.
-    cmd = [py, "-m", module, "--no-ct", "--mirror", "--shell", shell or _cortex_shell_id()]
+    shell = shell or _cortex_shell_id()
+    if not shell:
+        return None
+    cmd = [py, "-m", module, "--no-ct", "--mirror", "--shell", shell]
     if transcript_path:
         cmd += ["--transcript", str(transcript_path)]
     try:
@@ -817,6 +867,8 @@ def wakeup_note_text(transcript_path: str | None = None,
     the sectioned note file (never another shell's, and never the heading —
     that line is display-only)."""
     shell = shell or _cortex_shell_id()
+    if not shell:
+        return None
     fresh = _render_note_fresh(transcript_path, shell)
     if fresh:
         return fresh
@@ -1188,12 +1240,17 @@ _SHELL_STATE_KEYS = ("session_id", "next_wake_at", "last_note_ts", "pending_note
 
 def _shell_state_path(shell: str | None = None) -> Path:
     """<[cortex].shell_state_dir>/<shell>.json. Empty config value =
-    <marrow DATA_DIR>/state/shells. shell=None -> this window's shell id."""
+    <marrow DATA_DIR>/state/shells. shell=None -> this window's shell id;
+    ValueError when that id is unusable (bad MARROW_CORTEX), so a malformed
+    marker can never claim another shell's ledger."""
+    shell = shell or _cortex_shell_id()
+    if not shell:
+        raise ValueError("no usable cortex shell id")
     cx = config.load().get("cortex", {}) or {}
     raw = str(cx.get("shell_state_dir") or "").strip()
     base = (Path(raw).expanduser() if raw
             else config.DATA_DIR / "state" / "shells")
-    return base / f"{(shell or _cortex_shell_id())}.json"
+    return base / f"{shell}.json"
 
 
 def shell_state_read(shell: str | None = None) -> dict:

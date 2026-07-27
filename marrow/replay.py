@@ -173,8 +173,9 @@ def render(rows, header: str, max_turns: int, per_chars: int,
     return "\n".join(lines)
 
 
-def shell_exclude_channels(shell: str) -> list[str]:
-    """The channels a cortex `shell` must drop from replay — its own self-talk."""
+def shell_exclude_channels(shell: str | None) -> list[str]:
+    """The channels a cortex `shell` must drop from replay — its own self-talk.
+    Unmapped or unusable shell id -> the unqualified exclude list."""
     mapping = cortex_bridge._cortex_toml_section("note", "shell_replay_exclude", None)
     if not isinstance(mapping, dict):
         mapping = _DEFAULT_SHELL_EXCLUDE

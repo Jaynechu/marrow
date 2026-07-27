@@ -641,6 +641,45 @@ def test_shell_kick_wire_format_is_one_shell_line(monkeypatch, tmp_path):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_shell_kick_without_a_socket_for_that_shell(monkeypatch, tmp_path):
+    """The single shell_socket belongs to tg; another shell has none, so the
+    kick is skipped instead of poking tg's socket."""
+    _force_enabled(monkeypatch, True, extra={"shell_socket": str(tmp_path / "s.sock")})
+    assert cortex_bridge._shell_socket_path("tg") == tmp_path / "s.sock"
+    assert cortex_bridge._shell_socket_path("wx") is None
+    assert cortex_bridge._shell_kick("wx") is False
+
+
+def test_bad_marrow_cortex_value_is_refused_not_read_as_cli(monkeypatch, tmp_path):
+    """A malformed marker must never resolve to cli and claim its ledger."""
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    cortex_bridge._bad_shell_id_warned.clear()
+    alerts = []
+    monkeypatch.setattr(cortex_bridge, "_warn_bad_shell_id", alerts.append)
+    monkeypatch.setenv("MARROW_CORTEX", "../cli")
+    assert cortex_bridge._cortex_shell_id() is None
+    assert alerts == ["../cli"]
+    assert cortex_bridge._shell_enabled() is False
+    assert cortex_bridge._cortex_handoff_path() is None
+    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") is None
+    assert cortex_bridge.lie_down(30)["ok"] is False
+    with pytest.raises(ValueError):
+        cortex_bridge._shell_state_path()
+
+
+def test_marrow_cortex_legacy_and_explicit_shell_ids(monkeypatch):
+    _force_enabled(monkeypatch, True)
+    monkeypatch.delenv("MARROW_CORTEX", raising=False)
+    assert cortex_bridge._cortex_shell_id() == "cli"
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+    assert cortex_bridge._cortex_shell_id() == "cli"
+    monkeypatch.setenv("MARROW_CORTEX", "TG")
+    assert cortex_bridge._cortex_shell_id() == "tg"
+    monkeypatch.setenv("MARROW_CORTEX", "wx")
+    assert cortex_bridge._cortex_shell_id() == "wx"
+
+
 def test_cli_lie_down_path_untouched_by_the_shell_route(env, monkeypatch, tmp_path):
     """Regression: the cli shell still spawns cortex.lie_down and writes no
     shell state file."""
