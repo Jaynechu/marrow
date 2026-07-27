@@ -39,6 +39,14 @@ llm = LLMClient(
 cortex_bridge.register(marrow_tool, _DB)
 
 
+def _localize_ts(row: dict, fields: tuple[str, ...]) -> dict:
+    """Convert the named UTC ISO fields of a DB row to local YYYY-MM-DD HH:MM."""
+    for f in fields:
+        if row.get(f):
+            row[f] = utc_iso_to_local_datetime(row[f])
+    return row
+
+
 @marrow_tool()
 def recall(
     query: Annotated[str, Field(description="Search text; matched over the event corpus via fused semantic+FTS+recency. Empty/whitespace query with since+until returns that window's digest rows instead. query='diary' + since/until returns diary rows for the window.")],
@@ -867,7 +875,7 @@ def alert(
                 " FROM alerts WHERE resolved = 0"
                 " ORDER BY created_at DESC"
             ).fetchall()
-            return [dict(r) for r in rows]
+            return [_localize_ts(dict(r), ("created_at",)) for r in rows]
         finally:
             conn.close()
     # resolve
@@ -902,7 +910,10 @@ def msg(
     if action not in _MSG_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_MSG_ACTIONS)}"}
     if action == "list":
-        return _outbox.list_recent(limit=limit, db=_DB)
+        return [
+            _localize_ts(r, ("created_at", "sent_at", "replied_at"))
+            for r in _outbox.list_recent(limit=limit, db=_DB)
+        ]
     if not to:
         return {"ok": False, "error": "send requires `to`"}
     if not text:
