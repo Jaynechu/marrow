@@ -463,30 +463,6 @@ class LLMClient:
         return text
 
     @staticmethod
-    def _extract_session_id(out: str) -> str | None:
-        """Pull session_id off the final stream-json result record (verified
-        live: claude --output-format stream-json always carries it). Returns
-        None on any parse failure — caller (cortex) treats that as fresh."""
-        try:
-            rec = None
-            for line in out.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    ev = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if ev.get("type") == "result":
-                    rec = ev
-            if rec is None:
-                return None
-            sid = rec.get("session_id")
-            return str(sid) if sid else None
-        except Exception:
-            return None
-
-    @staticmethod
     def _extract_usage(out: str, fmt: str) -> dict | None:
         """Parse usage/modelUsage from the result event. Returns None on any failure."""
         try:

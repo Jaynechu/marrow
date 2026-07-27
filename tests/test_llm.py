@@ -467,31 +467,6 @@ def test_log_usage_none_does_not_write(tmp_path, monkeypatch):
     assert written == []
 
 
-# --- stream-json session id extraction ---
-
-def _cortex_stream_out(result, session_id="sess-abc"):
-    rec = {"type": "result", "result": result, "is_error": False,
-           "session_id": session_id}
-    return "\n".join([
-        json.dumps({"type": "system", "session_id": session_id}),
-        json.dumps(rec),
-    ])
-
-
-def test_extract_session_id():
-    out = _cortex_stream_out("ok", session_id="sess-xyz")
-    assert LLMClient._extract_session_id(out) == "sess-xyz"
-
-
-def test_extract_session_id_missing_returns_none():
-    out = json.dumps({"type": "result", "result": "ok"})
-    assert LLMClient._extract_session_id(out) is None
-
-
-def test_extract_session_id_garbage_returns_none():
-    assert LLMClient._extract_session_id("not json") is None
-
-
 def test_isolation_flags_still_present_on_default_stream(monkeypatch):
     """Untouched-path guard: the existing pipeline stream runner must keep
     the isolation flags + MARROW_PIPELINE after the shared-helper refactor."""
