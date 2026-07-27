@@ -118,8 +118,10 @@ tick_s = 300
 batch = 50
 max_batches = 20
 # Backlog watermark — last-line defence, fires even if the spawn path is
-# broken. One warn/embed alert when pending rows exceed the count, or the
-# oldest unembedded event is older than the hours.
+# broken. One warn/embed alert per episode.
+# count: needs the line breached on TWO consecutive ticks, so a healthy bulk
+# rebuild (reimport / re-embed) that the next spawn drains never alarms.
+# hours: oldest unembedded event older than this alerts immediately.
 backlog_alert_count = 100
 backlog_alert_hours = 6
 # Consecutive non-zero child exits before a warn/embed alert.

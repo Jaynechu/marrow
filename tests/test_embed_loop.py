@@ -12,8 +12,7 @@ import time
 import pytest
 
 from marrow import (
-    config, popen_detach as popen_detach_mod, recall, repo, sticker_ops,
-    storage, watcher,
+    config, popen_detach as popen_detach_mod, recall, repo, storage, watcher,
 )
 from marrow.watcher import EmbedLoop
 
@@ -232,10 +231,22 @@ def test_fail_alert_streak_config_respected(db, spawns):
 # backlog watermark
 # ---------------------------------------------------------------------------
 
-def test_backlog_count_alert_fires_once(db, spawns):
+def test_backlog_count_silent_on_first_tick_over(db, spawns):
+    """A bulk rebuild is over the line on the tick that starts the drain."""
     for i in range(5):
         _add_event(db, f"e{i}")
     loop = _loop(db, backlog_alert_count=3)
+    loop.tick()
+    assert _alerts(db, "embed") == []
+    assert loop._count_over_prev is True
+
+
+def test_backlog_count_alerts_once_on_second_consecutive_tick(db, spawns):
+    for i in range(5):
+        _add_event(db, f"e{i}")
+    loop = _loop(db, backlog_alert_count=3)
+    loop.tick()
+    loop._child = None
     loop.tick()
     rows = _alerts(db, "embed")
     assert len(rows) == 1
@@ -245,7 +256,42 @@ def test_backlog_count_alert_fires_once(db, spawns):
     loop.tick()
     rows = _alerts(db, "embed")
     assert len(rows) == 1
-    assert rows[0]["hit_count"] == 1  # not re-fired next tick
+    assert rows[0]["hit_count"] == 1  # not re-fired on later ticks
+
+
+def test_backlog_count_drained_before_second_tick_stays_silent(db, spawns):
+    """Healthy path: the spawn drains the queue between tick 1 and tick 2."""
+    for i in range(5):
+        _add_event(db, f"e{i}")
+    loop = _loop(db, backlog_alert_count=3)
+    loop.tick()
+    db.execute("DELETE FROM events")
+    db.commit()
+    loop._child = None
+    loop.tick()
+    assert _alerts(db, "embed") == []
+    assert loop._count_over_prev is False
+    assert loop._backlog_alerted is False
+
+
+def test_backlog_count_streak_restarts_after_drain(db, spawns):
+    """After a drain the count rule needs two fresh consecutive ticks again."""
+    for i in range(5):
+        _add_event(db, f"e{i}")
+    loop = _loop(db, backlog_alert_count=3)
+    loop.tick()
+    db.execute("DELETE FROM events")
+    db.commit()
+    loop._child = None
+    loop.tick()
+    for i in range(5):
+        _add_event(db, f"r{i}")
+    loop._child = None
+    loop.tick()
+    assert _alerts(db, "embed") == []  # streak restarted
+    loop._child = None
+    loop.tick()
+    assert len(_alerts(db, "embed")) == 1
 
 
 def test_backlog_alert_rearms_after_backlog_clears(db, spawns):
@@ -253,14 +299,18 @@ def test_backlog_alert_rearms_after_backlog_clears(db, spawns):
         _add_event(db, f"e{i}")
     loop = _loop(db, backlog_alert_count=3)
     loop.tick()
+    loop._child = None
+    loop.tick()
     assert loop._backlog_alerted is True
     db.execute("DELETE FROM events")
     db.commit()
+    loop._child = None
     loop.tick()
     assert loop._backlog_alerted is False
 
 
-def test_backlog_age_alert(db, spawns):
+def test_backlog_age_alert_is_immediate(db, spawns):
+    """The age rule needs no streak — one stale row already proves the stall."""
     old = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                         time.gmtime(time.time() - 10 * 3600))
     _add_event(db, "stale", created_at=old)
@@ -290,8 +340,9 @@ def test_backlog_alert_fires_even_when_spawn_broken(db, monkeypatch):
 
     monkeypatch.setattr(popen_detach_mod, "popen_detach", boom)
     loop = _loop(db, backlog_alert_count=3)
-    with pytest.raises(OSError):
-        loop.tick()
+    for _ in range(2):  # count rule needs two consecutive ticks over the line
+        with pytest.raises(OSError):
+            loop.tick()
     rows = _alerts(db, "embed")
     assert len(rows) == 1 and rows[0]["fingerprint"] == "embed_backlog"
 
@@ -359,17 +410,14 @@ def test_start_stop_runs_boot_tick(db, spawns, tmp_path):
 # ---------------------------------------------------------------------------
 
 def _isolate_watcher(tmp_path, monkeypatch, cfg_extra=None):
-    """tmp db + db-pages + stickers dir. The stickers pin matters: without it
-    watcher.run's boot sweep walks the real vault and imports imagehash, which
-    leaks into later tests that expect that import to fail."""
+    """tmp db + db-pages. The stickers dir is pinned globally by the autouse
+    conftest fixture, so watcher.run's boot sweep stays off the real vault."""
     db_file = tmp_path / "t.db"
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "db_path", lambda: str(db_file))
-    monkeypatch.setattr(sticker_ops, "STICKERS_DIR", tmp_path / "stickers")
     db_pages = tmp_path / "db-pages"
     db_pages.mkdir()
-    cfg = {"paths": {"db": str(db_file), "db_pages": str(db_pages),
-                     "stickers_dir": str(tmp_path / "stickers")},
+    cfg = {"paths": {"db": str(db_file), "db_pages": str(db_pages)},
            "embedding": {"dim": 1024}, "backup": {"keep": 14}}
     cfg.update(cfg_extra or {})
     monkeypatch.setattr(config, "load", lambda: cfg)

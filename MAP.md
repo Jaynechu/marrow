@@ -75,7 +75,7 @@ Three runtimes:
 ### 4.2 embedding (recall.py)
 - bge-m3 ONNX CPU singleton, 1024d, CLS-pool L2-norm, max_length 512. `recall:embed_pending` iterates 7 lanes (events/memes/entities/milestones/diary/tasks/stickers), batch 50/lane, so events backlog can't starve others; diary lane sweeps orphaned vec rows (rowid reuse after DELETE+INSERT).
 - Auto-backfill: `watcher:EmbedLoop` ([embed_loop], tick 300s). Tick counts pending rows via `recall:pending_counts` (wraps each lane's pending_sql in COUNT, capped) — pure SQL, watcher never loads the model. Pending>0 → detached `mw embed` child (popen_detach) does the embedding and frees the model memory on exit; one child at a time (Popen handle + flock in the CLI). `fail_alert_streak` consecutive non-zero exits → warn/embed `embed_child_failed`.
-- Backlog watermark (last-line defence, fires even if the spawn path is broken): pending > `backlog_alert_count` OR oldest unembedded events.created_at older than `backlog_alert_hours` → one warn/embed `embed_backlog`; re-arms only after the backlog clears.
+- Backlog watermark (last-line defence, fires even if the spawn path is broken): pending > `backlog_alert_count` on two consecutive ticks (check runs pre-spawn, so a healthy bulk rebuild is draining by tick 2) OR oldest unembedded events.created_at older than `backlog_alert_hours` (immediate) → one warn/embed `embed_backlog`; re-arms after the backlog clears.
 
 ### 4.3 recall fusion (`recall:recall_fusion` / entry `recall:recall_with_config`)
 - Events: FTS5 (phrase-quoted, BM25-normalised) ∪ vec cosine, merged by id. Weighted sum: vec .55 · bm25 .30 · recency .15 · affect .10. Recency exp(-days/30) with floors: imp 5 / override → 0.5 · imp 3-4 → 0.18 · imp ≤2 → 0.
