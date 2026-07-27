@@ -2572,17 +2572,35 @@ def _session_write_set(sid: str, tpath: str) -> set:
         return set()
 
 
-def _git_revert_own_writes(seg: str, cwd: str, write_set: set) -> bool:
+def _memo0(fn):
+    """Memoise a zero-arg callable — the wrapped call runs at most once."""
+    box: list = []
+
+    def _get():
+        if not box:
+            box.append(fn())
+        return box[0]
+    return _get
+
+
+def _git_revert_own_writes(seg: str, cwd: str, write_set_fn) -> bool:
     """True when EVERY explicit path operand of a checkout/restore segment is a
     file this session wrote itself. Operands resolve against the segment's repo
-    dir and the repo root; both sides compared as realpaths."""
-    if not write_set:
+    dir and the repo root; both sides compared as realpaths.
+
+    *write_set_fn* is a memoised zero-arg provider, resolved only once a
+    segment actually needs the ledger — a non-git Bash call never reads or
+    writes the ledger files."""
+    if write_set_fn is None:
         return False
     parsed = _git_revert_parse(seg, cwd)
     if not parsed or parsed["action"] not in ("checkout-file", "restore"):
         return False
     paths = parsed["paths"]
     if not paths:
+        return False
+    write_set = write_set_fn()
+    if not write_set:
         return False
     base = parsed["repo"] or cwd
     root = (_git_read(base, ["rev-parse", "--show-toplevel"]) or "").strip()
@@ -2642,7 +2660,7 @@ def _git_branch_delete_holds(seg: str, cwd: str, hooks_cfg: dict) -> bool:
 
 def _git_revert_segment_matches(
     seg: str, pats: list, cwd: str = "", hooks_cfg: dict | None = None,
-    write_set: set | None = None,
+    write_set_fn=None,
 ) -> bool:
     """True if one shell segment contains a git revert-type op.
     `git restore --staged` alone (unstage only, no worktree discard) is safe
@@ -2664,7 +2682,7 @@ def _git_revert_segment_matches(
         if restore_safe and "restore" in p:
             continue  # safe unstage-only restore — don't hold on this pattern
         if "checkout" in p or "restore" in p:
-            if _git_revert_own_writes(seg, cwd, write_set or set()):
+            if _git_revert_own_writes(seg, cwd, write_set_fn):
                 continue  # only this session's own drafts — nothing to confirm
             if not _git_revert_loss_holds(seg, cwd):
                 continue  # nothing uncommitted at the targets — no loss
@@ -2677,7 +2695,7 @@ def _git_revert_segment_matches(
 
 
 def _git_revert_matches(cmd: str, cwd: str = "", hooks_cfg: dict | None = None,
-                        write_set: set | None = None) -> bool:
+                        write_set_fn=None) -> bool:
     """True if any shell segment of *cmd* contains a git revert-type op per
     config patterns."""
     if not cmd:
@@ -2687,7 +2705,8 @@ def _git_revert_matches(cmd: str, cwd: str = "", hooks_cfg: dict | None = None,
     pats = hooks_cfg.get("git_revert_patterns") or _GIT_REVERT_DEFAULT_PATTERNS
     for seg in _GIT_REVERT_SEP_RE.split(cmd):
         seg = seg.strip()
-        if seg and _git_revert_segment_matches(seg, pats, cwd, hooks_cfg, write_set):
+        if seg and _git_revert_segment_matches(seg, pats, cwd, hooks_cfg,
+                                               write_set_fn):
             return True
     return False
 
@@ -2958,7 +2977,7 @@ def _git_revert_owner(sid: str, cwd: str, ts: float | None) -> str | None:
 
 
 def _git_revert_reason(inp: dict, hooks_cfg: dict, cmd: str,
-                       write_set: set | None = None) -> str:
+                       write_set_fn=None) -> str:
     """Full ask reason: headline + Action/File/LOC/By. Degrades to headline +
     Action, and to the bare headline, when git or the DB can't answer."""
     template = hooks_cfg.get("git_revert_guard_message") or _GIT_REVERT_MSG
@@ -2969,7 +2988,7 @@ def _git_revert_reason(inp: dict, hooks_cfg: dict, cmd: str,
     for seg in _GIT_REVERT_SEP_RE.split(cmd):
         seg = seg.strip()
         if seg and _git_revert_segment_matches(seg, pats, hook_cwd, hooks_cfg,
-                                               write_set):
+                                               write_set_fn):
             parsed = _git_revert_parse(seg, hook_cwd)
             break
     if not parsed:
@@ -3025,9 +3044,11 @@ def _git_revert_guard(inp: dict) -> str | None:
         cwd = inp.get("cwd") or ""
         if not isinstance(cmd, str):
             return None
-        write_set = _session_write_set(inp.get("session_id") or "",
-                                       inp.get("transcript_path") or "")
-        if not _git_revert_matches(cmd, cwd, hooks_cfg, write_set):
+        # Lazy: the ledger is read/written only if a checkout/restore segment
+        # with path operands actually needs it, and then only once.
+        sid, tpath = inp.get("session_id") or "", inp.get("transcript_path") or ""
+        write_set_fn = _memo0(lambda: _session_write_set(sid, tpath))
+        if not _git_revert_matches(cmd, cwd, hooks_cfg, write_set_fn):
             return None
         # Worktree/agent cleanup teardown stays allowed — the isolation zone in
         # the cwd or anywhere in the command, or a live worktree-session
@@ -3041,7 +3062,7 @@ def _git_revert_guard(inp: dict) -> str | None:
             return ""
         reason = ""
         try:
-            reason = _git_revert_reason(inp, hooks_cfg, cmd, write_set)
+            reason = _git_revert_reason(inp, hooks_cfg, cmd, write_set_fn)
         except Exception:  # noqa: BLE001 — enrichment is additive, never fatal
             reason = ""
         # Never return "" here — the caller reads "" as worktree-exempt allow.

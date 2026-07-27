@@ -1365,6 +1365,40 @@ def test_write_ledger_is_incremental(env, monkeypatch, tmp_path):
     assert second == {os.path.realpath(str(a)), os.path.realpath(str(b))}
 
 
+def test_write_ledger_lazy_no_io_without_path_operands(
+    env, monkeypatch, capsys, tmp_path
+):
+    # The ledger costs a transcript tail scan + a cache write — it may only run
+    # when a checkout/restore segment with path operands needs it.
+    calls = []
+    monkeypatch.setattr(hooks, "_session_write_set",
+                        lambda *a: calls.append(a) or set())
+    t = _transcript(tmp_path, str(tmp_path / "draft.py"))
+    for cmd in ("ls -la", "pytest -q", "git status", "git reset --hard HEAD~1",
+                "git branch -D worktree-agent-abc"):
+        assert _pretool_t(monkeypatch, cmd, t) == 0
+        capsys.readouterr()
+    assert calls == []
+    assert not (config.DATA_DIR / "state" / "write_ledger").exists()
+
+
+def test_write_ledger_scanned_once_per_call(env, monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(hooks, "_git_worktree_dirty", lambda *a: True)
+    real = hooks._session_write_set
+    calls = []
+    monkeypatch.setattr(hooks, "_session_write_set",
+                        lambda *a: calls.append(a) or real(*a))
+    mine, theirs = tmp_path / "mine.py", tmp_path / "theirs.py"
+    mine.write_text("x")
+    theirs.write_text("y")
+    t = _transcript(tmp_path, str(mine))
+    # Two checkout/restore segments — the memo resolves the ledger only once.
+    assert _pretool_t(monkeypatch, f"git restore {mine} && git restore {theirs}",
+                      t) == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert len(calls) == 1
+
+
 def test_write_ledger_does_not_exempt_reset_hard(env, monkeypatch, capsys, tmp_path):
     # Ops with no path operand are untouched by the ledger.
     f = tmp_path / "draft.py"
