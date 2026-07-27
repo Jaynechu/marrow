@@ -527,6 +527,15 @@ drop_patterns = ["\\|\\s*Health:\\S+\\s*\\|"]
 #   backup_guard_intercept=false to downgrade deny items to reminders instead.
 backup_guard = true
 backup_guard_intercept = true
+# Agent/worktree isolation zones — throw-away workspaces where destructive
+# housekeeping can't lose the user's (or another session's) work. Matched as a
+# substring of a path, a cwd or a whole command. Shared by the backup guard's
+# whitelist and the git-revert guard's exemption.
+isolation_prefixes = [
+    ".claude/worktrees/",
+    "/private/tmp/claude-",
+    "/tmp/claude-",
+]
 # The reminder + deny messages are mechanism-defining copy — they live in code.
 
 # rm → trash auto-rewrite (PreToolUse). When a Bash `rm` segment's positional
@@ -557,6 +566,9 @@ git_force_push_guard = true
 # only) is treated as safe. checkout/restore ask only when the targets carry
 # uncommitted work (`git status --porcelain -- <targets>` non-empty); a
 # checkout with no tracked file operand is a branch switch and stays silent.
+# `git worktree remove` asks only in its forced form (-f/--force) — git refuses
+# to remove a dirty worktree by itself. `git branch -D` stays silent when EVERY
+# operand starts with an agent_branch_prefixes entry (worktree teardown).
 # Set git_revert_guard=false to disable.
 git_revert_guard = true
 git_revert_patterns = [
@@ -573,6 +585,9 @@ git_revert_patterns = [
 # Headline of the ask popup. `{action}` renders the human-readable phrase from
 # git_revert_action_labels below; the rest of the reason (Action/File/LOC/By)
 # is assembled by the guard and degrades to Action-only when git can't answer.
+# Branch-name prefixes owned by agent worktrees — `git branch -D` on these is
+# teardown, never the user's work.
+agent_branch_prefixes = ["worktree-agent-"]
 git_revert_guard_message = "⚠️ About to {action} — confirm?"
 # Per-op phrase for {action}: [hooks.git_revert_action_labels] at end of file.
 
