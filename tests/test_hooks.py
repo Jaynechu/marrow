@@ -1662,3 +1662,80 @@ def test_t8_checkout_untracked_operand_silent(env, monkeypatch, capsys):
                   cwd="/repo")
     assert rc == 0
     assert "permissionDecision" not in _hook_out(capsys)
+
+
+# -- relative `-C` / `--work-tree` resolve against the tool cwd ---------------
+
+def _git_repo_at(monkeypatch, repo, *, tracked=(), dirty=()):
+    """Answer git queries ONLY for *repo*; any other cwd answers None, so a
+    mis-resolved relative dir cannot accidentally look clean OR dirty."""
+    seen = []
+
+    def _read(cwd, args, timeout=3):
+        seen.append(cwd)
+        if cwd != repo:
+            return None
+        if args[:1] == ["ls-files"]:
+            want = args[args.index("--") + 1:] if "--" in args else list(tracked)
+            return "".join(f"{p}\n" for p in tracked if p in want)
+        if args[:2] == ["status", "--porcelain"]:
+            want = args[args.index("--") + 1:] if "--" in args else list(dirty)
+            return "".join(f" M {p}\n" for p in dirty if p in want)
+        if args[:1] == ["diff"]:
+            return ""
+        return None
+    monkeypatch.setattr(hooks, "_git_read", _read)
+    return seen
+
+
+def test_relative_dash_C_resolves_against_tool_cwd(env, monkeypatch, capsys):
+    seen = _git_repo_at(monkeypatch, "/repo/sub", tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git -C sub checkout a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert seen and set(seen) == {"/repo/sub"}
+
+
+def test_relative_work_tree_resolves_against_tool_cwd(env, monkeypatch, capsys):
+    seen = _git_repo_at(monkeypatch, "/repo/sub", tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git --work-tree=sub checkout a.py"}, cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert seen and set(seen) == {"/repo/sub"}
+
+
+def test_absolute_dash_C_unchanged(env, monkeypatch, capsys):
+    seen = _git_repo_at(monkeypatch, "/other", tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git -C /other checkout a.py"}, cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+    assert set(seen) == {"/other"}
+
+
+def test_relative_dash_C_pointing_nowhere_fails_safe(env, monkeypatch, capsys):
+    # Nothing answers (git would error on a non-repo too). Documented fall:
+    # no-`--` form → no tracked operand → branch-switch shape → silent (the
+    # command itself destroys nothing); `--` form names its targets outright,
+    # so unknown status still holds → ask. Neither path raises.
+    _git_repo_at(monkeypatch, "/repo/real", tracked=["a.py"], dirty=["a.py"])
+    rc = _pretool(monkeypatch, "Bash", {"command": "git -C nope checkout a.py"},
+                  cwd="/repo")
+    assert rc == 0
+    assert "permissionDecision" not in _hook_out(capsys)
+
+    rc = _pretool(monkeypatch, "Bash",
+                  {"command": "git -C nope checkout -- a.py"}, cwd="/repo")
+    assert rc == 0
+    assert _out(capsys)["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+
+def test_git_repo_dir_resolution_unit(env):
+    assert hooks._git_repo_dir("", "/repo") == ""
+    assert hooks._git_repo_dir("/abs", "/repo") == "/abs"
+    assert hooks._git_repo_dir("sub", "/repo") == "/repo/sub"
+    assert hooks._git_repo_dir("../sib", "/repo/a") == "/repo/sib"
+    assert hooks._git_repo_dir("sub", "") == "sub"          # no cwd -> as given
+    assert hooks._git_repo_dir("~/x", "/repo").startswith("/")  # ~ expanded

@@ -2387,6 +2387,19 @@ _GIT_REVERT_MSG = (
 _GIT_REVERT_SEP_RE = _re.compile(r"&&|\|\||[;&|]|\n")
 
 
+def _git_repo_dir(raw: str, cwd: str) -> str:
+    """Absolute repo dir for a `-C` / `--work-tree` operand. A RELATIVE dir is
+    resolved against the tool command's cwd — `_git_read` shells out without
+    `cwd=`, so a bare relative dir would otherwise resolve against the hook
+    process's own directory and query the wrong repo (or none)."""
+    if not raw:
+        return ""
+    p = os.path.expanduser(raw)
+    if os.path.isabs(p) or not cwd:
+        return p
+    return os.path.normpath(os.path.join(cwd, p))
+
+
 def _git_path_tracked(cwd: str, path: str) -> bool:
     """True when *path* is tracked in the index. Disk presence is irrelevant —
     `git ls-files` still lists a tracked file that was rm'd, and checking it
@@ -2533,14 +2546,20 @@ def _git_revert_parse(seg: str, cwd: str = "") -> dict | None:
         toks = toks[1:]
     if len(toks) < 2:
         return None
-    i, repo_dir = 1, ""
+    i, c_dir, wt_dir = 1, "", ""
     while i < len(toks) and toks[i].startswith("-"):
-        if toks[i] in ("-C", "--git-dir", "--work-tree") and i + 1 < len(toks):
-            if toks[i] == "-C":
-                repo_dir = toks[i + 1]
+        t = toks[i]
+        if t in ("-C", "--git-dir", "--work-tree") and i + 1 < len(toks):
+            if t == "-C":
+                c_dir = c_dir or toks[i + 1]
+            elif t == "--work-tree":
+                wt_dir = wt_dir or toks[i + 1]
             i += 2
             continue
+        if t.startswith("--work-tree="):
+            wt_dir = wt_dir or t.split("=", 1)[1]
         i += 1
+    repo_dir = _git_repo_dir(c_dir or wt_dir, cwd)
     if i >= len(toks):
         return None
     sub, rest = toks[i], toks[i + 1:]
