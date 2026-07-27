@@ -15,4 +15,4 @@ Run: read `venv_python` and `repo_root` from `[cortex]` in `~/.config/marrow/con
 - A live cli window is put down through the normal proxy lie_down on the way.
 - Check the current state any time: `<venv_python> -m cortex.ctl status`.
 
-The same breaker trips automatically after repeated token fuses (thresholds in `[cortex.breaker]`, `~/.config/marrow/config.toml`); an auto trip announces itself on tg and writes an alert row.
+A manual pause is **silent** — no tg message is sent. The same breaker trips automatically after repeated token fuses (thresholds in `[cortex.breaker]`, `~/.config/marrow/config.toml`); only that auto trip announces itself on tg and writes an alert row.
