@@ -648,8 +648,9 @@ def _render_note_fresh(transcript_path: str | None,
     The window note carries no replay block — turn_inject is that outlet.
 
     `shell` (caller's shell id) is passed through as --shell so the render is
-    scoped to THIS shell's wake ledger + activity rows; without it every note
-    rendered here silently used the default (cli) shell's data, even on tg."""
+    scoped to THIS shell — its wake ledger, its own session's activity rows and
+    its breaker pause state; without it every note rendered here silently used
+    the default (cli) shell's data, even on tg."""
     c = config.load().get("cortex", {})
     module = str(c.get("render_module") or "").strip()
     py, root = _cortex_paths()
