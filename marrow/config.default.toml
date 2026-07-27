@@ -368,7 +368,7 @@ handoff_carry_heading = "### 前情"
 # lie_down PreToolUse nudge (non-blocking additionalContext, every call).
 # {handoff} = the shell's own handoff path, filled by code. rotate arg selects
 # the rotate variant.
-lie_down_nudge_text = "Append one line to {handoff} if any activity. Skip if pure chat."
+lie_down_nudge_text = "Append one line to {handoff} - HH:mm <Activity> - <describe in one sentence>【desire】"
 lie_down_nudge_rotate_text = "Update {handoff} before rotate. Add todo if any."
 # Wake pipeline (v2). The ear is a Monitor tailing wake_signal_log_file; cortex
 # appends the human-text bell line to it, which surfaces as a user turn. Paths
