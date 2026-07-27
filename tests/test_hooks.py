@@ -1463,6 +1463,28 @@ def test_split_treats_missing_mtime_as_stale(env, tmp_path, monkeypatch):
     assert (docs, [ln[3:].strip() for ln in stale], fresh) == ([], ["gone.py"], [])
 
 
+def test_split_untracked_dir_judged_by_newest_file_inside(
+        env, tmp_path, monkeypatch):
+    """`?? dir/` — an old directory holding a just-written file stays fresh."""
+    monkeypatch.setattr(hooks, "_housekeep_stale_hours", lambda: 2.0)
+    monkeypatch.setattr(hooks, "_housekeep_docs_exts", lambda: {".md"})
+    repo = _mk_repo(tmp_path)
+    d = repo / "wip"
+    (d / "deep").mkdir(parents=True)
+    (d / "deep" / "new.py").write_text("x = 1\n")
+    old_ts = time.time() - 9 * 3600
+    for p in (d, d / "deep"):
+        os.utime(p, (old_ts, old_ts))
+
+    docs, stale, fresh = hooks._split_housekeep_dirty(str(repo), _porcelain(repo))
+    assert (docs, stale) == ([], [])
+    assert [ln[3:].strip() for ln in fresh] == ["wip/"]
+
+    os.utime(d / "deep" / "new.py", (old_ts, old_ts))
+    docs, stale, fresh = hooks._split_housekeep_dirty(str(repo), _porcelain(repo))
+    assert [ln[3:].strip() for ln in stale] == ["wip/"] and fresh == []
+
+
 def test_commit_housekeep_groups_two_commits_and_leaves_fresh(
         env, tmp_path, monkeypatch):
     monkeypatch.setattr(hooks, "_housekeep_stale_hours", lambda: 2.0)

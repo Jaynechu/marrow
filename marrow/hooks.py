@@ -672,6 +672,23 @@ def _porcelain_paths(line: str) -> list[str]:
     return [_unquote_porcelain(raw)]
 
 
+def _newest_mtime(target: Path) -> float:
+    """Freshness stamp for a porcelain target. Git reports an untracked
+    directory as one `?? dir/` line, and the directory's own mtime can be far
+    older than a file just written inside it — so a directory is judged by the
+    newest mtime anywhere under it."""
+    newest = target.stat().st_mtime
+    if not target.is_dir():
+        return newest
+    for p in target.rglob("*"):
+        try:
+            if p.is_file():
+                newest = max(newest, p.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
 def _split_housekeep_dirty(
     repo: str, dirty: list[str], now: float | None = None
 ) -> tuple[list[str], list[str], list[str]]:
@@ -696,7 +713,7 @@ def _split_housekeep_dirty(
             docs.append(line)
             continue
         try:
-            mtime = (Path(repo) / target).stat().st_mtime
+            mtime = _newest_mtime(Path(repo) / target)
         except Exception:  # noqa: BLE001 — deleted/renamed/unreadable
             stale.append(line)
             continue
