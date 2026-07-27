@@ -138,7 +138,7 @@ def test_wake_turn_registered_window_gets_normal_payload(cortex_env, tmp_path, m
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "resident")
     _write_ws(home)
-    (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
+    (home / "wakeup_note.md").write_text("## cli\nnote body here")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath,
@@ -159,7 +159,7 @@ def test_wake_turn_receipt_bell_injects_note_and_consumes_receipt(cortex_env, tm
                             "rearm": False,
                             "ts": datetime.now(timezone.utc).isoformat(),
                             "template_prefix": "☀️ "})
-    (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
+    (home / "wakeup_note.md").write_text("## cli\nnote body here")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath, "prompt": "☀️ 09:00",
@@ -175,7 +175,7 @@ def test_wake_turn_shape_fallback_injects_note_when_receipt_missing(cortex_env, 
     home, _ = cortex_env
     tpath = _jsonl(tmp_path, "resident")
     _write_ws(home)  # no receipt
-    (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
+    (home / "wakeup_note.md").write_text("## cli\nnote body here")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath, "prompt": "☀️ 09:00",
@@ -196,7 +196,7 @@ def test_wake_turn_receipt_stale_epoch_suppressed(cortex_env, tmp_path, monkeypa
                             "rearm": False,
                             "ts": datetime.now(timezone.utc).isoformat(),
                             "template_prefix": "☀️ "})
-    (home / "wakeup_note.md").write_text("## Wakeup\nnote body here")
+    (home / "wakeup_note.md").write_text("## cli\nnote body here")
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     _stdin(monkeypatch, {
         "session_id": "s1", "transcript_path": tpath, "prompt": "☀️ 09:00",

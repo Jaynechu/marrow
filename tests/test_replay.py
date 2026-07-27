@@ -352,9 +352,24 @@ def test_turn_inject_is_the_only_outlet_on_a_wake_turn(tmp_path, monkeypatch):
     assert "news from elsewhere" not in second
 
 
-def test_wakeup_note_text_falls_back_to_the_frozen_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(cortex_bridge, "_render_note_fresh", lambda t: None)
+def test_wakeup_note_text_falls_back_to_this_shells_section(tmp_path, monkeypatch):
+    """Render failure -> the frozen file, sliced to the CALLER's own section
+    (heading stripped); another shell's section is never returned."""
+    monkeypatch.setattr(cortex_bridge, "_render_note_fresh", lambda t, s=None: None)
     note = tmp_path / "wakeup_note.md"
-    note.write_text("frozen note body")
+    note.write_text("## cli · sid=aaaaaaaa\nfrozen note body\n\n"
+                    "## tg · sid=bbbbbbbb\nother shell body\n")
     monkeypatch.setattr(cortex_bridge, "_cortex_path", lambda *a, **k: note)
+    monkeypatch.setenv("MARROW_CORTEX", "1")
     assert cortex_bridge.wakeup_note_text("/t/x.jsonl") == "frozen note body"
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") == "other shell body"
+
+
+def test_wakeup_note_text_none_when_this_shell_has_no_section(tmp_path, monkeypatch):
+    monkeypatch.setattr(cortex_bridge, "_render_note_fresh", lambda t, s=None: None)
+    note = tmp_path / "wakeup_note.md"
+    note.write_text("## cli\nonly the cli section here\n")
+    monkeypatch.setattr(cortex_bridge, "_cortex_path", lambda *a, **k: note)
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") is None

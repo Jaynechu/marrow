@@ -36,7 +36,6 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated
-from zoneinfo import ZoneInfo
 
 from pydantic import Field
 
@@ -430,8 +429,7 @@ def _lie_down_shell(shell: str, next_wake_min: float,
     ledger records every shell's sleep (_log_shell_sleep_row)."""
     day_max = float(_cortex_toml_section("wake", "next_wake_max", 240))
     mins = max(0.0, min(float(next_wake_min), day_max))
-    tz = ZoneInfo(config.load().get("core", {}).get("timezone", "UTC"))
-    when = datetime.now(tz) + timedelta(minutes=mins)
+    when = datetime.now(config.get_tz()) + timedelta(minutes=mins)
     payload = {"next_wake_at": when.isoformat()}
     if rotate:
         payload["rotate_pending"] = True
@@ -594,12 +592,17 @@ def _cortex_path(key: str, default_name: str) -> Path:
     return p if p.is_absolute() else _cortex_home() / raw
 
 
-def _render_note_fresh(transcript_path: str | None) -> str | None:
+def _render_note_fresh(transcript_path: str | None,
+                       shell: str | None = None) -> str | None:
     """Fresh render via the cortex venv (config [cortex].render_module, e.g.
     cortex.note_render). Reflects the current time + the CALLER's transcript SID
     even after a window rotation, unlike the frozen file. Unset module / any
     failure / empty output -> None so the caller falls back to the static file.
-    The window note carries no replay block — turn_inject is that outlet."""
+    The window note carries no replay block — turn_inject is that outlet.
+
+    `shell` (caller's shell id) is passed through as --shell so the render is
+    scoped to THIS shell's wake ledger + activity rows; without it every note
+    rendered here silently used the default (cli) shell's data, even on tg."""
     c = config.load().get("cortex", {})
     module = str(c.get("render_module") or "").strip()
     py, root = _cortex_paths()
@@ -609,7 +612,10 @@ def _render_note_fresh(transcript_path: str | None) -> str | None:
     root = str(Path(root).expanduser())
     # --no-ct: the wake-branch hook delivers ct notes via outbox.deliver, so the
     # fresh render must not also peek them (would double them in one payload).
-    cmd = [py, "-m", module, "--no-ct"]
+    # --mirror: the renderer itself writes this shell's section of the on-disk
+    # note (cortex owns that file format — see cortex/note_file.py), so marrow
+    # never rewrites the whole file and never clobbers another shell.
+    cmd = [py, "-m", module, "--no-ct", "--mirror", "--shell", shell or _cortex_shell_id()]
     if transcript_path:
         cmd += ["--transcript", str(transcript_path)]
     try:
@@ -798,33 +804,53 @@ def wake_token_current(token: tuple[int, str] | None) -> bool:
         return True
 
 
-def wakeup_note_text(transcript_path: str | None = None) -> str | None:
+def wakeup_note_text(transcript_path: str | None = None,
+                     shell: str | None = None) -> str | None:
     """Note text for the wake-bell injection. Tries a fresh render first (current
     time + caller's transcript SID, correct after rotation); on any failure falls
     back to the frozen file (config wakeup_note_file under home). None when both
-    yield nothing so the caller injects nothing."""
-    fresh = _render_note_fresh(transcript_path)
+    yield nothing so the caller injects nothing.
+
+    `shell` defaults to this window's shell id (MARROW_CORTEX) — the same
+    resolver the handoff file uses. Both paths are shell-scoped: the fresh
+    render passes --shell, and the fallback slices THIS shell's section out of
+    the sectioned note file (never another shell's, and never the heading —
+    that line is display-only)."""
+    shell = shell or _cortex_shell_id()
+    fresh = _render_note_fresh(transcript_path, shell)
     if fresh:
-        _mirror_wakeup_note(fresh)
         return fresh
     try:
-        text = _cortex_path("wakeup_note_file", "wakeup_note.md").read_text(
-            encoding="utf-8").strip()
-        return text or None
+        raw = _cortex_path("wakeup_note_file", "wakeup_note.md").read_text(
+            encoding="utf-8")
     except OSError:
         return None
+    return _note_section(raw, shell)
 
 
-def _mirror_wakeup_note(text: str) -> None:
-    """Best-effort mirror of the injected note to wakeup_note_file so the on-disk
-    copy always equals the latest full note the session received. Never raises —
-    a write failure must not break injection."""
-    try:
-        path = _cortex_path("wakeup_note_file", "wakeup_note.md")
-        from ._atomic import atomic_write
-        atomic_write(str(path), text)
-    except Exception:
-        pass
+# Cross-repo contract with cortex/note_file.py: `## <shell> · sid=<8 chars>`
+# (sid optional). Duplicated as a 10-line reader rather than imported — marrow
+# and cortex are separate repos/venvs with no shared package.
+_NOTE_HEADING = "## "
+_NOTE_SEP = " · "
+
+
+def _note_section(text: str, shell: str) -> str | None:
+    """Body of THIS shell's section, heading stripped. None when the section is
+    absent or empty. A legacy heading-less file belongs to no shell -> None."""
+    body: list[str] = []
+    inside = False
+    for line in (text or "").splitlines():
+        if line.startswith(_NOTE_HEADING):
+            rest = line[len(_NOTE_HEADING):].strip().split(_NOTE_SEP)[0].strip()
+            head = rest.split()[0] if rest else ""
+            if inside:
+                break
+            inside = head == shell
+            continue
+        if inside:
+            body.append(line)
+    return "\n".join(body).strip() or None
 
 
 def free_round_note_text() -> str | None:

@@ -67,7 +67,7 @@ def _seed_receipt(tmp_path, text="☀️ 14:00", gen=None, state_id=None):
 
 def test_wake_turn_injects_full_note(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nread me and act", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_receipt(tmp_path, text="☀️ 14:00")
     _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})
@@ -78,7 +78,7 @@ def test_wake_turn_injects_full_note(tmp_path, monkeypatch, capsys):
 def test_wake_turn_current_token_injects(tmp_path, monkeypatch, capsys):
     """A receipt whose token matches the live epoch injects the note."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nread me and act", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 7, "abcd1234")
     _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
@@ -91,7 +91,7 @@ def test_wake_turn_stale_token_suppressed(tmp_path, monkeypatch, capsys):
     """A receipt whose token was superseded (newer gen) is NOT processed as a
     wake: no note injected."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nread me and act", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 8, "abcd1234")  # live gen moved past the receipt's gen 7
     _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
@@ -103,7 +103,7 @@ def test_wake_turn_stale_token_suppressed(tmp_path, monkeypatch, capsys):
 def test_wake_turn_tokenless_receipt_still_injects(tmp_path, monkeypatch, capsys):
     """A token-less receipt is processed as before even when an epoch is recorded."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nread me and act", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 8, "abcd1234")
     _seed_receipt(tmp_path, text="☀️ 14:00")  # no gen/state_id on the receipt
@@ -123,7 +123,7 @@ def test_wake_turn_missing_note_silent(tmp_path, monkeypatch, capsys):
 
 def test_ordinary_chat_no_note_inject(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("secret note", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nsecret note", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_receipt(tmp_path, text="☀️ 14:00")
     _stdin(monkeypatch, {"session_id": "s1", "prompt": "今天过得怎么样"})
@@ -138,7 +138,7 @@ def test_wake_bell_mid_sentence_not_swallowed(tmp_path, monkeypatch, capsys):
     swallowed by the wake branch: no note injected, and the user-wake reset fires
     (it is user speech). Receipt match is exact full-line, never a substring."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("secret note", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nsecret note", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_receipt(tmp_path, text="☀️ 14:00")
     called = {"reset": False}
@@ -156,7 +156,7 @@ def test_wake_bell_shape_fallback_fires_wake_branch(tmp_path, monkeypatch, capsy
     the template-shape fallback (fail-open) — full note injected, no user-wake
     reset."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nread me and act", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     called = {"reset": False}
     monkeypatch.setattr(cortex_bridge, "_cortex_user_wake_reset",
@@ -173,7 +173,7 @@ def test_wake_bell_shape_fallback_fires_wake_branch(tmp_path, monkeypatch, capsy
 def test_wake_bell_receipt_fires_wake_branch(tmp_path, monkeypatch, capsys):
     """A receipt exact match with a current epoch token fires the wake branch."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nread me and act", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 7, "abcd1234")
     _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
@@ -188,7 +188,7 @@ def test_wake_bell_wrapped_envelope_fires_wake_branch(tmp_path, monkeypatch, cap
     `<event>☀️ 14:00</event>` — the envelope-aware exact match still fires the
     wake branch."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("read me and act", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nread me and act", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_epoch(tmp_path, 7, "abcd1234")
     _seed_receipt(tmp_path, text="☀️ 14:00", gen=7, state_id="abcd1234")
@@ -210,7 +210,7 @@ def test_tuck_in_line_with_nothing_staged_injects_nothing(tmp_path, monkeypatch,
     """A [NEW ROUND] marker turn with no staged payload injects nothing — and it
     never falls back to the frozen wakeup note (no double note, 07-14)."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
-    (tmp_path / "wakeup_note.md").write_text("FROZEN note", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nFROZEN note", encoding="utf-8")
     _enable(monkeypatch, tmp_path, {"tuck_in_marker": "[NEW ROUND]"})
     _stdin(monkeypatch, {"session_id": "s1",
                          "prompt": "⏳ [NEW ROUND] 15 min"})
@@ -401,7 +401,7 @@ def test_marker_mention_mid_sentence_not_swallowed(tmp_path, monkeypatch, capsys
 def test_wakeup_note_fresh_render_wins(tmp_path, monkeypatch):
     """render_module configured + subprocess succeeds => fresh stdout is used,
     not the frozen file."""
-    (tmp_path / "wakeup_note.md").write_text("frozen", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nfrozen", encoding="utf-8")
     _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
                                     "venv_python": "/x/py", "repo_root": "/x"})
 
@@ -413,43 +413,32 @@ def test_wakeup_note_fresh_render_wins(tmp_path, monkeypatch):
     assert cortex_bridge.wakeup_note_text("/t/feed1234ab.jsonl") == "FRESH note SID feed1234"
 
 
-def test_wakeup_note_fresh_render_mirrors_to_file(tmp_path, monkeypatch):
-    """A successful fresh render overwrites wakeup_note.md so the on-disk copy
-    equals the note actually injected."""
-    note = tmp_path / "wakeup_note.md"
-    note.write_text("stale frozen", encoding="utf-8")
+def test_wakeup_note_render_asks_the_renderer_to_mirror_this_shell(tmp_path, monkeypatch):
+    """marrow no longer rewrites wakeup_note.md itself — it tells the renderer
+    which shell it is and asks it to store that shell's section (--mirror), so a
+    tg render can never overwrite the cli section."""
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
     _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
                                     "venv_python": "/x/py", "repo_root": "/x"})
+    seen = {}
 
     class _P:
         returncode = 0
         stdout = "FRESH mirrored note"
         stderr = ""
-    monkeypatch.setattr(cortex_bridge.subprocess, "run", lambda *a, **k: _P())
-    cortex_bridge.wakeup_note_text("/t/x.jsonl")
-    assert note.read_text(encoding="utf-8") == "FRESH mirrored note"
 
-
-def test_wakeup_note_mirror_failure_never_breaks_injection(tmp_path, monkeypatch):
-    """A mirror write failure (atomic_write raising) is swallowed inside
-    _mirror_wakeup_note, so the injected text still returns."""
-    _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
-                                    "venv_python": "/x/py", "repo_root": "/x"})
-
-    class _P:
-        returncode = 0
-        stdout = "FRESH note"
-        stderr = ""
-    monkeypatch.setattr(cortex_bridge.subprocess, "run", lambda *a, **k: _P())
-    import marrow._atomic as _atomic
-    monkeypatch.setattr(_atomic, "atomic_write",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
-    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") == "FRESH note"
+    def _run(cmd, **k):
+        seen["cmd"] = cmd
+        return _P()
+    monkeypatch.setattr(cortex_bridge.subprocess, "run", _run)
+    assert cortex_bridge.wakeup_note_text("/t/x.jsonl") == "FRESH mirrored note"
+    assert "--mirror" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--shell") + 1] == "tg"
 
 
 def test_wakeup_note_falls_back_on_render_failure(tmp_path, monkeypatch):
     """Subprocess failure / non-zero / empty => frozen file is returned."""
-    (tmp_path / "wakeup_note.md").write_text("frozen fallback", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nfrozen fallback", encoding="utf-8")
     _enable(monkeypatch, tmp_path, {"render_module": "cortex.note_render",
                                     "venv_python": "/x/py", "repo_root": "/x"})
 
@@ -461,7 +450,7 @@ def test_wakeup_note_falls_back_on_render_failure(tmp_path, monkeypatch):
 
 def test_wakeup_note_no_render_module_uses_file(tmp_path, monkeypatch):
     """render_module unset => never spawns, static file only (feature disabled)."""
-    (tmp_path / "wakeup_note.md").write_text("static only", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nstatic only", encoding="utf-8")
     _enable(monkeypatch, tmp_path, {"venv_python": "/x/py", "repo_root": "/x"})
 
     def _fail(*a, **k):
@@ -473,7 +462,7 @@ def test_wakeup_note_no_render_module_uses_file(tmp_path, monkeypatch):
 def test_non_cortex_session_no_wake_inject(tmp_path, monkeypatch, capsys):
     """No MARROW_CORTEX => the whole cortex branch is skipped."""
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    (tmp_path / "wakeup_note.md").write_text("note", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nnote", encoding="utf-8")
     _enable(monkeypatch, tmp_path)
     _seed_receipt(tmp_path, text="☀️ 14:00")
     _stdin(monkeypatch, {"session_id": "s1", "prompt": "☀️ 14:00"})

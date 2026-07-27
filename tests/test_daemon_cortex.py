@@ -708,7 +708,7 @@ def test_switch_off_show_context_gated_empty(monkeypatch, tmp_path):
 
 def test_wakeup_note_text_reads_file(monkeypatch, tmp_path):
     """wakeup_note_text returns the note file contents (stripped)."""
-    (tmp_path / "wakeup_note.md").write_text("  do the thing  ", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\n  do the thing  \n", encoding="utf-8")
     _force_enabled(monkeypatch, True, extra={"home": str(tmp_path)})
     assert cortex_bridge.wakeup_note_text() == "do the thing"
 

@@ -246,7 +246,7 @@ def test_ct_note_merged_into_wake_payload(tmp_path, monkeypatch, capsys):
     below the wakeup note (the normal delivery path never runs on a wake turn)."""
     monkeypatch.setenv("MARROW_CORTEX", "1")
     db = _fresh_db(tmp_path)
-    (tmp_path / "wakeup_note.md").write_text("wake body", encoding="utf-8")
+    (tmp_path / "wakeup_note.md").write_text("## cli\nwake body", encoding="utf-8")
     _enable_cortex(monkeypatch, tmp_path, db)
     _seed_receipt(tmp_path, text="☀️ 14:00")
     _mk(db, "ct", "covert note for cortex", from_channel="tg", from_sid="tgtg0001")
