@@ -478,19 +478,21 @@ own_note_header = "📤 Sent on this channel"
 wire_channels = ["tg", "wx"]
 
 [replay]
-# Cross-session replay inject (turn_inject): each session passively hears other
-# sessions' recent user/assistant turns. Cursor per sid (state/replay/<sid>);
-# first sight seeds to current MAX(events.id) — future-only, never backfills.
+# Cross-session replay: the LATEST max_turns rounds of OTHER conversations, shown
+# once. Not a delivery queue — content older than the latest window is never
+# back-filled, missed is missed. The only state is one private marker per consumer
+# (state/replay/<key>) holding the newest events row id it has already been shown;
+# no marker yet = show the latest window and record it.
 # max_turns: turn cap (one user->assistant exchange); overflow folds to +N more.
 # max_lines: outer cap on rendered message lines, below max_turns — a turn with
 #   many per-turn messages can still overflow the turn cap; newest lines win.
 # per_msg_chars: per-message truncation (shorter than cortex — ambient only).
 # idle_gate_min: non-cortex sessions inject replay only when her last completed
 #   turn in that session is >= this many minutes old (catch-up on return, quiet
-#   during focused work). First turn = injects. 0 = every turn. Cortex is exempt
-#   (every turn, via the last_note_row_id cursor shared with note.py).
+#   during focused work). First turn = injects. 0 = every turn. Cortex windows
+#   are exempt (every turn).
 # exclude_target_channels: non-cortex sessions on these channels receive NOTHING.
-#   ct is NOT listed — the cortex window takes the note-aligned cursor path.
+#   ct is NOT listed — the cortex window is a normal consumer here.
 #   Source ct events are excluded by the query itself.
 enabled = true
 max_turns = 2

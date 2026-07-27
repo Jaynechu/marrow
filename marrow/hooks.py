@@ -26,7 +26,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from . import config, cortex_bridge, outbox, repo, storage, transcript
+from . import config, cortex_bridge, outbox, replay, repo, storage, transcript
 from .popen_detach import popen_detach
 from .timeutil import (
     utc_iso_to_local_date,
@@ -179,34 +179,6 @@ def _save_ct_cursor(sid: str, last_uuid: str | None, offset: int) -> None:
         pass
 
 
-# ── cross-session replay cursor (turn_inject) ────────────────────────────────
-# One small file per sid holding the last-seen events.id, same dir/pattern as
-# recall_seen. Absent = first sight of this sid → seed to MAX(id), future-only.
-
-def _replay_cursor_path(sid: str) -> Path:
-    return config.DATA_DIR / "state" / "replay" / f"{sid}"
-
-
-def _load_replay_cursor(sid: str) -> int | None:
-    if not sid:
-        return None
-    try:
-        return int(_replay_cursor_path(sid).read_text().strip())
-    except Exception:
-        return None
-
-
-def _save_replay_cursor(sid: str, last_id: int) -> None:
-    if not sid:
-        return
-    p = _replay_cursor_path(sid)
-    try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(str(int(last_id)))
-    except Exception:
-        pass
-
-
 # ── own-channel outbound-note cursor (turn_inject, F6) ───────────────────────
 # One file per sid holding the last-rendered outbox.sent_at, same dir pattern as
 # replay. Absent = first sight → seed to MAX(sent_at), future-only. Advance is
@@ -240,417 +212,6 @@ def _save_outbound_cursor(sid: str, sent_at: str) -> None:
         p.write_text(str(sent_at or ""))
     except Exception:
         pass
-
-
-def _replay_local_hm(ts: str, tz) -> str:
-    try:
-        dt = datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(tz).strftime("%H:%M")
-    except Exception:
-        return "??:??"
-
-
-def _replay_truncate(text: str, limit: int) -> str:
-    text = text or ""
-    if len(text) <= limit:
-        return text
-    return text[: max(limit - 1, 0)] + "…"
-
-
-_REPLAY_SLASH_HEAD = _re.compile(r"^/[A-Za-z][A-Za-z0-9_:.-]*$")
-
-
-def _replay_is_slash_command(text: str, max_chars: int) -> bool:
-    """True when the WHOLE trimmed message is a slash command (optionally with
-    short args) rather than prose that merely contains a '/'. Three guards keep
-    real messages out: single line only (a pasted path + question is multi-line),
-    the head token carries no further '/' (kills /Users/... file paths), and the
-    whole message stays under max_chars."""
-    t = (text or "").strip()
-    if not t.startswith("/") or "\n" in t or len(t) > max_chars:
-        return False
-    head = t.split(" ", 1)[0]
-    return bool(_REPLAY_SLASH_HEAD.match(head))
-
-
-def _replay_drop_filters(cfg: dict):
-    """Build (slash_max_chars_or_None, [compiled patterns]) from [replay] config.
-    Missing keys fall back to defaults; an unparsable pattern is skipped."""
-    slash_max = None
-    if cfg.get("drop_slash_commands", True):
-        slash_max = int(cfg.get("slash_command_max_chars", 40))
-    pats = []
-    for p in (cfg.get("drop_patterns", []) or []):
-        try:
-            pats.append(_re.compile(p))
-        except _re.error:
-            continue
-    return slash_max, pats
-
-
-def _replay_render(rows, header: str, max_turns: int, per_chars: int, max_lines: int = 0):
-    """Group events into turns and render the P3 replay block. Returns
-    (block, cutoff_row_id): block is '' when empty; cutoff_row_id is the max
-    `id` of every SCANNED row — fold-dropped and noise-dropped rows count too,
-    so a diff-cursor caller never re-reads a row that can only ever drop (it
-    would stall the cursor forever). None when rows carry no `id` column.
-    A user event opens a turn;
-    consecutive user msgs stay in the same turn; the following assistant msgs
-    close it. Overflow beyond max_turns
-    folds to a count. `max_lines` (0 = no cap) further caps the rendered message
-    lines to the newest N after turn-capping — an outer bound below max_turns
-    for turns that carry many per-turn messages. Shared by the per-sid cursor
-    path and the cortex row-id cursor path.
-
-    Rows that are pure noise for another session — bare slash-command turns and
-    bot status/system output matching [replay].drop_patterns — are skipped here,
-    the single outlet shared by every caller. A slash command drops its WHOLE
-    turn (the command line AND the assistant rows answering it), otherwise the
-    reply survives as an orphan with nothing it answers. A turn whose rows all
-    drop never exists, so it renders nothing and consumes no max_turns slot."""
-    tz = config.get_tz()
-    slash_max, drop_pats = _replay_drop_filters(
-        (config.load().get("replay", {}) or {}))
-    turns: list[list[dict]] = []
-    cutoff_row_id = None
-    slash_turn = False  # inside a dropped slash-command turn
-    for r in rows:
-        # The cutoff counts every SCANNED row, dropped ones included: a dropped
-        # row is dropped deterministically on every re-read, so leaving it
-        # behind the cutoff would keep it inside the caller's query window
-        # forever.
-        try:
-            rid = r["id"]
-        except (KeyError, IndexError):
-            rid = None
-        if isinstance(rid, int) and (cutoff_row_id is None or rid > cutoff_row_id):
-            cutoff_row_id = rid
-        content = transcript.strip_media_markers(r["content"])
-        if not content:
-            continue
-        is_user = r["role"] == "user"
-        if is_user:
-            # A user row always ends the previous slash turn: either it opens a
-            # new slash turn (drop it and its replies) or it opens a real one.
-            slash_turn = (slash_max is not None
-                          and _replay_is_slash_command(content, slash_max))
-        if slash_turn:
-            continue  # the command line, or an assistant row answering it
-        if any(p.search(content) for p in drop_pats):
-            continue
-        item = {
-            "channel": r["channel"] or "?",
-            "sid4": (r["session_id"] or "")[:4],
-            "hm": _replay_local_hm(r["timestamp"], tz),
-            "role": "N" if r["role"] == "user" else "Y",
-            "content": _replay_truncate(content, per_chars),
-        }
-        if r["role"] == "user" and (not turns or turns[-1][-1]["role"] != "N"):
-            turns.append([item])
-        elif not turns:
-            # assistant with no opening user turn — start a bare turn
-            turns.append([item])
-        else:
-            turns[-1].append(item)
-    if not turns:
-        return "", cutoff_row_id
-    kept = turns[-max_turns:]
-    folded = len(turns) - len(kept)
-    msg_lines = [
-        f"[{it['channel']}·{it['sid4']} {it['hm']}] {it['role']}: {it['content']}"
-        for turn in kept for it in turn
-    ]
-    if max_lines and len(msg_lines) > max_lines:
-        msg_lines = msg_lines[-max_lines:]  # newest lines win
-    lines = [header, *msg_lines]
-    if folded > 0:
-        lines.append(f"+{folded} earlier turns")
-    return "\n".join(lines), cutoff_row_id
-
-
-def _replay_cortex_since_row_id(conn, d: dict) -> int | None:
-    """The cortex replay cursor: `wake_state.last_note_row_id`, the events row id
-    of the last row this window consumed. The SAME field cortex's note.py reads
-    and writes, so a turn delivered on either side is never re-delivered by the
-    other. `id` is AUTOINCREMENT insert order — the true replay order — and,
-    unlike a timestamp string, it tells two same-second rows apart, so a real
-    event landing in the same second as an already-consumed row is never skipped.
-
-    Migration (one-time read): state carrying only the legacy `last_note_ts`
-    resolves to the newest row at-or-before that timestamp, so nothing already
-    shown re-appears and nothing unseen is skipped. None = no cursor yet (full
-    window)."""
-    v = d.get("last_note_row_id")
-    if isinstance(v, int):
-        return v
-    since_ts = d.get("last_note_ts")
-    if not since_ts:
-        return None
-    try:
-        row = conn.execute(
-            "SELECT MAX(id) AS id FROM events WHERE timestamp <= ?", (since_ts,)
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    return int(row["id"]) if row and row["id"] is not None else None
-
-
-# Every cortex shell excludes its OWN channel from Replay: the cli shell talks
-# on 'ct', the tg shell on 'tg'. Mirror of cortex note.py
-# _DEFAULT_SHELL_REPLAY_EXCLUDE; cortex.toml [note].shell_replay_exclude wins
-# when set. Unknown/unmapped shell -> the unqualified ('ct') set.
-_DEFAULT_SHELL_REPLAY_EXCLUDE = {"cli": ["ct"], "tg": ["tg"]}
-_UNQUALIFIED_REPLAY_EXCLUDE = ["ct"]
-
-
-def _replay_cortex_exclude_channels(shell: str) -> list[str]:
-    """The channels a cortex `shell`'s replay must drop — its own self-talk."""
-    mapping = cortex_bridge._cortex_toml_section("note", "shell_replay_exclude", None)
-    if not isinstance(mapping, dict):
-        mapping = _DEFAULT_SHELL_REPLAY_EXCLUDE
-    channels = mapping.get(str(shell))
-    if channels is None:
-        return list(_UNQUALIFIED_REPLAY_EXCLUDE)
-    return [str(c) for c in channels if str(c).strip()]
-
-
-def _shell_ledger_since_row_id(d: dict) -> int | None:
-    """Effective replay cursor of a non-cli shell ledger: the higher of
-    `last_note_row_id` (rows already delivered) and `pending_note_row_id` (the
-    cutoff of a note the shell host is feeding RIGHT NOW — it writes the pending
-    key before the feed and promotes it after). The fed turn's own hook runs
-    while that feed is still in flight, so counting the pending value is what
-    keeps it from re-replaying the rows the note is already showing. A failed
-    feed drops the pending key without promoting, leaving those rows replayable.
-
-    The ledger's `last_note_ts` key serves other purposes and is never a cursor
-    source. Neither key present -> None (full window, like cli's first read)."""
-    best = None
-    for key in ("last_note_row_id", "pending_note_row_id"):
-        v = d.get(key)
-        if isinstance(v, int) and not isinstance(v, bool) and (
-                best is None or v > best):
-            best = v
-    return best
-
-
-def _replay_cortex_scan(conn, since_row_id: int | None, exclude: list[str],
-                        header: str, max_turns: int, per_chars: int,
-                        max_lines: int) -> tuple[str, int | None]:
-    """Read the window newer than `since_row_id` (dropping `exclude` channels)
-    and render it. Returns (block, scanned cutoff row id); cutoff None = nothing
-    to advance to."""
-    where_ch = ""
-    ch_params: tuple = ()
-    if exclude:
-        where_ch = (" AND COALESCE(channel,'') NOT IN ("
-                    + ",".join("?" * len(exclude)) + ")")
-        ch_params = tuple(exclude)
-    where_since = " AND id > ?" if since_row_id is not None else ""
-    since_params = (since_row_id,) if since_row_id is not None else ()
-    try:
-        rows = conn.execute(
-            "SELECT id, session_id, role, content, timestamp, channel "
-            "FROM events WHERE role IN ('user','assistant')" + where_ch
-            + where_since + " ORDER BY id DESC LIMIT ?",
-            ch_params + since_params + (max_turns * 4,),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return "", None
-    if not rows:
-        return "", None
-    rows = list(reversed(rows))  # chronological
-    return _replay_render(rows, header, max_turns, per_chars, max_lines)
-
-
-def _replay_cortex(header: str, max_turns: int, per_chars: int, max_lines: int = 0) -> str:
-    """Cortex-window replay on a normal turn, sharing note.py's last_note_row_id
-    diff cursor so a turn delivered here is never re-delivered by the next note,
-    and vice versa. Reads events newer than the cursor row id (excluding this
-    shell's own channels, matching note.py semantics), renders P3 format, advances
-    the cursor to the newest SCANNED row id under the ledger's flock —
-    including rows the noise filters dropped, so an all-noise batch still moves the
-    cursor instead of being re-read every turn. Advance is monotonic — never
-    rewinds a cursor that note.py (or a concurrent turn) already pushed forward.
-
-    Cursor file is per shell: the cli shell keeps wake_state.json (legacy
-    last_note_ts migration included); every other shell uses its own ledger
-    <shell_state_dir>/<shell>.json, so two shells never consume each other's
-    batch. Same lock/atomic-replace protocol on both. A shell ledger's cursor is
-    the effective one (see _shell_ledger_since_row_id): an in-flight note's
-    pending cutoff counts as read, while the advance still writes only
-    last_note_row_id."""
-    shell = cortex_bridge._cortex_shell_id()
-    exclude = _replay_cortex_exclude_channels(shell)
-    is_cli = shell == "cli"
-    p = (cortex_bridge._cortex_wake_state_path() if is_cli
-         else cortex_bridge._shell_state_path(shell))
-    conn = storage.connect(config.db_path())
-    try:
-        # Whole read-modify-write under one flock: the monotonic compare below
-        # is only sound against a cursor no one can move meanwhile. A lock we
-        # cannot take (required=True) skips the whole round — proceeding
-        # unlocked would race another writer and re-inject its rows. Nothing is
-        # lost: the cursor stays put, so these rows replay next round.
-        with cortex_bridge._wake_state_lock(p, required=True):
-            d = cortex_bridge._wake_state_load(p)
-            if is_cli:
-                since_row_id = _replay_cortex_since_row_id(conn, d)
-            else:
-                since_row_id = _shell_ledger_since_row_id(d)
-            block, cutoff_row_id = _replay_cortex_scan(
-                conn, since_row_id, exclude, header, max_turns, per_chars,
-                max_lines)
-            # Monotonic advance to the scanned cutoff — runs even when block is
-            # '' (all rows dropped as noise), otherwise those rows sit inside
-            # the window on every later turn. Only moves forward, so a cursor
-            # note.py or a concurrent cortex turn already pushed past is never
-            # rewound (double-deliver / 18:38 bug).
-            if cutoff_row_id is not None and (
-                    since_row_id is None or cutoff_row_id > since_row_id):
-                if is_cli:
-                    cortex_bridge._ws_ensure_epoch(d)
-                d["last_note_row_id"] = cutoff_row_id
-                cortex_bridge._wake_state_save(p, d)
-            return block
-    except cortex_bridge.WakeStateLockTimeout:
-        return ""
-    finally:
-        conn.close()
-
-
-def _her_last_user_age_min(conn, sid: str) -> float | None:
-    """Minutes since this sid's most recent user-role event in events, or None
-    when no prior user event exists (first turn). The current turn's message is
-    not yet archived (Stop-hook archives at turn end), so this reflects the last
-    completed turn."""
-    try:
-        row = conn.execute(
-            "SELECT MAX(timestamp) AS ts FROM events "
-            "WHERE session_id = ? AND role = 'user'",
-            (sid,),
-        ).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    if not row or not row["ts"]:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-    return (datetime.now(timezone.utc) - dt).total_seconds() / 60.0
-
-
-def _replay_seed(conn, sid: str, header: str, max_turns: int, per_chars: int,
-                  max_lines: int = 0) -> str:
-    """F11: SessionStart-only first-sight render for the per-sid replay cursor.
-    Renders the last max_turns turns of other-session activity regardless of
-    cursor position (there is none yet), then advances the cursor forward to
-    the rendered cutoff (not the DB tip) so turn 1's normal diff-mode call
-    never re-shows the same lines. Empty result still seeds the cursor to the
-    current tip (future-only from here), matching the no-seed_ok behaviour."""
-    rows = conn.execute(
-        "SELECT id, session_id, role, content, timestamp, channel FROM events "
-        "WHERE session_id != ? AND role IN ('user','assistant') "
-        "AND COALESCE(channel,'') != 'ct' ORDER BY id DESC LIMIT ?",
-        (sid, max_turns * 4),
-    ).fetchall()
-    if not rows:
-        row = conn.execute("SELECT MAX(id) AS m FROM events").fetchone()
-        seed = int(row["m"]) if row and row["m"] is not None else 0
-        _save_replay_cursor(sid, seed)
-        return ""
-    rows = list(reversed(rows))  # chronological
-    block, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
-    max_id = rows[-1]["id"]
-    _save_replay_cursor(sid, max_id)
-    return block
-
-
-def _replay_context(sid: str, channel: str, *, seed_ok: bool = False,
-                    transcript_path: str | None = None) -> str:
-    """Cross-session replay inject. Returns '' when disabled, when this session's
-    channel is an excluded target, on first sight of the sid (seed only, unless
-    seed_ok), when gated by idle_gate_min, or when no new events from OTHER
-    sessions exist.
-
-    seed_ok (F11, SessionStart only): on first sight of the sid, render the
-    last max_turns turns of other-session activity instead of seeding silently
-    — opening context should not be empty just because the cursor has never
-    moved. The cursor still only advances forward (to the rendered cutoff), so
-    turn 1 never re-shows a line this seed already rendered.
-
-    Cortex windows (MARROW_CORTEX) take the last_note_row_id diff cursor shared with
-    note.py — the exclude_target_channels gate and the per-sid cursor never apply
-    there. Every cortex turn is eligible (no idle gate)."""
-    if not sid:
-        return ""
-    cfg = (config.load().get("replay", {}) or {})
-    if not cfg.get("enabled", True):
-        return ""
-
-    max_turns = int(cfg.get("max_turns", 2))
-    per_chars = int(cfg.get("per_msg_chars", 250))
-    max_lines = int(cfg.get("max_lines", 4))
-    header = cfg.get("header", "## Recent replay from other sessions")
-
-    if cortex_bridge.is_cortex_session(transcript_path):
-        try:
-            return _replay_cortex(header, max_turns, per_chars, max_lines)
-        except Exception:
-            return ""
-
-    if channel in (cfg.get("exclude_target_channels", []) or []):
-        return ""
-
-    idle_gate_min = float(cfg.get("idle_gate_min", 20))
-
-    conn = storage.connect(config.db_path())
-    try:
-        cursor = _load_replay_cursor(sid)
-        if cursor is None:
-            if seed_ok:
-                return _replay_seed(conn, sid, header, max_turns, per_chars, max_lines)
-            row = conn.execute("SELECT MAX(id) AS m FROM events").fetchone()
-            seed = int(row["m"]) if row and row["m"] is not None else 0
-            _save_replay_cursor(sid, seed)
-            return ""  # first sight — future-only, never backfill
-
-        # Idle gate: inject only when her last completed turn in THIS sid is
-        # >= idle_gate_min old (or no prior user event = first turn). While
-        # gated, hold the cursor — nothing lost; the fold caps the burst on
-        # release. idle_gate_min = 0 disables the gate (every turn).
-        if idle_gate_min > 0:
-            age = _her_last_user_age_min(conn, sid)
-            if age is not None and age < idle_gate_min:
-                return ""
-
-        rows = conn.execute(
-            "SELECT id, session_id, role, content, timestamp, channel FROM events "
-            "WHERE id > ? AND session_id != ? AND role IN ('user','assistant') "
-            "AND COALESCE(channel,'') != 'ct' ORDER BY id ASC",
-            (cursor, sid),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return ""
-    finally:
-        conn.close()
-
-    if not rows:
-        return ""
-
-    max_id = rows[-1]["id"]
-
-    block, _ = _replay_render(rows, header, max_turns, per_chars, max_lines)
-
-    # Advance cursor on a render decision regardless of fold (ambient replay).
-    _save_replay_cursor(sid, max_id)
-
-    return block
 
 
 def _outbound_notes(sid: str, channel: str) -> str:
@@ -709,8 +270,8 @@ def _outbound_notes(sid: str, channel: str) -> str:
         sent_at = r["sent_at"]
         if sent_at and (not cutoff or str(sent_at) > str(cutoff)):
             cutoff = sent_at
-        hm = _replay_local_hm(sent_at, tz)
-        body = _replay_truncate(transcript.strip_media_markers(r["body"]) or "", per_chars)
+        hm = replay.local_hm(sent_at, tz)
+        body = replay.truncate(transcript.strip_media_markers(r["body"]) or "", per_chars)
         lines.append(f"[{hm}] {body}")
 
     # Monotonic forward-only advance to the max rendered sent_at (F8 semantics).
@@ -1602,14 +1163,11 @@ def session_start() -> int:
             if backdrop:
                 parts.append(backdrop)
 
-            # F11: seed cross-session replay here (same cursor/render path as
-            # turn_inject) so opening context carries other-session activity
-            # before her first message, instead of wasting the first-sight seed
-            # call on turn 1. Outbound-notes (F6) excluded — its own cursor
-            # would otherwise be consumed here too, silencing turn 1's inject.
+            # Cross-session replay: same core call as turn_inject. No marker yet
+            # -> the latest window renders here, so opening context is not empty.
             if sid:
-                replay_seed = _replay_context(
-                    sid, os.environ.get("MARROW_CHANNEL") or "cli", seed_ok=True,
+                replay_seed = replay.context(
+                    sid, os.environ.get("MARROW_CHANNEL") or "cli",
                     transcript_path=tpath)
                 if replay_seed:
                     parts.append(replay_seed)
@@ -2038,7 +1596,7 @@ def user_prompt_submit() -> int:
                     "wake_line_stale", f"gen={_tok[0]}",
                     "suppressed (superseded epoch)")
                 return 0
-            _note, _cutoff = cortex_bridge.wakeup_note_payload(tpath)
+            _note = cortex_bridge.wakeup_note_text(tpath)
             # Merge any ct-targeted outbox notes into the wake payload — the
             # normal delivery path below never runs on a wake turn, so ct notes
             # must be consumed here (same atomic claim/consume ordering).
@@ -2054,10 +1612,6 @@ def user_prompt_submit() -> int:
                     "hookEventName": "UserPromptSubmit",
                     "additionalContext": _payload,
                 }}, sys.stdout)
-                # Deliver-then-advance: the note's Replay is rendered read-only,
-                # so only a real injection may move the shared cursor past the
-                # rows it showed. Without this the next turn replays them again.
-                cortex_bridge.advance_cli_replay_cursor(_cutoff)
             return 0
         # Real user message (NOT a machine line down the ear channel) → user-wake
         # reset: flip awake, kill the pending alarm + sentinel, spawn a watchdog.
@@ -3760,21 +3314,6 @@ def _usage_threshold_context(sid: str, tpath: str) -> str:
         return ""
 
 
-def _is_wake_bell_turn(prompt: str, tpath: str | None) -> bool:
-    """True on a cortex wake-bell turn. user_prompt_submit injects the wakeup
-    note on that turn and the note already carries its own Replay block, so
-    turn_inject (a SEPARATE hook command on the same event, order/parallelism
-    not guaranteed) must not render the same rows a second time in one turn.
-    Read-only: match_wake_bell peeks the receipt, never consumes it — and the
-    shape fallback still matches once user_prompt_submit has consumed it."""
-    if not prompt or not cortex_bridge.is_cortex_session(tpath):
-        return False
-    try:
-        return cortex_bridge.match_wake_bell(prompt) is not None
-    except Exception:
-        return False
-
-
 def turn_inject() -> int:
     """Inject current time + delta since last reply, plus the B8 kickout
     nudge (config [kickout]).
@@ -3797,14 +3336,9 @@ def turn_inject() -> int:
     tz = config.get_tz()
     now = datetime.now(timezone.utc).astimezone(tz)
     kickout_ctx = _kickout_context(channel, now, tpath)
-    # Wake turn: the wakeup note injected by user_prompt_submit already carries
-    # this turn's replay — skip ours instead of doubling it.
-    wake_turn = _is_wake_bell_turn(
-        (inp.get("prompt") or "") if isinstance(inp, dict) else "", tpath)
-
+    # The ONLY replay outlet for a window session — the wakeup note carries none.
     def _replay_fragment() -> str:
-        return "" if wake_turn else _replay_context(
-            sid, channel, transcript_path=tpath)
+        return replay.context(sid, channel, transcript_path=tpath)
 
     def _sched_fragment() -> str:
         try:
