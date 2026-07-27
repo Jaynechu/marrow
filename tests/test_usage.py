@@ -9,11 +9,11 @@ import io
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
-from marrow import config, cortex_bridge, hooks, usage
+from marrow import config, cortex_bridge, hooks, storage, usage
 
 
 def _assistant(cache_creation=0, output=0, cache_read=0, input_=0):
@@ -61,11 +61,59 @@ def test_sessionstart_lines_empty_kv():
     assert usage.sessionstart_lines({}) == []
 
 
+def test_sessionstart_lines_cdx_seven_day_only():
+    """Current live shape (5h window gone): only cdx_seven_day_pct in kv."""
+    kv = {"cdx_seven_day_pct": "6"}
+    lines = usage.sessionstart_lines(kv)
+    assert "cdx 7d 6%" in lines[0]
+
+
 def test_threshold_line_shows_main_occupancy_and_agent():
     kv = {"five_hour_pct": "20", "five_hour_reset_at": "2026-07-08T18:50:00+00:00"}
     line = usage.threshold_line(70_000, 120_000, kv)  # main=occupancy, agent=net
     assert line.startswith("Plan Used: 5h 20%")
     assert "Net Session Token: main 70k agent 120k" in line
+
+
+# --------------------------------------------------------------------------- #
+# read_kv: cdx_* staleness gate (only cdx_*, 5h/7d/net are never gated here)
+# --------------------------------------------------------------------------- #
+
+def test_read_kv_drops_stale_cdx_rows_only(monkeypatch, tmp_path):
+    db = str(tmp_path / "kv.db")
+    monkeypatch.setattr(config, "db_path", lambda: db)
+    storage.init_db(db)
+    conn = storage.connect(db)
+    old = "2020-01-01T00:00:00+00:00"
+    with conn:
+        conn.executemany(
+            "INSERT INTO ct_rate_limit (key, value, updated_at) VALUES (?, ?, ?)",
+            [
+                ("cdx_seven_day_pct", "6.0", old),
+                ("five_hour_pct", "5", old),  # non-cdx: staleness gate must not touch it
+            ],
+        )
+    conn.close()
+
+    kv = usage.read_kv()
+    assert "cdx_seven_day_pct" not in kv
+    assert kv.get("five_hour_pct") == "5"
+
+
+def test_read_kv_keeps_fresh_cdx_rows(monkeypatch, tmp_path):
+    db = str(tmp_path / "kv2.db")
+    monkeypatch.setattr(config, "db_path", lambda: db)
+    storage.init_db(db)
+    conn = storage.connect(db)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with conn:
+        conn.execute(
+            "INSERT INTO ct_rate_limit (key, value, updated_at) VALUES (?, ?, ?)",
+            ("cdx_seven_day_pct", "6.0", now_iso),
+        )
+    conn.close()
+
+    assert usage.read_kv().get("cdx_seven_day_pct") == "6.0"
 
 
 # --------------------------------------------------------------------------- #
