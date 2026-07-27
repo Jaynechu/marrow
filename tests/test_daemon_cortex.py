@@ -730,3 +730,79 @@ def test_boot_rules_helpers_removed():
     """The rejected boot_rules SessionStart mechanism is fully gone."""
     assert not hasattr(cortex_bridge, "cortex_boot_rules")
     assert not hasattr(cortex_bridge, "_cortex_boot_rules_path")
+
+
+# ── shell sleep ledger (ct_wake_log rows per shell) ───────────────────────────
+
+def _wake_log_db(tmp_path):
+    """A db carrying the live ct_wake_log shape (cortex owns the migration)."""
+    import sqlite3
+    db = str(tmp_path / "wake.db")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE ct_wake_log (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "ts TEXT NOT NULL, wake INTEGER NOT NULL, dry_run INTEGER NOT NULL, "
+        "reasons TEXT, gated_by TEXT, explanation TEXT, tokens INTEGER, "
+        "force_slept TEXT, net_tokens INTEGER, "
+        "shell TEXT NOT NULL DEFAULT 'cli')")
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _wake_rows(db):
+    import sqlite3
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(
+            "SELECT shell, wake, dry_run, reasons, force_slept "
+            "FROM ct_wake_log ORDER BY id").fetchall()
+    finally:
+        conn.close()
+
+
+def test_tg_lie_down_writes_one_wake_log_row(monkeypatch, tmp_path):
+    """T2: a tg shell lie_down lands exactly one ct_wake_log row stamped
+    shell='tg' with force_slept empty (a voluntary sleep is no incident)."""
+    db = _wake_log_db(tmp_path)
+    monkeypatch.setattr(config, "db_path", lambda: db)
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    monkeypatch.setattr(cortex_bridge, "_cortex_toml_section",
+                        lambda *a, **k: 240)
+    monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+
+    out = cortex_bridge.lie_down(30)
+
+    assert out["ok"] is True and out["shell"] == "tg"
+    rows = _wake_rows(db)
+    assert len(rows) == 1
+    shell, wake, dry_run, reasons, force_slept = rows[0]
+    assert shell == "tg"
+    assert (wake, dry_run, reasons) == (1, 0, "lie_down")
+    assert force_slept is None
+
+
+def test_cli_lie_down_writes_no_shell_row(monkeypatch, tmp_path):
+    """T2 regression: the cli path is unchanged — cortex writes its own row, so
+    the bridge must not add one here."""
+    db = _wake_log_db(tmp_path)
+    monkeypatch.setattr(config, "db_path", lambda: db)
+    _force_enabled(monkeypatch, True,
+                   extra={"shell_state_dir": str(tmp_path / "shells")})
+    monkeypatch.setattr(cortex_bridge, "_run_cortex_module",
+                        lambda module, args=None: {"ok": True, "stdout": "{}"})
+    monkeypatch.setenv("MARROW_CORTEX", "1")
+
+    assert cortex_bridge.lie_down(30)["ok"] is True
+    assert _wake_rows(db) == []
+
+
+def test_shell_sleep_row_survives_missing_table(monkeypatch, tmp_path):
+    """Best-effort: a db without ct_wake_log never fails the sleep."""
+    db = str(tmp_path / "empty.db")
+    import sqlite3
+    sqlite3.connect(db).close()
+    monkeypatch.setattr(config, "db_path", lambda: db)
+    assert cortex_bridge._log_shell_sleep_row("tg") is None

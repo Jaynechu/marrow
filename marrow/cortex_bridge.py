@@ -389,6 +389,33 @@ def shell_direct(text: str, shell: str = "tg") -> dict:
     return {"ok": True, "shell": shell, "kicked": _shell_kick(shell)}
 
 
+def _log_shell_sleep_row(shell: str) -> int | None:
+    """Insert this shell's ct_wake_log row for a voluntary lie_down, so the
+    sleep ledger covers every shell, not just cli (the cli row is written by
+    cortex itself). Same shape as the cli rows: wake=1, dry_run=0, reasons
+    tagging the origin, force_slept NULL (a voluntary call is no incident) and
+    the shell stamp the note's force-slept filter reads. Best-effort: None on
+    any error (old DB without the shell column included) — a missing ledger row
+    must never fail the sleep."""
+    import sqlite3
+    from datetime import timezone as _tz
+    try:
+        conn = sqlite3.connect(config.db_path(), timeout=30)
+    except sqlite3.Error:
+        return None
+    try:
+        cur = conn.execute(
+            "INSERT INTO ct_wake_log (ts, wake, dry_run, reasons, shell) "
+            "VALUES (?, 1, 0, 'lie_down', ?)",
+            (datetime.now(_tz.utc).isoformat(), shell))
+        conn.commit()
+        return int(cur.lastrowid)
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def _lie_down_shell(shell: str, next_wake_min: float,
                     rotate: bool = False) -> dict:
     """lie_down for a non-cli shell: the host owns the timing, so this only
@@ -398,7 +425,10 @@ def _lie_down_shell(shell: str, next_wake_min: float,
     rotate=True adds the rotate_pending flag: the host claims it on the kicked
     pass and respawns the resident session (same end-of-window semantics as the
     cli shell's rotate) instead of feeding it a note. next_wake_at still stands,
-    so the fresh session sleeps until the wake booked here."""
+    so the fresh session sleeps until the wake booked here.
+
+    The sleep also lands one ct_wake_log row stamped with this shell, so the
+    ledger records every shell's sleep (_log_shell_sleep_row)."""
     day_max = float(_cortex_toml_section("wake", "next_wake_max", 240))
     mins = max(0.0, min(float(next_wake_min), day_max))
     tz = ZoneInfo(config.load().get("core", {}).get("timezone", "UTC"))
@@ -407,6 +437,7 @@ def _lie_down_shell(shell: str, next_wake_min: float,
     if rotate:
         payload["rotate_pending"] = True
     shell_state_write(payload, shell=shell)
+    _log_shell_sleep_row(shell)
     kicked = _shell_kick(shell)
     hm = when.strftime("%H:%M")
     return {"ok": True, "shell": shell, "next_wake": hm, "kicked": kicked,
