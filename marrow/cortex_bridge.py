@@ -26,6 +26,9 @@ sites into here.
 """
 from __future__ import annotations
 
+import contextlib as _contextlib
+import fcntl as _fcntl
+import json as _json_ws
 import os
 import re as _re
 import shutil
@@ -1043,11 +1046,6 @@ def _cortex_watchdog_pidfile() -> Path:
     return _cortex_path("watchdog_pidfile", "state/watchdog.pid")
 
 
-import contextlib as _contextlib
-import fcntl as _fcntl
-import json as _json_ws
-
-
 @_contextlib.contextmanager
 def _wake_state_lock(p: Path):
     """Blocking exclusive flock on <wake_state>.lock, byte-compatible with
@@ -1514,7 +1512,7 @@ def _handoff_archive_stem(shell: str, old_text: str) -> str:
     start, end = _handoff_page_range(old_text)
     if start is None or start == end:
         return f"{shell}-{end}"
-    s_md, e_md = start[5:], end[5:]  # strip year for the range tail
+    _, e_md = start[5:], end[5:]  # strip year for the range tail
     return f"{shell}-{start}~{e_md}" if start[:4] == end[:4] else f"{shell}-{start}~{end}"
 
 
