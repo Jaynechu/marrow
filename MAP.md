@@ -6,7 +6,7 @@
 
 ## 0. Contents
 
-§1 system map+hooks · §2 write path · §3 read path · §4 storage+recall · §5 surface sync (§5.4 CLI+MCP) · §6 cortex bridge (tl/goals/wishlist/agent_guard) · §7 scheduled jobs · §8 alerts · §9 catchup/self-heal · §10 aging · §11 infra · §12 addons · §13 invariants+status
+§1 system map+hooks · §2 write path · §3 read path · §4 storage+recall · §5 surface sync (§5.4 CLI+MCP) · §6 cortex bridge (tl/goals/wishlist/agent_guard) · §7 scheduled jobs · §8 alerts · §9 catchup/self-heal · §10 aging · §11 infra · §12 addons · §13 invariants+status · §14 sensors
 
 ## 1. System map
 
@@ -228,3 +228,15 @@ Three runtimes:
 **Invariants**: flock every md write · Stop-hook per-turn archive is idempotent by source_hash · 4-flag detach · DB never trusts md free-text inside rendered blocks · journal DELETE + no second conn inside write txn · all DB timestamps UTC.
 
 **Status**: stub = wallet, cheatsheet, profile-render(rows flow once entities populate) · shipped = stickers C2 (MCP: sticker(search/pick) + sticker_admin(ingest/update/delete/pending); sticker_ops.py: sha256+phash dedup, thumb gen; subpage sync live; watcher Finder auto-ingest; nudge counter wx-only 10-turn; /sticker-entry command for batch desc fill; system prompt rules in synapse-wx cc.py) · wip = study/projects child pages (legacy read_only) · deletable = subpages_render legacy fns (verified unreachable) · open bugs/gaps = see system review notes until alert-redesign batches land.
+
+## 14. Sensors
+
+- `marrow/sensors.py` — OwnTracks-compatible HTTP receiver, geofence transitions → location state. Off unless `[sensors].enabled` (default false).
+- Config keys: `port` (default 8043), `bind` (default 0.0.0.0), `auth_user`/`auth_pass` (HTTP Basic, no user = auth open), `silent_alert_hours` (watchdog threshold, ≤0 disables).
+- launchd: `com.marrow.sensors` (`deploy/mw-sensors.plist`, `python -m marrow.sensors`), gated by `install.py _GATED_PLISTS["com.marrow.sensors"] = ("sensors", "enabled")` — install skips writing the plist when disabled; clean exit 0 does not restart (KeepAlive SuccessfulExit=false), so a stale disabled install can't spin.
+- HTTP: `POST /pub`, OwnTracks JSON body, always replies 200 `[]` (protocol contract) regardless of payload validity; any other path → 404.
+- State files: `~/.config/marrow/state/sensors/location.json` (current state) + `transitions.jsonl` (append-only raw payload log, one line per accepted transition).
+- location.json schema: `zone` (current zone name or null), `since` (ISO ts of the last transition, null if cold-start seed), `seeded` (bool, true if state came from an `inregions` cold-start seed not a transition), `prev` (the previous `{event, zone, ts}` reconstructed from state, used to resolve a leave's zone name), `last_seen` (ISO ts of the last accepted POST, any type).
+- Cold-start seed: `_type=location` payload with non-empty `inregions` and no existing `since` → seeds `zone=inregions[0]`, `since=null`, `seeded=true`; only fires once (guarded by `not state.get("since")`).
+- Dedupe: a `_type=transition` payload identical to the reconstructed current event (same event/zone/ts) is dropped — not re-appended to transitions.jsonl, not re-written to location.json (only `last_seen` still updates).
+- Alert: `sensor_silent` (fingerprint `sensor_silent:owntracks`), raised by `check_silent` when no POST landed for `silent_alert_hours`; hourly watchdog thread (`_watchdog_loop`, 3600s interval) inside the same server process.
