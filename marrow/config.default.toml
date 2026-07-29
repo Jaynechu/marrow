@@ -332,6 +332,18 @@ prompt_file = ""
 length_range = "300-800"
 style = "叙述生动有趣，故事性强。文艺中带着搞笑。"
 
+[sensors]
+# OwnTracks-compatible HTTP receiver: any app POSTing the same JSON to /pub
+# works. Off by default — no listener, no state files, no rendered location.
+# auth_user empty = no HTTP Basic check. silent_alert_hours = raise a
+# sensor_silent alert when no POST has arrived for that many hours.
+enabled = false
+port = 8043
+bind = "0.0.0.0"
+auth_user = ""
+auth_pass = ""
+silent_alert_hours = 24
+
 [cortex]
 # Master switch: cortex is an optional autonomous-wake layer living in a separate repo; false = clean marrow, no cortex organs.
 enabled = false
