@@ -25,8 +25,13 @@
   <key>RunAtLoad</key>
   <true/>
 
+  <!-- Crashes restart; a clean exit 0 (sensors disabled in config) does not,
+       so a stale installed plist cannot spin on ThrottleInterval forever. -->
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
 
   <key>ThrottleInterval</key>
   <integer>5</integer>
