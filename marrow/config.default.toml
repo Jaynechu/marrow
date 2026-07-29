@@ -172,7 +172,7 @@ event_context_window = 1
 # data collection results from the parallel stopword agent.
 stopwords = []
 # Per-project recall-off (C3 groundwork, HANDOVER queue item 2): session cwd
-# starting with any entry skips recall injection entirely (hooks.py
+# starting with any entry skips recall injection entirely (hooks/recall_inject.py
 # user_prompt_submit, checked before query construction). Empty = no opt-out.
 # No user-facing command yet — hand-edit this list (parked).
 exclude_cwds = []
