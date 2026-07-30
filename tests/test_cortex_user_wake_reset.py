@@ -763,8 +763,8 @@ def test_presence_state_cli_reads_wake_state(cortex_env):
 
 
 def test_presence_state_tg_reads_its_own_ledger(tg_shell):
-    """The occupancy nudge's presence gate + handoff header must judge a tg window off
-    the tg ledger (host-written last_real_user_ts / session_id), never off cli's."""
+    """The occupancy nudge's presence gate must judge a tg window off the tg
+    ledger (host-written last_real_user_ts), never off cli's."""
     home, shells_dir = tg_shell
     (home / "wake_state.json").write_text(json.dumps({
         "last_user_msg_ts": "2020-01-01T00:00:00+00:00",
@@ -774,7 +774,6 @@ def test_presence_state_tg_reads_its_own_ledger(tg_shell):
         "session_id": "d994b51d-bc04-48ea-a8d7-d72274e28bb3"}))
     ws = cortex_bridge._shell_presence_state()
     assert ws["last_user_msg_ts"] == "2026-07-26T09:46:49+00:00"
-    assert ws["transcript"] == "d994b51d-bc04-48ea-a8d7-d72274e28bb3.jsonl"
     assert cortex_bridge._user_active_within(ws, 15) is False   # stamp is old
 
 
@@ -789,4 +788,3 @@ def test_presence_state_tg_ignores_the_idle_basis(tg_shell):
     ws = cortex_bridge._shell_presence_state()
     assert "last_user_msg_ts" not in ws
     assert cortex_bridge._user_active_within(ws, 15) is False
-    assert ws["transcript"] == "d994b51d-bc04-48ea-a8d7-d72274e28bb3.jsonl"

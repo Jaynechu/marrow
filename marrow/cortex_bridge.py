@@ -1742,31 +1742,6 @@ def _cortex_handoff_page_turn_if_stale() -> None:
         _cortex_page_turn(p, text)
 
 
-def _cortex_handoff_header(ws: dict) -> str:
-    """Build the 'HH:mm-HH:mm | SID xxxxxxxx' line appended to show_text so
-    cortex knows the time range and session id to write into its handoff."""
-    from datetime import timezone as _tz
-    since_raw = ws.get("awake_since")
-    since_str = "??:??"
-    if since_raw:
-        try:
-            since_dt = datetime.fromisoformat(since_raw)
-            if since_dt.tzinfo is None:
-                since_dt = since_dt.replace(tzinfo=_tz.utc)
-            since_str = since_dt.astimezone(config.get_tz()).strftime("%H:%M")
-        except (ValueError, TypeError):
-            pass
-    now_str = datetime.now(config.get_tz()).strftime("%H:%M")
-    transcript_raw = ws.get("transcript")
-    sid = "unknown"
-    if transcript_raw:
-        try:
-            sid = Path(str(transcript_raw)).stem[:8]
-        except (OSError, ValueError):
-            pass
-    return f"{since_str}-{now_str} | SID {sid}"
-
-
 def _user_active_within(ws: dict, minutes: int) -> bool:
     """True when the presence state records a real user message younger than
     *minutes*. Only real user turns stamp last_user_msg_ts; no stamp = treat as
@@ -1786,12 +1761,12 @@ def _user_active_within(ws: dict, minutes: int) -> bool:
 
 
 def _shell_presence_state() -> dict:
-    """Presence + handoff-header view for THIS window's shell. cli reads
-    wake_state.json; a non-cli shell reads its OWN host-written ledger and is
-    normalised onto the same keys, so a tg window never judges presence off the
-    cli shell's state. Presence comes from last_real_user_ts only, with no
-    fallback: last_user_ts is the host's idle basis, which machine rounds reset
-    too. Missing/corrupt -> {} (absent stamp = not active)."""
+    """Presence view for THIS window's shell. cli reads wake_state.json; a
+    non-cli shell reads its OWN host-written ledger and is normalised onto the
+    same keys, so a tg window never judges presence off the cli shell's state.
+    Presence comes from last_real_user_ts only, with no fallback: last_user_ts
+    is the host's idle basis, which machine rounds reset too. Missing/corrupt
+    -> {} (absent stamp = not active)."""
     if _cortex_shell_id() == "cli":
         try:
             return _wake_state_load(_cortex_wake_state_path())
@@ -1804,8 +1779,6 @@ def _shell_presence_state() -> dict:
     out: dict = {}
     if st.get("last_real_user_ts"):
         out["last_user_msg_ts"] = st["last_real_user_ts"]
-    if st.get("session_id"):
-        out["transcript"] = f"{st['session_id']}.jsonl"
     return out
 
 
@@ -1844,7 +1817,4 @@ def _cortex_show_context(tpath: str) -> str:
         return ""
     if silent_min <= 0 and ws.get("user_replied_this_wake"):
         return ""
-    header = _cortex_handoff_header(ws)
-    if header:
-        text = f"{text}\nHandoff section header: {header}"
     return text
