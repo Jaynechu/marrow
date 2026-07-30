@@ -1768,9 +1768,9 @@ def _cortex_handoff_header(ws: dict) -> str:
 
 
 def _user_active_within(ws: dict, minutes: int) -> bool:
-    """True when the wake_state records a real user message younger than
-    *minutes*. No stamp = treat as not-active (silence gate fires). Machine turns
-    never write last_user_msg_ts, so they never count as presence."""
+    """True when the presence state records a real user message younger than
+    *minutes*. Only real user turns stamp last_user_msg_ts; no stamp = treat as
+    not-active, so the silence gate fires."""
     raw = ws.get("last_user_msg_ts")
     if not raw:
         return False
@@ -1788,9 +1788,10 @@ def _user_active_within(ws: dict, minutes: int) -> bool:
 def _shell_presence_state() -> dict:
     """Presence + handoff-header view for THIS window's shell. cli reads
     wake_state.json; a non-cli shell reads its OWN host-written ledger and is
-    normalised onto the same keys (the host writes last_user_ts / session_id), so
-    a tg window never judges presence off the cli shell's state. Missing/corrupt
-    -> {}."""
+    normalised onto the same keys, so a tg window never judges presence off the
+    cli shell's state. Presence comes from last_real_user_ts only, with no
+    fallback: last_user_ts is the host's idle basis, which machine rounds reset
+    too. Missing/corrupt -> {} (absent stamp = not active)."""
     if _cortex_shell_id() == "cli":
         try:
             return _wake_state_load(_cortex_wake_state_path())
@@ -1801,8 +1802,8 @@ def _shell_presence_state() -> dict:
     except Exception:
         return {}
     out: dict = {}
-    if st.get("last_user_ts"):
-        out["last_user_msg_ts"] = st["last_user_ts"]
+    if st.get("last_real_user_ts"):
+        out["last_user_msg_ts"] = st["last_real_user_ts"]
     if st.get("session_id"):
         out["transcript"] = f"{st['session_id']}.jsonl"
     return out
@@ -1820,9 +1821,9 @@ _SHOW_TEXT = (
 
 def _cortex_show_context(tpath: str) -> str:
     """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (soft,
-    ahead of the cortex fuse). Suppressed when user is chatting
-    (user_replied_this_wake). Empty for normal sessions, below threshold,
-    or when show_tokens <= 0 (the off-switch)."""
+    ahead of the cortex fuse). Gate order: cortex shell on -> show_tokens > 0
+    (the off-switch) -> window tokens at/over it -> user not present. Anything
+    that fails returns ""."""
     if not _shell_enabled():
         return ""
     cr = config.load().get("cortex_rotate", {}) or {}
@@ -1835,9 +1836,9 @@ def _cortex_show_context(tpath: str) -> str:
         return ""
     ws = _shell_presence_state()
     # Presence gate: hold the nudge while the user's last real message is younger
-    # than show_silent_min (mid-chat — the fuse is the backstop). It retries
-    # on a later turn while tokens stay over threshold. Falls back to the boolean
-    # user_replied_this_wake when no timestamp is stored (legacy state / gate off).
+    # than show_silent_min (mid-chat — the fuse is the backstop); it retries on a
+    # later turn while tokens stay over threshold. show_silent_min <= 0 turns the
+    # timestamp gate off and falls back to the boolean user_replied_this_wake.
     silent_min = int(cr.get("show_silent_min", 0) or 0)
     if silent_min > 0 and _user_active_within(ws, silent_min):
         return ""

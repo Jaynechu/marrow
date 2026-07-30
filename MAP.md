@@ -170,7 +170,7 @@ Three runtimes:
 - Directed kick (`shell_direct`, `mw shell-direct <text> --shell tg`, /ct-direction): writes `pending_note` + kicks — asleep shell wakes now, live shell takes it next turn, replacing that round's rendered note.
 - Marrow does NOT write `session_id` (the MCP daemon is shared, no reliable per-call sid); the host owns that key.
 - User-wake reset is cli-only (non-cli shell returns early): `wake_state.json` is the cli window's alarm; the non-cli host cancels its own booked wake per inbound message (`synapse_tg.shell.on_user_message`).
-- Presence + handoff-header reads route through `_shell_presence_state()`: cli reads `wake_state.json`; a non-cli shell reads its own ledger, normalised (`last_user_ts` → `last_user_msg_ts`, `session_id` → `transcript`).
+- Presence + handoff-header reads route through `_shell_presence_state()`: cli reads `wake_state.json`; a non-cli shell reads its own ledger, normalised (`last_real_user_ts` → `last_user_msg_ts`, `session_id` → `transcript`). No fallback to `last_user_ts` — that is the host's idle basis, reset by machine rounds too.
 
 ### 6.8 Circuit breaker — the cortex main switch
 - ONE persistent file stops cortex AUTONOMOUS activity (auto wake / window spawn / fed round / watchdog reap) for the shells it covers. Bridges keep running, tg/wx chat is unaffected, manual commands still work. Survives every restart; only an explicit clear releases it. Covers both a short pause AND a long-term disable — no toml editing for either.
