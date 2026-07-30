@@ -420,11 +420,30 @@ def _log_shell_sleep_row(shell: str) -> int | None:
         conn.close()
 
 
-def _lie_down_shell(shell: str, next_wake_min: float,
-                    rotate: bool = False) -> dict:
+def _wake_band_clamp(minutes: float, human_override: bool = False) -> float:
+    """Normalise minutes into cortex's two legal wake bands, read from
+    cortex.toml [wake] (marrow venv cannot import cortex, so the numbers come
+    off the shared config). The gap between the bands is unselectable: a value
+    landing there snaps to the nearer edge. `human_override` (an explicit
+    minutes choice) passes untouched. Mirrors cortex's clamp_next_wake_minutes,
+    which owns the cli path."""
+    if human_override:
+        return float(minutes)
+    hi = float(_cortex_toml_section("wake", "next_wake_max", 360))
+    low_max = float(_cortex_toml_section("wake", "next_wake_low_max", 55))
+    high_min = float(_cortex_toml_section("wake", "next_wake_high_min", 180))
+    mins = max(0.0, min(float(minutes), hi))
+    if low_max < mins < high_min:
+        mins = low_max if mins <= (low_max + high_min) / 2 else high_min
+    return mins
+
+
+def _lie_down_shell(shell: str, next_wake_min: float, rotate: bool = False,
+                    human_override: bool = False) -> dict:
     """lie_down for a non-cli shell: the host owns the timing, so this only
     writes the wake ledger (<shell_state_dir>/<shell>.json) and kicks the host.
-    Minutes are clamped to cortex's [wake].next_wake_max band; 0 = wake now.
+    Minutes are normalised into cortex's legal wake bands (0 = wake now) unless
+    human_override carries an explicit choice through untouched.
 
     rotate=True adds the rotate_pending flag: the host claims it on the kicked
     pass and respawns the resident session (same end-of-window semantics as the
@@ -433,8 +452,7 @@ def _lie_down_shell(shell: str, next_wake_min: float,
 
     The sleep also lands one ct_wake_log row stamped with this shell, so the
     ledger records every shell's sleep (_log_shell_sleep_row)."""
-    day_max = float(_cortex_toml_section("wake", "next_wake_max", 240))
-    mins = max(0.0, min(float(next_wake_min), day_max))
+    mins = _wake_band_clamp(next_wake_min, human_override)
     when = datetime.now(config.get_tz()) + timedelta(minutes=mins)
     payload = {"next_wake_at": when.isoformat()}
     if rotate:
@@ -451,14 +469,15 @@ def lie_down(next_wake_min: float, rotate: bool = False,
              mode: str | None = None, human_override: bool = False) -> dict:
     # Description rendered from cortex config at register() (C9); see
     # _lie_down_doc. Kept minimal here — FastMCP reads __doc__ at registration.
-    # human_override = explicit minutes pierce the rotate clamp band (threaded
-    # straight to cortex's --human-override).
+    # human_override = explicit minutes pierce the wake bands (threaded straight
+    # to cortex's --human-override on the cli path, honoured in-process on the
+    # shell path).
     """lie_down(next_wake_min=N)."""
     shell = _cortex_shell_id()
     if not shell:
         return {"ok": False, "error": "MARROW_CORTEX is not a valid shell id"}
     if shell != "cli":
-        return _lie_down_shell(shell, next_wake_min, rotate)
+        return _lie_down_shell(shell, next_wake_min, rotate, human_override)
     args = ["--next-wake-min", str(next_wake_min)]
     if rotate:
         args += ["--rotate"]
@@ -504,13 +523,16 @@ _DB = config.db_path()
 
 
 def _lie_down_doc() -> str:
-    """C9 (user-final): lie_down description with the clamp range rendered
-    from cortex config — [wake].next_wake_max (T3: 0-day_max for every hour,
-    night band retired). Never hardcoded in the string."""
+    """C9 (user-final): lie_down description with the two legal wake bands
+    rendered from cortex config — [wake].next_wake_low_max /
+    next_wake_high_min / next_wake_max. Never hardcoded in the string."""
+    low_max = int(_cortex_toml_section("wake", "next_wake_low_max", 55))
+    high_min = int(_cortex_toml_section("wake", "next_wake_high_min", 180))
     day_max = int(_cortex_toml_section("wake", "next_wake_max", 360))
-    return (f'lie_down(next_wake_min=N) [N=0-{day_max}]; '
+    band = f'N=0-{low_max} ∪ {high_min}-{day_max}'
+    return (f'lie_down(next_wake_min=N) [{band}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
-            f'[N=0-{day_max}, 0=rotate now]')
+            f'[{band}, 0=rotate now]')
 
 
 def register(marrow_tool, db: str | None = None) -> None:
