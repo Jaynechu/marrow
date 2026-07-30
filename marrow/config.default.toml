@@ -278,13 +278,9 @@ im_quiet_text = ""
 # appends a one-line nudge to wrap up, write the handoff, and
 # lie_down(rotate=True). Normal sessions never see this. The nudge text is
 # mechanism-defining copy (in code) and renders this threshold;
-# show_tokens = 0 is the off-switch.
+# show_tokens = 0 is the off-switch. Only a machine turn (wake bell / free-round
+# / fuse / ctl / command body) carries the nudge; a real user turn never does.
 show_tokens = 150000
-# Behavioural presence gate (mirrors cortex silent_max_min = 15): hold the nudge
-# while the user's last real message is younger than this many minutes (mid-chat
-# — the fuse is the backstop), inject once they have been silent this long. 0 =
-# no gate (fire on the boolean user_replied_this_wake only).
-show_silent_min = 15
 
 [cortex_usage]
 # Net-token visibility (all sessions self-aware). Rendered by usage.py off the

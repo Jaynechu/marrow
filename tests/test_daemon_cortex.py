@@ -430,7 +430,7 @@ def test_shell_gates_go_plain_when_shell_not_listed(monkeypatch):
     monkeypatch.setenv("MARROW_CORTEX", "tg")
     inp = {"tool_name": "mcp__marrow__lie_down", "tool_input": {"rotate": True}}
     assert cortex_bridge._cortex_lie_down_nudge(inp) is None
-    assert cortex_bridge._cortex_show_context("") == ""
+    assert cortex_bridge._cortex_show_context("", None) == ""
 
 
 # ── per-shell state file ──────────────────────────────────────────────────────
@@ -740,7 +740,7 @@ def test_switch_off_show_context_gated_empty(monkeypatch, tmp_path):
     switch off the hook call site never invokes it (call-site gate), and even if
     invoked without MARROW_CORTEX it returns empty."""
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
-    assert cortex_bridge._cortex_show_context(str(tmp_path / "none.jsonl")) == ""
+    assert cortex_bridge._cortex_show_context(str(tmp_path / "none.jsonl"), None) == ""
 
 
 # ── wake v2 (Item 1-3) ────────────────────────────────────────────────────────

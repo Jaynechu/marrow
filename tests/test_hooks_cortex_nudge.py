@@ -177,7 +177,7 @@ def test_hint_stands_alone_when_base_copy_unset(hint_env, monkeypatch):
                cortex={"lie_down_nudge_text": ""}, rotate={"show_tokens": 5_000})
     out = _nudge(hint_env)
     assert out is not None
-    assert out.startswith("Context ≥5k")
+    assert out.startswith("Current session context ≥5k")
     assert "\n" not in out
 
 

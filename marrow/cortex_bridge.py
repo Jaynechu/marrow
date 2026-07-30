@@ -576,8 +576,8 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
 # show_tokens with the 亮牌 nudge and fills {show_k} from it, so the copy never
 # restates the number.
 _LIE_DOWN_OVER_TEXT = (
-    "Context ≥{show_k}k - lie_down(rotate=True) instead, so the next wake "
-    "starts on a clean window."
+    "Current session context ≥{show_k}k - handoff + lie_down(rotate=True) "
+    "instead. Start next wake on a clean window."
 )
 
 
@@ -1777,53 +1777,12 @@ def _cortex_handoff_page_turn_if_stale() -> None:
         _cortex_page_turn(p, text)
 
 
-def _user_active_within(ws: dict, minutes: int) -> bool:
-    """True when the presence state records a real user message younger than
-    *minutes*. Only real user turns stamp last_user_msg_ts; no stamp = treat as
-    not-active, so the silence gate fires."""
-    raw = ws.get("last_user_msg_ts")
-    if not raw:
-        return False
-    from datetime import timezone as _tz
-    try:
-        dt = datetime.fromisoformat(str(raw))
-    except (ValueError, TypeError):
-        return False
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_tz.utc)
-    age = (datetime.now(_tz.utc) - dt).total_seconds()
-    return age < minutes * 60
-
-
-def _shell_presence_state() -> dict:
-    """Presence view for THIS window's shell. cli reads wake_state.json; a
-    non-cli shell reads its OWN host-written ledger and is normalised onto the
-    same keys, so a tg window never judges presence off the cli shell's state.
-    Presence comes from last_real_user_ts only, with no fallback: last_user_ts
-    is the host's idle basis, which machine rounds reset too. Missing/corrupt
-    -> {} (absent stamp = not active)."""
-    if _cortex_shell_id() == "cli":
-        try:
-            return _wake_state_load(_cortex_wake_state_path())
-        except Exception:
-            return {}
-    try:
-        st = shell_state_read()
-    except Exception:
-        return {}
-    out: dict = {}
-    if st.get("last_real_user_ts"):
-        out["last_user_msg_ts"] = st["last_real_user_ts"]
-    return out
-
-
 # Window-occupancy 亮牌 nudge (mechanism-defining copy). show_tokens is the
 # off-switch (<= 0 = inert) and fills {show_k} — the copy never restates the
 # threshold, so config stays the single source.
 _SHOW_TEXT = (
-    "Context ≥{show_k}k - If not actively chatting with user, handoff within 3 "
-    "turns and lie_down(rotate=True) to clear (rotate unlocks a short next_wake, "
-    "≥16min). If mid-conversation: carry on, the fuse is the backstop."
+    "Current session context ≥{show_k}k - handoff within 3 turns and "
+    "lie_down(rotate=True) to clear (rotate unlocks a short next_wake, ≥16min)."
 )
 
 
@@ -1834,29 +1793,21 @@ def _show_tokens() -> int:
     return int(cr.get("show_tokens", 150_000) or 0)
 
 
-def _cortex_show_context(tpath: str) -> str:
+def _cortex_show_context(tpath: str, prompt: str | None) -> str:
     """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (soft,
     ahead of the cortex fuse). Gate order: cortex shell on -> show_tokens > 0
-    (the off-switch) -> window tokens at/over it -> user not present. Anything
-    that fails returns ""."""
+    (the off-switch) -> window tokens at/over it -> the turn is a machine line
+    (is_machine_line: wake bell / free-round / fuse / ctl / command body; an
+    empty prompt counts as machine too). A real user turn never carries the
+    nudge — mid-chat the fuse is the backstop. Anything that fails returns ""."""
     if not _shell_enabled():
         return ""
     show = _show_tokens()
     if show <= 0:
         return ""
-    text = _SHOW_TEXT.format(show_k=round(show / 1000))
     from .hooks import _window_tokens_from_transcript
     if _window_tokens_from_transcript(tpath) < show:
         return ""
-    ws = _shell_presence_state()
-    # Presence gate: hold the nudge while the user's last real message is younger
-    # than show_silent_min (mid-chat — the fuse is the backstop); it retries on a
-    # later turn while tokens stay over threshold. show_silent_min <= 0 turns the
-    # timestamp gate off and falls back to the boolean user_replied_this_wake.
-    cr = config.load().get("cortex_rotate", {}) or {}
-    silent_min = int(cr.get("show_silent_min", 0) or 0)
-    if silent_min > 0 and _user_active_within(ws, silent_min):
+    if not is_machine_line(prompt or ""):
         return ""
-    if silent_min <= 0 and ws.get("user_replied_this_wake"):
-        return ""
-    return text
+    return _SHOW_TEXT.format(show_k=round(show / 1000))
