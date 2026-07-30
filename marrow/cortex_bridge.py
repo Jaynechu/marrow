@@ -551,7 +551,10 @@ def register(marrow_tool, db: str | None = None) -> None:
 def _cortex_lie_down_nudge(inp: dict) -> str | None:
     """Non-blocking PreToolUse additionalContext for every cortex lie_down call:
     reminds the session to log/handoff. Never denies. rotate arg selects the
-    rotate copy. Cortex window + lie_down only; None otherwise."""
+    rotate copy. A plain (rotate falsy) call from a window at/over the show
+    threshold also carries the rotate-instead hint — no presence gate here,
+    lie_down means the conversation is over. Either line can stand alone when
+    the other's copy is unset. Cortex window + lie_down only; None otherwise."""
     if not _shell_enabled():
         return None
     if inp.get("tool_name") != "mcp__marrow__lie_down":
@@ -560,10 +563,42 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     wants_rotate = bool(ti.get("rotate"))
     cx = config.load().get("cortex", {}) or {}
     key = "lie_down_nudge_rotate_text" if wants_rotate else "lie_down_nudge_text"
-    text = cx.get(key)
+    lines = [str(cx.get(key) or "").strip()]
+    if not wants_rotate:
+        lines.append(_lie_down_rotate_hint(inp.get("transcript_path"), cx))
+    text = "\n".join(ln for ln in lines if ln)
     if not text:
         return None
     return _fill_handoff(text)
+
+
+# Rotate-instead hint for a plain lie_down on an over-threshold window. Shares
+# show_tokens with the 亮牌 nudge and fills {show_k} from it, so the copy never
+# restates the number.
+_LIE_DOWN_OVER_TEXT = (
+    "Context ≥{show_k}k - lie_down(rotate=True) instead, so the next wake "
+    "starts on a clean window."
+)
+
+
+def _lie_down_rotate_hint(tpath: str | None, cx: dict) -> str:
+    """The over-threshold half of the plain-lie_down nudge. Override
+    [cortex].lie_down_over_threshold_text ({show_k} = the threshold in k);
+    blank -> no hint. "" when the threshold is off, the window is under it, or
+    the transcript is missing/unreadable (occupancy reads 0)."""
+    show = _show_tokens()
+    if show <= 0:
+        return ""
+    if "lie_down_over_threshold_text" in cx:
+        tmpl = str(cx.get("lie_down_over_threshold_text") or "").strip()
+        if not tmpl:
+            return ""
+    else:
+        tmpl = _LIE_DOWN_OVER_TEXT
+    from .hooks import _window_tokens_from_transcript
+    if _window_tokens_from_transcript(str(tpath or "")) < show:
+        return ""
+    return tmpl.format(show_k=round(show / 1000))
 
 
 # MARROW_CORTEX values that mean "the default (cli) shell": unset, or the
@@ -1792,6 +1827,13 @@ _SHOW_TEXT = (
 )
 
 
+def _show_tokens() -> int:
+    """[cortex_rotate].show_tokens — the window-occupancy threshold shared by the
+    UserPromptSubmit 亮牌 and the lie_down rotate hint. <= 0 = both inert."""
+    cr = config.load().get("cortex_rotate", {}) or {}
+    return int(cr.get("show_tokens", 150_000) or 0)
+
+
 def _cortex_show_context(tpath: str) -> str:
     """Cortex-only (MARROW_CORTEX=1) window-occupancy 亮牌 at show_tokens (soft,
     ahead of the cortex fuse). Gate order: cortex shell on -> show_tokens > 0
@@ -1799,8 +1841,7 @@ def _cortex_show_context(tpath: str) -> str:
     that fails returns ""."""
     if not _shell_enabled():
         return ""
-    cr = config.load().get("cortex_rotate", {}) or {}
-    show = int(cr.get("show_tokens", 150_000) or 0)
+    show = _show_tokens()
     if show <= 0:
         return ""
     text = _SHOW_TEXT.format(show_k=round(show / 1000))
@@ -1812,6 +1853,7 @@ def _cortex_show_context(tpath: str) -> str:
     # than show_silent_min (mid-chat — the fuse is the backstop); it retries on a
     # later turn while tokens stay over threshold. show_silent_min <= 0 turns the
     # timestamp gate off and falls back to the boolean user_replied_this_wake.
+    cr = config.load().get("cortex_rotate", {}) or {}
     silent_min = int(cr.get("show_silent_min", 0) or 0)
     if silent_min > 0 and _user_active_within(ws, silent_min):
         return ""
