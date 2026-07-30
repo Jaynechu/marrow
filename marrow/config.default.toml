@@ -476,7 +476,6 @@ window_hours = 24
 # Notification copy. {count} = fuses in window, {hours} = window_hours,
 # {scope} = all/cli/tg. Display text — customise freely.
 trip_message = "Circuit breaker tripped: fuse #{count} within {hours}h. Cortex autonomous activity paused ({scope}). Clear with ct-wake."
-clear_message = "Circuit breaker cleared — cortex autonomous activity resumed."
 
 [outbox]
 # Cross-channel message drop (msg MCP tool → outbox table → channel adapters).

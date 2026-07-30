@@ -12,6 +12,7 @@ Run: read `venv_python` and `repo_root` from `[cortex]` in `~/.config/marrow/con
 
 - Default scope is **all shells** (cli + tg).
 - One shell only: `<venv_python> -m cortex.ctl pause --shell cli` (or `--shell tg`).
+- Single-shell pauses MERGE, never replace: pause cli then pause tg = both held (scope becomes `all`), and pausing one shell while scope is already `all` leaves `all` standing. Release per shell with `/ct-wake tg|cli`.
 - A live cli window is put down through the normal proxy lie_down on the way.
 - Check the current state any time: `<venv_python> -m cortex.ctl status`.
 
