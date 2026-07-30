@@ -552,8 +552,7 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     """Non-blocking PreToolUse additionalContext for every cortex lie_down call:
     reminds the session to log/handoff. Never denies. rotate arg selects the
     rotate copy. A plain (rotate falsy) call from a window at/over the show
-    threshold also carries the rotate-instead hint — no presence gate here,
-    lie_down means the conversation is over. Either line can stand alone when
+    threshold also carries the rotate-instead hint. Either line can stand alone when
     the other's copy is unset. Cortex window + lie_down only; None otherwise."""
     if not _shell_enabled():
         return None
@@ -1525,10 +1524,9 @@ def _cortex_user_wake_reset(inp: dict) -> None:
         d["gen"] = old_gen + 1
         new_gen = d["gen"]
         d["user_replied_this_wake"] = True
-        # Stamp the real user-message time so presence gates (e.g. the
-        # occupancy nudge) can hold while the user is actively chatting and fire once
-        # they have gone silent. Caller already excluded machine lines, so this
-        # never counts an injected/machine turn as user presence.
+        # Stamp the real user-message time — cortex's watchdog reads it for
+        # idle tracking. Caller already excluded machine lines, so a machine
+        # turn never counts as user activity.
         from datetime import timezone as _tz_u
         d["last_user_msg_ts"] = datetime.now(_tz_u.utc).isoformat()
         # A user arrival resets the free-round silence cycle: drop the pending
