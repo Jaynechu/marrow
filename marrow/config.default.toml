@@ -399,6 +399,9 @@ handoff_carry_heading = "### 前情"
 # variant.
 lie_down_nudge_text = "Append one line to {handoff} - HH:mm <Activity> - <describe in one sentence>【desire】"
 lie_down_nudge_rotate_text = "Update {handoff} before rotate. Add todo if any."
+# transfer PreToolUse nudge (non-blocking). {handoff} = the handoff path. Blank
+# = no nudge.
+transfer_nudge_text = "Update {handoff} before transfer. Add todo if any."
 # Wake pipeline (v2). The ear is a Monitor tailing wake_signal_log_file; cortex
 # appends the human-text bell line to it, which surfaces as a user turn. Paths
 # for the note and signal log default to <home>/<file> (override with an

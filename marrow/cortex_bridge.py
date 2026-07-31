@@ -510,6 +510,27 @@ def lie_down(next_wake_min: float, rotate: bool = False,
     return out
 
 
+def transfer() -> dict:
+    # Description set at register() from _TRANSFER_DOC (user-final copy kept in
+    # one place); FastMCP reads __doc__ at registration.
+    """transfer()."""
+    shell = _cortex_shell_id()
+    if not shell:
+        return {"ok": False, "error": "MARROW_CORTEX is not a valid shell id"}
+    out = _run_cortex_module("cortex.duty", ["--transfer", shell])
+    # cortex.duty prints the outcome (or its refusal) as JSON on a clean exit;
+    # an unparseable stdout leaves the subprocess result standing.
+    if out.get("ok"):
+        try:
+            import json as _json
+            data = _json.loads(out.get("stdout") or "{}")
+            if isinstance(data, dict) and data:
+                return data
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
 def say() -> dict:
     """Pop-up the window to seek attention. Use when you really want to find me."""
     return _run_cortex_module("cortex.say")
@@ -535,6 +556,11 @@ def _lie_down_doc() -> str:
             f'[{band}, 0=rotate now]')
 
 
+# transfer description (user-final). Zero args: the target is the other shell.
+_TRANSFER_DOC = ("transfer(): transfer between cortex shells (cli<->tg) - hold "
+                 "current one and kick the other. Update handoff first.")
+
+
 def register(marrow_tool, db: str | None = None) -> None:
     """Install the cortex MCP tools onto the daemon when [cortex].enabled.
 
@@ -543,10 +569,11 @@ def register(marrow_tool, db: str | None = None) -> None:
       - wish registers for ALL sessions;
       - first / goal are PENDING — not registered anywhere yet (no injection
         mechanism wired; keep the functions + storage, just don't expose them);
-      - lie_down / say register ONLY in a cortex session (_CORTEX, the
-        import-time MARROW_CORTEX capture — the original inner env gate) whose
-        shell id is listed in [cortex].shells (shell resolved lazily here);
-        lie_down serves every listed shell, say the cli shell only.
+      - lie_down / transfer / say register ONLY in a cortex session (_CORTEX,
+        the import-time MARROW_CORTEX capture — the original inner env gate)
+        whose shell id is listed in [cortex].shells (shell resolved lazily
+        here); lie_down and transfer serve every listed shell, say the cli
+        shell only.
     Idempotent per process (FastMCP tolerates re-adding the same tool name)."""
     global _DB
     if db is not None:
@@ -562,6 +589,8 @@ def register(marrow_tool, db: str | None = None) -> None:
         # at registration (C9) — never hardcoded in the docstring.
         lie_down.__doc__ = _lie_down_doc()
         marrow_tool()(lie_down)
+        transfer.__doc__ = _TRANSFER_DOC
+        marrow_tool()(transfer)
         if shell == "cli":
             marrow_tool()(say)
 
@@ -591,6 +620,28 @@ def _cortex_lie_down_nudge(inp: dict) -> str | None:
     if not text:
         return None
     return _fill_handoff(text)
+
+
+_DEFAULT_TRANSFER_NUDGE = "Update {handoff} before transfer. Add todo if any."
+
+
+def _cortex_transfer_nudge(inp: dict) -> str | None:
+    """Non-blocking PreToolUse additionalContext for every cortex transfer call:
+    the handoff is what the incoming shell reads, so it goes first. Override
+    [cortex].transfer_nudge_text; blank -> inject nothing. Cortex window +
+    transfer only; None otherwise."""
+    if not _shell_enabled():
+        return None
+    if inp.get("tool_name") != "mcp__marrow__transfer":
+        return None
+    cx = config.load().get("cortex", {}) or {}
+    if "transfer_nudge_text" in cx:
+        tmpl = str(cx.get("transfer_nudge_text") or "").strip()
+        if not tmpl:
+            return None
+    else:
+        tmpl = _DEFAULT_TRANSFER_NUDGE
+    return _fill_handoff(tmpl)
 
 
 # Rotate-instead hint for a plain lie_down on an over-threshold window. Shares
