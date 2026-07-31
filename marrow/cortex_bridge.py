@@ -327,7 +327,8 @@ def _cortex_paths() -> tuple[str, str]:
             str(c.get("repo_root") or "").strip())
 
 
-def _run_cortex_module(module: str, extra_args: list[str] | None = None) -> dict:
+def _run_cortex_module(module: str, extra_args: list[str] | None = None,
+                       timeout: float = 30) -> dict:
     py, root = _cortex_paths()
     if not py or not root:
         return {"ok": False, "error": "cortex not configured "
@@ -336,9 +337,10 @@ def _run_cortex_module(module: str, extra_args: list[str] | None = None) -> dict
     root = str(Path(root).expanduser())
     cmd = [py, "-m", module] + (extra_args or [])
     try:
-        p = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=30)
+        p = subprocess.run(cmd, cwd=root, capture_output=True, text=True,
+                           timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"{module} timed out after 30s"}
+        return {"ok": False, "error": f"{module} timed out after {timeout:g}s"}
     except OSError as exc:
         return {"ok": False, "error": f"{module} failed to launch: {exc}"}
     if p.returncode != 0:
@@ -510,6 +512,21 @@ def lie_down(next_wake_min: float, rotate: bool = False,
     return out
 
 
+_DEFAULT_TRANSFER_TIMEOUT = 240.0
+
+
+def _transfer_timeout() -> float:
+    """[cortex].transfer_timeout_sec — ceiling for the whole duty transition
+    subprocess. Must stay above cortex's own wake ceiling (an unheard bell on a
+    live cli window costs [wake].ear_timeout_sec twice, bell + retype ladder),
+    or a normal-but-slow handover is killed mid-wake."""
+    cx = config.load().get("cortex", {}) or {}
+    try:
+        return float(cx.get("transfer_timeout_sec") or _DEFAULT_TRANSFER_TIMEOUT)
+    except (TypeError, ValueError):
+        return _DEFAULT_TRANSFER_TIMEOUT
+
+
 def transfer() -> dict:
     # Description set at register() from _TRANSFER_DOC (user-final copy kept in
     # one place); FastMCP reads __doc__ at registration.
@@ -517,7 +534,8 @@ def transfer() -> dict:
     shell = _cortex_shell_id()
     if not shell:
         return {"ok": False, "error": "MARROW_CORTEX is not a valid shell id"}
-    out = _run_cortex_module("cortex.duty", ["--transfer", shell])
+    out = _run_cortex_module("cortex.duty", ["--transfer", shell],
+                             timeout=_transfer_timeout())
     # cortex.duty prints the outcome (or its refusal) as JSON on a clean exit;
     # an unparseable stdout leaves the subprocess result standing.
     if out.get("ok"):
@@ -1803,9 +1821,14 @@ def _build_fresh_page(template_text: str, todos: list[str], carry: list[str]) ->
 
 
 def _cortex_page_turn(p: Path, old_text: str) -> None:
-    """Archive the full page and replace it with a fresh template carrying
-    unchecked todos + the last handoff_carry_lines activity lines. Best-effort:
-    any failure leaves the file in place (the next SessionStart retries)."""
+    """Copy the full page into the archive, then swap in a fresh template
+    carrying unchecked todos + the last handoff_carry_lines activity lines.
+
+    Failure-safe by construction: the old page is COPIED (never moved), the new
+    page is composed in a temp file beside it, and one os.replace publishes it —
+    so any failure mid-way leaves the live handoff untouched and the next
+    SessionStart retries. A failed swap drops the archive copy it just made, so
+    the retry lands on the same name instead of a -2 twin."""
     cx = config.load().get("cortex", {}) or {}
     home_p = Path(cx.get("home") or "~/.config/marrow/cortex").expanduser()
     archive_dir = home_p / (cx.get("handoff_archive_dir") or "handoff_archive")
@@ -1836,6 +1859,8 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
                 carry = body[-carry_n:]
                 break
 
+    dest = None
+    tmp = p.with_name(f"{p.name}.tmp.{os.getpid()}")
     try:
         archive_dir.mkdir(parents=True, exist_ok=True)
         stem = _handoff_archive_stem(old_text)
@@ -1844,12 +1869,17 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
         while dest.exists():
             n += 1
             dest = archive_dir / f"{stem}-{n}.md"
-        shutil.move(str(p), str(dest))
+        shutil.copy2(str(p), str(dest))
 
-        p.write_text(_build_fresh_page(template_text, todos, carry),
-                     encoding="utf-8")
+        tmp.write_text(_build_fresh_page(template_text, todos, carry),
+                       encoding="utf-8")
+        os.replace(tmp, p)
     except OSError:
-        pass
+        with _contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        if dest is not None:
+            with _contextlib.suppress(OSError):
+                dest.unlink(missing_ok=True)
 
 
 def _cortex_handoff_page_turn_if_stale() -> None:

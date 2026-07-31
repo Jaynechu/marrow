@@ -402,6 +402,11 @@ lie_down_nudge_rotate_text = "Update {handoff} before rotate. Add todo if any."
 # transfer PreToolUse nudge (non-blocking). {handoff} = the handoff path. Blank
 # = no nudge.
 transfer_nudge_text = "Update {handoff} before transfer. Add todo if any."
+# Ceiling (seconds) on the transfer subprocess — the whole duty transition,
+# including the incoming cli window's wake. Keep it above cortex's own wake
+# ceiling (bell + retype ladder = 2x [wake].ear_timeout_sec) or a slow-but-normal
+# handover is killed mid-wake.
+transfer_timeout_sec = 240
 # Wake pipeline (v2). The ear is a Monitor tailing wake_signal_log_file; cortex
 # appends the human-text bell line to it, which surfaces as a user turn. Paths
 # for the note and signal log default to <home>/<file> (override with an
@@ -477,7 +482,7 @@ fuse_threshold = 2
 window_hours = 24
 # Notification copy. {count} = fuses in window, {hours} = window_hours,
 # {scope} = all/cli/tg. Display text — customise freely.
-trip_message = "Circuit breaker tripped: fuse #{count} within {hours}h. Cortex autonomous activity paused ({scope}). Clear with ct-duty."
+trip_message = "Circuit breaker tripped: fuse #{count} within {hours}h. Cortex autonomous activity paused ({scope}). Clear with ct-duty cli|tg|all."
 
 [outbox]
 # Cross-channel message drop (msg MCP tool → outbox table → channel adapters).

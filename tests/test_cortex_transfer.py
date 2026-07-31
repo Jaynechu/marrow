@@ -91,7 +91,7 @@ def test_transfer_takes_no_arguments(monkeypatch):
 def calls(monkeypatch):
     seen = []
 
-    def _run(module, extra_args=None):
+    def _run(module, extra_args=None, timeout=None):
         seen.append((module, list(extra_args or [])))
         return {"ok": True, "stdout": json.dumps(
             {"ok": True, "shell": "cli", "target": "tg", "hold": "cli"})}
@@ -191,3 +191,32 @@ def test_nudge_silent_outside_a_cortex_shell(monkeypatch):
     _force_cortex(monkeypatch)
     assert cortex_bridge._cortex_transfer_nudge(
         {"tool_name": "mcp__marrow__transfer", "tool_input": {}}) is None
+
+
+# --- subprocess ceiling -------------------------------------------------------
+
+def test_transfer_outlasts_the_cortex_wake_ceiling(monkeypatch):
+    """The incoming cli window's wake polls its transcript for up to two
+    ear_timeout_sec (bell + retype ladder); a shorter ceiling would kill a
+    slow-but-normal handover mid-wake."""
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    _force_cortex(monkeypatch)
+    seen = {}
+
+    def _run(module, extra_args=None, timeout=None):
+        seen["timeout"] = timeout
+        return {"ok": True, "stdout": "{}"}
+
+    monkeypatch.setattr(cortex_bridge, "_run_cortex_module", _run)
+    cortex_bridge.transfer()
+    assert seen["timeout"] >= 200
+
+
+def test_transfer_timeout_is_config_driven(monkeypatch):
+    _force_cortex(monkeypatch, transfer_timeout_sec=90)
+    assert cortex_bridge._transfer_timeout() == 90.0
+
+
+def test_bad_transfer_timeout_falls_back_to_the_default(monkeypatch):
+    _force_cortex(monkeypatch, transfer_timeout_sec="soon")
+    assert cortex_bridge._transfer_timeout() == cortex_bridge._DEFAULT_TRANSFER_TIMEOUT

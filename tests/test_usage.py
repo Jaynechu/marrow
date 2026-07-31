@@ -356,6 +356,31 @@ def test_page_turn_collision_suffix(tmp_path, monkeypatch):
     assert (archive_dir / f"{today}-2.md").exists()
 
 
+def test_page_turn_write_failure_keeps_the_live_page(tmp_path, monkeypatch):
+    """A failed swap must never cost the handoff: the old page stays live, the
+    half-made archive copy and the temp page are cleaned up, and the next
+    SessionStart retries onto the same archive name."""
+    logs = [f"- l{i}" for i in range(160)]
+    today = datetime.now(config.get_tz()).date().isoformat()
+    body = _handoff_body(["[] survive"], logs, log_date=today)
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
+
+    def _boom(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(cortex_bridge.os, "replace", _boom)
+    cortex_bridge._cortex_handoff_page_turn_if_stale()
+
+    assert hp.read_text(encoding="utf-8") == body
+    assert list((home / "handoff_archive").glob("*.md")) == []
+    assert list(home.glob("handoff.md.tmp*")) == []
+
+    monkeypatch.undo()
+    _page_setup(tmp_path, monkeypatch, body)
+    cortex_bridge._cortex_handoff_page_turn_if_stale()
+    assert (home / "handoff_archive" / f"{today}.md").exists()
+
+
 def test_page_turn_same_file_for_every_shell(tmp_path, monkeypatch):
     body = _handoff_body(["[] t"], ["- l"])
     home, hp = _page_setup(tmp_path, monkeypatch, body, shell="tg")
