@@ -52,7 +52,7 @@ def test_nudge_plain_lie_down(tmp_path, monkeypatch, capsys):
     hso = _out(capsys)
     want = config.load()["cortex"]["lie_down_nudge_text"].split("{handoff}")[0]
     assert want in hso["additionalContext"]
-    assert "handoff-cli.md" in hso["additionalContext"]
+    assert "handoff.md" in hso["additionalContext"]
     assert "permissionDecision" not in hso
 
 
@@ -64,7 +64,7 @@ def test_nudge_rotate_uses_rotate_copy(tmp_path, monkeypatch, capsys):
     # fresh handoff so the deny gate stays open — rotate copy still selected
     home = tmp_path / "cortex"
     home.mkdir(parents=True, exist_ok=True)
-    hp = home / "handoff-cli.md"
+    hp = home / "handoff.md"
     hp.write_text("note", encoding="utf-8")
     _stdin(monkeypatch, {"tool_name": "mcp__marrow__lie_down",
                          "transcript_path": str(jl), "tool_input": {"rotate": True}})

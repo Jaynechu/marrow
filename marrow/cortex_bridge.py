@@ -625,8 +625,8 @@ def _lie_down_rotate_hint(tpath: str | None, cx: dict) -> str:
 # MARROW_CORTEX values that mean "the default (cli) shell": unset, or the
 # legacy boolean marker from before the var carried a shell id.
 _LEGACY_CLI_MARKERS = frozenset({"1", "true", "yes", "on"})
-# A shell id names files (handoff-<shell>.md, <shell>.json) and is passed as a
-# subprocess argument, so it must be a bare token.
+# A shell id names files (<shell>.json) and is passed as a subprocess argument,
+# so it must be a bare token.
 _SHELL_ID_RE = _re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _bad_shell_id_warned: set[str] = set()
 
@@ -665,18 +665,15 @@ def _cortex_shell_id() -> str | None:
 
 
 def _cortex_handoff_path():
-    """<[cortex].home>/handoff-<shell>.md — the per-shell handoff file a fresh
-    cortex window reads at SessionStart. None on config error or unusable
-    shell id."""
-    shell = _cortex_shell_id()
-    if not shell:
+    """<[cortex].home>/<handoff_file> — one handoff shared by every shell. None
+    on config error or unusable shell id (a refused window touches no cortex
+    state)."""
+    if not _cortex_shell_id():
         return None
     try:
         cx = config.load().get("cortex", {}) or {}
         home = (cx.get("home") or "~/.config/marrow/cortex")
-        pattern = (cx.get("handoff_file_pattern") or "handoff-{shell}.md")
-        name = pattern.replace("{shell}", shell)
-        return Path(home).expanduser() / name
+        return Path(home).expanduser() / (cx.get("handoff_file") or "handoff.md")
     except Exception:
         return None
 
@@ -918,11 +915,10 @@ def wakeup_note_text(transcript_path: str | None = None,
     back to the frozen file (config wakeup_note_file under home). None when both
     yield nothing so the caller injects nothing.
 
-    `shell` defaults to this window's shell id (MARROW_CORTEX) — the same
-    resolver the handoff file uses. Both paths are shell-scoped: the fresh
-    render passes --shell, and the fallback slices THIS shell's section out of
-    the sectioned note file (never another shell's, and never the heading —
-    that line is display-only)."""
+    `shell` defaults to this window's shell id (MARROW_CORTEX). Both paths are
+    shell-scoped: the fresh render passes --shell, and the fallback slices THIS
+    shell's section out of the sectioned note file (never another shell's, and
+    never the heading — that line is display-only)."""
     shell = shell or _cortex_shell_id()
     if not shell:
         return None
@@ -1029,8 +1025,8 @@ def fuse_prompt_text() -> str | None:
 
 
 def _fill_handoff(text: str) -> str:
-    """Render {handoff} as this shell's own handoff path (shared by the lie_down
-    nudge + the FUSE body); bare "handoff" when the path is unresolvable."""
+    """Render {handoff} as the handoff path (shared by the lie_down nudge + the
+    FUSE body); bare "handoff" when the path is unresolvable."""
     p = _cortex_handoff_path()
     return text.replace("{handoff}", str(p) if p is not None else "handoff")
 
@@ -1650,6 +1646,43 @@ def kick_cortex(kind: str, note_id=None, minutes=None) -> None:
 _HANDOFF_LOG_DATE_RE = _re.compile(r"^###\s*(\d{4}-\d{2}-\d{2})\b")
 _HANDOFF_UNCHECKED_RE = _re.compile(r"^\s*(?:-\s*)?\[\s*\]")
 _HANDOFF_HEADING_RE = _re.compile(r"^#{1,6}\s")
+_HANDOFF_LOCK_WAIT = 5.0
+_HANDOFF_LOCK_POLL = 0.02
+
+
+@_contextlib.contextmanager
+def _handoff_lock(p: Path):
+    """Exclusive flock on the sibling <handoff>.lock. Yields True when held,
+    False when unavailable — an unlocked turn would archive the same page
+    twice, so the caller skips and the next SessionStart retries."""
+    fd = None
+    got = False
+    try:
+        lp = p.parent / (p.name + ".lock")
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lp), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        fd = None
+    if fd is not None:
+        deadline = time.monotonic() + _HANDOFF_LOCK_WAIT
+        while True:
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                got = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_HANDOFF_LOCK_POLL)
+    try:
+        yield got
+    finally:
+        if fd is not None:
+            if got:
+                with _contextlib.suppress(OSError):
+                    _fcntl.flock(fd, _fcntl.LOCK_UN)
+            with _contextlib.suppress(OSError):
+                os.close(fd)
 
 
 def _handoff_headings() -> tuple[str, str, str]:
@@ -1689,13 +1722,13 @@ def _handoff_page_range(old_text: str) -> tuple[str | None, str]:
     return None, end
 
 
-def _handoff_archive_stem(shell: str, old_text: str) -> str:
-    """{shell}-{date} single day, {shell}-{date~date} range."""
+def _handoff_archive_stem(old_text: str) -> str:
+    """{date} single day, {date~date} range."""
     start, end = _handoff_page_range(old_text)
     if start is None or start == end:
-        return f"{shell}-{end}"
-    _, e_md = start[5:], end[5:]  # strip year for the range tail
-    return f"{shell}-{start}~{e_md}" if start[:4] == end[:4] else f"{shell}-{start}~{end}"
+        return end
+    e_md = end[5:]  # strip year for the range tail
+    return f"{start}~{e_md}" if start[:4] == end[:4] else f"{start}~{end}"
 
 
 def _build_fresh_page(template_text: str, todos: list[str], carry: list[str]) -> str:
@@ -1754,7 +1787,7 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
 
     try:
         archive_dir.mkdir(parents=True, exist_ok=True)
-        stem = _handoff_archive_stem(_cortex_shell_id(), old_text)
+        stem = _handoff_archive_stem(old_text)
         dest = archive_dir / f"{stem}.md"
         n = 1
         while dest.exists():
@@ -1769,32 +1802,27 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
 
 
 def _cortex_handoff_page_turn_if_stale() -> None:
-    """Line-count page-turn side effect for a fresh cortex window: own handoff
-    over handoff_max_lines -> archive + fresh template carrying todos/activity.
-    First cli run migrates a legacy handoff.md -> handoff-cli.md (one-time mv).
-    Under the line cap or unreadable -> no-op. No content returned; the cortex
+    """Line-count page-turn side effect for a fresh cortex window: handoff over
+    handoff_max_lines -> archive + fresh template carrying todos/activity. Under
+    the line cap or unreadable -> no-op. Read and turn share one flock so two
+    shells starting together turn the page once. No content returned; the cortex
     CLAUDE.md memory import is the sole read path."""
     p = _cortex_handoff_path()
     if p is None:
         return
-    # One-time legacy migration: handoff.md -> handoff-cli.md (cli only).
-    if _cortex_shell_id() == "cli" and not p.exists():
-        legacy = p.parent / "handoff.md"
-        if legacy.exists():
-            try:
-                shutil.move(str(legacy), str(p))
-            except OSError:
-                pass
-    try:
-        text = p.read_text(encoding="utf-8")
-    except OSError:
-        return
-    if not text.strip():
-        return
-    cx = config.load().get("cortex", {}) or {}
-    max_lines = int(cx.get("handoff_max_lines", 150) or 0)
-    if max_lines > 0 and len(text.splitlines()) > max_lines:
-        _cortex_page_turn(p, text)
+    with _handoff_lock(p) as held:
+        if not held:
+            return
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            return
+        if not text.strip():
+            return
+        cx = config.load().get("cortex", {}) or {}
+        max_lines = int(cx.get("handoff_max_lines", 150) or 0)
+        if max_lines > 0 and len(text.splitlines()) > max_lines:
+            _cortex_page_turn(p, text)
 
 
 # Window-occupancy 亮牌 nudge (mechanism-defining copy). show_tokens is the
