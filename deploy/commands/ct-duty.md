@@ -13,9 +13,9 @@ One command, scope by argument — `<venv_python> -m cortex.ctl duty <cli|tg|off
 3. **off** — both held. Nothing autonomous runs on either side.
 4. **all** — nothing held, both kicked (tg first).
 
-Order inside a swap is fixed: the hold lands on disk before any kick, so the two shells are never active at the same instant. The incoming shell resumes its old window unless it is over `[duty].fresh_token_threshold` or older than `[duty].fresh_age_hours` — then it spawns fresh and the old window is closed.
+Order inside a swap is fixed: the hold lands on disk before any kick, so the two shells are never active at the same instant. The incoming shell resumes its old window unless it is over `[duty].fresh_token_threshold` or older than `[duty].fresh_age_hours` — then it spawns fresh; the retired window is left open for the user to close.
 
-The mode argument is required and must be one of the four; anything else exits non-zero without touching state. `[duty].enabled = false` (cortex config) refuses the same way.
+The mode argument is required and must be one of the four; anything else exits non-zero without touching state.
 
 Do not spawn, resume or put down any window yourself — the CLI owns both pipelines. Plumbing that stays available for narrower work: `cortex.ctl pause|wake|resume [--shell cli|tg]` (breaker only, no duty change).
 
