@@ -527,14 +527,17 @@ def _transfer_timeout() -> float:
         return _DEFAULT_TRANSFER_TIMEOUT
 
 
-def transfer() -> dict:
+def transfer(rotate: bool = False) -> dict:
     # Description set at register() from _TRANSFER_DOC (user-final copy kept in
     # one place); FastMCP reads __doc__ at registration.
     """transfer()."""
     shell = _cortex_shell_id()
     if not shell:
         return {"ok": False, "error": "MARROW_CORTEX is not a valid shell id"}
-    out = _run_cortex_module("cortex.duty", ["--transfer", shell],
+    args = ["--transfer", shell]
+    if rotate:
+        args.append("--rotate")
+    out = _run_cortex_module("cortex.duty", args,
                              timeout=_transfer_timeout())
     # cortex.duty prints the outcome (or its refusal) as JSON on a clean exit;
     # an unparseable stdout leaves the subprocess result standing.
@@ -574,9 +577,10 @@ def _lie_down_doc() -> str:
             f'[{band}, 0=rotate now]')
 
 
-# transfer description (user-final). Zero args: the target is the other shell.
+# transfer description (user-final). The target is always the other shell.
 _TRANSFER_DOC = ("transfer(): transfer between cortex shells (cli<->tg) - hold "
-                 "current one and kick the other. Update handoff first.")
+                 "current one and kick the other. Update handoff first. "
+                 "transfer(rotate=True) to rotate current session.")
 
 
 def register(marrow_tool, db: str | None = None) -> None:

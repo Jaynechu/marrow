@@ -77,12 +77,13 @@ def test_registered_description_is_the_contract_copy(monkeypatch):
     tools = _register_as(monkeypatch, "cli", shells=["cli", "tg"])
     assert tools["transfer"].description == (
         "transfer(): transfer between cortex shells (cli<->tg) - hold current "
-        "one and kick the other. Update handoff first.")
+        "one and kick the other. Update handoff first. transfer(rotate=True) "
+        "to rotate current session.")
 
 
-def test_transfer_takes_no_arguments(monkeypatch):
+def test_transfer_takes_only_the_rotate_flag(monkeypatch):
     tools = _register_as(monkeypatch, "cli", shells=["cli", "tg"])
-    assert tools["transfer"].parameters.get("properties", {}) == {}
+    assert list(tools["transfer"].parameters.get("properties", {})) == ["rotate"]
 
 
 # --- routing ------------------------------------------------------------------
@@ -117,6 +118,12 @@ def test_tg_caller_transfers_from_tg(monkeypatch, calls):
     monkeypatch.setenv("MARROW_CORTEX", "tg")
     cortex_bridge.transfer()
     assert calls == [("cortex.duty", ["--transfer", "tg"])]
+
+
+def test_rotate_rides_along_as_a_flag(monkeypatch, calls):
+    monkeypatch.setenv("MARROW_CORTEX", "tg")
+    cortex_bridge.transfer(rotate=True)
+    assert calls == [("cortex.duty", ["--transfer", "tg", "--rotate"])]
 
 
 def test_bad_shell_id_never_reaches_cortex(monkeypatch, calls):
