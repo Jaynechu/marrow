@@ -129,8 +129,8 @@ def test_bad_shell_id_never_reaches_cortex(monkeypatch, calls):
 def test_refusal_payload_is_surfaced(monkeypatch):
     monkeypatch.setenv("MARROW_CORTEX", "cli")
     monkeypatch.setattr(cortex_bridge, "_run_cortex_module", lambda *a, **k: {
-        "ok": True, "stdout": json.dumps({"ok": False, "error": "duty disabled"})})
-    assert cortex_bridge.transfer() == {"ok": False, "error": "duty disabled"}
+        "ok": True, "stdout": json.dumps({"ok": False, "error": "breaker held"})})
+    assert cortex_bridge.transfer() == {"ok": False, "error": "breaker held"}
 
 
 def test_unparseable_stdout_leaves_the_subprocess_result(monkeypatch):

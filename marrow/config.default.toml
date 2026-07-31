@@ -477,7 +477,7 @@ fuse_threshold = 2
 window_hours = 24
 # Notification copy. {count} = fuses in window, {hours} = window_hours,
 # {scope} = all/cli/tg. Display text — customise freely.
-trip_message = "Circuit breaker tripped: fuse #{count} within {hours}h. Cortex autonomous activity paused ({scope}). Clear with ct-wake."
+trip_message = "Circuit breaker tripped: fuse #{count} within {hours}h. Cortex autonomous activity paused ({scope}). Clear with ct-duty."
 
 [outbox]
 # Cross-channel message drop (msg MCP tool → outbox table → channel adapters).
@@ -529,7 +529,7 @@ exclude_target_channels = []
 # Render-layer noise filter (applies to every replay path). Rows are only hidden
 # from the replay block — nothing is deleted from events.
 # drop_slash_commands: hide turns that are a bare slash command (/clear, /info,
-#   /ct-wake ...). Matched only when the WHOLE trimmed message is one line, the
+#   /ct-duty ...). Matched only when the WHOLE trimmed message is one line, the
 #   command token holds no further "/" (so a pasted /Users/... path survives),
 #   and the message is shorter than slash_command_max_chars. A "/" inside a
 #   sentence is never matched.
