@@ -1828,7 +1828,10 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
     page is composed in a temp file beside it, and one os.replace publishes it —
     so any failure mid-way leaves the live handoff untouched and the next
     SessionStart retries. A failed swap drops the archive copy it just made, so
-    the retry lands on the same name instead of a -2 twin."""
+    the retry lands on the same name instead of a -2 twin. A failed swap also
+    raises one alert (deduped, so a persistent failure updates the same row
+    instead of flooding new ones) since a silent retry-forever would
+    otherwise go unnoticed."""
     cx = config.load().get("cortex", {}) or {}
     home_p = Path(cx.get("home") or "~/.config/marrow/cortex").expanduser()
     archive_dir = home_p / (cx.get("handoff_archive_dir") or "handoff_archive")
@@ -1874,12 +1877,23 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
         tmp.write_text(_build_fresh_page(template_text, todos, carry),
                        encoding="utf-8")
         os.replace(tmp, p)
-    except OSError:
+    except OSError as exc:
         with _contextlib.suppress(OSError):
             tmp.unlink(missing_ok=True)
         if dest is not None:
             with _contextlib.suppress(OSError):
                 dest.unlink(missing_ok=True)
+        try:
+            from . import repo
+            repo.add_alert(
+                "warn", "cortex_page_turn_failed", "cortex_page_turn_failed",
+                source="cortex_bridge.py",
+                message=f"cortex handoff page-turn failed, retrying next"
+                        f" SessionStart: {exc}",
+                db=config.db_path(),
+            )
+        except Exception:  # noqa: BLE001 — a broken alert path must not break the retry
+            pass
 
 
 def _cortex_handoff_page_turn_if_stale() -> None:

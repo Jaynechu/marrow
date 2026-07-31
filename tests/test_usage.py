@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from marrow import config, cortex_bridge, hooks, storage, usage
+from marrow import config, cortex_bridge, hooks, repo, storage, usage
 
 
 def _assistant(cache_creation=0, output=0, cache_read=0, input_=0):
@@ -359,11 +359,16 @@ def test_page_turn_collision_suffix(tmp_path, monkeypatch):
 def test_page_turn_write_failure_keeps_the_live_page(tmp_path, monkeypatch):
     """A failed swap must never cost the handoff: the old page stays live, the
     half-made archive copy and the temp page are cleaned up, and the next
-    SessionStart retries onto the same archive name."""
+    SessionStart retries onto the same archive name. It also raises exactly
+    one alert via the existing repo.add_alert mechanism."""
     logs = [f"- l{i}" for i in range(160)]
     today = datetime.now(config.get_tz()).date().isoformat()
     body = _handoff_body(["[] survive"], logs, log_date=today)
     home, hp = _page_setup(tmp_path, monkeypatch, body)
+
+    calls = []
+    monkeypatch.setattr(repo, "add_alert",
+                        lambda *a, **k: calls.append((a, k)) or 1)
 
     def _boom(src, dst):
         raise OSError("no space left on device")
@@ -375,10 +380,32 @@ def test_page_turn_write_failure_keeps_the_live_page(tmp_path, monkeypatch):
     assert list((home / "handoff_archive").glob("*.md")) == []
     assert list(home.glob("handoff.md.tmp*")) == []
 
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[0] == "warn"
+    assert args[1] == "cortex_page_turn_failed"
+    assert args[2] == "cortex_page_turn_failed"
+    assert "no space left on device" in kwargs["message"]
+
     monkeypatch.undo()
     _page_setup(tmp_path, monkeypatch, body)
     cortex_bridge._cortex_handoff_page_turn_if_stale()
     assert (home / "handoff_archive" / f"{today}.md").exists()
+
+
+def test_page_turn_success_writes_no_alert(tmp_path, monkeypatch):
+    """The success path must never touch the alert mechanism."""
+    logs = [f"- HH:mm: line{i}" for i in range(160)]
+    body = _handoff_body(["[] survive"], logs)
+    home, hp = _page_setup(tmp_path, monkeypatch, body)
+
+    calls = []
+    monkeypatch.setattr(repo, "add_alert",
+                        lambda *a, **k: calls.append((a, k)) or 1)
+
+    cortex_bridge._cortex_handoff_page_turn_if_stale()
+
+    assert calls == []
 
 
 def test_page_turn_same_file_for_every_shell(tmp_path, monkeypatch):
