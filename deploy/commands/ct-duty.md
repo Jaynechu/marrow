@@ -1,5 +1,5 @@
 ---
-description: Cortex — rotate duty and kick shell. Args: cli | tg | off | all.
+description: Cortex — rotate duty and/or kick shell. Args: cli | tg | off | all.
 ---
 
 ⚙️ [CMD ct-duty] Decide which cortex shell is **on duty**. At most one runs; the other is held. This is also the release for a manual pause or an automatic fuse trip — the command clears the breaker first.
