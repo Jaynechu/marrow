@@ -19,4 +19,6 @@ The mode argument is required and must be one of the four; anything else exits n
 
 Do not spawn, resume or put down any window yourself — the CLI owns both pipelines. Plumbing that stays available for narrower work: `cortex.ctl pause|wake|resume [--shell cli|tg]` (breaker only, no duty change).
 
+Pausing or resuming a single shell WITHOUT changing who is on duty -> /ct-pause, never map that request onto a duty mode.
+
 Report the one-line output in plain words (breaker cleared? / new mode + hold / which shell woke, fresh or resumed / cli put down). To inspect state first: `<venv_python> -m cortex.ctl status`.
