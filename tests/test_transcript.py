@@ -632,6 +632,26 @@ def test_strip_media_markers():
     assert transcript.strip_media_markers("") == ""
 
 
+def test_strip_media_markers_keeps_paragraph_structure():
+    # tag on its own line: the line goes, ONE blank line survives between the
+    # paragraphs it separated
+    assert transcript.strip_media_markers(
+        '早\n\n<gif path="/a.gif"/>\n\n吃了吗') == "早\n\n吃了吗"
+    assert transcript.strip_media_markers(
+        '早\n\n   <gif path="/a.gif"/>   \n\n吃了吗') == "早\n\n吃了吗"
+    # single break stays single; consecutive marker lines fold into one break
+    assert transcript.strip_media_markers(
+        '早\n<gif path="/a.gif"/>\n吃') == "早\n吃"
+    assert transcript.strip_media_markers(
+        'a\n<image path="/a.png"/>\n<gif path="/b.gif"/>\nb') == "a\nb"
+    # inline tag leaves exactly one space, never a double
+    assert transcript.strip_media_markers(
+        'hey <image path="/a.png"/> there') == "hey there"
+    # text without a tag is returned untouched, long blank runs included
+    assert transcript.strip_media_markers(
+        "plain\n\n\n\ntext") == "plain\n\n\n\ntext"
+
+
 def test_strip_media_markers_drops_the_tg_quote_marker():
     assert transcript.strip_media_markers(
         "<quote>你别管了</quote>好，那两个我不碰。") == "好，那两个我不碰。"
@@ -657,4 +677,4 @@ def test_media_markers_are_stripped_at_write_time(tmp_path):
                      "content": '<file path="/tmp/a.pdf"/>'}},
     ])
     rows = transcript.clean(jl)
-    assert [r["content"] for r in rows] == ["早安", "早 吃了吗"]
+    assert [r["content"] for r in rows] == ["早安", "早\n\n吃了吗"]

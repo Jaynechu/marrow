@@ -88,7 +88,12 @@ _WX_DOT_SENTINEL_RE = re.compile(r"^\.\s*$", re.M)
 # media tags. Recall reads rows as stored; the consumption-point calls (replay
 # render, hooks/state.py, recall) stay as backstops for older rows. NOT a
 # row-drop — leaves surrounding dialogue intact.
-_MEDIA_TAG_RE = re.compile(r'\s*<(?:image|file|gif)\s+path="[^"]*?"[^>]*>\s*')
+_MEDIA_TAG_RE = re.compile(r'<(?:image|file|gif)\s+path="[^"]*?"[^>]*>')
+_MEDIA_SENTINEL = "\x00"
+_MEDIA_OWN_LINE_RE = re.compile(
+    rf"^[ \t]*(?:{_MEDIA_SENTINEL}[ \t]*)+\n?", re.M)
+_MEDIA_INLINE_RE = re.compile(rf"[ \t]*{_MEDIA_SENTINEL}[ \t]*")
+_BLANK_RUN_RE = re.compile(r"\n{3,}")
 _WX_TIME_PREFIX_RE = re.compile(r"^\[time:[^\]]+\]\s*")
 _STICKER_LINE_RE = re.compile(r"^\[sticker:[^\]\n]*\]\n?", re.M)
 # tg reply-target protocol: a LEADING <quote>fragment</quote> tells the bridge
@@ -98,6 +103,18 @@ _STICKER_LINE_RE = re.compile(r"^\[sticker:[^\]\n]*\]\n?", re.M)
 _TG_QUOTE_PREFIX_RE = re.compile(r"^\s*<quote>.*?</quote>\s*", re.DOTALL)
 
 
+def _strip_media_tags(text: str) -> str:
+    """Remove media tags while keeping paragraph structure: a tag sitting on its
+    own line takes the line with it (one blank line survives between the
+    paragraphs it separated), a tag inside a line leaves a single space."""
+    if not _MEDIA_TAG_RE.search(text):
+        return text
+    text = _MEDIA_TAG_RE.sub(_MEDIA_SENTINEL, text)
+    text = _MEDIA_OWN_LINE_RE.sub("", text)
+    text = _MEDIA_INLINE_RE.sub(" ", text)
+    return _BLANK_RUN_RE.sub("\n\n", text)
+
+
 def strip_media_markers(text: str) -> str:
     """Strip media tags + bridge protocol markers from stored event content.
 
@@ -105,7 +122,7 @@ def strip_media_markers(text: str) -> str:
       1. Leading ``[time: ...]`` wx anchor prefix.
       2. ``[sticker: ...]`` marker lines.
       3. Leading ``<quote>...</quote>`` tg reply-target marker.
-      4. ``<image|file|gif path="..."/>`` media tags (→ single space).
+      4. ``<image|file|gif path="..."/>`` media tags, newline-preserving.
 
     Returns the result stripped of leading/trailing whitespace. Safe on plain
     text — every pattern is specific enough to be a no-op.
@@ -115,7 +132,7 @@ def strip_media_markers(text: str) -> str:
     text = _WX_TIME_PREFIX_RE.sub("", text)
     text = _STICKER_LINE_RE.sub("", text)
     text = _TG_QUOTE_PREFIX_RE.sub("", text, count=1)
-    return _MEDIA_TAG_RE.sub(" ", text).strip()
+    return _strip_media_tags(text).strip()
 
 
 def strip_wx_boilerplate(text: str) -> str:
