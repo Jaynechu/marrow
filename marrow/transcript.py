@@ -78,29 +78,34 @@ _WX_MERGE_NOTE_RE = re.compile(r"^\[bridge:[^\]]*\]\n?", re.M)
 # 3. Lone "." sentinel — a pure-media bubble arrives as body "." + instruction.
 #    After patterns 1 & 2 are stripped this may leave a bare dot line.
 _WX_DOT_SENTINEL_RE = re.compile(r"^\.\s*$", re.M)
-# NOTE: the wx-bridge "[time: ...]" prefix is intentionally NOT stripped here —
-# it is retained in stored content and removed only at each consumption point
-# (hooks._WX_TIME_PREFIX_RE, recall needle build). See test_wx_boilerplate_strip.
+# NOTE: the wx-bridge "[time: ...]" prefix is not handled here — strip_media_markers
+# owns it. See test_wx_boilerplate_strip.
 
 
-# ── media / bridge-marker strip (shared consumption-point shaper) ────────────
-# Applied where stored event content is surfaced or embedded: strip the wx
-# time-anchor prefix, bare [sticker: ...] marker lines, and <image|file|gif
-# path="..."/> media tags down to whitespace. Recall (embed + row passthrough)
-# and the cortex Replay renderer share this so the same row reads identically
-# everywhere. NOT a row-drop — leaves surrounding dialogue intact.
+# ── media / bridge-marker strip (write-time shaper) ──────────────────────────
+# Applied in rows_from_records, so archived content carries no wx time-anchor
+# prefix, no bare [sticker: ...] marker lines and no <image|file|gif path="..."/>
+# media tags. Recall reads rows as stored; the consumption-point calls (replay
+# render, hooks/state.py, recall) stay as backstops for older rows. NOT a
+# row-drop — leaves surrounding dialogue intact.
 _MEDIA_TAG_RE = re.compile(r'\s*<(?:image|file|gif)\s+path="[^"]*?"[^>]*>\s*')
 _WX_TIME_PREFIX_RE = re.compile(r"^\[time:[^\]]+\]\s*")
 _STICKER_LINE_RE = re.compile(r"^\[sticker:[^\]\n]*\]\n?", re.M)
+# tg reply-target protocol: a LEADING <quote>fragment</quote> tells the bridge
+# which message to reply to and is removed before sending, so the reader never
+# sees it and the fragment is an echo of an already-archived row. Leading-only
+# so prose discussing the tag keeps flowing.
+_TG_QUOTE_PREFIX_RE = re.compile(r"^\s*<quote>.*?</quote>\s*", re.DOTALL)
 
 
 def strip_media_markers(text: str) -> str:
-    """Strip media tags + wx bridge markers from stored event content.
+    """Strip media tags + bridge protocol markers from stored event content.
 
     Removes (in order):
       1. Leading ``[time: ...]`` wx anchor prefix.
       2. ``[sticker: ...]`` marker lines.
-      3. ``<image|file|gif path="..."/>`` media tags (→ single space).
+      3. Leading ``<quote>...</quote>`` tg reply-target marker.
+      4. ``<image|file|gif path="..."/>`` media tags (→ single space).
 
     Returns the result stripped of leading/trailing whitespace. Safe on plain
     text — every pattern is specific enough to be a no-op.
@@ -109,6 +114,7 @@ def strip_media_markers(text: str) -> str:
         return ""
     text = _WX_TIME_PREFIX_RE.sub("", text)
     text = _STICKER_LINE_RE.sub("", text)
+    text = _TG_QUOTE_PREFIX_RE.sub("", text, count=1)
     return _MEDIA_TAG_RE.sub(" ", text).strip()
 
 
@@ -383,6 +389,10 @@ def rows_from_records(records: list[dict], *, channel: str = "cli",
     over *records* (CC `/rewind` leaves isSidechain=False on rewound turns, so
     the chain walk is what excludes them). Records without a uuid keep the
     prior behavior (never chain-filtered).
+
+    Surviving rows are shaped by strip_media_markers before they are emitted, so
+    archived content holds no media tags or wx bridge markers; a row that is
+    nothing but markers ends up empty and is dropped.
     """
     if active is None:
         active = _active_chain_uuids(records)
@@ -410,6 +420,9 @@ def rows_from_records(records: list[dict], *, channel: str = "cli",
             # cortex-injected machine line, never memory. Trace each drop so a
             # mis-tuned marker (over/under-filtering) is diagnosable.
             logger.debug("transcript: dropped machine-marker row: %r", text[:60])
+            continue
+        text = strip_media_markers(text)
+        if not text:
             continue
         rows.append({
             "session_id": o.get("sessionId") or o.get("session_id") or "",
