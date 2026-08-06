@@ -71,6 +71,19 @@ def test_between_zones_renders_out(env):
     assert presence.render("s1").startswith("📍 out (45m) · ")
 
 
+@pytest.mark.parametrize("minutes,expected", [
+    (45, "45m"), (60, "1h0m"), (135, "2h15m"), (23 * 60 + 59, "23h59m"),
+    (24 * 60, "1d0h"), (25 * 60, "1d1h"), (3 * 24 * 60 + 2 * 60, "3d2h"),
+])
+def test_duration_tiers(minutes, expected):
+    assert presence._duration(minutes * 60) == expected
+
+
+def test_long_stay_renders_days_not_raw_hours(env):
+    _write_location(env, {"zone": "Home", "since": _ago(24 * 60 + 23)})
+    assert presence.render("s1").startswith("📍 Home (1d0h) · ")
+
+
 def test_idle_over_threshold_renders_inactive(env, monkeypatch):
     monkeypatch.setattr(presence, "_frontmost_app", lambda: "Safari")
     monkeypatch.setattr(presence, "_idle_seconds", lambda: 25 * 60)
@@ -111,6 +124,34 @@ def test_everything_unknown_renders_empty(env, monkeypatch):
     monkeypatch.setattr(presence, "_frontmost_app", lambda: None)
     monkeypatch.setattr(presence, "_idle_seconds", lambda: None)
     assert presence.render("s1") == ""
+
+
+def test_probes_run_concurrently(env, monkeypatch):
+    delay = 0.3
+
+    def _slow_app():
+        time.sleep(delay)
+        return "Safari"
+
+    def _slow_idle():
+        time.sleep(delay)
+        return 0
+
+    monkeypatch.setattr(presence, "_frontmost_app", _slow_app)
+    monkeypatch.setattr(presence, "_idle_seconds", _slow_idle)
+    start = time.monotonic()
+    assert presence._activity_piece(30) == "💻 Active: Safari"
+    elapsed = time.monotonic() - start
+    assert elapsed < delay * 1.6
+
+
+def test_probe_exception_degrades_instead_of_raising(env, monkeypatch):
+    def _boom():
+        raise RuntimeError("wedged")
+
+    monkeypatch.setattr(presence, "_idle_seconds", _boom)
+    _write_location(env, {"zone": "Home", "since": _ago(30)})
+    assert presence.render("s1") == "📍 Home (30m)"
 
 
 def test_probes_are_never_spawned_for_real(env, monkeypatch):

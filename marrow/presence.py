@@ -16,13 +16,14 @@ import os
 import re
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
 from . import config
 from .paths import paths
 
-_PROBE_TIMEOUT_S = 3
+_PROBE_TIMEOUT_S = 1.5
 _DEFAULT_INTERVAL_MIN = 30
 _DEFAULT_AWAY_IDLE_MIN = 30
 _DEFAULT_CHANNELS = ("cli", "tg", "wx")
@@ -41,10 +42,16 @@ def _stamp_file(sid: str) -> Path:
 
 
 def _duration(seconds: float) -> str:
+    """<60m -> `45m`; <24h -> `2h15m`; else `2d2h` (minutes dropped at that
+    scale). Same tiers as the cortex wake-note location line, so one moment
+    never renders two ways."""
     minutes = max(0, int(seconds) // 60)
     if minutes < 60:
         return f"{minutes}m"
-    return f"{minutes // 60}h{minutes % 60}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h{minutes % 60}m"
+    return f"{hours // 24}d{hours % 24}h"
 
 
 def _parse_local(ts: str, tz) -> datetime:
@@ -108,12 +115,24 @@ def _frontmost_app() -> str | None:
     return name
 
 
+def _probe() -> tuple[str | None, int | None]:
+    """Both probes at once — they sit on the user-visible turn path, so the
+    worst case is one timeout, not the sum of two."""
+    def _safe(fn):
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        app = pool.submit(_safe, _frontmost_app)
+        idle = pool.submit(_safe, _idle_seconds)
+        return app.result(), idle.result()
+
+
 def _activity_piece(away_idle_min: int) -> str:
-    app = _frontmost_app()
-    if not app:
-        return ""
-    idle = _idle_seconds()
-    if idle is None:
+    app, idle = _probe()
+    if not app or idle is None:
         return ""
     if idle >= away_idle_min * 60:
         return f"💻 Inactive: {_duration(idle)} {app}"
