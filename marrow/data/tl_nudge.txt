@@ -1,4 +1,4 @@
-Approved text (Lumi 07-21). Replace this file (or point [tl_nudge].text_file at your own) with zero code change. {last_tl} = HH:mm of this session's last tl.
+Replace this file (or point [tl_nudge].text_file at your own) with zero code change. {last_tl} = HH:mm of this session's last tl.
 ---
 It has been 10 turns since your last tl ({last_tl}).
 - If coding/study: keep one tl per session — update it when things change.
