@@ -114,6 +114,270 @@ def _usage_threshold_context(sid: str, tpath: str) -> str:
         return ""
 
 
+def _last_app_segment(ti: dict) -> str:
+    """Return a '📱 {app} {age}' segment from pings_file, or '' if off/unavailable."""
+    try:
+        from pathlib import Path as _Path
+
+        pf = (ti.get("pings_file") or "").strip()
+        if not pf:
+            return ""
+        ppath = _Path(pf).expanduser()
+        try:
+            entries = json.loads(ppath.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        if not isinstance(entries, list):
+            return ""
+
+        now_utc = datetime.now(timezone.utc)
+        last_app: str = ""
+        last_dt: datetime | None = None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            app = (entry.get("app") or "").strip()
+            if not app:
+                continue
+            ts_str = (entry.get("ts") or "").strip()
+            try:
+                dt = datetime.fromisoformat(ts_str)
+            except Exception:
+                continue
+            last_app = app
+            last_dt = dt
+
+        if not last_app or last_dt is None:
+            return ""
+
+        age_s = (now_utc - last_dt.astimezone(timezone.utc)).total_seconds()
+        if age_s < 60:
+            return f"📱 {last_app} 刚刚"
+        elif age_s < 3600:
+            return f"📱 {last_app} {int(age_s // 60)}m前"
+        else:
+            return f"📱 {last_app} {int(age_s // 3600)}h前"
+    except Exception:
+        return ""
+
+
+def _phone_app_fragment(sid: str) -> str:
+    """Independent per-session gate for the 📱 phone-app segment.
+
+    Reads the latest ping from [turn_inject].pings_file. Emits
+    '📱 {app} {age}' ONLY when the latest ping ts differs from the
+    stored ts for this session (i.e. new phone activity since last emit).
+    On emit, updates state/pings_inject/<sid>. Returns '' when off,
+    on read errors, or when no new ping exists.
+
+    First turn of a session: emits if a ping exists (fresh context).
+    """
+    try:
+        ti = config.load().get("turn_inject", {}) or {}
+        pf = (ti.get("pings_file") or "").strip()
+        if not pf:
+            return ""
+
+        from pathlib import Path as _Path
+
+        ppath = _Path(pf).expanduser()
+        try:
+            entries = json.loads(ppath.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        if not isinstance(entries, list):
+            return ""
+
+        now_utc = datetime.now(timezone.utc)
+        last_app: str = ""
+        last_dt: datetime | None = None
+        last_ts_str: str = ""
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            app = (entry.get("app") or "").strip()
+            if not app:
+                continue
+            ts_str = (entry.get("ts") or "").strip()
+            try:
+                dt = datetime.fromisoformat(ts_str)
+            except Exception:
+                continue
+            last_app = app
+            last_dt = dt
+            last_ts_str = ts_str
+
+        if not last_app or last_dt is None:
+            return ""
+
+        # Gate: only emit if this ping ts is new since last emit for this session.
+        state_dir = config.DATA_DIR / "state" / "pings_inject"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_file = state_dir / sid
+
+        stored_ts: str = ""
+        try:
+            stored_ts = state_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+
+        if stored_ts == last_ts_str:
+            return ""
+
+        # New ping — emit and stamp.
+        age_s = (now_utc - last_dt.astimezone(timezone.utc)).total_seconds()
+        if age_s < 60:
+            seg = f"📱 {last_app} 刚刚"
+        elif age_s < 3600:
+            seg = f"📱 {last_app} {int(age_s // 60)}m前"
+        else:
+            seg = f"📱 {last_app} {int(age_s // 3600)}h前"
+
+        try:
+            state_file.write_text(last_ts_str, encoding="utf-8")
+        except Exception:
+            pass
+
+        return seg
+    except Exception:
+        return ""
+
+
+def _vitals_fragment(sid: str) -> str:
+    """Phone-vitals one-liner for per-turn context injection (config-gated).
+
+    Reads cfg from [turn_inject].vitals_file. Returns "" when off, on read
+    errors, or when the throttle gate blocks emission. On emit, writes
+    state/vitals_inject/<sid> JSON so subsequent calls can gate correctly.
+    """
+    try:
+        ti = config.load().get("turn_inject", {}) or {}
+        vf = (ti.get("vitals_file") or "").strip()
+        if not vf:
+            return ""
+
+        import math
+        from pathlib import Path as _Path
+
+        vpath = _Path(vf).expanduser()
+        try:
+            raw = json.loads(vpath.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+
+        # Strip stray leading/trailing spaces from keys (some producers add them).
+        snap = {k.strip(): v for k, v in raw.items()}
+
+        interval_min = int(ti.get("vitals_interval_min", 60) or 60)
+        stale_min = int(ti.get("vitals_stale_min", 90) or 90)
+        zones = ti.get("vitals_zones") or []
+
+        # Parse timestamp.
+        ts_str = snap.get("ts", "")
+        snap_dt: datetime | None = None
+        try:
+            snap_dt = datetime.fromisoformat(ts_str)
+        except Exception:
+            pass
+
+        age_s: float = float("inf")
+        if snap_dt is not None:
+            age_s = (datetime.now(timezone.utc) - snap_dt.astimezone(timezone.utc)).total_seconds()
+
+        stale = age_s > stale_min * 60
+
+        # Resolve zone label.
+        lat_s = snap.get("lat", "")
+        lon_s = snap.get("lon", "")
+        zone_label: str = ""
+        try:
+            lat = float(lat_s)
+            lon = float(lon_s)
+            best_dist = float("inf")
+            for z in zones:
+                zlat = float(z.get("lat", 0))
+                zlon = float(z.get("lon", 0))
+                r = float(z.get("radius_m", 300))
+                # Equirectangular approx in metres.
+                dlat = math.radians(lat - zlat) * 6_371_000
+                dlon = math.radians(lon - zlon) * 6_371_000 * math.cos(math.radians(zlat))
+                dist = math.sqrt(dlat ** 2 + dlon ** 2)
+                if dist <= r and dist < best_dist:
+                    best_dist = dist
+                    zone_label = str(z.get("name", ""))
+            if not zone_label:
+                zone_label = f"外面({lat:.4f},{lon:.4f})"
+        except Exception:
+            zone_label = ""
+
+        # Throttle state.
+        state_dir = config.DATA_DIR / "state" / "vitals_inject"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        state_file = state_dir / sid
+
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        last_ts: float = 0.0
+        last_zone: str = ""
+        try:
+            st = json.loads(state_file.read_text(encoding="utf-8"))
+            last_ts = float(st.get("ts", 0))
+            last_zone = str(st.get("zone", ""))
+        except Exception:
+            pass
+
+        first_turn = last_ts == 0.0
+        zone_changed = (zone_label != last_zone) and not stale
+        interval_elapsed = (now_epoch - last_ts) >= interval_min * 60
+
+        if not first_turn and not zone_changed and not interval_elapsed:
+            return ""
+
+        # Build the line.
+        batt = snap.get("battery_pct", "")
+        temp = snap.get("temperature", "")
+        weather = snap.get("weather", "")
+        steps = snap.get("steps_today", "")
+
+        if stale:
+            # Stale warning line.
+            age_total = int(age_s)
+            h, rem = divmod(age_total, 3600)
+            m = rem // 60
+            age_str = (f"{h}h{m}m" if h else f"{m}m") if (h or m) else f"{age_total}s"
+            local_time = ""
+            if snap_dt is not None:
+                tz_local = config.get_tz()
+                local_time = snap_dt.astimezone(tz_local).strftime("%H:%M")
+            parts = [f"📍 ⚠️ 手机{age_str}没上报 · 最后: {zone_label}"]
+            if batt:
+                parts.append(f"🔋{batt}%")
+            if local_time:
+                parts.append(f"({local_time})")
+            line = " ".join(parts)
+        else:
+            segments = [f"📍 {zone_label}"]
+            if batt:
+                segments.append(f"🔋{batt}%")
+            if temp or weather:
+                segments.append(f"{temp} {weather}".strip())
+            if steps:
+                segments.append(f"今日{steps}步")
+            line = " · ".join(segments)
+
+        # Write state.
+        try:
+            state_file.write_text(
+                json.dumps({"ts": now_epoch, "zone": zone_label}),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+        return line
+    except Exception:
+        return ""
+
+
 def turn_inject() -> int:
     """Inject current time + delta since last reply, plus the B8 kickout
     nudge (config [kickout]) and the throttled presence line (config
@@ -180,7 +444,11 @@ def turn_inject() -> int:
         wx_replay = f"\n\n{wx_replay}" if wx_replay else ""
         wx_own = _outbound_notes(sid, channel)
         wx_own = f"\n\n{wx_own}" if wx_own else ""
-        wx_ctx = f"{wx_sched}{wx_tl}{wx_presence}{wx_kick}{wx_replay}{wx_own}".strip()
+        vit = _vitals_fragment(sid)
+        vit_full = f"\n\n{vit}" if vit else ""
+        app = _phone_app_fragment(sid)
+        app_full = f"\n\n{app}" if app else ""
+        wx_ctx = f"{vit_full}{app_full}{wx_sched}{wx_tl}{wx_presence}{wx_kick}{wx_replay}{wx_own}".strip()
         if wx_ctx:
             json.dump(
                 {"hookSpecificOutput": {
@@ -241,7 +509,11 @@ def turn_inject() -> int:
     replay_full = f"\n\n{replay_ctx}" if replay_ctx else ""
     own_ctx = _outbound_notes(sid, channel)
     own_full = f"\n\n{own_ctx}" if own_ctx else ""
-    ctx = (f"# Context — {now_str}{delta}{sched_ctx}{tl_ctx}{presence_ctx}{care_ctx}"
+    vit = _vitals_fragment(sid)
+    vit_full = f"\n\n{vit}" if vit else ""
+    app = _phone_app_fragment(sid)
+    app_full = f"\n\n{app}" if app else ""
+    ctx = (f"# Context — {now_str}{delta}{vit_full}{app_full}{sched_ctx}{tl_ctx}{presence_ctx}{care_ctx}"
            f"{kickout_full}{show_full}{usage_full}{replay_full}{own_full}")
     json.dump(
         {"hookSpecificOutput": {
