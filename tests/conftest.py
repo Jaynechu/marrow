@@ -242,9 +242,9 @@ def _redirect_marrow_data_dir(tmp_path_factory):
     mp.setattr(config, "sub_pages_path",
                lambda: str(vault / "db-pages"))
 
-    # cortex writes (wake_signal.log / wake_audit.log / wake_state.json /
-    # wishlist.md) resolve from [cortex].home — a config VALUE defaulting to the
-    # REAL ~/.config/marrow/cortex, NOT derived from DATA_DIR. Without this a
+    # cortex writes (wake_signal.log / wake_audit.log / wake_state.json)
+    # resolve from [cortex].home — a config VALUE defaulting to the REAL
+    # ~/.config/marrow/cortex, NOT derived from DATA_DIR. Without this a
     # test-rendered free-round note leaked into the live ear channel (07-14
     # incident). Wrap config.load so every cortex file lands under tmp.
     _real_load = config.load
@@ -253,7 +253,6 @@ def _redirect_marrow_data_dir(tmp_path_factory):
         cfg = _real_load()
         cx = dict(cfg.get("cortex", {}) or {})
         cx["home"] = str(cortex_home)
-        cx["wishlist_path"] = ""  # derive from the tmp home
         cfg["cortex"] = cx
         return cfg
 

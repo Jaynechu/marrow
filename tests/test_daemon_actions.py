@@ -1,6 +1,6 @@
 """Action-dispatch coverage for the 12-tool MCP surface rebuild (07-06):
 tl clear, dim upsert/query/delete (all kinds), sticker/sticker_admin/alert
-dispatch validation, event_clear filters, first untick/list.
+dispatch validation, event_clear filters.
 """
 from __future__ import annotations
 
@@ -536,52 +536,6 @@ def test_alert_list_unresolved_only(env):
 def test_alert_resolve_requires_id(env):
     out = daemon.alert("resolve")
     assert out["ok"] is False
-
-
-# ── first untick/list ────────────────────────────────────────────────────────
-
-def test_first_untick_removes_row(env):
-    cortex_bridge.first("tick", item="gym-reminder", note="x", sid="s1")
-    out = cortex_bridge.first("untick", item="gym-reminder")
-    assert out == {"ok": True, "item": "gym-reminder"}
-    conn = storage.connect(env)
-    try:
-        assert conn.execute("SELECT COUNT(*) FROM ct_first_tick").fetchone()[0] == 0
-    finally:
-        conn.close()
-
-
-def test_first_untick_missing_item_reports_false(env):
-    out = cortex_bridge.first("untick", item="nope")
-    assert out == {"ok": False, "item": "nope"}
-
-
-def test_first_list_shows_acks(env):
-    cortex_bridge.first("tick", item="a", note="n1", sid="s1")
-    cortex_bridge.first("tick", item="b", note="n2", sid="s2")
-    rows = cortex_bridge.first("list")
-    assert {r["item"] for r in rows} == {"a", "b"}
-
-
-def test_first_unknown_action(env):
-    out = cortex_bridge.first("bogus")
-    assert out["ok"] is False
-
-
-def test_first_tick_rejects_bad_status(env):
-    out = cortex_bridge.first("tick", item="x", note="n", sid="s1", status="bogus")
-    assert out["ok"] is False
-
-
-def test_first_tick_status_tried_stored(env):
-    cortex_bridge.first("tick", item="x", note="blocked", sid="s1", status="tried")
-    conn = storage.connect(env)
-    try:
-        row = conn.execute(
-            "SELECT status FROM ct_first_tick WHERE item='x'").fetchone()
-    finally:
-        conn.close()
-    assert row["status"] == "tried"
 
 
 # ── tl silence enforcement ───────────────────────────────────────────────────

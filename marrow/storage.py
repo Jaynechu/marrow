@@ -1261,9 +1261,9 @@ def _migrate_to_v29(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_to_v30(conn: sqlite3.Connection) -> None:
-    """v30: goals table (C1/C3, Decided 07-03 eve) — key/value/unit pairs set
-    via goal(action=set) MCP, read via goal(action=list). No history, latest
-    value only."""
+    """v30: goals table (C1/C3, Decided 07-03 eve) — key/value/unit pairs, no
+    history, latest value only. Its writer (the `goal` MCP tool) has since been
+    removed; the table stays for schema continuity."""
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 30:
         return
@@ -1299,8 +1299,8 @@ CREATE TABLE IF NOT EXISTS ct_rate_limit (
 def _migrate_to_v32(conn: sqlite3.Connection) -> None:
     """v32: ct_first_tick table (C4, First tick 07-04) — an executing session
     self-marks a cortex-nagged item as seen/handled so other sessions and later
-    wakes stop repeat-nagging. Writer = first(action=tick) MCP tool; reader = cortex
-    (latest mark per item, no history)."""
+    wakes stop repeat-nagging. Its writer (the `first` MCP tool) has since been
+    removed; the table stays for schema continuity."""
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 32:
         return
@@ -1362,8 +1362,7 @@ END;
 
 
 def _migrate_to_v34(conn: sqlite3.Connection) -> None:
-    """v34: ct_first_tick.status — column for the tool-side status write
-    (later workstream); schema only here. Default 'done' matches the
+    """v34: ct_first_tick.status — schema only. Default 'done' matches the
     seen/handled semantics existing rows already carry implicitly.
     Idempotent — duplicate ALTER swallowed; user_version short-circuits.
     """

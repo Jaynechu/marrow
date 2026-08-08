@@ -1,4 +1,4 @@
-"""goal/wish MCP tools (C3 marrow-side plumbing) + recall cortex guard."""
+"""Cortex-session MCP tools (lie_down / transfer / say) + recall cortex guard."""
 from __future__ import annotations
 
 import pytest
@@ -14,96 +14,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cortex_bridge, "_DB", db)
     monkeypatch.setattr(config, "db_path", lambda: db)
     return db, tmp_path
-
-
-def test_goal_set_creates_row(env):
-    out = cortex_bridge.goal("set", "sleep", "8", "h")
-    assert out == {"ok": True, "key": "sleep", "value": "8", "unit": "h"}
-    rows = cortex_bridge.goal("list")
-    assert rows == [{"key": "sleep", "value": "8", "unit": "h",
-                      "updated_at": rows[0]["updated_at"]}]
-
-
-def test_goal_set_updates_existing_key(env):
-    cortex_bridge.goal("set", "sleep", "7", "h")
-    cortex_bridge.goal("set", "sleep", "8", "h")
-    rows = cortex_bridge.goal("list")
-    assert len(rows) == 1
-    assert rows[0]["value"] == "8"
-
-
-def test_goal_set_requires_key_and_value(env):
-    assert cortex_bridge.goal("set", "", "8")["ok"] is False
-    assert cortex_bridge.goal("set", "sleep", "")["ok"] is False
-
-
-def test_goal_list_multiple_sorted(env):
-    cortex_bridge.goal("set", "sleep", "8", "h")
-    cortex_bridge.goal("set", "exercise", "3", "x/week")
-    rows = cortex_bridge.goal("list")
-    assert [r["key"] for r in rows] == ["exercise", "sleep"]
-
-
-def test_goal_delete_removes_key(env):
-    cortex_bridge.goal("set", "sleep", "8", "h")
-    out = cortex_bridge.goal("delete", "sleep")
-    assert out == {"ok": True, "key": "sleep", "deleted": True}
-    assert cortex_bridge.goal("list") == []
-
-
-def test_goal_delete_missing_key_reports_not_deleted(env):
-    out = cortex_bridge.goal("delete", "nope")
-    assert out == {"ok": True, "key": "nope", "deleted": False}
-
-
-def test_goal_unknown_action(env):
-    out = cortex_bridge.goal("nope")
-    assert out["ok"] is False
-
-
-def test_wish_creates_file_with_header(env, tmp_path, monkeypatch):
-    home = tmp_path / "cortex"
-    monkeypatch.setattr(config, "load", lambda: {"cortex": {"home": str(home)}})
-    out = cortex_bridge.wish("新出的那个奶茶")
-    assert out["ok"] is True
-    path = home / "wishlist.md"
-    assert path.exists()
-    assert out["path"] == str(path)
-    text = path.read_text(encoding="utf-8")
-    assert "# Wishlist" in text
-    assert "新出的那个奶茶" in text
-    assert out["line"] in text
-
-
-def test_wish_appends_never_touches_prior_lines(env, tmp_path, monkeypatch):
-    home = tmp_path / "cortex"
-    home.mkdir(parents=True)
-    wishlist = home / "wishlist.md"
-    wishlist.write_text("# Wishlist\n\n- 2026-01-01 her own hand-written note\n",
-                         encoding="utf-8")
-    monkeypatch.setattr(config, "load", lambda: {"cortex": {"home": str(home)}})
-    cortex_bridge.wish("second wish")
-    text = wishlist.read_text(encoding="utf-8")
-    assert "her own hand-written note" in text
-    assert "second wish" in text
-    assert text.index("her own hand-written note") < text.index("second wish")
-
-
-def test_wish_requires_text(env, tmp_path, monkeypatch):
-    home = tmp_path / "cortex"
-    monkeypatch.setattr(config, "load", lambda: {"cortex": {"home": str(home)}})
-    assert cortex_bridge.wish("")["ok"] is False
-    assert not home.exists() or not (home / "wishlist.md").exists()
-
-
-def test_wish_uses_explicit_wishlist_path(env, tmp_path, monkeypatch):
-    target = tmp_path / "somewhere" / "my-wishes.md"
-    monkeypatch.setattr(config, "load", lambda: {
-        "cortex": {"home": str(tmp_path / "cortex"), "wishlist_path": str(target)},
-    })
-    cortex_bridge.wish("custom path wish")
-    assert target.exists()
-    assert "custom path wish" in target.read_text(encoding="utf-8")
 
 
 def test_recall_allowed_under_marrow_cortex(env, monkeypatch):
@@ -334,7 +244,7 @@ def _force_enabled(monkeypatch, value, extra=None):
 
 
 def test_switch_off_registers_no_tools(monkeypatch):
-    """enabled=false => register() installs none of the six cortex tools."""
+    """enabled=false => register() installs none of the cortex tools."""
     _force_enabled(monkeypatch, False)
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     m, mt = _fresh_mcp()
@@ -342,32 +252,27 @@ def test_switch_off_registers_no_tools(monkeypatch):
     assert set(m._tool_manager._tools.keys()) == set()
 
 
-def test_switch_on_registers_wish_only(monkeypatch):
-    """enabled=true (no MARROW_CORTEX) => wish for all sessions; first/goal are
-    pending (not registered anywhere yet); lie_down/wait/say stay absent
-    (cortex-session inner gate)."""
+def test_switch_on_plain_session_registers_no_tools(monkeypatch):
+    """enabled=true (no MARROW_CORTEX) => a plain session gets nothing; the
+    cortex tools all sit behind the cortex-session inner gate."""
     _force_enabled(monkeypatch, True)
     m, mt = _fresh_mcp()
     # _CORTEX is the import-time capture; force the non-cortex case explicitly.
     monkeypatch.setattr(cortex_bridge, "_CORTEX", False)
     cortex_bridge.register(mt)
-    names = set(m._tool_manager._tools.keys())
-    assert "wish" in names
-    assert "first" not in names and "goal" not in names
-    assert "lie_down" not in names and "say" not in names
+    assert set(m._tool_manager._tools.keys()) == set()
 
 
-def test_switch_on_cortex_session_registers_wish_and_cortex_pair(monkeypatch):
-    """enabled=true AND cortex session (_CORTEX) => wish + lie_down/say
-    register (wait retired T1); first/goal stay pending (not registered)."""
+def test_switch_on_cortex_session_registers_cortex_pair(monkeypatch):
+    """enabled=true AND cortex session (_CORTEX) => lie_down/say register
+    (wait retired T1)."""
     _force_enabled(monkeypatch, True)
     m, mt = _fresh_mcp()
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     names = set(m._tool_manager._tools.keys())
-    assert {"wish", "lie_down", "say"} <= names
+    assert {"lie_down", "say"} <= names
     assert "wait" not in names
-    assert "first" not in names and "goal" not in names
 
 
 def _register_as(monkeypatch, shell_env, shells=None):
@@ -389,26 +294,26 @@ def test_shell_legacy_and_cli_register_lie_down_and_say(monkeypatch):
     """T8: MARROW_CORTEX=1 (legacy) and =cli are the same shell — full cli kit."""
     for value in ("1", "cli"):
         names = _register_as(monkeypatch, value)
-        assert {"wish", "lie_down", "say"} <= names
+        assert {"lie_down", "say"} <= names
 
 
 def test_shell_tg_registers_lie_down_without_say(monkeypatch):
     """T8: say is cli-only; the tg shell still gets lie_down."""
     names = _register_as(monkeypatch, "tg", shells=["cli", "tg"])
-    assert {"wish", "lie_down"} <= names
+    assert {"lie_down"} <= names
     assert "say" not in names
 
 
 def test_shell_absent_from_shells_registers_no_cortex_tools(monkeypatch):
-    """T8: tg session while shells=["cli"] -> plain session (wish only)."""
+    """T8: tg session while shells=["cli"] -> plain session (no tools)."""
     names = _register_as(monkeypatch, "tg", shells=["cli"])
-    assert names == {"wish"}
+    assert names == set()
 
 
 def test_empty_shells_disables_cortex_tools_for_cli(monkeypatch):
     """T8: shells=[] switches every shell off; enabled stays the master switch."""
     names = _register_as(monkeypatch, "cli", shells=[])
-    assert names == {"wish"}
+    assert names == set()
 
 
 def test_shell_enabled_follows_env_and_config(monkeypatch):

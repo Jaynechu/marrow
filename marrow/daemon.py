@@ -5,9 +5,9 @@ Core tool surface: recall / atlas_lookup / event_embed + action-dispatch tools
 handoff is rendered by the SessionStart hook. LLMClient wired so provider
 failures land in alerts.
 
-The optional cortex organs (wish / first / goal + cortex-session lie_down /
-wait / say) live in cortex_bridge and install via cortex_bridge.register() only
-when [cortex].enabled — a clean marrow shows none of them.
+The optional cortex organs (cortex-session lie_down / transfer / say) live in
+cortex_bridge and install via cortex_bridge.register() only when
+[cortex].enabled — a clean marrow shows none of them.
 """
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ llm = LLMClient(
     on_alert=lambda sev, t, m, s: repo.add_alert(sev, t, m, s, db=_DB)
 )
 
-# Cortex organs (wish / first / goal + cortex-session lie_down / wait / say)
-# install here only when [cortex].enabled; a clean marrow shows none of them.
+# Cortex organs (cortex-session lie_down / transfer / say) install here only
+# when [cortex].enabled; a clean marrow shows none of them.
 cortex_bridge.register(marrow_tool, _DB)
 
 

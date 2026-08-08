@@ -376,8 +376,6 @@ tier = "top"
 model = ""
 # --effort passed to the cortex CLI (low/medium/high/xhigh/max). Empty = CLI default.
 effort = ""
-# Wishlist md, pure append-only (Decided 07-03 eve). Empty = <home>/wishlist.md.
-wishlist_path = ""
 # Cortex repo + its venv — power the cortex-only lie_down / say MCP tools
 # (registered only when the daemon runs under MARROW_CORTEX). The subprocess
 # runs from repo_root so `python -m cortex.X` resolves from any cwd. Both empty

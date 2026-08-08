@@ -35,11 +35,8 @@ import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Annotated
 
-from pydantic import Field
-
-from . import config, storage
+from . import config
 
 
 # ── gates ─────────────────────────────────────────────────────────────────────
@@ -86,234 +83,6 @@ def _shell_enabled() -> bool:
     if not os.environ.get("MARROW_CORTEX"):
         return False
     return _cortex_shell_id() in _shells()
-
-
-# ── wish ─────────────────────────────────────────────────────────────────────
-
-def _wishlist_path() -> Path:
-    cortex_cfg = config.load().get("cortex", {})
-    wp = (cortex_cfg.get("wishlist_path") or "").strip()
-    if wp:
-        return Path(wp).expanduser()
-    home = cortex_cfg.get("home") or "~/.config/marrow/cortex"
-    return Path(home).expanduser() / "wishlist.md"
-
-
-_WISHLIST_HEADER = (
-    "# Wishlist\n\n"
-    "> Owed treats, wants, self-rewards. Append-only — hand edits are sacred.\n\n"
-)
-
-
-_HEADING_RE = _re.compile(r"^(#{2,3})\s+(.*)$")
-
-
-def _insert_at_section_end(existing: str, section: str, line: str) -> str:
-    """Insert `line` after the last non-empty line of the first heading (##
-    or ###) whose text contains `section` (case-insensitive substring), and
-    before the next heading of same-or-higher level. Falls back to plain
-    append when no heading matches."""
-    if existing and not existing.endswith("\n"):
-        existing += "\n"
-    lines = existing.splitlines(keepends=True)
-    needle = section.strip().lower()
-    start = None
-    start_level = None
-    for i, ln in enumerate(lines):
-        m = _HEADING_RE.match(ln.rstrip("\n"))
-        if m and needle in m.group(2).strip().lower():
-            start = i
-            start_level = len(m.group(1))
-            break
-    if start is None:
-        return existing + line
-
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        m = _HEADING_RE.match(lines[j].rstrip("\n"))
-        if m and len(m.group(1)) <= start_level:
-            end = j
-            break
-
-    last_content = start
-    for j in range(start + 1, end):
-        if lines[j].strip():
-            last_content = j
-    insert_at = last_content + 1
-    return "".join(lines[:insert_at]) + line + "".join(lines[insert_at:])
-
-
-def wish(
-    text: Annotated[str, Field(description="The wish/promise/plan line to append; required. A leading '- ' is stripped. Stored as '[] <date> <text>' with the configured wish_date_format.")],
-    section: Annotated[str | None, Field(description="Heading substring (## or ###, e.g. 心愿单/约定/种草) to insert the line at that section's end; omit to append at end of file.")] = None,
-    due: Annotated[str | None, Field(description="Optional due tag appended as ' [<due>]' after the text (free-form, e.g. a date).")] = None,
-) -> dict:
-    """Our wishlist — personal wishes & cravings, promises
-    made, and shared plans. e.g. 你说好请我喝奶茶 / 最近想买耳钉 / 约好周末去看海.
-    Markdown structure (headings, subsections) is user-managed — this tool
-    only adds lines, never edits existing content: ~/.config/marrow/cortex/wishlist.md."""
-    import fcntl
-    from datetime import datetime
-
-    text = (text or "").strip()
-    if text.startswith("- "):
-        text = text[2:].strip()
-    if not text:
-        return {"ok": False, "error": "text required"}
-    path = _wishlist_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    date_fmt = config.load().get("cortex", {}).get("wish_date_format", "%y/%m/%d")
-    date = datetime.now(config.get_tz()).strftime(date_fmt)
-    due = (due or "").strip()
-    suffix = f" [{due}]" if due else ""
-    line = f"[] {date} {text}{suffix}\n"
-    lock_path = str(path) + ".lock"
-    lf = open(lock_path, "a")
-    try:
-        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-        existing = path.read_text(encoding="utf-8") if path.exists() else _WISHLIST_HEADER
-        section = (section or "").strip()
-        new_content = (
-            _insert_at_section_end(existing, section, line)
-            if section else existing + line
-        )
-        from ._atomic import atomic_write
-        atomic_write(str(path), new_content)
-    finally:
-        fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-        lf.close()
-    return {"ok": True, "path": str(path), "line": line.strip()}
-
-
-# ── first ────────────────────────────────────────────────────────────────────
-
-_FIRST_ACTIONS = {"tick", "untick", "list"}
-_FIRST_STATUSES = {"done", "tried"}
-
-
-def first(
-    action: str,
-    item: str | None = None,
-    note: str | None = None,
-    sid: str | None = None,
-    status: str = "done",
-) -> dict | list[dict]:
-    """(pending — not registered; original description saved in CC-Lab/docs/notes/ct-first-goal-reconnect.md)
-    Respond to the Cortex First section (notes/concerns injected into context).
-    'tick' each item you acted on + a tiny note (1-10 chars), e.g. 处理好啦；等会儿再跟进。
-    status='tried' when attempted but unsolved — note what blocked.
-    'untick' a wrong ack; 'list' current ticks."""
-    if action not in _FIRST_ACTIONS:
-        return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_FIRST_ACTIONS)}"}
-
-    if action == "list":
-        conn = storage.connect(_DB)
-        try:
-            rows = conn.execute(
-                "SELECT item, seen_at, sid, note, status FROM ct_first_tick ORDER BY seen_at DESC"
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
-
-    item = (item or "").strip()
-    if not item:
-        return {"ok": False, "error": "item required"}
-
-    if action == "untick":
-        conn = storage.connect(_DB)
-        try:
-            with conn:
-                cur = conn.execute("DELETE FROM ct_first_tick WHERE item=?", (item,))
-            return {"ok": cur.rowcount > 0, "item": item}
-        finally:
-            conn.close()
-
-    # tick
-    if status not in _FIRST_STATUSES:
-        return {"ok": False, "error": f"status must be one of {sorted(_FIRST_STATUSES)}"}
-    note = (note or "").strip() or None
-    conn = storage.connect(_DB)
-    try:
-        if not sid:
-            from .timeline import _query_current_sid
-            sid = _query_current_sid(conn)
-        with conn:
-            conn.execute(
-                "INSERT INTO ct_first_tick (item, seen_at, sid, note, status)"
-                " VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ','now'), ?, ?, ?)"
-                " ON CONFLICT(item) DO UPDATE SET"
-                " seen_at=excluded.seen_at, sid=excluded.sid, note=excluded.note,"
-                " status=excluded.status",
-                (item, sid, note, status),
-            )
-        return {"ok": True, "item": item, "sid": sid, "note": note, "status": status}
-    finally:
-        conn.close()
-
-
-# ── goal ─────────────────────────────────────────────────────────────────────
-
-_GOAL_ACTIONS = {"set", "list", "delete"}
-
-
-def goal(
-    action: str,
-    key: str | None = None,
-    value: str | None = None,
-    unit: str | None = None,
-) -> dict | list[dict]:
-    """(pending — not registered; original description saved in CC-Lab/docs/notes/ct-first-goal-reconnect.md)
-    Timetrack weekly goals e.g. study, sleep, exercise.
-    action='set': create / update goals
-    e.g. 'sleep goal 8h' → key='sleep' value='8' unit='h';
-    'list'; 'delete' by key when dropped or achieved."""
-    if action not in _GOAL_ACTIONS:
-        return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_GOAL_ACTIONS)}"}
-
-    if action == "set":
-        key = (key or "").strip()
-        value = (value or "").strip()
-        if not key:
-            return {"ok": False, "error": "key required"}
-        if not value:
-            return {"ok": False, "error": "value required"}
-        conn = storage.connect(_DB)
-        try:
-            with conn:
-                conn.execute(
-                    "INSERT INTO goals (key, value, unit, updated_at)"
-                    " VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))"
-                    " ON CONFLICT(key) DO UPDATE SET"
-                    " value=excluded.value, unit=excluded.unit,"
-                    " updated_at=excluded.updated_at",
-                    (key, value, unit),
-                )
-            return {"ok": True, "key": key, "value": value, "unit": unit}
-        finally:
-            conn.close()
-
-    if action == "list":
-        conn = storage.connect(_DB)
-        try:
-            rows = conn.execute(
-                "SELECT key, value, unit, updated_at FROM goals ORDER BY key"
-            ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            conn.close()
-
-    # delete
-    key = (key or "").strip()
-    if not key:
-        return {"ok": False, "error": "key required"}
-    conn = storage.connect(_DB)
-    try:
-        with conn:
-            cur = conn.execute("DELETE FROM goals WHERE key=?", (key,))
-        return {"ok": True, "key": key, "deleted": cur.rowcount > 0}
-    finally:
-        conn.close()
 
 
 # ── cortex (lie_down / say) ───────────────────────────────────────────────────
@@ -587,22 +356,17 @@ def register(marrow_tool, db: str | None = None) -> None:
     """Install the cortex MCP tools onto the daemon when [cortex].enabled.
 
     `marrow_tool` is daemon.marrow_tool (the alwaysLoad tool decorator). enabled
-    == False => no-op (none of the tools reach the schema). When enabled:
-      - wish registers for ALL sessions;
-      - first / goal are PENDING — not registered anywhere yet (no injection
-        mechanism wired; keep the functions + storage, just don't expose them);
-      - lie_down / transfer / say register ONLY in a cortex session (_CORTEX,
-        the import-time MARROW_CORTEX capture — the original inner env gate)
-        whose shell id is listed in [cortex].shells (shell resolved lazily
-        here); lie_down and transfer serve every listed shell, say the cli
-        shell only.
+    == False => no-op (none of the tools reach the schema). When enabled,
+    lie_down / transfer / say register ONLY in a cortex session (_CORTEX, the
+    import-time MARROW_CORTEX capture — the original inner env gate) whose
+    shell id is listed in [cortex].shells (shell resolved lazily here);
+    lie_down and transfer serve every listed shell, say the cli shell only.
     Idempotent per process (FastMCP tolerates re-adding the same tool name)."""
     global _DB
     if db is not None:
         _DB = db
     if not enabled():
         return
-    marrow_tool()(wish)
     if _CORTEX:
         shell = _cortex_shell_id()
         if shell not in _shells():
