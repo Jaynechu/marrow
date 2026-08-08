@@ -144,7 +144,7 @@ def test_embed_milestone_writes_and_idempotent(db):
 def test_embed_pending_backfills_all_six_lanes(db):
     _make_event(db, "event row")
     _make_meme(db, "meme-key")
-    _make_entity(db, "Stellan", fact="partner")
+    _make_entity(db, "Nova", fact="partner")
     _make_milestone(db, "milestone-title")
     _make_diary(db, "2026-05-23", "diary content for vec")
     _make_task(db, "GAMSAT prep", category="study", next_step="section 2")

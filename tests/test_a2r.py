@@ -140,11 +140,11 @@ def test_kickout_wx_quiet_window(monkeypatch, capsys):
     _freeze_melb(monkeypatch, 23, 30)
     monkeypatch.delenv("MARROW_CORTEX", raising=False)
     monkeypatch.setenv("MARROW_CHANNEL", "wx")
-    monkeypatch.setattr(hooks.inject, "_kickout_context", lambda channel, now, transcript_path=None: "老婆该睡了-test")
+    monkeypatch.setattr(hooks.inject, "_kickout_context", lambda channel, now, transcript_path=None: "该睡了-test")
     _stdin(monkeypatch, {"session_id": "s1", "transcript_path": "/x/a.jsonl"})
     hooks.turn_inject()
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-    assert "老婆该睡了-test" in ctx
+    assert "该睡了-test" in ctx
 
 
 def test_kickout_wx_evening_no_nudge(monkeypatch, capsys):

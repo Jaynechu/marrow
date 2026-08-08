@@ -37,11 +37,11 @@ def test_string_dup_matches_milestone_title(db):
 def test_string_dup_matches_entity_alias(db):
     db.execute(
         "INSERT INTO entities (kind, name, aliases) VALUES (?, ?, ?)",
-        ("person", "Stellan",
-         json.dumps(["鸭子", "言澈"], ensure_ascii=False)),
+        ("person", "Nova",
+         json.dumps(["野猫", "小言"], ensure_ascii=False)),
     )
     db.commit()
-    assert memes_dedup.string_dup_reason(db, "鸭子") == "dup_entity"
+    assert memes_dedup.string_dup_reason(db, "野猫") == "dup_entity"
 
 
 def test_string_dup_matches_entity_name(db):

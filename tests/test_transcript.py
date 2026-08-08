@@ -203,12 +203,12 @@ def test_spawn_prompt_head_is_headless_even_with_haiku_assistant(tmp_path):
 
 def test_sonnet_assistant_with_normal_user_content_is_not_headless(tmp_path):
     jl = _w(tmp_path / "s.jsonl", [
-        _user("你是褚言澈，你要以第一人称写一篇日记"),
+        _user("你是小助，你要以第一人称写一篇日记"),
         _asst("claude-sonnet-4-6"),
     ])
     assert transcript.is_headless(jl) is False
     assert [r["content"] for r in transcript.clean(jl)] == [
-        "你是褚言澈，你要以第一人称写一篇日记", "reply"]
+        "你是小助，你要以第一人称写一篇日记", "reply"]
 
 
 def test_haiku_assistant_with_normal_user_content_is_not_headless(tmp_path):
@@ -234,13 +234,13 @@ def test_mixed_assistant_models_with_normal_user_content_is_not_headless(tmp_pat
 
 def test_all_opus_is_not_headless(tmp_path):
     jl = _w(tmp_path / "o.jsonl", [
-        _user("老公 clawbot 真实对话"),
+        _user("队友 clawbot 真实对话"),
         _asst("claude-opus-4-7", text="real reply"),
         _asst("claude-opus-4-6", text="legacy opus reply"),
     ])
     assert transcript.is_headless(jl) is False
     assert [r["content"] for r in transcript.clean(jl)] == [
-        "老公 clawbot 真实对话", "real reply", "legacy opus reply"]
+        "队友 clawbot 真实对话", "real reply", "legacy opus reply"]
 
 
 def test_synthetic_model_is_dropped_from_set(tmp_path):
@@ -275,11 +275,11 @@ def test_empty_model_set_spawn_prompt_head_is_headless(tmp_path):
 
 def test_empty_model_set_human_first_message_is_not_headless(tmp_path):
     jl = _w(tmp_path / "hu.jsonl", [
-        _user("老公帮我看下这个 bug 好不好"),
+        _user("队友帮我看下这个 bug 好不好"),
     ])
     assert transcript.is_headless(jl) is False
     assert [r["content"] for r in transcript.clean(jl)] == [
-        "老公帮我看下这个 bug 好不好"]
+        "队友帮我看下这个 bug 好不好"]
 
 
 def test_no_assistant_no_user_is_not_headless(tmp_path):
@@ -394,7 +394,7 @@ def test_sdk_cli_real_session_kept(tmp_path):
     jl = _w(tmp_path / "c.jsonl", [
         {"type": "user", "sessionId": "h1", "timestamp": "t",
          "entrypoint": "sdk-cli",
-         "message": {"role": "user", "content": "老公 clawbot 真实对话"}},
+         "message": {"role": "user", "content": "队友 clawbot 真实对话"}},
         {"type": "assistant", "sessionId": "h1", "timestamp": "t",
          "entrypoint": "sdk-cli",
          "message": {"role": "assistant", "model": "claude-opus-4-7",
@@ -402,7 +402,7 @@ def test_sdk_cli_real_session_kept(tmp_path):
     ])
     assert transcript.is_headless(jl) is False
     assert [r["content"] for r in transcript.clean(jl)] == [
-        "老公 clawbot 真实对话", "real reply"]
+        "队友 clawbot 真实对话", "real reply"]
 
 
 # ── strip_harness_markers ────────────────────────────────────────────────────
@@ -498,7 +498,7 @@ def test_pure_sticker_tag_rows_are_dropped():
 
 
 def test_sticker_tag_mixed_with_real_text_is_kept():
-    text = '<image path="/stk/a.png"/>\n\n褚念念！！！我早上想你了。'
+    text = '<image path="/stk/a.png"/>\n\n小念！！！我早上想你了。'
     assert transcript._is_harness_row(text) is False
 
 

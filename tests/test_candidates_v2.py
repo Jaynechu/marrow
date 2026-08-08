@@ -23,7 +23,7 @@ def _disable_cosine_layer(monkeypatch):
     """Target the string/alias dedup layer. The cosine layer is exercised in
     tests/test_semantic_dedup.py with explicit stubs. Force it off here so
     bge-m3 paraphrase scoring can't swallow rows the string layer keeps
-    distinct (e.g. '阿澈' vs '阿澈新' score 0.87).
+    distinct (e.g. '小助' vs '小助新' score 0.87).
     """
     from marrow import semantic_dedup
     monkeypatch.setattr(
@@ -155,26 +155,26 @@ def _aliases(conn, rid):
 
 
 def test_match_entity_incoming_name_hits_existing_alias(db):
-    rid = _seed_entity(db, "阿澈", aliases=["言澈", "Stellan"])
-    hit = candidates.match_entity(db, "person", "言澈", ["小屿"])
+    rid = _seed_entity(db, "小助", aliases=["小言", "Nova"])
+    hit = candidates.match_entity(db, "person", "小言", ["小屿"])
     assert hit == rid
 
 
 def test_match_entity_incoming_alias_hits_existing_name(db):
-    rid = _seed_entity(db, "阿澈")
-    hit = candidates.match_entity(db, "person", "言澈", ["阿澈", "Stellan"])
+    rid = _seed_entity(db, "小助")
+    hit = candidates.match_entity(db, "person", "小言", ["小助", "Nova"])
     assert hit == rid
 
 
 def test_match_entity_unrelated_name_no_hit(db):
-    _seed_entity(db, "阿澈", aliases=["言澈"])
+    _seed_entity(db, "小助", aliases=["小言"])
     hit = candidates.match_entity(db, "person", "陈奶奶", ["邻居陈"])
     assert hit is None
 
 
 def test_match_entity_case_insensitive(db):
-    rid = _seed_entity(db, "Stellan", aliases=["言澈"])
-    hit = candidates.match_entity(db, "person", "stellan", ["雪狼"])
+    rid = _seed_entity(db, "Nova", aliases=["小言"])
+    hit = candidates.match_entity(db, "person", "nova", ["雪狼"])
     assert hit == rid
 
 
@@ -185,34 +185,34 @@ def test_match_entity_scoped_by_kind(db):
 
 
 def test_match_entity_superseded_row_does_not_hit(db):
-    rid = _seed_entity(db, "阿澈", aliases=["言澈"])
-    other = _seed_entity(db, "阿澈新")
+    rid = _seed_entity(db, "小助", aliases=["小言"])
+    other = _seed_entity(db, "小助新")
     db.execute("UPDATE entities SET superseded_by=? WHERE id=?", (other, rid))
     db.commit()
-    hit = candidates.match_entity(db, "person", "言澈", [])
+    hit = candidates.match_entity(db, "person", "小言", [])
     assert hit is None
 
 
 def test_merge_aliases_into_adds_new_dedups_existing(db):
-    rid = _seed_entity(db, "阿澈", aliases=["言澈", "Stellan"])
-    candidates._merge_aliases_into(db, rid, "言澈", ["小屿"])
+    rid = _seed_entity(db, "小助", aliases=["小言", "Nova"])
+    candidates._merge_aliases_into(db, rid, "小言", ["小屿"])
     aliases = _aliases(db, rid)
     assert "小屿" in aliases
-    assert aliases.count("言澈") == 1  # already present, not duplicated
+    assert aliases.count("小言") == 1  # already present, not duplicated
 
 
 def test_merge_aliases_into_canonical_name_not_added(db):
-    rid = _seed_entity(db, "阿澈")
-    candidates._merge_aliases_into(db, rid, "言澈", ["阿澈", "Stellan"])
+    rid = _seed_entity(db, "小助")
+    candidates._merge_aliases_into(db, rid, "小言", ["小助", "Nova"])
     aliases = _aliases(db, rid)
-    assert "言澈" in aliases and "Stellan" in aliases
-    assert "阿澈" not in aliases  # canonical name never duplicated into aliases
+    assert "小言" in aliases and "Nova" in aliases
+    assert "小助" not in aliases  # canonical name never duplicated into aliases
 
 
 def test_merge_aliases_into_case_insensitive_name(db):
-    rid = _seed_entity(db, "Stellan", aliases=["言澈"])
-    candidates._merge_aliases_into(db, rid, "stellan", ["雪狼"])
+    rid = _seed_entity(db, "Nova", aliases=["小言"])
+    candidates._merge_aliases_into(db, rid, "nova", ["雪狼"])
     aliases = _aliases(db, rid)
     assert "雪狼" in aliases
-    # 'stellan' matches canonical 'Stellan' case-insensitively → not added
-    assert "stellan" not in [a.lower() for a in aliases]
+    # 'nova' matches canonical 'Nova' case-insensitively → not added
+    assert "nova" not in [a.lower() for a in aliases]

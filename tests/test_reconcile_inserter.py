@@ -894,11 +894,11 @@ def test_memes_insert_bare_text_personal(tmp_path):
     db_path = _db(tmp_path)
     conn = _conn(db_path)
     md = tmp_path / "memes.md"
-    md.write_text("## Personal\n- 鸭子是个大笨蛋\n", encoding="utf-8")
+    md.write_text("## Personal\n- 猫子是个大笨蛋\n", encoding="utf-8")
 
     rpt = reconcile_memes(conn, md)
     row = conn.execute(
-        "SELECT type, key, value, pinned FROM memes WHERE key='鸭子是个大笨蛋'"
+        "SELECT type, key, value, pinned FROM memes WHERE key='猫子是个大笨蛋'"
     ).fetchone()
     md_text = md.read_text()
     conn.close()
@@ -1077,12 +1077,12 @@ def test_memes_bare_anchored_edit_syncs(tmp_path):
     conn = _conn(db_path)
     conn.execute(
         "INSERT INTO memes (id, type, key, pinned, status)"
-        " VALUES (17, 'fact', '鸭子是个大笨蛋', 1, 'active')"
+        " VALUES (17, 'fact', '猫子是个大笨蛋', 1, 'active')"
     )
     conn.commit()
     md = tmp_path / "memes.md"
     md.write_text(
-        "## Personal\n- 鸭子是只可爱的大笨蛋 <!-- id:17 -->\n", encoding="utf-8"
+        "## Personal\n- 猫子是只可爱的大笨蛋 <!-- id:17 -->\n", encoding="utf-8"
     )
 
     rpt = reconcile_memes(conn, md)
@@ -1090,7 +1090,7 @@ def test_memes_bare_anchored_edit_syncs(tmp_path):
     conn.close()
 
     assert rpt.updated == 1
-    assert row["key"] == "鸭子是只可爱的大笨蛋"
+    assert row["key"] == "猫子是只可爱的大笨蛋"
     assert row["type"] == "fact"  # untouched
 
 

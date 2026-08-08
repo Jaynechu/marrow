@@ -69,38 +69,38 @@ def test_cosine_top_match_picks_highest(db, monkeypatch):
 # ── entities: match_entity cosine layer (dim upsert dedup) ──────────────────
 
 def test_match_entity_cosine_hit_returns_row(db, monkeypatch):
-    # Seed existing entity; cosine-high candidate "Stellan" matches "言澈".
+    # Seed existing entity; cosine-high candidate "Nova" matches "小言".
     db.execute(
         "INSERT INTO entities (kind, name, source) VALUES (?, ?, ?)",
-        ("person", "言澈", "test"),
+        ("person", "小言", "test"),
     )
     db.commit()
     rid = db.execute(
-        "SELECT id FROM entities WHERE name='言澈'"
+        "SELECT id FROM entities WHERE name='小言'"
     ).fetchone()["id"]
     monkeypatch.setattr(
         semantic_dedup, "cosine_top_match", lambda conn, q, t: (0, 0.91),
     )
-    hit = candidates.match_entity(db, "person", "Stellan", [])
+    hit = candidates.match_entity(db, "person", "Nova", [])
     assert hit == rid
 
 
 def test_match_entity_cosine_hit_merge_absorbs_alias(db, monkeypatch):
     db.execute(
         "INSERT INTO entities (kind, name, source) VALUES (?, ?, ?)",
-        ("person", "言澈", "test"),
+        ("person", "小言", "test"),
     )
     db.commit()
     monkeypatch.setattr(
         semantic_dedup, "cosine_top_match", lambda conn, q, t: (0, 0.91),
     )
-    hit = candidates.match_entity(db, "person", "Stellan", [])
-    candidates._merge_aliases_into(db, hit, "Stellan", [])
+    hit = candidates.match_entity(db, "person", "Nova", [])
+    candidates._merge_aliases_into(db, hit, "Nova", [])
     row = db.execute(
-        "SELECT aliases FROM entities WHERE name='言澈'"
+        "SELECT aliases FROM entities WHERE name='小言'"
     ).fetchone()
     aliases = json.loads(row["aliases"])
-    assert "Stellan" in aliases
+    assert "Nova" in aliases
     cnt = db.execute(
         "SELECT COUNT(*) FROM entities WHERE kind='person'"
     ).fetchone()[0]
@@ -110,7 +110,7 @@ def test_match_entity_cosine_hit_merge_absorbs_alias(db, monkeypatch):
 def test_match_entity_cosine_miss_returns_none(db, monkeypatch):
     db.execute(
         "INSERT INTO entities (kind, name, source) VALUES (?, ?, ?)",
-        ("person", "言澈", "test"),
+        ("person", "小言", "test"),
     )
     db.commit()
     monkeypatch.setattr(

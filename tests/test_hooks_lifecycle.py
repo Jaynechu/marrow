@@ -40,7 +40,7 @@ def test_session_end_does_not_write_db_pages(env, monkeypatch, tmp_path):
     db, _, _ = env
     conn = storage.connect(db)
     conn.execute("INSERT INTO milestones(scope,date,title,pinned) "
-                 "VALUES('me','2026-01-17','Stellan birthday',1)")
+                 "VALUES('me','2026-01-17','Nova birthday',1)")
     conn.commit()
     conn.close()
     jl = tmp_path / "s.jsonl"
