@@ -49,7 +49,7 @@ Key sections in `~/.config/marrow/config.toml`:
 
 | Section | What to set |
 |---|---|
-| `[persona]` | `user_name`, `assistant_name`, aliases, `anchor_keys` |
+| `[persona]` | `user_name`, `assistant_name` |
 | `[paths]` | `db_pages`, `daybrief`, `monitor` (defaults work out of the box under `~/.config/marrow/`) |
 | `[llm]` | Provider chain — `claude_cli` default |
 | `[recall]` | Fusion weights, vector window, per-rank content caps |
