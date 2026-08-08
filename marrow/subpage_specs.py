@@ -314,7 +314,7 @@ def build_stickers_spec(folder: str) -> InserterSpec:
 
 
 def build_wallet_spec(folder: str) -> InserterSpec:
-    """Wallet — transactions table (Phase 5 stellan_wallet). Empty for now."""
+    """Wallet — transactions table (Phase 5 wallet). Empty for now."""
     def fetch(_conn: sqlite3.Connection) -> list[dict]:
         return []  # transactions table not yet shipped
 
@@ -341,7 +341,7 @@ def build_wallet_spec(folder: str) -> InserterSpec:
         parse_row=parse_wallet,
         group_by="append",
         empty_message=(
-            "_Bank-statement render lands with Phase 5 stellan_wallet._"
+            "_Bank-statement render lands with Phase 5 wallet._"
         ),
     )
 

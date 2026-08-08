@@ -139,7 +139,7 @@ def render_milestone(conn: sqlite3.Connection) -> str:
 
 # -- Empty stubs: Profile / Stickers / Wallet -------------------------------
 # Position-reserved per DESIGN L43-65. Profile content lands when entity
-# render is wired; Wallet content lands with Phase 5 (stellan_wallet);
+# render is wired; Wallet content lands with Phase 5 (wallet);
 # Stickers gallery lands once auto-describe ingest ships.
 
 def _stub_block(key: str, title: str, note: str) -> str:
@@ -171,7 +171,7 @@ def render_wallet(conn: sqlite3.Connection) -> str:
     return _stub_block(
         "wallet",
         "Wallet",
-        "Position reserved — bank-statement render lands with Phase 5 stellan_wallet.",
+        "Position reserved — bank-statement render lands with Phase 5 wallet.",
     )
 
 
