@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timezone
 from .. import config, cortex_bridge, replay, storage
 from ._shared import _read_input
-from .state import _outbound_notes
+
 
 def _in_time_window(now_min: int, start: str, end: str) -> bool:
     """Minute-of-day membership; wraps past midnight when end <= start."""
@@ -178,9 +178,7 @@ def turn_inject() -> int:
         wx_kick = f"\n\n{kickout_ctx}" if kickout_ctx else ""
         wx_replay = _replay_fragment()
         wx_replay = f"\n\n{wx_replay}" if wx_replay else ""
-        wx_own = _outbound_notes(sid, channel)
-        wx_own = f"\n\n{wx_own}" if wx_own else ""
-        wx_ctx = f"{wx_sched}{wx_tl}{wx_presence}{wx_kick}{wx_replay}{wx_own}".strip()
+        wx_ctx = f"{wx_sched}{wx_tl}{wx_presence}{wx_kick}{wx_replay}".strip()
         if wx_ctx:
             json.dump(
                 {"hookSpecificOutput": {
@@ -239,10 +237,8 @@ def turn_inject() -> int:
     usage_full = f"\n\n{usage_ctx}" if usage_ctx else ""
     replay_ctx = _replay_fragment()
     replay_full = f"\n\n{replay_ctx}" if replay_ctx else ""
-    own_ctx = _outbound_notes(sid, channel)
-    own_full = f"\n\n{own_ctx}" if own_ctx else ""
     ctx = (f"# Context — {now_str}{delta}{sched_ctx}{tl_ctx}{presence_ctx}{care_ctx}"
-           f"{kickout_full}{show_full}{usage_full}{replay_full}{own_full}")
+           f"{kickout_full}{show_full}{usage_full}{replay_full}")
     json.dump(
         {"hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",

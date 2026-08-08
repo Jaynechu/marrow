@@ -1,4 +1,4 @@
-"""Cortex-session MCP tools (lie_down / transfer / say) + recall cortex guard."""
+"""Cortex-session MCP tools (lie_down / transfer) + recall cortex guard."""
 from __future__ import annotations
 
 import pytest
@@ -24,7 +24,7 @@ def test_recall_allowed_under_marrow_cortex(env, monkeypatch):
     assert daemon.recall("anything") == []
 
 
-# ── cortex lie_down / say tools ────────────────────────────────────────────────
+# ── cortex lie_down tool ──────────────────────────────────────────────────────
 
 def test_cortex_tools_hidden_without_marrow_cortex():
     """Without MARROW_CORTEX at import time the tools do not register into the
@@ -33,7 +33,7 @@ def test_cortex_tools_hidden_without_marrow_cortex():
     assert cortex_bridge._CORTEX is False
     names = set(daemon.mcp._tool_manager._tools.keys())
     assert "lie_down" not in names
-    assert "say" not in names
+    assert "transfer" not in names
 
 
 def test_lie_down_runs_module_from_any_cwd(env, monkeypatch, tmp_path):
@@ -167,29 +167,6 @@ def test_lie_down_no_human_override_flag_by_default(env, monkeypatch, tmp_path):
     assert "--human-override" not in captured["cmd"]
 
 
-def test_say_runs_module(env, monkeypatch, tmp_path):
-    fake_py = tmp_path / "python"
-    fake_root = tmp_path / "repo"
-    monkeypatch.setattr(config, "load", lambda: {
-        "cortex": {"venv_python": str(fake_py), "repo_root": str(fake_root)},
-    })
-    captured = {}
-
-    class _P:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def _fake_run(cmd, cwd=None, **kw):
-        captured["cmd"] = cmd
-        return _P()
-
-    monkeypatch.setattr(cortex_bridge.subprocess, "run", _fake_run)
-    out = cortex_bridge.say()
-    assert out["ok"] is True
-    assert captured["cmd"][1:] == ["-m", "cortex.say"]
-
-
 def test_cortex_tool_not_configured(env, monkeypatch):
     monkeypatch.setattr(config, "load", lambda: {"cortex": {}})
     out = cortex_bridge.lie_down(next_wake_min=20)
@@ -208,8 +185,7 @@ def test_cortex_tool_surfaces_stderr(env, monkeypatch, tmp_path):
         stderr = "ModuleNotFoundError: No module named 'cortex'"
 
     monkeypatch.setattr(cortex_bridge.subprocess, "run", lambda *a, **k: _P())
-    run_fn = cortex_bridge.say
-    out = run_fn()
+    out = cortex_bridge.transfer()
     assert out["ok"] is False
     assert "ModuleNotFoundError" in out["error"]
 
@@ -264,14 +240,14 @@ def test_switch_on_plain_session_registers_no_tools(monkeypatch):
 
 
 def test_switch_on_cortex_session_registers_cortex_pair(monkeypatch):
-    """enabled=true AND cortex session (_CORTEX) => lie_down/say register
+    """enabled=true AND cortex session (_CORTEX) => lie_down/transfer register
     (wait retired T1)."""
     _force_enabled(monkeypatch, True)
     m, mt = _fresh_mcp()
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
     cortex_bridge.register(mt)
     names = set(m._tool_manager._tools.keys())
-    assert {"lie_down", "say"} <= names
+    assert {"lie_down", "transfer"} <= names
     assert "wait" not in names
 
 
@@ -290,18 +266,17 @@ def _register_as(monkeypatch, shell_env, shells=None):
     return set(m._tool_manager._tools.keys())
 
 
-def test_shell_legacy_and_cli_register_lie_down_and_say(monkeypatch):
+def test_shell_legacy_and_cli_register_lie_down(monkeypatch):
     """T8: MARROW_CORTEX=1 (legacy) and =cli are the same shell — full cli kit."""
     for value in ("1", "cli"):
         names = _register_as(monkeypatch, value)
-        assert {"lie_down", "say"} <= names
+        assert {"lie_down", "transfer"} <= names
 
 
-def test_shell_tg_registers_lie_down_without_say(monkeypatch):
-    """T8: say is cli-only; the tg shell still gets lie_down."""
+def test_shell_tg_registers_lie_down(monkeypatch):
+    """T8: a listed non-cli shell still gets lie_down."""
     names = _register_as(monkeypatch, "tg", shells=["cli", "tg"])
     assert {"lie_down"} <= names
-    assert "say" not in names
 
 
 def test_shell_absent_from_shells_registers_no_cortex_tools(monkeypatch):
@@ -509,49 +484,6 @@ def test_tg_lie_down_without_rotate_leaves_no_flag(monkeypatch, tmp_path):
     out = cortex_bridge.lie_down(next_wake_min=30)
     assert out["rotate"] is False
     assert "rotate_pending" not in cortex_bridge.shell_state_read("tg")
-
-
-def test_shell_direct_writes_pending_note_and_kicks(monkeypatch, tmp_path):
-    """T10 directed kick: the text lands in the ledger, then the host is poked."""
-    _force_enabled(monkeypatch, True,
-                   extra={"shell_state_dir": str(tmp_path / "shells")})
-    kicks = []
-    monkeypatch.setattr(cortex_bridge, "_shell_kick",
-                        lambda shell: kicks.append(shell) or True)
-    out = cortex_bridge.shell_direct("  go check the diary  ")
-    assert out == {"ok": True, "shell": "tg", "kicked": True}
-    assert kicks == ["tg"]
-    assert cortex_bridge.shell_state_read("tg")["pending_note"] == "go check the diary"
-
-
-def test_shell_direct_rejects_empty_text_without_kicking(monkeypatch, tmp_path):
-    _force_enabled(monkeypatch, True,
-                   extra={"shell_state_dir": str(tmp_path / "shells")})
-    monkeypatch.setattr(cortex_bridge, "_shell_kick",
-                        lambda shell: pytest.fail("must not kick"))
-    assert cortex_bridge.shell_direct("   ")["ok"] is False
-    assert cortex_bridge.shell_state_read("tg") == {}
-
-
-def test_shell_direct_survives_a_dead_host(monkeypatch, tmp_path):
-    """Host down -> kicked False, text still queued for its recompute tick."""
-    _force_enabled(monkeypatch, True,
-                   extra={"shell_state_dir": str(tmp_path / "shells"),
-                          "shell_socket": str(tmp_path / "absent.sock")})
-    out = cortex_bridge.shell_direct("wake up")
-    assert out["ok"] is True and out["kicked"] is False
-    assert cortex_bridge.shell_state_read("tg")["pending_note"] == "wake up"
-
-
-def test_cli_shell_direct_command(monkeypatch, tmp_path, capsys):
-    """mw shell-direct <text> — the slash-command entry point."""
-    from marrow import cli
-    _force_enabled(monkeypatch, True,
-                   extra={"shell_state_dir": str(tmp_path / "shells")})
-    monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
-    assert cli.main(["shell-direct", "go", "check", "the", "diary"]) == 0
-    assert "kicked=True" in capsys.readouterr().out
-    assert cortex_bridge.shell_state_read("tg")["pending_note"] == "go check the diary"
 
 
 def test_shell_kick_wire_format_is_one_shell_line(monkeypatch, tmp_path):
