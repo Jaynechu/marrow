@@ -93,7 +93,7 @@ def test_v38_idempotent(tmp_path):
 
 
 def test_v38_ignores_non_numeric_block_ids(tmp_path):
-    """diary/wallet-style block ids (dates, paths) never inflate seq."""
+    """wallet-style block ids (dates, paths) never inflate seq."""
     conn = storage.init_db(str(tmp_path / "nonnum.db"))
     try:
         with conn:

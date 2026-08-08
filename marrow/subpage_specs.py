@@ -14,7 +14,6 @@ read-only render path.
 """
 from __future__ import annotations
 
-import calendar
 import re
 import sqlite3
 from pathlib import Path
@@ -24,20 +23,6 @@ from . import atlas as _atlas_mod
 
 # Shared anchor pattern — matches `<!-- id:N -->` anywhere on a line.
 _ANCHOR_RE = re.compile(r"\s*<!-- id:[^>]+ -->\s*$")
-
-
-def _year(date_str: str) -> str:
-    return date_str[:4] if date_str and len(date_str) >= 4 else "?"
-
-
-def _month_name(date_str: str) -> str:
-    """`'2026-05-20'` → `'May'`. Empty/short strings get sentinel."""
-    if not date_str or len(date_str) < 7:
-        return ""
-    try:
-        return calendar.month_name[int(date_str[5:7])]
-    except (ValueError, IndexError):
-        return ""
 
 
 def _anchor(row_id: int | str) -> str:
@@ -155,55 +140,6 @@ def build_milestone_spec(folder: str) -> InserterSpec:
         section_of=lambda r: "Us" if r["scope"] == "us" else "Me",
         section_order=_canonical_order(["Us", "Me"]),
         empty_message="_No milestones yet._",
-        force_sort_consistency=True,
-    )
-
-
-# ── diary ──────────────────────────────────────────────────────────────────
-
-
-def build_diary_spec(folder: str) -> InserterSpec:
-    """Diary — one block per date, month + year section headings.
-
-    block_id = date string. Year sections ordered ascending so the file
-    reads oldest → newest (matches legacy render). Month subsection lives
-    inside each year as a level-3 heading prefixing the H4 day blocks.
-
-    The "section" granularity for inserter purposes is the year — month
-    + day boundaries are emitted inside each block, but a new year does
-    not exist as a header until the first entry of that year arrives.
-    """
-    def fetch(conn: sqlite3.Connection) -> list[dict]:
-        rows = conn.execute(
-            "SELECT date, content, mood FROM diary ORDER BY date ASC"
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def render(r: dict) -> str:
-        mood = f" [{r['mood']}]" if r.get("mood") else ""
-        body = (r["content"] or "").strip()
-        anchor = _anchor(r["date"])
-        # Single multi-line block with the H4 date heading. Mood lives in
-        # the heading tag for legacy parity. Anchor sits on the next line
-        # so parse_blocks can scope cleanly to this day.
-        return f"#### {r['date']}{mood}\n{anchor}\n\n{body}"
-
-    # Diary blocks span multiple lines (heading + anchor + body); parse_row
-    # operates on single lines so it can't extract content. reconcile_diary
-    # uses a dedicated block scanner instead — parse_row stays None.
-
-    return InserterSpec(
-        key="diary",
-        path=str(Path(folder) / "diary.md"),
-        fetch=fetch,
-        block_id_of=lambda r: str(r["date"]),
-        render_row=render,
-        parse_row=None,
-        group_by="date",
-        section_of=lambda r: _year(r["date"]),
-        section_order=lambda labels: sorted(set(labels)),
-        render_section_header=lambda y: f"## {y}",
-        empty_message="_No diary entries yet._",
         force_sort_consistency=True,
     )
 
@@ -528,7 +464,6 @@ def build_atlas_spec(folder: str) -> InserterSpec:
 SPEC_BUILDERS = {
     "profile":  build_profile_spec,
     "milestone": build_milestone_spec,
-    "diary":    build_diary_spec,
     "memes":    build_memes_spec,
     "stickers": build_stickers_spec,
     "wallet":   build_wallet_spec,

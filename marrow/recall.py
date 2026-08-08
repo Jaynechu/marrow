@@ -195,24 +195,6 @@ _LANES: dict[str, dict[str, str]] = {
             "ORDER BY mi.id DESC LIMIT ?"
         ),
     },
-    # Diary table is keyed by `date TEXT PRIMARY KEY`, not INTEGER. vec0 rowid
-    # must be INTEGER, so we ride SQLite's implicit `rowid` column (auto-assigned
-    # to every table without an explicit INTEGER PRIMARY KEY). Stable across
-    # re-opens; reassigned on DELETE+INSERT (any diary rewrite by date). Orphan
-    # rows in diary_vec_meta whose rowid no longer exists in diary are swept by
-    # _embed_pending_lane before the per-lane backfill query runs.
-    "diary": {
-        "vec_table": "diary_vec",
-        "meta_table": "diary_vec_meta",
-        "pending_sql": (
-            "SELECT d.rowid AS id, "
-            "  TRIM(d.date || ': ' || COALESCE(d.content,'')) AS text "
-            "FROM diary d WHERE COALESCE(d.content,'') NOT IN ('','—') "
-            "AND NOT EXISTS (SELECT 1 FROM diary_vec_meta x "
-            "                WHERE x.rowid=d.rowid) "
-            "ORDER BY d.rowid DESC LIMIT ?"
-        ),
-    },
     # Tasks lane covers study + projects (both live in `tasks` filtered by
     # category). Embed active + done so finished work stays surfaceable;
     # skip archived (aging.py auto-applies after 30d of zero mentions).
@@ -336,26 +318,6 @@ def embed_milestone(
     return _embed_one(conn, "milestones", milestone_id, text, embedder_id, dim)
 
 
-def embed_diary(
-    conn: sqlite3.Connection,
-    date: str,
-    text: str,
-    embedder_id: str = "bge-m3",
-    dim: int = 1024,
-) -> bool:
-    """Embed one diary entry into diary_vec + diary_vec_meta. Idempotent.
-
-    Resolves the diary row's rowid by date first — diary's PK is TEXT, vec0
-    needs INTEGER. Returns False if the date is not in the diary table.
-    """
-    row = conn.execute(
-        "SELECT rowid FROM diary WHERE date=?", (date,)
-    ).fetchone()
-    if row is None:
-        return False
-    return _embed_one(conn, "diary", int(row["rowid"]), text, embedder_id, dim)
-
-
 def embed_task(
     conn: sqlite3.Connection,
     task_id: int,
@@ -365,27 +327,6 @@ def embed_task(
 ) -> bool:
     """Embed one task row into tasks_vec + tasks_vec_meta. Idempotent."""
     return _embed_one(conn, "tasks", task_id, text, embedder_id, dim)
-
-
-def _sweep_diary_orphans(conn: sqlite3.Connection) -> None:
-    """Drop diary_vec / diary_vec_meta rows whose rowid no longer maps to a
-    diary row. A diary rewrite by DELETE+INSERT reassigns rowid and orphans the
-    previous vec embedding. Cheap full-scan join — diary is small (≤ ~365
-    rows/yr).
-    """
-    try:
-        stale = [r[0] for r in conn.execute(
-            "SELECT m.rowid FROM diary_vec_meta m "
-            "WHERE NOT EXISTS (SELECT 1 FROM diary d WHERE d.rowid=m.rowid)"
-        ).fetchall()]
-    except sqlite3.Error:
-        return
-    if not stale:
-        return
-    with conn:
-        for rid in stale:
-            conn.execute("DELETE FROM diary_vec WHERE rowid=?", (rid,))
-            conn.execute("DELETE FROM diary_vec_meta WHERE rowid=?", (rid,))
 
 
 def _embed_pending_lane(
@@ -399,8 +340,6 @@ def _embed_pending_lane(
     emb = _ensure_embedder()
     if emb is None:
         return 0
-    if lane == "diary":
-        _sweep_diary_orphans(conn)
     cfg = _LANES[lane]
     rows = conn.execute(cfg["pending_sql"], (batch,)).fetchall()
     if not rows:
@@ -461,8 +400,8 @@ def embed_pending(
     embedder_id: str = "bge-m3",
     dim: int = 1024,
 ) -> int:
-    """Backfill all seven lanes (events + memes + entities + milestones + diary
-    + tasks + stickers).
+    """Backfill all six lanes (events + memes + entities + milestones + tasks
+    + stickers).
 
     Per-lane budget = `batch` so a large events backlog cannot starve the
     cross-table lanes on a single hook firing. Returns total rows written.
@@ -670,18 +609,6 @@ def _milestones_vec_hits(conn: sqlite3.Connection, qblob: bytes, k: int) -> dict
     )
 
 
-def _diary_vec_hits(conn: sqlite3.Connection, qblob: bytes, k: int) -> list[dict]:
-    return _vec_cards(
-        conn,
-        "SELECT d.rowid AS id, d.date, d.content, v.distance "
-        "FROM diary_vec v JOIN diary d ON d.rowid = v.rowid "
-        "WHERE embedding MATCH ? AND k = ? "
-        "ORDER BY v.distance",
-        qblob, k,
-        {"date": "", "content": ""},
-    )
-
-
 def _tasks_vec_hits(conn: sqlite3.Connection, qblob: bytes, k: int) -> list[dict]:
     return _vec_cards(
         conn,
@@ -770,7 +697,7 @@ def _apply_stopwords(q: str, stopwords: list[str]) -> str:
 
 # cwd → recall bucket mapping. Same-bucket events get +same_boost, known
 # cross-bucket events take -diff_penalty (soft cut, still possible to win
-# on strong raw score). Anchors (milestones / memes / diary / tasks / entity
+# on strong raw score). Anchors (milestones / memes / tasks / entity
 # force-include) are evergreen and skip the bucket bias entirely.
 #
 # Defaults below are the FALLBACK shape used when no [recall.buckets] config
@@ -1278,7 +1205,6 @@ def recall_fusion(
     w_memes_vec: float = 0.60,
     w_entities_vec: float = 0.60,
     w_milestones_vec: float = 0.60,
-    w_diary_vec: float = 0.55,
     w_tasks_vec: float = 0.55,
     min_score: float = 0.35,
     current_cwd: str | None = None,
@@ -1292,9 +1218,9 @@ def recall_fusion(
     Applies FLOOR tiers to final score.
     FTS keyword hit on dormant row clears dormant flag before scoring.
     Returns rows sorted by score desc, truncated by budget_chars.
-    `exclude_kinds`: lane kinds to skip entirely (e.g. ("diary", "task")).
-    `since`/`until`: UTC ISO strings; when set, events and diary are filtered
-    to this window. Anchor lanes (memes/entities/milestones/tasks) unaffected.
+    `exclude_kinds`: lane kinds to skip entirely (e.g. ("task",)).
+    `since`/`until`: UTC ISO strings; when set, events are filtered to this
+    window. Anchor lanes (memes/entities/milestones/tasks) unaffected.
     """
     q = query.strip()
     if not q:
@@ -1437,14 +1363,12 @@ def recall_fusion(
     memes_vec_map: dict[int, float] = {}
     milestones_vec_map: dict[int, float] = {}
     entities_vec_cards: list[dict] = []
-    diary_vec_cards: list[dict] = []
     tasks_vec_cards: list[dict] = []
     if vec_available:
         k_lane = max(limit * 2, 5)
         memes_vec_map = _memes_vec_hits(conn, qblob, k_lane)
         milestones_vec_map = _milestones_vec_hits(conn, qblob, k_lane)
         entities_vec_cards = _entities_vec_hits(conn, qblob, k_lane)
-        diary_vec_cards = _diary_vec_hits(conn, qblob, k_lane)
         tasks_vec_cards = _tasks_vec_hits(conn, qblob, k_lane)
 
     # Memes: merge vec hits into the substring pool by id.
@@ -1548,72 +1472,6 @@ def recall_fusion(
             "strong": tier,
         }
     milestone_cands = list(ms_by_id.values())
-
-    # Diary: vec-only lane (no kw scan for long-form prose). Build candidates
-    # gated by _VEC_ONLY_FLOOR; scored with w_diary_vec, no bm25/recency.
-    # When a time window is active (since and/or until), convert to
-    # configured-local-timezone dates and filter diary rows to that range.
-    _diary_since_date: str | None = None
-    _diary_until_date: str | None = None
-    _diary_window_error = False
-    if since or until:
-        from .timeutil import utc_iso_to_local_date as _u2d
-        try:
-            if since:
-                _diary_since_date = _u2d(since)
-            if until:
-                # `until` is the EXCLUSIVE end boundary (start of the configured-local-timezone
-                # day AFTER the requested until-day, see timecue.melb_day_range).
-                # Converting it straight to a local date yields until+1 and the
-                # `date <= ?` filter then leaks the following day. Step back 1s
-                # so a since==until window returns only that single day.
-                _u_dt = datetime.datetime.fromisoformat(
-                    until.replace("Z", "+00:00")) - datetime.timedelta(seconds=1)
-                _diary_until_date = _u2d(
-                    _u_dt.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        except Exception:
-            _diary_window_error = True
-
-    diary_cands: list[dict] = []
-    if (since or until) and not _diary_window_error:
-        # Date window present — direct SELECT, bypass vec floor.
-        _dwhere = ["COALESCE(content,'') NOT IN ('','—')"]
-        _dparams: list = []
-        if _diary_since_date:
-            _dwhere.append("date >= ?")
-            _dparams.append(_diary_since_date)
-        if _diary_until_date:
-            _dwhere.append("date <= ?")
-            _dparams.append(_diary_until_date)
-        for row in conn.execute(
-            f"SELECT rowid, date, content FROM diary WHERE {' AND '.join(_dwhere)}",
-            _dparams,
-        ).fetchall():
-            ts = row["date"] + "T00:00:00Z" if row["date"] else ""
-            diary_cands.append({
-                "kind": "diary", "id": int(row["rowid"]),
-                "session_id": None, "timestamp": ts,
-                "role": "diary", "content": row["content"],
-                "channel": None, "compressed": 0,
-                "bm25": 0.0, "vec": 1.0, "fts_hit": False,
-                "date": row["date"],
-            })
-    else:
-        for card in diary_vec_cards:
-            vs = card["vec_score"]
-            if vs < _VEC_ONLY_FLOOR:
-                continue
-            if not card["content"] or card["content"] == "—":
-                continue
-            ts = card["date"] + "T00:00:00Z" if card["date"] else ""
-            diary_cands.append({
-                "kind": "diary", "id": card["id"],
-                "session_id": None, "timestamp": ts,
-                "role": "diary", "content": card["content"],
-                "channel": None, "compressed": 0,
-                "bm25": 0.0, "vec": vs, "fts_hit": False,
-                "date": card["date"],
-            })
 
     # Tasks: vec-only lane (no kw scan for now — titles are short, can land
     # later if needed). Evergreen — no recency on the recall ranking either.
@@ -1818,12 +1676,6 @@ def recall_fusion(
                       else _STRONG_BODY_FLOOR)
         scored.append((raw, {**vc, "score": raw}))
 
-    # ── diary scoring (vec only — evergreen long-form prose) ─────────────────
-    if "diary" not in exclude_kinds:
-        for dc in diary_cands:
-            raw = w_diary_vec * dc.get("vec", 0.0)
-            scored.append((raw, {**dc, "score": raw}))
-
     # ── tasks scoring (vec only — evergreen study + project surface) ────────
     if "task" not in exclude_kinds:
         for tc in tasks_cands:
@@ -1850,8 +1702,8 @@ def recall_fusion(
         scored.append((raw, {**ec, "score": raw}))
 
     # ── unified min_score gate ──────────────────────────────────────────────
-    # All lanes (events / anchors / diary / tasks) must clear the same floor.
-    # Without this, anchor lanes (milestone/memes/diary/tasks/entity) bypass
+    # All lanes (events / anchors / tasks) must clear the same floor.
+    # Without this, anchor lanes (milestone/memes/tasks/entity) bypass
     # the gate entirely and surface unrelated rows on every query.
     scored = [(s, r) for s, r in scored if s >= min_score]
     scored.sort(key=lambda x: x[0], reverse=True)
@@ -1865,7 +1717,7 @@ def recall_fusion(
     chosen_event_ids: dict[str, list[int]] = {}
     for s, r in scored:
         kind = r.get("kind") or "event"
-        if kind not in ("entity", "milestone", "memes", "diary", "task"):
+        if kind not in ("entity", "milestone", "memes", "task"):
             sid = r.get("session_id")
             rid = r.get("id")
             if sid and rid:
@@ -1902,7 +1754,7 @@ def recall_with_config(
     limit: int | None = None,
     budget_chars: int | None = None,
     current_cwd: str | None = None,
-    exclude_kinds: tuple[str, ...] = ("diary", "task"),
+    exclude_kinds: tuple[str, ...] = ("task",),
     since: str | None = None,
     until: str | None = None,
 ) -> list[dict]:
@@ -1911,8 +1763,8 @@ def recall_with_config(
     Single shared path so hook (UserPromptSubmit) and MCP daemon return the
     same shape for the same query. Caller may override limit/budget per call.
     `current_cwd` enables per-event same-bucket boost / cross-bucket penalty
-    (CC-Lab=project, ~/my-dashboard=daily, Study=study).
-    `exclude_kinds`: kinds to suppress. Hook default = ("diary", "task");
+    (CC-Lab=project, ~/notes=daily, Study=study).
+    `exclude_kinds`: kinds to suppress. Hook default = ("task",);
     MCP callers pass () to include all kinds.
     `since`/`until`: UTC ISO strings for time-lane filtering.
     """
@@ -1921,7 +1773,7 @@ def recall_with_config(
     _weight_keys = {
         "w_vec", "w_bm25", "w_recency", "w_affect",
         "w_memes_vec", "w_entities_vec", "w_milestones_vec",
-        "w_diary_vec", "w_tasks_vec", "min_score",
+        "w_tasks_vec", "min_score",
     }
     # Strip WX time-anchor prefix before query reaches FTS + vec.
     # Format: "[time: <...> | gap: <...>] <actual query>"

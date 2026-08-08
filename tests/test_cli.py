@@ -177,35 +177,6 @@ def test_ls_status_filter(db, capsys):
     assert "Old" not in capsys.readouterr().out
 
 
-# ── diary: TEXT primary key (date, no id) ──────────────────────────────────────
-
-@pytest.fixture()
-def diary_db(db):
-    conn = storage.connect(db)
-    conn.execute("INSERT INTO diary(date,content) VALUES('2026-05-17','draft')")
-    conn.commit()
-    conn.close()
-    return db
-
-
-def test_set_diary_by_date(diary_db):
-    rc = cli.main(["set", "diary", "2026-05-17", "content", "final", "--db",
-                   diary_db])
-    assert rc == 0
-    assert _rows(diary_db, "SELECT content FROM diary")[0]["content"] == "final"
-
-
-def test_rm_diary_by_date(diary_db):
-    rc = cli.main(["rm", "diary", "2026-05-17", "--db", diary_db])
-    assert rc == 0
-    assert _rows(diary_db, "SELECT COUNT(*) c FROM diary")[0]["c"] == 0
-
-
-def test_show_diary_by_date(diary_db, capsys):
-    assert cli.main(["show", "diary", "2026-05-17", "--db", diary_db]) == 0
-    assert "draft" in capsys.readouterr().out
-
-
 # ── add milestone ─────────────────────────────────────────────────────────────
 
 def test_add_milestone_inserts_with_timestamps(db, capsys):

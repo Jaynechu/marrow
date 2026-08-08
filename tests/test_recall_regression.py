@@ -5,7 +5,7 @@ Covers:
 - test_no_anchor_bias: event and milestone with same bm25+vec score equally
 - test_pinned_no_boost: pinned milestone == unpinned at same bm25+vec
 - test_cwd_boost: same-bucket event gets +0.05; cross-bucket gets +0.00
-- test_exclude_kinds: default excludes diary/task; explicit () includes them
+- test_exclude_kinds: default excludes task; explicit () includes them
 - test_utc_to_local: 2026-06-06T14:00:00Z -> "2026-06-07" Melbourne date
 - test_stopword_filter: CJK + ASCII stopword filtering
 - test_time_anchor_strip: WX time-anchor prefix stripped at recall entry
@@ -422,36 +422,32 @@ def test_cwd_boost(tmp_path):
 # ── 5. exclude_kinds ──────────────────────────────────────────────────────────
 
 def test_exclude_kinds_default(tmp_path):
-    """recall_with_config default (exclude_kinds=('diary','task')) hides diary/task."""
+    """recall_with_config default (exclude_kinds=('task',)) hides task rows."""
     from unittest.mock import patch as _patch
-    from marrow import config as cfg_mod
 
     conn = storage.init_db(str(tmp_path / "ek.db"))
     try:
-        # Seed a diary entry (vec only lane).
+        # Seed a task (vec only lane).
         conn.execute(
-            "INSERT INTO diary(date, content) VALUES('2026-06-01', 'test diary exclude content')"
+            "INSERT INTO tasks(title, category, status)"
+            " VALUES('test task exclude content', 'study', 'active')"
         )
         conn.commit()
 
         # Use recall_fusion directly with exclude_kinds to avoid config loading.
         with _patch.object(rm, "_ensure_embedder", return_value=None):
-            with_diary = rm.recall_fusion(
-                conn, "exclude content", min_score=0.01, exclude_kinds=()
-            )
-            without_diary = rm.recall_fusion(
+            without_task = rm.recall_fusion(
                 conn, "exclude content", min_score=0.01,
-                exclude_kinds=("diary", "task")
+                exclude_kinds=("task",)
             )
 
-        diary_in_with = [r for r in with_diary if r.get("kind") == "diary"]
-        diary_in_without = [r for r in without_diary if r.get("kind") == "diary"]
+        task_in_without = [r for r in without_task if r.get("kind") == "task"]
 
-        # Vec-only lane — with no embedder, no diary candidates are generated
+        # Vec-only lane — with no embedder, no task candidates are generated
         # regardless. But we can verify exclude_kinds doesn't break anything
         # and the signature is accepted.
-        assert diary_in_without == [], (
-            f"diary should be excluded: {diary_in_without}"
+        assert task_in_without == [], (
+            f"task should be excluded: {task_in_without}"
         )
     finally:
         conn.close()
@@ -567,12 +563,12 @@ def test_time_anchor_strip(db):
         # With prefix — should strip "[time:...] " and search for "hi"
         results_with = rm.recall_with_config(
             db, "[time: 2026-06-06 Sat 04:23 | gap: 0m] hi how are you today",
-            exclude_kinds=("diary", "task"),
+            exclude_kinds=("task",),
         )
         # Without prefix — identical search
         results_without = rm.recall_with_config(
             db, "hi how are you today",
-            exclude_kinds=("diary", "task"),
+            exclude_kinds=("task",),
         )
 
     # Both should hit the same event (or both miss — consistent).

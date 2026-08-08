@@ -2,7 +2,6 @@
 
 Covers:
 - Present session anchor → unchanged count (no tl_line write-back since Phase 5)
-- Present diary anchor → unchanged count (no tl_line write-back since Phase 5)
 - Delete a tl line → no-op (deleted line = no-op, next render restores)
 - Unchanged text → unchanged count, no DB write
 - Unknown sid → conflict reported
@@ -57,22 +56,9 @@ def _insert_digest(
     return ts
 
 
-def _insert_diary(conn, date: str, tl: str | None = "日记TL",
-                   tone: str | None = None) -> None:
-    conn.execute(
-        "INSERT INTO diary (date, content, tl_line, tone) VALUES (?, 'body', ?, ?)",
-        (date, tl, tone),
-    )
-    conn.commit()
-
-
-def _make_timeline_block(sid: str, tl: str, date: str | None = None,
-                         diary_tl: str | None = None) -> str:
+def _make_timeline_block(sid: str, tl: str) -> str:
     """Build a minimal ## Timeline block with anchors."""
-    lines = ["## Timeline", f"14:00 {tl} <!-- tl:{sid} -->"]
-    if date and diary_tl:
-        lines.append(f"06-07 Day 【平淡】 {diary_tl} <!-- tl:d:{date} -->")
-    return "\n".join(lines)
+    return "\n".join(["## Timeline", f"14:00 {tl} <!-- tl:{sid} -->"])
 
 
 def _freeze_reconcile_now(monkeypatch, melb_dt: _dt.datetime) -> None:
@@ -181,52 +167,7 @@ def test_reconcile_tl_audit_row_not_written(conn, dash_path):
     assert row is None
 
 
-# ── diary anchor presence (tl_line write-back removed in Phase 5) ────────────
-
-def test_reconcile_tl_diary_edit(conn, dash_path):
-    """Present diary anchor → unchanged count; diary.tl_line not mutated (Phase 5)."""
-    date = "2026-06-07"
-    sid = "sid-diary-test"
-    _insert_digest(conn, sid)
-    _insert_diary(conn, date, tl="原始日记TL")
-    dash_path.write_text(
-        _make_timeline_block(sid, "聊天了", date=date, diary_tl="新日记TL")
-    )
-
-    rpt = reconcile_timeline(conn, dash_path)
-    assert rpt.unchanged >= 1
-    row = conn.execute(
-        "SELECT tl_line, tone FROM diary WHERE date=?", (date,)
-    ).fetchone()
-    assert row["tl_line"] == "原始日记TL"  # unchanged — write-back removed
-    assert row["tone"] == "平淡"  # tone extracted from 【平淡】
-
-
-def test_reconcile_tl_diary_unknown_date(conn, dash_path):
-    """Diary date not in DB → conflict reported."""
-    dash_path.write_text(
-        "## Timeline\n06-07 Day 【平淡】 missing diary <!-- tl:d:2026-06-07 -->"
-    )
-    rpt = reconcile_timeline(conn, dash_path)
-    assert any("2026-06-07" in c for c in rpt.conflicts)
-
-
 # ── prefix-only / tone-tag lines must not write back ─────────────────────────
-
-def test_reconcile_tl_stub_day_line_no_writeback(conn, dash_path):
-    """Prefix-only stub day line (NULL tl_line) strips to empty → no write-back."""
-    date = "2026-06-07"
-    _insert_diary(conn, date, tl=None, tone="平淡")
-    dash_path.write_text(
-        f"## Timeline\n06-07 Day 【平淡】 <!-- tl:d:{date} -->"
-    )
-    rpt = reconcile_timeline(conn, dash_path)
-    assert rpt.updated == 0
-    row = conn.execute(
-        "SELECT tl_line FROM diary WHERE date=?", (date,)
-    ).fetchone()
-    assert row["tl_line"] is None
-
 
 def test_reconcile_tl_tone_tagged_line_no_writeback(conn, dash_path):
     """Tone-tagged anchor counts as unchanged; tl_line not mutated (Phase 5)."""
@@ -294,9 +235,7 @@ def test_reconcile_tl_no_file(conn, dash_path):
 
 def test_migration_tl_hidden_columns(conn):
     cols_sd = {r[1] for r in conn.execute("PRAGMA table_info(session_digests)")}
-    cols_d  = {r[1] for r in conn.execute("PRAGMA table_info(diary)")}
     assert "tl_hidden" in cols_sd
-    assert "tl_hidden" in cols_d
     import marrow.storage as _s
     _s._migrate_to_v18(conn)  # must not raise
 
@@ -324,16 +263,6 @@ def test_delete_sid_hidden_excludes_from_render(conn):
     result = timeline.render_timeline(conn)
     assert "隐藏TL" not in result
     assert "sid-hidden" not in result
-
-
-def test_delete_diary_line_sets_hidden(conn, dash_path):
-    date = "2026-06-01"
-    _insert_diary(conn, date, tl="日记TL")
-    dash_path.write_text(f"## Timeline\n_none_\n<!-- tl-rendered:d={date} -->")
-    rpt = reconcile_timeline(conn, dash_path)
-    assert rpt.updated >= 1
-    row = conn.execute("SELECT tl_hidden FROM diary WHERE date=?", (date,)).fetchone()
-    assert row["tl_hidden"] == 1
 
 
 def test_add_plus_line_with_time_inserts_event(conn, dash_path):
@@ -428,26 +357,6 @@ def test_add_plus_line_top_without_time_uses_now(conn, dash_path, monkeypatch):
     ).fetchone()
     assert row["content"] == "随手记"
     assert row["timestamp"] == "2026-06-13T12:50:00Z"
-
-
-def test_add_plus_line_uses_full_date_anchor_context(conn, dash_path, monkeypatch):
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo("Australia/Melbourne")
-    _freeze_reconcile_now(
-        monkeypatch, _dt.datetime(2026, 6, 13, 22, 50, tzinfo=tz)
-    )
-    dash_path.write_text(
-        "## Timeline\n"
-        "<!-- tl:d:2026-06-09 -->\n"
-        "+ND 宵夜"
-    )
-
-    reconcile_timeline(conn, dash_path)
-    row = conn.execute(
-        "SELECT content, timestamp FROM events WHERE channel='manual'"
-    ).fetchone()
-    assert row["content"] == "宵夜"
-    assert row["timestamp"] == "2026-06-09T11:00:00Z"
 
 
 def test_add_plus_line_yearless_context_uses_recent_past_year(

@@ -45,7 +45,6 @@ _LIVE_SQL: dict[str, str] = {
     "stickers.md": "SELECT id FROM stickers",
     "projects.md": "SELECT id FROM tasks WHERE category='project'",
     "study.md": "SELECT id FROM tasks WHERE category='study'",
-    "diary.md": "SELECT date FROM diary",
 }
 
 

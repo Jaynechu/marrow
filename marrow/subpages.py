@@ -29,13 +29,11 @@ from .reconcile import reconcile_milestones, emit_conflict_alerts
 from .reconcile_inserter import (
     reconcile_memes,
     reconcile_profile,
-    reconcile_diary,
     reconcile_stickers,
     reconcile_wallet,
 )
 from .subpages_render import (
     render_cheatsheet,
-    render_diary,
     render_memes,
     render_milestone,
     render_profile,
@@ -323,10 +321,6 @@ _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = 
         "milestone", render_milestone, "milestone.md",
         subpage_specs.build_milestone_spec,
         reconcile=reconcile_milestones),
-    "diary":      _flat_with_inserter(
-        "diary", render_diary, "diary.md",
-        subpage_specs.build_diary_spec,
-        reconcile=reconcile_diary),
     "memes":      _flat_with_inserter(
         "memes", render_memes, "memes.md",
         subpage_specs.build_memes_spec,
@@ -349,7 +343,7 @@ _REGISTRY: dict[str, Callable[[sqlite3.Connection, str, str], SubPageConfig]] = 
 
 # Render order when [subpages] is absent from config — covers fresh installs
 # and tests. Mirrors DESIGN L43-65 default order.
-_DEFAULT_TOP = ["profile", "milestone", "diary", "memes",
+_DEFAULT_TOP = ["profile", "milestone", "memes",
                 "stickers", "wallet"]
 _DEFAULT_BOTTOM = ["study", "projects", "cheatsheet", "atlas"]
 
@@ -441,7 +435,6 @@ _FILENAME: dict[str, str] = {}
 _DISPLAY = {
     "profile":    "Profile",
     "milestone":  "Milestone",
-    "diary":      "Diary",
     "memes":      "Memes",
     "stickers":   "Stickers",
     "wallet":     "Wallet",

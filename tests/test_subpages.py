@@ -4,8 +4,6 @@ Contract:
 - Each sub-page rendered from one table, same render contract (markers +
   atomic write) differing only by table + view.
 - Structured views: row-id anchor `<!-- id:{id} -->` at line end.
-- Narrative views (diary): `## YYYY-MM-DD` heading is the row
-  boundary; no extra inline anchor.
 - Cheatsheet: read-only, always overwrite.
 - Anchored md edits flow back to DB via reconcile; free-form hand-edits
   inside the rendered block are silently overwritten on next render.
@@ -25,10 +23,6 @@ def db(tmp_path):
     p = str(tmp_path / "t.db")
     conn = storage.init_db(p)
     with conn:
-        conn.execute("INSERT INTO diary(date,content,mood) "
-                     "VALUES('2026-05-20','Today was a good day.','calm')")
-        conn.execute("INSERT INTO diary(date,content) "
-                     "VALUES('2026-04-15','Spring entry.')")
         conn.execute("INSERT INTO milestones(scope,date,title,description,pinned) "
                      "VALUES('us','2026-01-17','First meeting','In the rain',1)")
         conn.execute("INSERT INTO milestones(scope,date,title,pinned) "
@@ -43,50 +37,6 @@ def db(tmp_path):
                      "VALUES('old feature','dropped idea','idea')")
     conn.close()
     return p
-
-
-# ---------------------------------------------------------------------------
-# Diary
-# ---------------------------------------------------------------------------
-
-def test_render_diary_contains_dates_and_content(db):
-    conn = storage.connect(db)
-    try:
-        block = subpages.render_diary(conn)
-    finally:
-        conn.close()
-    assert "#### 2026-05-20" in block
-    assert "Today was a good day." in block
-    assert "### April" in block  # month-name heading
-    assert "### May" in block
-    assert "## 2026" in block    # year heading
-    assert "Spring entry." in block
-    assert "<!-- marrow:diary:start -->" in block
-    assert "<!-- marrow:diary:end -->" in block
-
-
-def test_render_diary_no_structured_anchor(db):
-    conn = storage.connect(db)
-    try:
-        block = subpages.render_diary(conn)
-    finally:
-        conn.close()
-    # Narrative view: NO row-id anchor, boundary is the date heading only
-    assert "<!-- id:" not in block
-
-
-def test_render_diary_month_grouped(db):
-    conn = storage.connect(db)
-    try:
-        block = subpages.render_diary(conn)
-    finally:
-        conn.close()
-    # Both months appear as H3 month-name headings under a shared year.
-    assert "## 2026" in block
-    assert "### April" in block
-    assert "### May" in block
-    # ASC order: oldest first — April appears before May.
-    assert block.index("### April") < block.index("### May")
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +273,6 @@ def test_build_all_configs_returns_expected_keys(db, tmp_path):
     finally:
         conn.close()
     keys = {c.key for c in cfgs}
-    assert "diary" in keys
     assert "milestone" in keys
     assert "memes" in keys
     assert "goose" not in keys
@@ -342,7 +291,7 @@ def test_write_all_subpages_creates_files(db, tmp_path):
         )
     finally:
         conn.close()
-    for name in ("diary.md", "milestone.md", "memes.md",
+    for name in ("milestone.md", "memes.md",
                   "cheatsheet.md", "study.md", "projects.md",
                   "profile.md", "stickers.md", "wallet.md"):
         assert (Path(folder) / name).exists(), f"Missing {name}"
@@ -359,7 +308,7 @@ def test_build_all_configs_respects_subpages_config(db, tmp_path, monkeypatch):
     state = str(tmp_path / "state")
 
     def fake_load():
-        return {"subpages": {"top": ["milestone", "diary"],
+        return {"subpages": {"top": ["milestone", "memes"],
                               "bottom": ["projects"], "hidden": []}}
 
     monkeypatch.setattr(subpages._config, "load", fake_load)
@@ -370,7 +319,7 @@ def test_build_all_configs_respects_subpages_config(db, tmp_path, monkeypatch):
         conn.close()
     keys = [c.key for c in cfgs]
     # Order honoured; only listed keys built.
-    assert keys == ["milestone", "diary", "projects"]
+    assert keys == ["milestone", "memes", "projects"]
 
 
 def test_build_all_configs_warns_on_unknown_key(db, tmp_path, monkeypatch):

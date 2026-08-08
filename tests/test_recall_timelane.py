@@ -2,7 +2,6 @@
 
 Covers:
 - recall_fusion window filters events (in/out of window)
-- diary date filter
 - fetch_window_digests (ts-based and date fallback)
 - daemon param conversion via melb_day_range
 - hooks merge ordering (windowed first)
@@ -68,14 +67,6 @@ def _make_digest(db, sid: str, date: str, text: str,
     db.commit()
 
 
-def _make_diary(db, date: str, content: str) -> None:
-    db.execute(
-        "INSERT OR REPLACE INTO diary(date, content) VALUES(?,?)",
-        (date, content),
-    )
-    db.commit()
-
-
 # ── window filter: events FTS ─────────────────────────────────────────────────
 
 def test_fts_window_filters_in_range(db):
@@ -127,33 +118,6 @@ def test_vec_window_python_filter(db):
     sids = {h["session_id"] for h in hits}
     assert "s1" in sids
     assert "s2" not in sids
-
-
-# ── diary date filter ─────────────────────────────────────────────────────────
-
-def test_diary_filtered_by_window(db):
-    # diary_vec lane is vec-only; we test the date-filter logic via diary_cands
-    # by injecting diary rows and verifying out-of-window ones are excluded.
-    # Since we can't easily mock vec for diary, we test fetch_window_digests
-    # which covers the diary-adjacent date logic.
-    _make_diary(db, "2026-06-09", "Had a latte")
-    _make_diary(db, "2026-06-07", "Read a book")
-
-    since, until = melb_day_range("2026-06-09")
-    # The diary lane inside recall_fusion uses _diary_dates to filter;
-    # with no vec available, diary_vec_cards is empty → diary_cands empty.
-    # Test the date-set computation path directly.
-    from marrow import timeutil
-    from datetime import datetime as _dt, timedelta as _td
-    _s = _dt.fromisoformat(since.replace("Z", "+00:00"))
-    _e = _dt.fromisoformat(until.replace("Z", "+00:00"))
-    dates: set[str] = set()
-    _cur = _s
-    while _cur <= _e:
-        dates.add(timeutil.utc_iso_to_local_date(_cur.strftime("%Y-%m-%dT%H:%M:%SZ")))
-        _cur += _td(days=1)
-    assert "2026-06-09" in dates
-    assert "2026-06-07" not in dates
 
 
 # ── fetch_window_digests ──────────────────────────────────────────────────────

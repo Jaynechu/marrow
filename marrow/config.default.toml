@@ -34,7 +34,7 @@ daybrief = ""
 # monitor.md (alerts surface) renders here. Empty = <db_pages>/monitor.md.
 # e.g. "~/Documents/my-vault/db-pages/monitor.md"
 monitor = ""
-# DB-rendered pages folder (milestone.md, diary.md, ...).
+# DB-rendered pages folder (milestone.md, memes.md, ...).
 # Empty = <ny_root>/db-pages, else <DATA_DIR>/db-pages (config.py fallback).
 # e.g. "~/Documents/my-vault/db-pages". Name signals "rendered from DB".
 # Legacy key: `sub_pages`.
@@ -147,7 +147,6 @@ w_affect = 0.10
 w_memes_vec = 0.58
 w_entities_vec = 0.58
 w_milestones_vec = 0.58
-w_diary_vec = 0.55
 w_tasks_vec = 0.55
 min_score = 0.40
 # Staged additive recall boost for self-authored (role='tl') rows, indexed by
@@ -237,11 +236,11 @@ meme_exclude_terms = []
 
 [subpages]
 # Sub-page render order + visibility (DESIGN L43-65). Known keys:
-#   profile · milestone · diary · memes · stickers · wallet
+#   profile · milestone · memes · stickers · wallet
 #   study · projects · cheatsheet
 # `top` = content (numbered in the `## Content` list). `bottom` = utility
 # (unnumbered). `hidden` = built but not listed in `## Content`.
-top = ["profile", "milestone", "diary", "memes", "stickers", "wallet"]
+top = ["profile", "milestone", "memes", "stickers", "wallet"]
 bottom = ["study", "projects", "cheatsheet"]
 hidden = []
 
@@ -318,15 +317,6 @@ text_file = ""
 # rows written by other live sessions since this session last saw them.
 # false = no cross-window tl injection.
 enabled = true
-
-[diary]
-# Diary free-write groundwork for the cortex free-write slot — no writer wired
-# yet. Prompt text in marrow/data/prompt_diary.txt (or point prompt_file at your
-# own). enabled is a groundwork flag.
-enabled = false
-prompt_file = ""
-length_range = "300-800"
-style = "叙述生动有趣，故事性强。文艺中带着搞笑。"
 
 [sensors]
 # OwnTracks-compatible HTTP receiver: any app POSTing the same JSON to /pub

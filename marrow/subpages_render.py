@@ -3,21 +3,11 @@
 Each renderer returns a complete markdown block (including markers).
 Anchor formats:
 - Structured views: `<!-- id:{id} -->` at line end (DESIGN L118).
-- Narrative views (diary): `#### YYYY-MM-DD` heading is the row boundary; no inline anchor.
-  Stacks `## YYYY` / `### MonthName` above for navigation.
 """
 from __future__ import annotations
 
-import calendar
 import sqlite3
 from pathlib import Path
-
-
-def _year_month(date_str: str) -> tuple[str, str]:
-    """`'2026-05-20'` → `('2026', 'May')`. Empty/short strings get sentinels."""
-    if not date_str or len(date_str) < 7:
-        return ("?", "?")
-    return date_str[:4], calendar.month_name[int(date_str[5:7])]
 
 
 _MARKER_START = "<!-- marrow:{key}:start -->"
@@ -34,42 +24,6 @@ def _m1(key: str) -> str:
 
 def _anchor(row_id: int) -> str:
     return f" <!-- id:{row_id} -->"
-
-
-# -- Diary (narrative, month-grouped) ---------------------------------------
-
-def render_diary(conn: sqlite3.Connection) -> str:
-    key = "diary"
-    rows = conn.execute(
-        "SELECT date, content, mood FROM diary ORDER BY date ASC"
-    ).fetchall()
-    # No internal H1 — Obsidian shows the filename as the title; an in-file
-    # H1 duplicates it. Same rule applies to every render fn below.
-    # Hierarchy: ## YYYY → ### MonthName → #### YYYY-MM-DD [mood] → body.
-    out = [_m0(key), ""]
-    cur_year = None
-    cur_month = None
-    for r in rows:
-        year, month = _year_month(r["date"])
-        if year != cur_year:
-            out.append(f"## {year}")
-            out.append("")
-            cur_year = year
-            cur_month = None
-        if month != cur_month:
-            out.append(f"### {month}")
-            out.append("")
-            cur_month = month
-        mood = f" [{r['mood']}]" if r["mood"] else ""
-        out.append(f"#### {r['date']}{mood}")
-        out.append("")
-        out.append(r["content"].strip() if r["content"] else "")
-        out.append("")
-    if not rows:
-        out.append("_No diary entries yet._")
-        out.append("")
-    out.append(_m1(key))
-    return "\n".join(out)
 
 
 # -- Milestone (structured, ## Us / ## Me) ----------------------------------

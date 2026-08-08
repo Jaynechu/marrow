@@ -21,8 +21,6 @@ def db(tmp_path):
     p = str(tmp_path / "t.db")
     conn = storage.init_db(p)
     with conn:
-        conn.execute("INSERT INTO diary(date,content,mood)"
-                     " VALUES('2026-05-20','Today was a good day.','calm')")
         conn.execute("INSERT INTO milestones(scope,date,title,description,pinned)"
                      " VALUES('us','2026-01-17','First meeting','In the rain',1)")
         conn.execute("INSERT INTO milestones(scope,date,title,pinned)"
@@ -65,20 +63,6 @@ def test_milestone_bootstrap_emits_us_and_me_sections(db, tmp_path):
     assert "##### [2026-03-01] Head of school award" in text
     assert "<!-- id:1 -->" in text and "<!-- id:2 -->" in text
     assert counts["bootstrapped"] == 2
-
-
-# ── diary ──────────────────────────────────────────────────────────────────
-
-
-def test_diary_bootstrap_uses_date_block_ids(db, tmp_path):
-    spec = subpage_specs.build_diary_spec(str(tmp_path / "ny"))
-    counts = _run(spec, db)
-    text = Path(spec.path).read_text()
-    assert "## 2026" in text
-    assert "#### 2026-05-20" in text
-    assert "Today was a good day." in text
-    assert "<!-- id:2026-05-20 -->" in text
-    assert counts["bootstrapped"] == 1
 
 
 # ── memes ──────────────────────────────────────────────────────────────────
@@ -187,7 +171,7 @@ def test_wallet_bootstrap_emits_empty_placeholder(db, tmp_path):
 
 def test_registry_covers_expected_subpages():
     keys = set(subpage_specs.SPEC_BUILDERS)
-    expected = {"profile", "milestone", "diary", "memes",
+    expected = {"profile", "milestone", "memes",
                 "stickers", "wallet", "projects", "study"}
     assert expected.issubset(keys)
     assert "goose" not in keys

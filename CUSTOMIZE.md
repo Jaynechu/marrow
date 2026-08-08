@@ -16,7 +16,7 @@ relationship_terms = []
 anchor_keys = ["YourName", "AssistantName"]
 ```
 
-Runtime prompts (diary, sessionend, recall labels) read these values. Interaction style / personality goes in `~/.claude/CLAUDE.md` (not this repo).
+Runtime prompts (sessionend, recall labels) read these values. Interaction style / personality goes in `~/.claude/CLAUDE.md` (not this repo).
 
 ## 2. cwd → recall bucket
 
@@ -37,7 +37,7 @@ Substring match against lowercased cwd. Empty list disables that bucket. Clearin
 File: `marrow/config.default.toml` → `[recall]`
 
 - `w_vec` `w_bm25` `w_recency` `w_affect` — main fusion weights (sum ≈ 1.0)
-- `w_memes_vec` `w_entities_vec` `w_milestones_vec` `w_diary_vec` `w_tasks_vec` — anchor-table weights
+- `w_memes_vec` `w_entities_vec` `w_milestones_vec` `w_tasks_vec` — anchor-table weights
 - `min_score` — noise floor (0.35 = ship, 0.10 = debug)
 - `limit` — max hits per recall call
 - `event_max_chars` / `budget_chars` — output caps
@@ -62,7 +62,7 @@ File: `marrow/config.default.toml` → `[embedding]`
 - Swap by changing `model` + `dim`
 - Vec lanes auto-disable if model files absent (recall falls back to BM25 + recency + affect)
 
-## 8. Dashboard / sub-pages
+## 8. Rendered pages (daybrief / monitor / sub-pages)
 
 File: `marrow/config.default.toml` → `[paths]` + `[subpages]`
 

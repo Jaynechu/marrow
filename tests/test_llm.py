@@ -93,7 +93,7 @@ def test_retry_absorbs_transient_miss_no_alert(monkeypatch):
         return "ok-2nd"
 
     monkeypatch.setattr(c, "_run_claude_cli", flaky)
-    assert c.call("diary", "body", tier="cheap") == "ok-2nd"
+    assert c.call("sessionend", "body", tier="cheap") == "ok-2nd"
     assert len(calls) == 2  # one retry, same provider
     assert alerts == []  # transient miss never alerts
 
@@ -105,7 +105,7 @@ def test_claude_only_failure_is_warn(monkeypatch):
         c, "_run_claude_cli",
         lambda s, m, p: (_ for _ in ()).throw(LLMError("cli down")))
     with pytest.raises(LLMError, match="all providers failed"):
-        c.call("diary", "body", tier="cheap")
+        c.call("sessionend", "body", tier="cheap")
     assert alerts and alerts[-1][0] == "warn"
     assert "no fallback configured" in alerts[-1][2]
 
@@ -365,7 +365,7 @@ def test_refusal_never_returned_as_success_via_call(monkeypatch):
 
     monkeypatch.setattr(c, "_run_claude_cli", fake_run)
     with pytest.raises(LLMError):
-        c.call("diary", "body")
+        c.call("sessionend", "body")
 
 
 # --- Cost monitor tests ---

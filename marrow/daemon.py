@@ -49,7 +49,7 @@ def _localize_ts(row: dict, fields: tuple[str, ...]) -> dict:
 
 @marrow_tool()
 def recall(
-    query: Annotated[str, Field(description="Search text; matched over the event corpus via fused semantic+FTS+recency. Empty/whitespace query with since+until returns that window's digest rows instead. query='diary' + since/until returns diary rows for the window.")],
+    query: Annotated[str, Field(description="Search text; matched over the event corpus via fused semantic+FTS+recency. Empty/whitespace query with since+until returns that window's digest rows instead.")],
     limit: Annotated[int, Field(ge=1, description="Max rows returned (default 10); also caps window-digest rows when query is empty.")] = 10,
     context: Annotated[bool, Field(description="When true, attaches ±1 adjacent same-session turns as _context to each non-dim event/task row (default false).")] = False,
     since: Annotated[str | None, Field(description="Lower time bound as a configured-local-timezone day string YYYY-MM-DD; converted to that day's start. Optional.")] = None,
@@ -72,7 +72,7 @@ def recall(
             rows = _recall_mod.fetch_window_digests(conn, since_utc, until_utc, cap=limit)
             return rows
 
-        # MCP manual recall: include all kinds (diary + task explicitly wanted).
+        # MCP manual recall: include all kinds (task explicitly wanted).
         rows = _recall_mod.recall_with_config(
             conn, query, limit=limit, exclude_kinds=(),
             since=since_utc, until=until_utc,
@@ -80,7 +80,7 @@ def recall(
         if context:
             for row in rows:
                 kind = row.get("kind") or "event"
-                if kind not in ("entity", "milestone", "memes", "diary", "task"):
+                if kind not in ("entity", "milestone", "memes", "task"):
                     sid = row.get("session_id")
                     eid = row.get("id")
                     if sid and eid:

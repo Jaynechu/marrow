@@ -62,7 +62,6 @@ Slash commands installed into `~/.claude/`:
 
 | Command | What it does |
 |---|---|
-| `/diary` | Read diary context for a requested date |
 | `/embed` | Embed pending memory rows |
 | `/refresh` | Force-render daybrief + monitor; add `--all` for sub-pages |
 | `/switch` | Pick a recent session to resume |

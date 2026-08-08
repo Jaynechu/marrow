@@ -6,7 +6,7 @@ from marrow import storage
 
 PHASE1_TABLES = {
     "events", "tasks", "milestones", "memes", "stickers",
-    "pit", "diary", "goose_bites", "alerts", "audit_log",
+    "pit", "goose_bites", "alerts", "audit_log",
 }
 PHASE2_ABSENT = {"emotions", "people", "preferences", "dir", "threads"}
 

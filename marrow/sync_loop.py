@@ -100,7 +100,6 @@ def _max_any(conn: sqlite3.Connection,
 _SUBPAGE_DB_SOURCES: dict[str, list[tuple[str, str]]] = {
     "profile":   [("entities", "created_at")],
     "milestone": [("milestones", "updated_at")],
-    "diary":     [("diary", "updated_at")],
     "memes":     [("memes", "created_at")],
     "stickers":  [("stickers", "updated_at")],
     "wallet":    [],  # no table yet
@@ -119,7 +118,6 @@ _ATLAS_SWEEP_TICK_S = float(os.environ.get("MARROW_ATLAS_SWEEP_TICK_S", "60.0"))
 # render_timeline actually renders, via (table, expr, where) triples so raw
 # conversation churn cannot fire the loop:
 #   session_digests.ts — always populated (unlike mostly-NULL updated_at).
-#   diary.updated_at.
 #   events: ONLY role='tl' (self lines) or channel='manual'. The bare
 #     events.created_at moved forward on every chat turn (every turn inserts
 #     assistant/user rows) → the loop rendered daybrief every ~5s. Filtering to
@@ -130,7 +128,6 @@ _ATLAS_SWEEP_TICK_S = float(os.environ.get("MARROW_ATLAS_SWEEP_TICK_S", "60.0"))
 # collect_tick, not the 5s loop, so its per-render churn cannot defeat the gate.
 _DAYBRIEF_DB_EXPRS: list[tuple[str, str, str | None]] = [
     ("session_digests", "ts", None),
-    ("diary", "updated_at", None),
     ("events", "COALESCE(updated_at, created_at)",
      "role='tl' OR channel='manual'"),
     ("affect", "COALESCE(updated_at, created_at)",

@@ -14,7 +14,7 @@ _RECALL_TZ = config.get_tz()
 
 # ── recall dedup state (per-session, hook-only) ──────────────────────────────
 
-_TABLE_KINDS = {"milestone", "memes", "entity", "diary", "task"}
+_TABLE_KINDS = {"milestone", "memes", "entity", "task"}
 
 # Strip WX-injected `[time: ... | gap: ...]` prefix from event content.
 # recall.py strips it for the main-hit content; mirror here for neighbors + log.

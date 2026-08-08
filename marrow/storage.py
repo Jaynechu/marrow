@@ -15,7 +15,7 @@ import sqlite_vec
 
 from . import config
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 # Tables whose id must never be reused (freed-id-reuse disease family): a plain
 # INTEGER PRIMARY KEY hands a deleted id back to the next INSERT, and side-tables
@@ -107,17 +107,6 @@ CREATE TABLE IF NOT EXISTS pit (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
-CREATE TABLE IF NOT EXISTS diary (
-  date TEXT PRIMARY KEY,
-  content TEXT NOT NULL,
-  mood TEXT,
-  session_ids TEXT,
-  tl_line TEXT,
-  tone TEXT,
-  overview TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
 CREATE TABLE IF NOT EXISTS goose_bites (
   id INTEGER PRIMARY KEY,
   date TEXT NOT NULL,
@@ -205,11 +194,6 @@ CREATE TABLE IF NOT EXISTS entities_vec_meta (
   dim INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS milestones_vec_meta (
-  rowid INTEGER PRIMARY KEY,
-  embedder_id TEXT NOT NULL,
-  dim INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS diary_vec_meta (
   rowid INTEGER PRIMARY KEY,
   embedder_id TEXT NOT NULL,
   dim INTEGER NOT NULL
@@ -402,7 +386,7 @@ def _vec_table(dim: int, name: str = "events_vec") -> str:
 # <name>_vec_meta. Same shape as events_vec so the embed write path stays one
 # helper.
 _VEC_LANES = (
-    "memes_vec", "entities_vec", "milestones_vec", "diary_vec", "tasks_vec",
+    "memes_vec", "entities_vec", "milestones_vec", "tasks_vec",
     "stickers_vec",
 )
 
@@ -575,7 +559,6 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v5(conn)
         _migrate_to_v6(conn)
         _migrate_to_v7(conn)
-        _migrate_to_v8(conn)
         _migrate_to_v9(conn)
         _migrate_to_v10(conn)
         _migrate_to_v11(conn)
@@ -611,6 +594,7 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
         _migrate_to_v41(conn)
         _migrate_to_v42(conn)
         _migrate_to_v43(conn)
+        _migrate_to_v44(conn)
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     return conn
 
@@ -760,16 +744,6 @@ def _migrate_to_v7(conn: sqlite3.Connection) -> None:
     """
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 7:
-        return
-
-
-def _migrate_to_v8(conn: sqlite3.Connection) -> None:
-    """v8: diary vec lane (diary_vec / diary_vec_meta). Table + meta are
-    created unconditionally in init_db; this bump is a version sentinel.
-    Backfill happens on the next embed_pending() call.
-    """
-    v = conn.execute("PRAGMA user_version").fetchone()[0]
-    if v >= 8:
         return
 
 
@@ -927,12 +901,11 @@ def _migrate_to_v16(conn: sqlite3.Connection) -> None:
 
 def _migrate_to_v17(conn: sqlite3.Connection) -> None:
     """v17: session_digests structured columns (kind/tl_line/life_lines) +
-    diary.tl_line + session_digests_fts FTS table.
+    session_digests_fts FTS table.
 
     kind: 'casual' or 'task' — model's explicit session classification.
     tl_line: 15-30 CN char timeline line (life perspective, plain words).
     life_lines: newline-joined life detail lines (casual only; NULL for task).
-    diary.tl_line: 25-40 char day summary written by daily.py diary call.
     Idempotent — duplicate ALTER swallowed; user_version short-circuits.
     """
     v = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -942,7 +915,6 @@ def _migrate_to_v17(conn: sqlite3.Connection) -> None:
         ("session_digests", "kind", "TEXT"),
         ("session_digests", "tl_line", "TEXT"),
         ("session_digests", "life_lines", "TEXT"),
-        ("diary", "tl_line", "TEXT"),
     ):
         try:
             conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
@@ -983,21 +955,20 @@ END;
 
 
 def _migrate_to_v18(conn: sqlite3.Connection) -> None:
-    """v18: tl_hidden flag on session_digests + diary — lets user permanently
-    hide a timeline line from future renders without deleting the row.
+    """v18: tl_hidden flag on session_digests — lets user permanently hide a
+    timeline line from future renders without deleting the row.
     Idempotent — duplicate ALTER swallowed; user_version short-circuits.
     """
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 18:
         return
-    for tbl, col, decl in (
-        ("session_digests", "tl_hidden", "INTEGER NOT NULL DEFAULT 0"),
-        ("diary", "tl_hidden", "INTEGER NOT NULL DEFAULT 0"),
-    ):
-        try:
-            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {decl}")
-        except sqlite3.OperationalError:
-            pass
+    try:
+        conn.execute(
+            "ALTER TABLE session_digests "
+            "ADD COLUMN tl_hidden INTEGER NOT NULL DEFAULT 0"
+        )
+    except sqlite3.OperationalError:
+        pass
 
 
 def _migrate_to_v19(conn: sqlite3.Connection) -> None:
@@ -1166,15 +1137,10 @@ END;
 
 
 def _migrate_to_v25(conn: sqlite3.Connection) -> None:
-    """v25: diary overview fields + session_digests.updated_at."""
+    """v25: session_digests.updated_at."""
     v = conn.execute("PRAGMA user_version").fetchone()[0]
     if v >= 25:
         return
-    for col in ("tone TEXT", "overview TEXT"):
-        try:
-            conn.execute(f"ALTER TABLE diary ADD COLUMN {col}")
-        except sqlite3.OperationalError:
-            pass
     try:
         conn.execute("ALTER TABLE session_digests ADD COLUMN updated_at TEXT")
     except sqlite3.OperationalError:
@@ -1593,8 +1559,8 @@ def _migrate_to_v37(conn: sqlite3.Connection) -> None:
 
 
 # AUTOINCREMENT tables whose subpage inserter uses str(id) as block_id (see
-# subpage_specs.py). events has no subpage; diary/wallet block_ids aren't
-# plain table ids — both excluded.
+# subpage_specs.py). events has no subpage; wallet block_ids aren't plain
+# table ids — both excluded.
 _AUTOINC_MDPAGE = {
     "entities": "profile.md",
     "memes": "memes.md",
@@ -1713,6 +1679,23 @@ def _migrate_to_v43(conn: sqlite3.Connection) -> None:
     if "flag" in cols:
         conn.execute("ALTER TABLE events DROP COLUMN flag")
     conn.execute("PRAGMA user_version=43")
+
+
+def _migrate_to_v44(conn: sqlite3.Connection) -> None:
+    """v44: drop the diary surface — table, its vec lane and md_index rows.
+
+    DROP TABLE on the vec0 virtual table also removes its shadow tables, so
+    the connection must have sqlite-vec loaded (connect() always does).
+    Idempotent — IF EXISTS + user_version short-circuit.
+    """
+    v = conn.execute("PRAGMA user_version").fetchone()[0]
+    if v >= 44:
+        return
+    conn.execute("DROP TABLE IF EXISTS diary_vec")
+    conn.execute("DROP TABLE IF EXISTS diary_vec_meta")
+    conn.execute("DROP TABLE IF EXISTS diary")
+    conn.execute("DELETE FROM md_index WHERE path LIKE '%/diary.md'")
+    conn.execute("PRAGMA user_version=44")
 
 
 def get_latest_watermark(conn, sid):

@@ -43,7 +43,7 @@ def _apply_rel_cutoff(hits: list[dict], rel_cutoff: float) -> list[dict]:
 # Per-kind id prefix for recall heads (event -> ev, memes -> me, etc.).
 _KIND_ABBREV = {
     "event": "ev", "memes": "me", "milestone": "ms",
-    "entity": "en", "diary": "d", "task": "t",
+    "entity": "en", "task": "t",
 }
 
 
@@ -82,7 +82,6 @@ def _recall_head(h: dict) -> str:
       memes     -> [<MM-DD|YYYY>] me#<id>
       milestone -> [<YYYY[-MM[-DD]]>] ms#<id>       (never T00:00)
       entity    -> en#<id>                          (no time)
-      diary     -> [<format_recall_ts>] d#<id>      (existing time handling)
       task      -> [<format_recall_ts>] t#<id>
     """
     kind = h.get("kind") or "event"
@@ -99,7 +98,7 @@ def _recall_head(h: dict) -> str:
         return f"[{d}] {ref}" if d else ref
     if kind == "entity":
         return ref
-    # diary / task — keep existing format_recall_ts handling.
+    # task — keep existing format_recall_ts handling.
     ts = format_recall_ts(h.get("timestamp") or "")
     return f"{ts} {ref}" if ts else ref
 

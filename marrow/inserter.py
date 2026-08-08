@@ -62,7 +62,7 @@ class InserterSpec:
     group_by:
     - "append"  — flat list, new rows append at file tail (profile, wallet).
     - "tag"     — section per categorical key (memes Personal/Public, stickers).
-    - "date"    — section per date or date-range (diary, milestone).
+    - "date"    — section per date or date-range (milestone).
     - "none"    — single section, ordered by row order.
 
     section_of(row) returns the section label. section_order(labels) returns
@@ -94,7 +94,7 @@ class InserterSpec:
     empty_message: str = "_(none yet)_"
     # When True, the inserter rebootstraps the file whenever the md block
     # order diverges from `fetch`'s canonical order. Reserved for views
-    # where chronological order is a hard contract (diary, milestone).
+    # where chronological order is a hard contract (milestone).
     # Side effect — non-anchored hand-edits inside the marker block are
     # wiped on rebootstrap. Tombstoned rows stay tombstoned.
     force_sort_consistency: bool = False
@@ -171,7 +171,7 @@ def write_subpage_inserter(spec: InserterSpec, conn: sqlite3.Connection,
         if spec.respect_tombstones else set()
     )
 
-    # Sort-consistency check — diary / milestone want canonical
+    # Sort-consistency check — milestone wants canonical
     # chronological order. If catchup-style inserts have left md blocks
     # out of fetch-order, rebootstrap the marker block from scratch.
     # db_order mirrors _bootstrap's emit order: rows grouped by section in

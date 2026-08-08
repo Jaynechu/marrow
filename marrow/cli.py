@@ -22,14 +22,6 @@ from . import config, repo, storage, subpages
 
 
 PROTECTED = {"id", "created_at", "updated_at", "source_hash", "occurred_at"}
-# diary is keyed by its TEXT date column, not an integer id.
-_KEY = {"diary": "date"}
-
-
-def _key(table: str) -> str:
-    return _KEY.get(table, "id")
-
-
 @contextmanager
 def _conn(db: str | None):
     conn = storage.connect(db or config.db_path())
@@ -73,13 +65,12 @@ def cmd_set(args) -> int:
         cols = _columns(conn, args.table)
         if not cols:
             return _fail(f"unknown table: {args.table}")
-        kc = _key(args.table)
-        if args.field in PROTECTED or args.field == kc \
+        if args.field in PROTECTED or args.field == "id" \
                 or args.field not in cols:
             return _fail(f"field not editable: {args.table}.{args.field}")
         return _write(
             conn, args.table, args.id,
-            f"UPDATE {args.table} SET {args.field} = ? WHERE {kc} = ?",
+            f"UPDATE {args.table} SET {args.field} = ? WHERE id = ?",
             (args.value, args.id), "update",
             f"{args.field}={args.value[:80]}",
         )
@@ -91,7 +82,7 @@ def cmd_rm(args) -> int:
             return _fail(f"unknown table: {args.table}")
         return _write(
             conn, args.table, args.id,
-            f"DELETE FROM {args.table} WHERE {_key(args.table)} = ?",
+            f"DELETE FROM {args.table} WHERE id = ?",
             (args.id,), "delete", "removed via mw",
         )
 
@@ -122,10 +113,9 @@ def _pin_toggle(args, val: int, summary: str) -> int:
             return _fail(f"unknown table: {args.table}")
         if "pinned" not in cols:
             return _fail(f"{args.table} has no pinned column")
-        kc = _key(args.table)
         return _write(
             conn, args.table, args.id,
-            f"UPDATE {args.table} SET pinned=? WHERE {kc}=?",
+            f"UPDATE {args.table} SET pinned=? WHERE id=?",
             (val, args.id), "update", summary,
         )
 
@@ -659,7 +649,7 @@ def cmd_show(args) -> int:
         if not _columns(conn, args.table):
             return _fail(f"unknown table: {args.table}")
         row = conn.execute(
-            f"SELECT * FROM {args.table} WHERE {_key(args.table)} = ?",
+            f"SELECT * FROM {args.table} WHERE id = ?",
             (args.id,),
         ).fetchone()
         if row is None:

@@ -48,14 +48,6 @@ def _insert_digest(
     conn.commit()
 
 
-def _insert_diary(conn, date: str, overview: str = "old overview") -> None:
-    conn.execute(
-        "INSERT INTO diary (date, content, overview) VALUES (?, 'body', ?)",
-        (date, overview),
-    )
-    conn.commit()
-
-
 def test_life_line_edit_updates_indexed_line(conn, dash_path):
     _insert_digest(conn, "sid-life", "10:00 first\n11:00 second")
     dash_path.write_text(
@@ -89,28 +81,6 @@ def test_life_line_mtime_gate_skips_future_digest(conn, dash_path):
     assert row["life_lines"] == "10:00 original"
     assert rpt.updated == 0
     assert rpt.unchanged == 1
-
-
-def test_overview_edit_updates_diary(conn, dash_path):
-    _insert_diary(conn, "2026-06-22")
-    dash_path.write_text(
-        "## Timeline\n"
-        "**06-22 Mon 【calm】** <!-- tl:d:2026-06-22 -->\n"
-        "New overview from markdown\n",
-        encoding="utf-8",
-    )
-
-    rpt = reconcile_timeline(conn, dash_path)
-
-    row = conn.execute(
-        "SELECT overview FROM diary WHERE date='2026-06-22'"
-    ).fetchone()
-    assert row["overview"] == "New overview from markdown"
-    assert rpt.updated >= 1
-    tone_row = conn.execute(
-        "SELECT tone FROM diary WHERE date='2026-06-22'"
-    ).fetchone()
-    assert tone_row["tone"] == "calm"
 
 
 def test_life_line_index_out_of_range_conflicts_without_crash(conn, dash_path):
