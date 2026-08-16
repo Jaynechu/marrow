@@ -43,12 +43,50 @@ def test_create_on_miss(env):
 
 def test_update_fact_on_name_hit(env):
     first = daemon.dim("upsert", kind="person", name="王医生", fact="ED consultant")
-    out = daemon.dim("upsert", kind="person", name="王医生", fact="ED director now")
+    out = daemon.dim("upsert", kind="person", name="王医生", fact="ED director now",
+                      replace=True)
     assert out["action"] == "update"
     assert out["id"] == first["id"]
     rows = _rows(env)
     assert len(rows) == 1
     assert rows[0]["fact"] == "ED director now"
+
+
+def test_update_fact_guard_blocks_differing_fact_without_replace(env):
+    first = daemon.dim("upsert", kind="person", name="王医生", fact="ED consultant")
+    out = daemon.dim("upsert", kind="person", name="王医生", fact="ED director now")
+    assert out == {"ok": False, "action": "needs_review", "id": first["id"],
+                    "kind": "person", "old_fact": "ED consultant",
+                    "error": "existing fact differs; merge with old_fact and resend with replace=true"}
+    rows = _rows(env)
+    assert len(rows) == 1
+    assert rows[0]["fact"] == "ED consultant"
+
+
+def test_update_fact_guard_skips_alias_merge_too(env):
+    first = daemon.dim("upsert", kind="person", name="王医生", aliases=["Dr Wang"],
+                       fact="ED consultant")
+    out = daemon.dim("upsert", kind="person", name="王医生", aliases=["老王"],
+                      fact="ED director now")
+    assert out["action"] == "needs_review"
+    rows = _rows(env)
+    assert len(rows) == 1
+    assert "老王" not in (rows[0]["aliases"] or "")
+
+
+def test_update_fact_equal_passes_through(env):
+    first = daemon.dim("upsert", kind="person", name="王医生", fact="ED consultant")
+    out = daemon.dim("upsert", kind="person", name="王医生", fact="ED consultant")
+    assert out == {"ok": True, "action": "update", "id": first["id"], "kind": "person"}
+
+
+def test_update_fact_none_leaves_fact_untouched(env):
+    first = daemon.dim("upsert", kind="person", name="王医生", fact="ED consultant")
+    out = daemon.dim("upsert", kind="person", name="王医生", aliases=["Dr Wang"])
+    assert out == {"ok": True, "action": "update", "id": first["id"], "kind": "person"}
+    rows = _rows(env)
+    assert rows[0]["fact"] == "ED consultant"
+    assert "Dr Wang" in rows[0]["aliases"]
 
 
 def test_update_merges_aliases_on_alias_hit(env):

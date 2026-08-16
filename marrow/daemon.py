@@ -598,7 +598,7 @@ _DIM_MD_FILES = {
 
 
 def _dim_upsert_entity(kind: str, name: str, fact: str | None,
-                       aliases: list[str] | None) -> dict:
+                       aliases: list[str] | None, replace: bool = False) -> dict:
     from .candidates import _merge_aliases_into, match_entity
     import json
 
@@ -608,6 +608,15 @@ def _dim_upsert_entity(kind: str, name: str, fact: str | None,
     try:
         hit_id = match_entity(conn, kind, name, aliases_list, source="daemon.dim_upsert")
         if hit_id is not None:
+            if fact is not None and not replace:
+                row = conn.execute(
+                    "SELECT fact FROM entities WHERE id=?", (hit_id,),
+                ).fetchone()
+                old_fact = (row["fact"] or "").strip() if row else ""
+                if old_fact and old_fact != fact:
+                    return {"ok": False, "action": "needs_review", "id": hit_id,
+                            "kind": kind, "old_fact": row["fact"],
+                            "error": "existing fact differs; merge with old_fact and resend with replace=true"}
             _merge_aliases_into(conn, hit_id, name, aliases_list)
             if fact is not None:
                 with conn:
@@ -630,7 +639,8 @@ def _dim_upsert_entity(kind: str, name: str, fact: str | None,
         conn.close()
 
 
-def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None) -> dict:
+def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None,
+                     replace: bool = False) -> dict:
     from . import memes_dedup
 
     key = name
@@ -644,9 +654,15 @@ def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None) -> dict
         # an update call needn't repeat the type it was created with; the
         # existing row's type carries over unless a new one is explicitly passed.
         existing = conn.execute(
-            "SELECT id, type FROM memes WHERE key=? LIMIT 1", (key,),
+            "SELECT id, type, value FROM memes WHERE key=? LIMIT 1", (key,),
         ).fetchone()
         if existing:
+            if value is not None and not replace:
+                old_value = (existing["value"] or "").strip()
+                if old_value and old_value != value:
+                    return {"ok": False, "action": "needs_review", "id": existing["id"],
+                            "kind": "meme", "old_fact": existing["value"],
+                            "error": "existing fact differs; merge with old_fact and resend with replace=true"}
             new_type = vtype_given or existing["type"]
             with conn:
                 conn.execute(
@@ -680,7 +696,7 @@ def _dim_upsert_meme(name: str, fact: str | None, meme_type: str | None) -> dict
 
 
 def _dim_upsert_milestone(name: str, fact: str | None, date: str | None,
-                          scope: str = "me") -> dict:
+                          scope: str = "me", replace: bool = False) -> dict:
     import hashlib
     import re as _re
 
@@ -692,10 +708,16 @@ def _dim_upsert_milestone(name: str, fact: str | None, date: str | None,
     conn = storage.connect(_DB)
     try:
         existing = conn.execute(
-            "SELECT id FROM milestones WHERE scope=? AND title=? AND date=?",
+            "SELECT id, description FROM milestones WHERE scope=? AND title=? AND date=?",
             (scope, name, date),
         ).fetchone()
         if existing:
+            if desc is not None and not replace:
+                old_desc = (existing["description"] or "").strip()
+                if old_desc and old_desc != desc:
+                    return {"ok": False, "action": "needs_review", "id": existing["id"],
+                            "kind": "milestone", "old_fact": existing["description"],
+                            "error": "existing fact differs; merge with old_fact and resend with replace=true"}
             with conn:
                 conn.execute(
                     "UPDATE milestones SET description=COALESCE(?, description),"
@@ -718,7 +740,7 @@ def _dim_upsert_milestone(name: str, fact: str | None, date: str | None,
 
 def _dim_upsert(kind: str | None, name: str | None, fact: str | None,
                 aliases: list[str] | None, meme_type: str | None,
-                date: str | None, scope: str) -> dict:
+                date: str | None, scope: str, replace: bool = False) -> dict:
     kind = (kind or "").strip()
     if kind not in _DIM_KINDS:
         return {"ok": False, "error": f"kind must be one of {sorted(_DIM_KINDS)}"}
@@ -726,10 +748,10 @@ def _dim_upsert(kind: str | None, name: str | None, fact: str | None,
     if not name:
         return {"ok": False, "error": "name required"}
     if kind in ("person", "pref", "place"):
-        return _dim_upsert_entity(kind, name, fact, aliases)
+        return _dim_upsert_entity(kind, name, fact, aliases, replace)
     if kind == "meme":
-        return _dim_upsert_meme(name, fact, meme_type)
-    return _dim_upsert_milestone(name, fact, date, scope)
+        return _dim_upsert_meme(name, fact, meme_type, replace)
+    return _dim_upsert_milestone(name, fact, date, scope, replace)
 
 
 def _dim_query(kind: str | None, name: str | None) -> list[dict]:
@@ -839,16 +861,19 @@ def dim(
     date: Annotated[str | None, Field(description="upsert of a milestone only: YYYY-MM-DD or YYYY. Required for milestone; part of its dedup key.")] = None,
     scope: Annotated[str, Field(description="upsert of a milestone only: 'us' (couple) or 'me' (default 'me'; any other value coerced to 'me').")] = "me",
     id: Annotated[int | None, Field(description="delete only: numeric row id of the item to remove. Required for delete; find it via a query first.")] = None,
+    replace: Annotated[bool, Field(description="upsert only: if the row already has a different non-empty fact, the default (false) blocks the write and returns old_fact for you to merge; set true to overwrite.")] = False,
 ) -> dict | list[dict]:
     """Call for subpage edits (only 3 for now) - read/write/delete.
     - 'upsert': when recall misses something that clearly exists, or a hit
-      shows stale/inaccurate info.
+      shows stale/inaccurate info. Updating a row whose fact differs from
+      yours returns old_fact instead of writing — merge the two and resend
+      with replace=true.
     - 'query': verify a write landed, get ids.
     - 'delete': query by name first if kind/id unknown. Removes DB row + md line + tombstone."""
     if action not in _DIM_ACTIONS:
         return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_DIM_ACTIONS)}"}
     if action == "upsert":
-        return _dim_upsert(kind, name, fact, aliases, meme_type, date, scope)
+        return _dim_upsert(kind, name, fact, aliases, meme_type, date, scope, replace)
     if action == "query":
         return _dim_query(kind, name)
     return _dim_delete(kind, id)

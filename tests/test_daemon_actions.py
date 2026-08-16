@@ -267,9 +267,51 @@ def test_dim_upsert_meme_create_and_update(env):
     assert row["pinned"] == 1
     assert row["updated_at"] is not None  # explicit UTC stamp, never NULL
 
-    out2 = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="updated meaning")
+    out2 = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="loving nickname")
     assert out2["action"] == "update"
     assert out2["id"] == mid
+
+    out3 = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="updated meaning",
+                       replace=True)
+    assert out3["action"] == "update"
+    assert out3["id"] == mid
+    conn = storage.connect(env)
+    try:
+        row = conn.execute("SELECT value FROM memes WHERE id=?", (mid,)).fetchone()
+    finally:
+        conn.close()
+    assert row["value"] == "updated meaning"
+
+
+def test_dim_upsert_meme_guard_blocks_differing_fact(env):
+    out = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="loving nickname",
+                      meme_type="paw")
+    mid = out["id"]
+    guarded = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="updated meaning")
+    assert guarded == {"ok": False, "action": "needs_review", "id": mid,
+                        "kind": "meme", "old_fact": "loving nickname",
+                        "error": "existing fact differs; merge with old_fact and resend with replace=true"}
+    conn = storage.connect(env)
+    try:
+        row = conn.execute("SELECT value FROM memes WHERE id=?", (mid,)).fetchone()
+    finally:
+        conn.close()
+    assert row["value"] == "loving nickname"  # untouched by guard
+
+
+def test_dim_upsert_meme_fact_none_untouched_by_guard(env):
+    out = daemon.dim("upsert", kind="meme", name="绿茶豹", fact="loving nickname",
+                      meme_type="paw")
+    mid = out["id"]
+    out2 = daemon.dim("upsert", kind="meme", name="绿茶豹", meme_type="fact")
+    assert out2 == {"ok": True, "action": "update", "id": mid, "kind": "meme"}
+    conn = storage.connect(env)
+    try:
+        row = conn.execute("SELECT value, type FROM memes WHERE id=?", (mid,)).fetchone()
+    finally:
+        conn.close()
+    assert row["value"] == "loving nickname"
+    assert row["type"] == "fact"
 
 
 def test_dim_upsert_meme_rejects_bad_type(env):
@@ -291,7 +333,7 @@ def test_dim_upsert_milestone_create_and_update(env):
     assert out["action"] == "create"
     mid = out["id"]
     out2 = daemon.dim("upsert", kind="milestone", name="搬家", date="2026-02-01",
-                      fact="updated desc")
+                      fact="updated desc", replace=True)
     assert out2["action"] == "update"
     assert out2["id"] == mid
     conn = storage.connect(env)
@@ -303,6 +345,48 @@ def test_dim_upsert_milestone_create_and_update(env):
     assert row["description"] == "updated desc"
     assert row["pinned"] == 1
     assert row["scope"] == "me"  # default scope, see report ambiguity note
+
+
+def test_dim_upsert_milestone_guard_blocks_differing_fact(env):
+    out = daemon.dim("upsert", kind="milestone", name="搬家", fact="moved to Clayton",
+                      date="2026-02-01")
+    mid = out["id"]
+    guarded = daemon.dim("upsert", kind="milestone", name="搬家", date="2026-02-01",
+                          fact="updated desc")
+    assert guarded == {"ok": False, "action": "needs_review", "id": mid,
+                        "kind": "milestone", "old_fact": "moved to Clayton",
+                        "error": "existing fact differs; merge with old_fact and resend with replace=true"}
+    conn = storage.connect(env)
+    try:
+        row = conn.execute("SELECT description FROM milestones WHERE id=?",
+                           (mid,)).fetchone()
+    finally:
+        conn.close()
+    assert row["description"] == "moved to Clayton"
+
+
+def test_dim_upsert_milestone_equal_fact_passes_through(env):
+    out = daemon.dim("upsert", kind="milestone", name="搬家", fact="moved to Clayton",
+                      date="2026-02-01")
+    mid = out["id"]
+    out2 = daemon.dim("upsert", kind="milestone", name="搬家", date="2026-02-01",
+                      fact="moved to Clayton")
+    assert out2 == {"ok": True, "action": "update", "id": mid, "kind": "milestone"}
+
+
+def test_dim_upsert_milestone_fact_none_untouched_by_guard(env):
+    out = daemon.dim("upsert", kind="milestone", name="搬家", fact="moved to Clayton",
+                      date="2026-02-01")
+    mid = out["id"]
+    out2 = daemon.dim("upsert", kind="milestone", name="搬家", date="2026-02-01")
+    assert out2 == {"ok": True, "action": "update", "id": mid, "kind": "milestone"}
+    conn = storage.connect(env)
+    try:
+        row = conn.execute("SELECT description FROM milestones WHERE id=?",
+                           (mid,)).fetchone()
+    finally:
+        conn.close()
+    assert row["description"] == "moved to Clayton"
 
 
 def test_dim_upsert_milestone_requires_valid_date(env):
