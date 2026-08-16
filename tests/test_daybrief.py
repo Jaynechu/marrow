@@ -105,11 +105,24 @@ def test_remcal_strips_daily_schedule_header(conn):
     assert "- [Routine] 05:30-06:15 Wake up" in out
 
 
-def test_timeline_zone_keeps_render_verbatim(conn):
+def test_timeline_zone_keeps_render_verbatim(conn, monkeypatch):
     """Post-P2: zone body = render_timeline verbatim (H2 header + tl anchors +
     trail retained), plus the daybrief.timeline id marker for md_index."""
     _digest(conn, "sid-a", 2.0, "10:00 早上写代码")
     _digest(conn, "sid-b", 20.0, "12:00 昨天复习")
+
+    # render_timeline is called once directly below and again inside
+    # daybrief.render — freeze so both stamp the same tl-rendered t= and the
+    # verbatim-line comparison isn't flaky across a real second-tick.
+    frozen = _dt.datetime.now(_dt.timezone.utc)
+
+    class FrozenDateTime(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz else frozen.replace(tzinfo=None)
+
+    monkeypatch.setattr(timeline._dt, "datetime", FrozenDateTime)
+
     expected = timeline.render_timeline(conn)
     assert expected and expected.splitlines()[0].startswith("## Timeline")
     assert "<!-- tl:" in expected           # sanity: anchors present
