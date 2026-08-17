@@ -942,13 +942,13 @@ def _tombstone_deleted(conn, select_sql: str, params, reason: str) -> None:
             " VALUES (?, ?)", [(h, reason) for h in hashes])
 
 
-def _do_event_clear(before: str | None, after: str | None, last: int | None) -> dict:
+def _do_event_clear(before: str | None, after: str | None, last: int | None, sid: str | None = None) -> dict:
     import shutil
     from datetime import datetime, timezone
 
-    time_filtered = bool(before or after)
+    time_filtered = bool(before or after or sid)
     if time_filtered and last:
-        return {"ok": False, "error": "before/after and last are mutually exclusive"}
+        return {"ok": False, "error": "before/after/sid and last are mutually exclusive"}
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     backup = f"/tmp/marrow-backup-purge-{ts}.db"
@@ -975,6 +975,9 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None) -> 
             counts["events"] = last
         elif time_filtered:
             where, params = _time_where("timestamp", before, after)
+            if sid:
+                where = (where + " AND " if where else " WHERE ") + "session_id LIKE ?"
+                params = list(params) + [sid + "%"]
             sids = [r[0] for r in conn.execute(
                 "SELECT DISTINCT session_id FROM events" + where, params).fetchall()]
             _tombstone_deleted(
@@ -1016,6 +1019,8 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None) -> 
         result["after"] = after
     if last:
         result["last"] = last
+    if sid:
+        result["sid"] = sid
     if counts:
         result["counts"] = counts
     return result
@@ -1025,10 +1030,11 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None) -> 
 def event_clear(
     before: Annotated[str, Field(description="Delete events with timestamp < this (ISO or YYYY-MM-DD). Combine with after for a range; mutually exclusive with last. Empty = no bound.")] = "",
     after: Annotated[str, Field(description="Delete events with timestamp >= this (ISO or YYYY-MM-DD). Combine with before for a range; mutually exclusive with last. Empty = no bound.")] = "",
-    last: Annotated[int, Field(ge=0, description="Delete the N most recent events; mutually exclusive with before/after. 0 = unused. With no before/after/last set, ALL events are purged.")] = 0,
+    last: Annotated[int, Field(ge=0, description="Delete the N most recent events; mutually exclusive with before/after/sid. 0 = unused. With no before/after/last/sid set, ALL events are purged.")] = 0,
+    sid: Annotated[str, Field(description="Delete events of this session_id (prefix match, e.g. '9039'). Combinable with before/after; mutually exclusive with last. Empty = no session filter.")] = "",
 ) -> dict:
     """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. DB backup first."""
-    return _do_event_clear(before or None, after or None, last or None)
+    return _do_event_clear(before or None, after or None, last or None, sid or None)
 
 
 def main() -> None:
