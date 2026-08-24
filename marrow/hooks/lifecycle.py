@@ -24,6 +24,7 @@ from .state import (
 )
 
 _SESSION_CLAIMS_PATH = Path("~/.config/marrow/session_claims.json").expanduser()
+_PAUSE_INGEST_PATH = Path("~/.config/marrow/pause_ingest").expanduser()
 
 
 def _claim_session_lock(sid: str, channel: str) -> None:
@@ -640,7 +641,7 @@ def stop() -> int:
 
     conn = storage.connect(config.db_path())
     try:
-        if rows:
+        if rows and not _PAUSE_INGEST_PATH.exists():
             repo.archive_events(conn, rows)
         _write_ct_activity(conn, sid, channel)
     finally:
