@@ -1,7 +1,7 @@
 """Marrow MCP server (stdio). Thin protocol shell over repo.py.
 
 Core tool surface: recall / atlas_lookup / event_embed + action-dispatch tools
-(tl / sticker / sticker_admin / dim / alert / event_clear). The session-start
+(tl / sticker / sticker_admin / dim / alert / event_clear / ingest). The session-start
 handoff is rendered by the SessionStart hook. LLMClient wired so provider
 failures land in alerts.
 
@@ -879,6 +879,28 @@ def dim(
     return _dim_delete(kind, id)
 
 
+# ── ingest ───────────────────────────────────────────────────────────────────
+
+_INGEST_ACTIONS = {"pause", "resume", "status"}
+_PAUSE_INGEST_PATH = Path("~/.config/marrow/pause_ingest").expanduser()
+
+
+@marrow_tool()
+def ingest(
+    action: Annotated[str, Field(description="pause / resume / status.")],
+) -> dict:
+    """Pause/resume memory recording, all channels. action=pause|resume|status."""
+    if action not in _INGEST_ACTIONS:
+        return {"ok": False, "error": f"unknown action {action!r}, expected one of {sorted(_INGEST_ACTIONS)}"}
+    if action == "pause":
+        _PAUSE_INGEST_PATH.touch()
+        return {"ok": True, "paused": True}
+    if action == "resume":
+        _PAUSE_INGEST_PATH.unlink(missing_ok=True)
+        return {"ok": True, "paused": False}
+    return {"ok": True, "paused": _PAUSE_INGEST_PATH.exists()}
+
+
 # ── alert ────────────────────────────────────────────────────────────────────
 
 _ALERT_ACTIONS = {"list", "resolve"}
@@ -991,6 +1013,7 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None, sid
                     "DELETE FROM audit_log WHERE action='sessionend_extract' AND target_id=?",
                     [(s,) for s in sids])
         else:
+            _PAUSE_INGEST_PATH.touch()
             triggers = conn.execute(
                 "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='events'"
             ).fetchall()
@@ -1033,7 +1056,8 @@ def event_clear(
     last: Annotated[int, Field(ge=0, description="Delete the N most recent events; mutually exclusive with before/after/sid. 0 = unused. With no before/after/last/sid set, ALL events are purged.")] = 0,
     sid: Annotated[str, Field(description="Delete events of this session_id (prefix match, e.g. '9039'). Combinable with before/after; mutually exclusive with last. Empty = no session filter.")] = "",
 ) -> dict:
-    """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. DB backup first."""
+    """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. DB backup first.
+    Full clear auto-pauses ingest (resume via ingest tool)."""
     return _do_event_clear(before or None, after or None, last or None, sid or None)
 
 

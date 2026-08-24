@@ -17,6 +17,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(cortex_bridge, "_DB", db)
     monkeypatch.setattr(config, "db_path", lambda: db)
     monkeypatch.setattr(daemon.subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(daemon, "_PAUSE_INGEST_PATH", tmp_path / "pause_ingest")
     return db
 
 
@@ -785,3 +786,53 @@ def test_localize_ts_leaves_unlisted_fields(monkeypatch):
     out = daemon._localize_ts(dict(row), ("created_at",))
     assert out["other"] == row["other"]
     assert out["created_at"] != row["created_at"]
+
+
+# ── ingest ───────────────────────────────────────────────────────────────────
+
+def test_ingest_unknown_action(env):
+    out = daemon.ingest("bogus")
+    assert out["ok"] is False
+
+
+def test_ingest_pause_creates_marker(env):
+    assert not daemon._PAUSE_INGEST_PATH.exists()
+    out = daemon.ingest("pause")
+    assert out == {"ok": True, "paused": True}
+    assert daemon._PAUSE_INGEST_PATH.exists()
+
+
+def test_ingest_resume_removes_marker(env):
+    daemon.ingest("pause")
+    out = daemon.ingest("resume")
+    assert out == {"ok": True, "paused": False}
+    assert not daemon._PAUSE_INGEST_PATH.exists()
+
+
+def test_ingest_resume_missing_marker_ok(env):
+    out = daemon.ingest("resume")
+    assert out == {"ok": True, "paused": False}
+
+
+def test_ingest_status_reports_state(env):
+    assert daemon.ingest("status") == {"ok": True, "paused": False}
+    daemon.ingest("pause")
+    assert daemon.ingest("status") == {"ok": True, "paused": True}
+
+
+# ── event_clear binds to ingest pause ─────────────────────────────────────────
+
+def test_event_clear_full_clear_pauses_ingest(env):
+    _insert_event(env, "2026-06-01T00:00:00Z")
+    assert not daemon._PAUSE_INGEST_PATH.exists()
+    daemon.event_clear()
+    assert daemon._PAUSE_INGEST_PATH.exists()
+
+
+def test_event_clear_partial_clear_does_not_pause_ingest(env):
+    _insert_event(env, "2026-06-01T00:00:00Z")
+    _insert_event(env, "2026-07-01T00:00:00Z")
+    daemon.event_clear(before="2026-06-15")
+    assert not daemon._PAUSE_INGEST_PATH.exists()
+    daemon.event_clear(last=1)
+    assert not daemon._PAUSE_INGEST_PATH.exists()
