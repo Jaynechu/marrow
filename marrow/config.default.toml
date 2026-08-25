@@ -13,8 +13,6 @@ enabled = true
 # Path to the cadence binary (`~` expanded). Empty = built-in default under
 # ~/CC-Lab.
 cadence_bin = ""
-# Header line shown above the schedule block.
-flag_note = "Only follow up overdue flagged 🚩 tasks — no push on others."
 # Calendar names to drop from the rendered block entirely.
 cal_exclude = []
 # Regex against event title: if set and it matches, rescue an event that

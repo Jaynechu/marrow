@@ -19,7 +19,7 @@ _SNAPSHOT_DIR = config.DATA_DIR / "schedule-snapshots"
 _TIMEOUT = 5
 _MAX_CHARS = 8000
 
-_DEFAULT_FLAG_NOTE = "Only follow up overdue flagged 🚩 tasks — no push on others."
+_DEFAULT_FLAG_NOTE = ""
 
 _REM_GLOB_BASE = str(
     Path.home() / "Library" / "Group Containers"
