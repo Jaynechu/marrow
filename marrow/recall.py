@@ -1256,6 +1256,7 @@ def recall_fusion(
     exclude_kinds: tuple[str, ...] = (),
     since: str | None = None,
     until: str | None = None,
+    exclude_sid: str | None = None,
 ) -> list[dict]:
     """Single weighted scalar fusion: vec + bm25 + recency + affect.
 
@@ -1266,6 +1267,9 @@ def recall_fusion(
     `exclude_kinds`: lane kinds to skip entirely (e.g. ("task",)).
     `since`/`until`: UTC ISO strings; when set, events are filtered to this
     window. Anchor lanes (memes/entities/milestones/tasks) unaffected.
+    `exclude_sid`: session id whose events are dropped in SQL (already in the
+    caller's context window). Rows with NULL session_id are kept. Anchor lanes
+    unaffected.
     """
     q = query.strip()
     if not q:
@@ -1313,6 +1317,9 @@ def recall_fusion(
         if until:
             _fts_where.append("e.timestamp < ?")
             _fts_params.append(until)
+        if exclude_sid:
+            _fts_where.append("(e.session_id IS NULL OR e.session_id != ?)")
+            _fts_params.append(exclude_sid)
         _fts_params.append(limit * 3)
         fts_rows = conn.execute(
             "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
@@ -1331,18 +1338,25 @@ def recall_fusion(
     if vec_available:
         qvec = qvecs[0]
         qblob = _vec_to_blob(qvec)
-        # When a time window is active, fetch a larger candidate set and filter
-        # in Python. sqlite-vec KNN (MATCH+k=) cannot reliably apply arbitrary
-        # WHERE predicates on the joined table inside the virtual-table scan.
-        vec_k = limit * 6 if (since or until) else limit * 3
+        # When a time window or session exclusion is active, fetch a larger
+        # candidate set — the predicate runs after the KNN scan, so some of the
+        # k slots are spent on rows that get dropped. sqlite-vec KNN (MATCH+k=)
+        # cannot push arbitrary WHERE predicates on the joined table into the
+        # virtual-table scan.
+        vec_k = limit * 6 if (since or until or exclude_sid) else limit * 3
+        _vec_where = ["embedding MATCH ?", "k = ?"]
+        _vec_params: list = [qblob, vec_k]
+        if exclude_sid:
+            _vec_where.append("(e.session_id IS NULL OR e.session_id != ?)")
+            _vec_params.append(exclude_sid)
         all_vec_rows = conn.execute(
             "SELECT e.id, e.session_id, e.timestamp, e.role, e.content, e.channel, "
             "e.compressed, e.imp AS imp, s.cwd AS session_cwd, v.distance "
             "FROM events_vec v JOIN events e ON e.id = v.rowid "
             "LEFT JOIN sessions s ON s.sid = e.session_id "
-            "WHERE embedding MATCH ? AND k = ? "
+            "WHERE " + " AND ".join(_vec_where) + " "
             "ORDER BY v.distance",
-            (qblob, vec_k),
+            _vec_params,
         ).fetchall()
         if since or until:
             vec_rows = [
@@ -1802,6 +1816,7 @@ def recall_with_config(
     exclude_kinds: tuple[str, ...] = ("task",),
     since: str | None = None,
     until: str | None = None,
+    exclude_sid: str | None = None,
 ) -> list[dict]:
     """Run recall_fusion with weights + thresholds from [recall] config.
 
@@ -1812,6 +1827,8 @@ def recall_with_config(
     `exclude_kinds`: kinds to suppress. Hook default = ("task",);
     MCP callers pass () to include all kinds.
     `since`/`until`: UTC ISO strings for time-lane filtering.
+    `exclude_sid`: drop events from that session. Hook passes the caller's own
+    sid (its content is already in context); MCP callers leave it None.
     """
     from . import config as _config
     rcfg = _config.load().get("recall", {})
@@ -1834,6 +1851,7 @@ def recall_with_config(
         exclude_kinds=exclude_kinds,
         since=since,
         until=until,
+        exclude_sid=exclude_sid,
         **{k: float(rcfg[k]) for k in _weight_keys if k in rcfg},
     )
 

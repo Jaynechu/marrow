@@ -310,6 +310,76 @@ def test_recall_fusion_no_window_returns_all(db):
     }
 
 
+# ── recall_fusion — exclude_sid (caller's own session) ────────────────────────
+
+def _make_sid_events(db):
+    _make_event(db, "marrow sid alpha", session_id="cur",
+                timestamp="2026-05-19T01:00:00Z")
+    _make_event(db, "marrow sid beta", session_id="other",
+                timestamp="2026-05-19T02:00:00Z")
+    _make_event(db, "marrow sid gamma", session_id="third",
+                timestamp="2026-05-19T03:00:00Z")
+
+
+def test_recall_fusion_exclude_sid_drops_own_session(db):
+    _make_sid_events(db)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(
+            db, "marrow sid", exclude_sid="cur", min_score=0.0,
+        )
+    contents = {r["content"] for r in results}
+    assert contents == {"marrow sid beta", "marrow sid gamma"}
+
+
+def test_recall_fusion_exclude_sid_none_returns_all(db):
+    _make_sid_events(db)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(db, "marrow sid", min_score=0.0)
+    contents = {r["content"] for r in results}
+    assert contents == {
+        "marrow sid alpha", "marrow sid beta", "marrow sid gamma",
+    }
+
+
+def test_recall_fusion_exclude_sid_unknown_sid_returns_all(db):
+    _make_sid_events(db)
+    with patch.object(rm, "_ensure_embedder", return_value=None):
+        results = rm.recall_fusion(
+            db, "marrow sid", exclude_sid="nosuchsession", min_score=0.0,
+        )
+    assert len(results) == 3
+
+
+def test_recall_fusion_exclude_sid_filters_vec_lane(db):
+    """Vec lane (no FTS overlap) also honours exclude_sid."""
+    qvec = _fake_vec(21)
+    now = rm.datetime.datetime.now(rm.datetime.timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    own = _make_event(db, "semantic row current session",
+                      session_id="cur", timestamp=now)
+    other = _make_event(db, "semantic row other session",
+                        session_id="other", timestamp=now)
+    _insert_vec(db, own, qvec.copy())
+    _insert_vec(db, other, qvec.copy())
+
+    mock_emb = MagicMock()
+    mock_emb.embed.return_value = np.array([qvec])
+    with patch.object(rm, "_ensure_embedder", return_value=mock_emb):
+        results = rm.recall_fusion(
+            db, "zzqqxxnomatchtoken", exclude_sid="cur", min_score=0.0,
+        )
+    ids = {r["id"] for r in results}
+    assert own not in ids
+    assert other in ids
+
+
+def test_recall_with_config_threads_exclude_sid(db):
+    _make_sid_events(db)
+    with patch.object(rm, "recall_fusion", return_value=[]) as mock_fusion:
+        rm.recall_with_config(db, "marrow sid", exclude_sid="cur")
+    assert mock_fusion.call_args.kwargs["exclude_sid"] == "cur"
+
+
 def test_recall_fusion_budget_truncation(db):
     _make_event(db, "x" * 3000, timestamp="2026-05-19T01:00:00Z")
     _make_event(db, "x" * 3000, session_id="s2", timestamp="2026-05-19T01:01:00Z")

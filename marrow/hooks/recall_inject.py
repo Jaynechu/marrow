@@ -378,7 +378,9 @@ def user_prompt_submit() -> int:
         from .. import recall as recall_mod
         conn = storage.connect(config.db_path())
         try:
-            hits = recall_mod.recall_with_config(conn, recall_query, current_cwd=cwd)
+            hits = recall_mod.recall_with_config(
+                conn, recall_query, current_cwd=cwd, exclude_sid=sid,
+            )
         finally:
             conn.close()
     except Exception:

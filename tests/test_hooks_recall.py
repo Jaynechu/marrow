@@ -108,6 +108,23 @@ def test_user_prompt_submit_emits_recall_block(env, monkeypatch, capsys):
     assert data["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
 
+def test_user_prompt_submit_skips_own_session_events(env, monkeypatch, capsys):
+    """Own-session events are already in context — recall must skip them."""
+    db, _, _ = env
+    conn = storage.connect(db)
+    conn.execute(
+        "INSERT INTO events(session_id,timestamp,role,content) "
+        "VALUES('s1','2026-05-20T10:00:00Z','user','build phase 1 plan')")
+    conn.commit()
+    conn.close()
+    _force_vector_on(monkeypatch)
+    _stdin(monkeypatch, {"prompt": "phase 1 plan", "session_id": "s1"})
+    rc = hooks.main(["user_prompt_submit"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "build phase 1 plan" not in out
+
+
 def test_user_prompt_submit_marrow_cortex_full_parity(env, monkeypatch, capsys):
     """B3m (07-08): cortex user_prompt_submit gets title/model backfill +
     touch like any other session (full memory parity, no recall short-circuit)."""
