@@ -1020,6 +1020,7 @@ def _do_event_clear(before: str | None, after: str | None, last: int | None, sid
             for t in triggers:
                 conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
             conn.execute("DELETE FROM events")
+            conn.execute("DELETE FROM sqlite_sequence WHERE name='events'")
             conn.execute("DELETE FROM event_tombstones")
             conn.execute("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
             conn.execute("DELETE FROM events_vec")
