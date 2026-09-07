@@ -163,8 +163,11 @@ def user_prompt_submit() -> int:
     # Cortex wake-turn injections (cortex window only). The cortex daemon types
     # the wake bell / machine marker straight into the window as a user turn;
     # each shape is handled here and stops before recall, while ordinary chat
-    # turns fall through untouched. Text + paths are config-routed.
-    if cortex_bridge.is_cortex_session(tpath):
+    # turns fall through untouched. Text + paths are config-routed, and the
+    # cortex-owned ones are read from cortex, so the master switch gates the
+    # whole branch: switch cortex off and a window still carrying the env
+    # marker runs plain.
+    if cortex_bridge.is_cortex_session(tpath) and cortex_bridge.enabled():
         _prompt = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
         # Free-round tuck-in ([NEW ROUND]): only the short marker line is typed
         # into the window; its diff-mode note (and any ct notes claimed for that
@@ -173,7 +176,11 @@ def user_prompt_submit() -> int:
         # (consume-once read, 07-14 incident stays closed). A tuck-in is a
         # machine line but never a wake BELL, so this branch is checked before
         # the wake-marker branch, and it never triggers the user-wake reset.
-        _tuck = cortex_bridge.tuck_in_marker()
+        # Marker text lives in cortex config, one subprocess away, and this hook
+        # is a fresh process on EVERY turn — so the raw shape is checked first
+        # and an ordinary prose turn never reaches cortex at all.
+        _could = cortex_bridge.could_carry_marker(_prompt)
+        _tuck = cortex_bridge.tuck_in_marker() if _could else ""
         if _tuck and cortex_bridge.line_starts_with_marker(_prompt, _tuck):
             _body = cortex_bridge.free_round_note_text()
             if _body:

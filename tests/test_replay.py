@@ -14,7 +14,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
-from marrow import config, cortex_bridge, hooks, replay, storage
+from marrow import config, cortex_bridge, cortex_cfg, hooks, replay, storage
 
 SID_SELF = "self1111-2222"
 SID_OTHER = "othr9999-8888"
@@ -240,8 +240,7 @@ def test_exclude_target_channels_silences_a_destination(tmp_path, monkeypatch):
 
 def test_shell_exclude_defaults_are_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "none.db"))
-    monkeypatch.setattr(cortex_bridge, "_cortex_toml_section",
-                        lambda *a, **k: None)
+    monkeypatch.setattr(cortex_cfg, "load", lambda: {"note": {}})
     assert replay.shell_exclude_channels("cli") == []
     assert replay.shell_exclude_channels("tg") == []
     assert replay.shell_exclude_channels("wx") == []  # unmapped -> unqualified
@@ -249,8 +248,8 @@ def test_shell_exclude_defaults_are_empty(tmp_path, monkeypatch):
 
 def test_shell_exclude_honours_the_cortex_toml_override(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "db_path", lambda: str(tmp_path / "none.db"))
-    monkeypatch.setattr(cortex_bridge, "_cortex_toml_section",
-                        lambda *a, **k: {"cli": ["ct"], "tg": ["tg"]})
+    monkeypatch.setattr(cortex_cfg, "load", lambda: {
+        "note": {"shell_replay_exclude": {"cli": ["ct"], "tg": ["tg"]}}})
     assert replay.shell_exclude_channels("cli") == ["ct"]
     assert replay.shell_exclude_channels("tg") == ["tg"]
     assert replay.shell_exclude_channels("wx") == []  # unmapped -> unqualified
@@ -260,8 +259,7 @@ def test_cortex_window_sees_ct_rows_and_ignores_the_idle_gate(tmp_path, monkeypa
     db = _fresh_db(tmp_path)
     _setup(monkeypatch, tmp_path, db, {"idle_gate_min": 999})
     monkeypatch.setattr(cortex_bridge, "is_cortex_session", lambda t: True)
-    monkeypatch.setattr(cortex_bridge, "_cortex_toml_section",
-                        lambda *a, **k: None)
+    monkeypatch.setattr(cortex_cfg, "load", lambda: {"note": {}})
     monkeypatch.setenv("MARROW_CORTEX", "1")
     _ev(db, SID_CT, "assistant", "other cortex chatter", channel="ct")
     _ev(db, SID_OTHER, "user", "someone else typed", channel="cli")
@@ -274,8 +272,8 @@ def test_cortex_shell_override_drops_that_shells_channel(tmp_path, monkeypatch):
     db = _fresh_db(tmp_path)
     _setup(monkeypatch, tmp_path, db)
     monkeypatch.setattr(cortex_bridge, "is_cortex_session", lambda t: True)
-    monkeypatch.setattr(cortex_bridge, "_cortex_toml_section",
-                        lambda *a, **k: {"tg": ["tg"]})
+    monkeypatch.setattr(cortex_cfg, "load", lambda: {
+        "note": {"shell_replay_exclude": {"tg": ["tg"]}}})
     monkeypatch.setenv("MARROW_CORTEX", "tg")
     _ev(db, "tgsid111", "user", "telegram window talking", channel="tg")
     _ev(db, SID_CT, "assistant", "cli cortex talking", channel="ct")

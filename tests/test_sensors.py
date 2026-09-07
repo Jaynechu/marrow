@@ -56,9 +56,9 @@ def _lines(state_dir) -> list[dict]:
 
 # ── T1: config ───────────────────────────────────────────────────────────────
 
-def test_sensors_section_defaults_off():
+def test_sensors_section_defaults():
     s = config.load()["sensors"]
-    assert s["enabled"] is False
+    assert s["enabled"] is True
     assert s["port"] == 8043
     assert s["bind"] == "0.0.0.0"
     assert s["auth_user"] == "" and s["auth_pass"] == ""

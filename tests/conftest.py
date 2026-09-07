@@ -1,6 +1,6 @@
 """Global test fixtures.
 
-Four autouse guards, plus a one-time import-time pin:
+Autouse guards, plus a one-time import-time pin:
 
 1. `_redirect_marrow_data_dir` (session-scope, autouse): patches
    `marrow.config.DATA_DIR` and `CONFIG_PATH` to a per-session tmp dir.
@@ -30,7 +30,12 @@ Four autouse guards, plus a one-time import-time pin:
    embedders the recall/dedup suites patch in. Mark a test `live_embedd`
    to opt out.
 
-5. `_pin_module_tz_caches_to_melbourne()` (module-level, runs once at
+5. `_fake_cortex_cfg` (function-scope, autouse): `marrow.cortex_cfg` reads
+   cortex's own settings by running the cortex CLI. No test may spawn it, so
+   the loader is served from a table built off the marrow `[cortex]` stub the
+   test sets. Mark a test `live_cortex_cfg` to opt out.
+
+6. `_pin_module_tz_caches_to_melbourne()` (module-level, runs once at
    collection): several modules cache their working timezone as a
    MODULE-LEVEL constant computed once via `config.get_tz()` at import time
    (`timeline._TZ`, `tl_writer._TZ`, `timecue._MELB`, `timeutil._MELB`,
@@ -361,3 +366,62 @@ def _disable_hooks_popen_detach(monkeypatch, request):
         monkeypatch.setattr(lifecycle, "popen_detach", lambda *a, **kw: None)
     except ImportError:
         pass
+
+
+# marrow [cortex] test-stub key -> the cortex config slot it stands in for.
+_CORTEX_STUB_KEYS = {
+    "spawn_opener_template": ("wake", "spawn_opener_template"),
+    "wake_bell_template": ("wake", "wake_bell_template"),
+    "tuck_in_marker": ("wake", "tuck_in_text"),
+    "wake_state_file": ("paths", "wake_state_file"),
+    "watchdog_pidfile": ("paths", "watchdog_pidfile"),
+}
+
+_CORTEX_TEST_TABLE = {
+    "paths": {"cortex_home": "", "wake_state_file": "", "watchdog_pidfile": ""},
+    "wake": {"spawn_opener_template": "[☀️ {hm}]", "wake_bell_template": "⏰ {hm}",
+             "tuck_in_text": "[NEW ROUND]", "next_wake_max": 360,
+             "next_wake_low_max": 55, "next_wake_high_min": 180},
+    "daemon": {"shell": "cli", "socket_path": "", "kick_timeout_sec": 1.0},
+    "note": {},
+}
+
+
+@pytest.fixture(autouse=True)
+def _fake_cortex_cfg(monkeypatch, request):
+    """No test spawns the real cortex CLI.
+
+    `marrow.cortex_cfg` shells out to `cortex.ctl config --resolved`; here it is
+    served from a table built off the marrow `[cortex]` stub the test already
+    sets, so a test that wants a particular bell / marker / ledger path keeps
+    declaring it in the one place it always has. A test that stubs nothing gets
+    the table above. Mark a test `live_cortex_cfg` to reach the real loader
+    (the cortex_cfg unit tests mock subprocess themselves)."""
+    from marrow import config, cortex_cfg
+
+    if "live_cortex_cfg" in request.keywords:
+        cortex_cfg.reset()
+        yield
+        cortex_cfg.reset()
+        return
+
+    def _fake_load():
+        cx = config.load().get("cortex", {}) or {}
+        table = {section: dict(keys)
+                 for section, keys in _CORTEX_TEST_TABLE.items()}
+        home = Path(str(cx.get("home") or "~/.config/marrow/cortex")).expanduser()
+        table["paths"]["cortex_home"] = str(home)
+        for stub_key, (section, key) in _CORTEX_STUB_KEYS.items():
+            if stub_key not in cx:
+                continue
+            value = cx[stub_key]
+            if section == "paths" and value:
+                p = Path(str(value)).expanduser()
+                value = str(p if p.is_absolute() else home / str(value))
+            table[section][key] = value
+        return table
+
+    monkeypatch.setattr(cortex_cfg, "load", _fake_load)
+    cortex_cfg.reset()
+    yield
+    cortex_cfg.reset()

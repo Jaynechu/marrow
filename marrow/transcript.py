@@ -239,16 +239,17 @@ def _is_machine_marker_row(text: str, markers: tuple[str, ...]) -> bool:
 
 
 def _wake_bell_row_re():
-    """Compiled matcher for the visible wake bell ([cortex].wake_bell_template),
+    """Compiled matcher for the visible wake bell (cortex [wake].wake_bell_template),
     cached per template string. The bell is human text only (no inline marker),
     so this shape match is what keeps it out of memory. A template WITH an '{hm}'
     placeholder matches '<prefix> HH:MM$'; a fully STATIC template (no {hm})
-    matches its literal text exactly. None when the shape is empty/disabled.
+    matches its literal text exactly. None when the shape is empty/disabled, or
+    when cortex config is unreadable (cortex off = no bells exist).
     Anchored to the whole (stripped) row so a message merely containing the text
     keeps flowing."""
     try:
-        from . import config
-        tmpl = str(config.load()["cortex"]["wake_bell_template"])
+        from . import cortex_cfg
+        tmpl = str(cortex_cfg.get("wake", "wake_bell_template"))
     except Exception:
         return None
     cached = getattr(_wake_bell_row_re, "_cache", None)
@@ -265,6 +266,12 @@ def _wake_bell_row_re():
 
 
 def _is_wake_bell_row(text: str) -> bool:
+    # The template comes from cortex (a subprocess), so rows that cannot hold a
+    # marker at all are answered from the raw text — an ingest run with no bell
+    # rows never reaches cortex.
+    from .cortex_bridge import could_carry_marker
+    if not could_carry_marker(text):
+        return False
     rx = _wake_bell_row_re()
     if rx is None:
         return False

@@ -36,7 +36,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config
+from . import config, cortex_cfg
+from .cortex_cfg import CortexConfigError
 
 
 # ── gates ─────────────────────────────────────────────────────────────────────
@@ -180,17 +181,19 @@ def _log_shell_sleep_row(shell: str) -> int | None:
 
 
 def _wake_band_clamp(minutes: float, human_override: bool = False) -> float:
-    """Normalise minutes into cortex's two legal wake bands, read from
-    cortex.toml [wake] (marrow venv cannot import cortex, so the numbers come
-    off the shared config). The gap between the bands is unselectable: a value
+    """Normalise minutes into cortex's two legal wake bands, read live from
+    cortex's own config. The gap between the bands is unselectable: a value
     landing there snaps to the nearer edge. `human_override` (an explicit
-    minutes choice) passes untouched. Mirrors cortex's clamp_next_wake_minutes,
-    which owns the cli path."""
+    minutes choice) passes untouched.
+
+    cortex.lie_down owns the clamp on the cli path; this one covers the shell
+    path only, which never reaches cortex (the ledger write + host kick happen
+    in-process here), so the numbers are fetched rather than duplicated."""
     if human_override:
         return float(minutes)
-    hi = float(_cortex_toml_section("wake", "next_wake_max", 360))
-    low_max = float(_cortex_toml_section("wake", "next_wake_low_max", 55))
-    high_min = float(_cortex_toml_section("wake", "next_wake_high_min", 180))
+    hi = float(cortex_cfg.get("wake", "next_wake_max"))
+    low_max = float(cortex_cfg.get("wake", "next_wake_low_max"))
+    high_min = float(cortex_cfg.get("wake", "next_wake_high_min"))
     mins = max(0.0, min(float(minutes), hi))
     if low_max < mins < high_min:
         mins = low_max if mins <= (low_max + high_min) / 2 else high_min
@@ -311,11 +314,11 @@ _DB = config.db_path()
 
 def _lie_down_doc() -> str:
     """C9 (user-final): lie_down description with the two legal wake bands
-    rendered from cortex config — [wake].next_wake_low_max /
+    rendered from cortex's own config — [wake].next_wake_low_max /
     next_wake_high_min / next_wake_max. Never hardcoded in the string."""
-    low_max = int(_cortex_toml_section("wake", "next_wake_low_max", 55))
-    high_min = int(_cortex_toml_section("wake", "next_wake_high_min", 180))
-    day_max = int(_cortex_toml_section("wake", "next_wake_max", 360))
+    low_max = int(cortex_cfg.get("wake", "next_wake_low_max"))
+    high_min = int(cortex_cfg.get("wake", "next_wake_high_min"))
+    day_max = int(cortex_cfg.get("wake", "next_wake_max"))
     band = f'N=0-{low_max} ∪ {high_min}-{day_max}'
     return (f'lie_down(next_wake_min=N) [{band}]; '
             f'rotate to next window - lie_down(next_wake_min=N, rotate=True) '
@@ -538,7 +541,7 @@ def _render_note_fresh(transcript_path: str | None,
 
 
 # ── wake bell: receipt sidecar (new) + shape fallback ─────────────────────────
-# The visible bell line is human text only ([cortex].wake_bell_template). The
+# The visible bell line is human text only (cortex [wake].wake_bell_template). The
 # machine data (gen/state_id/rearm) lives in a wake_state `wake_receipt` written
 # by the producer at send time. Recognition order (match_wake_bell):
 #   (a) receipt exact full-text match -> machine bell, consume receipt, epoch-
@@ -551,16 +554,17 @@ def _render_note_fresh(transcript_path: str | None,
 # swallowed user message is the only unacceptable outcome, so the receipt path
 # is EXACT-match only.
 
-def wake_bell_template(cfg: dict | None = None) -> str:
-    """Template of the bell TYPED into a live resident cortex window."""
-    return str((cfg or config.load())["cortex"]["wake_bell_template"])
+def wake_bell_template() -> str:
+    """Template of the bell TYPED into a live resident cortex window
+    (cortex [wake].wake_bell_template — cortex is the producer, so it owns it)."""
+    return str(cortex_cfg.get("wake", "wake_bell_template"))
 
 
-def spawn_opener_template(cfg: dict | None = None) -> str:
+def spawn_opener_template() -> str:
     """Template of the first prompt baked into a FRESHLY SPAWNED cortex window
     (cortex [wake].spawn_opener_template). A distinct shape from the resident
     bell, so the receipt-less shape fallback must accept both."""
-    return str((cfg or config.load())["cortex"]["spawn_opener_template"])
+    return str(cortex_cfg.get("wake", "spawn_opener_template"))
 
 
 def _receipt_ttl_sec(cfg: dict | None = None) -> float:
@@ -636,8 +640,14 @@ def match_wake_bell(prompt: str) -> tuple[str, tuple[int, str] | None, bool] | N
                         caller consumes the receipt + epoch-checks (suppress stale).
       kind='shape'   -> receipt missing but the line starts with the template
                         prefix; token=None, degraded=True; caller fails OPEN.
-    A blank template prefix disables the shape fallback (never matches on empty)."""
-    if not prompt:
+    A blank template prefix disables the shape fallback (never matches on empty).
+
+    Both paths reach cortex config (the receipt sidecar's own path is cortex's
+    [paths].wake_state_file), so a prompt that cannot carry a marker at all is
+    rejected on the raw text first — the every-turn hook never spawns cortex for
+    ordinary prose. Same contract as could_carry_marker: a bell line opens its
+    marker with '['."""
+    if not prompt or not could_carry_marker(prompt):
         return None
     # (a) receipt exact match
     receipt = _load_wake_receipt()
@@ -784,8 +794,9 @@ def free_round_note_text() -> str | None:
 def tuck_in_marker() -> str:
     """Marker inside the free-round line the cortex watchdog appends to
     wake_signal.log (surfaces down the ear channel). A prompt carrying it is a
-    machine line, not a real user message — excluded from the user-wake reset."""
-    return str(config.load()["cortex"]["tuck_in_marker"]).strip()
+    machine line, not a real user message — excluded from the user-wake reset.
+    Cortex types that line, so cortex [wake].tuck_in_text owns the text."""
+    return str(cortex_cfg.get("wake", "tuck_in_text")).strip()
 
 
 # ── Covert machine-marker bodies (FUSE / CTL). Cortex writes only the marker line
@@ -925,6 +936,38 @@ def _line_starts_with(prompt: str, marker: str) -> bool:
 # so a real user prompt quoting the marker is not swallowed by the early return.
 line_starts_with_marker = _line_starts_with
 
+# CONTRACT: a cortex-typed machine line opens either with a bracket or with a
+# decoration glyph (_MARKER_LEAD_RE: ⏰ ☀️ ⚙️ ⏳ …). Every shape both repos ship
+# satisfies it — the two wake templates, tuck_in_text, the fuse/ctl markers and
+# every machine_markers entry.
+_MARKER_OPEN = "["
+
+
+def could_carry_marker(prompt: str) -> bool:
+    """Cheap, config-free "is this worth asking cortex about?" gate.
+
+    Reading cortex config costs a subprocess and every hook runs in a FRESH
+    process, so the per-process cache never amortises: an ordinary chat turn
+    would pay it on every single turn. This gate answers from the raw text
+    alone, and only a prompt matching the contract above goes on to read cortex
+    config. Prose never matches — the glyph class deliberately excludes CJK, so
+    a Chinese line stays prose.
+
+    Narrowing this accepts: a template/marker reconfigured to open with neither
+    a bracket nor a decoration glyph stops being recognised. A prompt that does
+    open with one merely pays the read and then fails the real match."""
+    if not prompt:
+        return False
+    for line in prompt.splitlines() or [prompt]:
+        head = _ENVELOPE_LEAD_RE.sub("", line, count=1).lstrip()
+        if not head:
+            continue
+        if head.startswith(_MARKER_OPEN):
+            return True
+        if _MARKER_LEAD_RE.sub("", head, count=1) != head:
+            return True
+    return False
+
 
 def _starts_with_machine_marker(prompt: str) -> bool:
     """True iff *prompt* BEGINS with a machine marker after a tolerated leading
@@ -962,9 +1005,16 @@ def is_machine_line(prompt: str) -> bool:
             return True
     except Exception:
         pass
-    tm = tuck_in_marker()
-    if tm and _line_starts_with(p, tm):
-        return True
+    # tuck_in_text lives in cortex config, so ask only for a prompt that could
+    # carry a marker. No readable cortex config (cortex off / unconfigured) =
+    # no cortex shapes exist at all, so the line simply is not one of them.
+    if could_carry_marker(p):
+        try:
+            tm = tuck_in_marker()
+        except CortexConfigError:
+            tm = ""
+        if tm and _line_starts_with(p, tm):
+            return True
     if _starts_with_machine_marker(p):
         return True
     if is_compact_injection(p):
@@ -978,7 +1028,7 @@ def is_machine_line(prompt: str) -> bool:
 # with the SAME flock + atomic-replace protocol as cortex.wake_state. ──────────
 
 def _cortex_wake_state_path() -> Path:
-    return _cortex_path("wake_state_file")
+    return cortex_cfg.path("wake_state_file")
 
 
 def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
@@ -1000,7 +1050,7 @@ def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
 
 
 def _cortex_watchdog_pidfile() -> Path:
-    return _cortex_path("watchdog_pidfile")
+    return cortex_cfg.path("watchdog_pidfile")
 
 
 class WakeStateLockTimeout(RuntimeError):
@@ -1019,10 +1069,8 @@ def _wake_state_lock(p: Path, *, required: bool = False):
     Callers skip that round; the cursor is untouched, so its rows replay next
     round.
 
-    COUPLED: base = marrow [cortex].wake_state_file / [cortex].home. Cortex's
-    side (wake_state.lock_path) resolves from cortex [paths].wake_state_file /
-    [paths].cortex_home — override one without the other and the two lock files
-    split (silent lost update)."""
+    Both sides resolve the same base from cortex [paths].wake_state_file /
+    [paths].cortex_home, so the two lock files cannot split."""
     lp = p.with_suffix(".lock")
     fd = None
     got = False
@@ -1142,13 +1190,13 @@ def next_wake_at(shell: str) -> str | None:
 
 
 def _daemon_socket_path() -> Path:
-    """The cortex wake daemon's kick socket. cortex.toml [daemon].socket_path,
-    or <cortex home>/state/cortex-daemon.sock when unset — same resolution as
-    cortex.config.daemon_socket_path (marrow's venv cannot import cortex)."""
-    raw = str(_cortex_toml_section("daemon", "socket_path", "") or "").strip()
+    """The cortex wake daemon's kick socket. cortex [daemon].socket_path, or
+    <cortex home>/state/cortex-daemon.sock when unset — same resolution as
+    cortex.config.daemon_socket_path."""
+    raw = str(cortex_cfg.get("daemon", "socket_path") or "").strip()
     if raw:
         return Path(raw).expanduser()
-    return _cortex_home() / "state" / "cortex-daemon.sock"
+    return cortex_cfg.home() / "state" / "cortex-daemon.sock"
 
 
 def _notify_daemon() -> None:
@@ -1157,13 +1205,13 @@ def _notify_daemon() -> None:
     replaces a state write, and a missing socket / dead daemon is a silent
     no-op. Stdlib socket only."""
     import socket as _socket
-    shell = str(_cortex_toml_section("daemon", "shell", "cli") or "cli")
     try:
-        timeout = float(_cortex_toml_section("daemon", "kick_timeout_sec", 1.0))
-    except (TypeError, ValueError):
-        timeout = 1.0
-    try:
+        shell = str(cortex_cfg.get("daemon", "shell"))
+        timeout = float(cortex_cfg.get("daemon", "kick_timeout_sec"))
         path = _daemon_socket_path()
+    except (CortexConfigError, TypeError, ValueError):
+        return
+    try:
         with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
             s.connect(str(path))
@@ -1380,37 +1428,6 @@ def _cortex_user_wake_reset(inp: dict) -> None:
                 if d2.get("awake") and d2.get("awake_since") == awake_since:
                     d2["wake_log_id"] = wid
                     _wake_state_save(p, d2)
-
-
-# ── cortex.toml readers ───────────────────────────────────────────────────────
-
-def _cortex_toml_path() -> Path:
-    """cortex.toml lives beside marrow's config (shared config dir). Read
-    directly (marrow venv cannot import cortex) for the few knobs marrow needs
-    from cortex's own config."""
-    return Path(config.db_path()).parent / "cortex.toml"
-
-
-def _cortex_toml_section(section: str, key: str, default):
-    """One value from cortex.toml [section] (dotted `section` walks nested TOML
-    tables, e.g. "wake.watchdog" -> data["wake"]["watchdog"]). Tolerant: missing
-    file/key -> default. marrow venv cannot import cortex, so the few numbers the
-    tool descriptions render (lie_down clamps) are read straight from the shared
-    cortex.toml."""
-    import tomllib
-    try:
-        p = _cortex_toml_path()
-        if not p.exists():
-            return default
-        with p.open("rb") as f:
-            data = tomllib.load(f)
-        node = data
-        for part in section.split("."):
-            node = (node or {}).get(part, {})
-        v = (node or {}).get(key)
-        return v if v is not None else default
-    except (OSError, ValueError):
-        return default
 
 
 _HANDOFF_LOG_DATE_RE = _re.compile(r"^###\s*(\d{4}-\d{2}-\d{2})\b")
