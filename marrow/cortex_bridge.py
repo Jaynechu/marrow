@@ -640,8 +640,14 @@ def match_wake_bell(prompt: str) -> tuple[str, tuple[int, str] | None, bool] | N
                         caller consumes the receipt + epoch-checks (suppress stale).
       kind='shape'   -> receipt missing but the line starts with the template
                         prefix; token=None, degraded=True; caller fails OPEN.
-    A blank template prefix disables the shape fallback (never matches on empty)."""
-    if not prompt:
+    A blank template prefix disables the shape fallback (never matches on empty).
+
+    Both paths reach cortex config (the receipt sidecar's own path is cortex's
+    [paths].wake_state_file), so a prompt that cannot carry a marker at all is
+    rejected on the raw text first — the every-turn hook never spawns cortex for
+    ordinary prose. Same contract as could_carry_marker: a bell line opens its
+    marker with '['."""
+    if not prompt or not could_carry_marker(prompt):
         return None
     # (a) receipt exact match
     receipt = _load_wake_receipt()
@@ -930,6 +936,38 @@ def _line_starts_with(prompt: str, marker: str) -> bool:
 # so a real user prompt quoting the marker is not swallowed by the early return.
 line_starts_with_marker = _line_starts_with
 
+# CONTRACT: a cortex-typed machine line opens either with a bracket or with a
+# decoration glyph (_MARKER_LEAD_RE: ⏰ ☀️ ⚙️ ⏳ …). Every shape both repos ship
+# satisfies it — the two wake templates, tuck_in_text, the fuse/ctl markers and
+# every machine_markers entry.
+_MARKER_OPEN = "["
+
+
+def could_carry_marker(prompt: str) -> bool:
+    """Cheap, config-free "is this worth asking cortex about?" gate.
+
+    Reading cortex config costs a subprocess and every hook runs in a FRESH
+    process, so the per-process cache never amortises: an ordinary chat turn
+    would pay it on every single turn. This gate answers from the raw text
+    alone, and only a prompt matching the contract above goes on to read cortex
+    config. Prose never matches — the glyph class deliberately excludes CJK, so
+    a Chinese line stays prose.
+
+    Narrowing this accepts: a template/marker reconfigured to open with neither
+    a bracket nor a decoration glyph stops being recognised. A prompt that does
+    open with one merely pays the read and then fails the real match."""
+    if not prompt:
+        return False
+    for line in prompt.splitlines() or [prompt]:
+        head = _ENVELOPE_LEAD_RE.sub("", line, count=1).lstrip()
+        if not head:
+            continue
+        if head.startswith(_MARKER_OPEN):
+            return True
+        if _MARKER_LEAD_RE.sub("", head, count=1) != head:
+            return True
+    return False
+
 
 def _starts_with_machine_marker(prompt: str) -> bool:
     """True iff *prompt* BEGINS with a machine marker after a tolerated leading
@@ -967,14 +1005,16 @@ def is_machine_line(prompt: str) -> bool:
             return True
     except Exception:
         pass
-    # No readable cortex config (cortex off / unconfigured) = no cortex shapes
-    # exist at all, so the line simply is not one of them.
-    try:
-        tm = tuck_in_marker()
-    except CortexConfigError:
-        tm = ""
-    if tm and _line_starts_with(p, tm):
-        return True
+    # tuck_in_text lives in cortex config, so ask only for a prompt that could
+    # carry a marker. No readable cortex config (cortex off / unconfigured) =
+    # no cortex shapes exist at all, so the line simply is not one of them.
+    if could_carry_marker(p):
+        try:
+            tm = tuck_in_marker()
+        except CortexConfigError:
+            tm = ""
+        if tm and _line_starts_with(p, tm):
+            return True
     if _starts_with_machine_marker(p):
         return True
     if is_compact_injection(p):

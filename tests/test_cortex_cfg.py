@@ -156,3 +156,72 @@ def test_missing_key_raises_instead_of_inventing_a_value(cortex):
 
 def test_missing_key_with_explicit_default_returns_it(cortex):
     assert cortex_cfg.get("note", "shell_replay_exclude", None) is None
+
+
+# ── the per-turn gate: a prose turn must never reach cortex ───────────────────
+
+@pytest.fixture
+def counting_cortex(monkeypatch, tmp_path):
+    """cortex_cfg served by a counting stub, so a test can assert that a code
+    path consulted cortex zero times."""
+    from marrow import cortex_cfg as _cfg
+    calls: list[int] = []
+
+    def _load():
+        calls.append(1)
+        import tomllib
+        table = tomllib.loads(RESOLVED)
+        table["paths"]["cortex_home"] = str(tmp_path / "home")
+        return table
+
+    monkeypatch.setattr(config, "load", lambda: {
+        "cortex": {"enabled": True, "venv_python": "py", "repo_root": ".",
+                   "home": str(tmp_path / "home"),
+                   "machine_markers": ["[NEW ROUND]", "[FUSE]", "[CTL]", "[CMD"],
+                   "compact_markers": ["===== BEGIN ORIGINAL TRANSCRIPT"],
+                   "compact_marker_head_chars": 200,
+                   "receipt_ttl_min": 15}})
+    monkeypatch.setattr(_cfg, "load", _load)
+    return calls
+
+
+PROSE = [
+    "今天下班好累啊，你说我要不要先睡一会儿再看书",
+    "ok",
+    "did the [NEW ROUND] path fire? asking mid-sentence",
+    "",
+]
+
+
+@pytest.mark.parametrize("text", PROSE)
+def test_prose_turn_never_consults_cortex(counting_cortex, text):
+    from marrow import cortex_bridge
+    cortex_bridge.is_machine_line(text)
+    cortex_bridge.match_wake_bell(text)
+    assert counting_cortex == []
+
+
+@pytest.mark.parametrize("text", [
+    "[⏳ Free Round]",
+    "<event>⏳ [⏳ Free Round] tail",
+    "⚙️ [FUSE]",
+    "[⏰ Waking up]",
+])
+def test_marker_shaped_turn_is_allowed_through_the_gate(text):
+    from marrow import cortex_bridge
+    assert cortex_bridge.could_carry_marker(text)
+
+
+@pytest.mark.parametrize("text", PROSE[:3])
+def test_prose_is_rejected_by_the_gate(text):
+    from marrow import cortex_bridge
+    assert not cortex_bridge.could_carry_marker(text)
+
+
+def test_every_shipped_cortex_shape_satisfies_the_gate_contract(counting_cortex):
+    """could_carry_marker narrows on shape, so every cortex-typed line must
+    still pass it — a cortex default that stopped opening with '[' would
+    silently disable wake recognition."""
+    from marrow import cortex_bridge, cortex_cfg
+    for key in ("spawn_opener_template", "wake_bell_template", "tuck_in_text"):
+        assert cortex_bridge.could_carry_marker(cortex_cfg.get("wake", key)), key

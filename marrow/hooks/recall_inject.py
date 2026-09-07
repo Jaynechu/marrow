@@ -176,7 +176,11 @@ def user_prompt_submit() -> int:
         # (consume-once read, 07-14 incident stays closed). A tuck-in is a
         # machine line but never a wake BELL, so this branch is checked before
         # the wake-marker branch, and it never triggers the user-wake reset.
-        _tuck = cortex_bridge.tuck_in_marker()
+        # Marker text lives in cortex config, one subprocess away, and this hook
+        # is a fresh process on EVERY turn — so the raw shape is checked first
+        # and an ordinary prose turn never reaches cortex at all.
+        _could = cortex_bridge.could_carry_marker(_prompt)
+        _tuck = cortex_bridge.tuck_in_marker() if _could else ""
         if _tuck and cortex_bridge.line_starts_with_marker(_prompt, _tuck):
             _body = cortex_bridge.free_round_note_text()
             if _body:

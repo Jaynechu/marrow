@@ -3,8 +3,14 @@
 The cortex repo owns every cortex knob (its packaged config.default.toml plus
 the user file merged over it). Marrow shells out to
 `<venv_python> -m cortex.ctl config --resolved` from `[cortex].repo_root` and
-parses the printed TOML. The subprocess costs ~40ms warm and the result is
-cached for the life of the process, so a per-turn hook pays it at most once.
+parses the printed TOML.
+
+The subprocess costs ~55ms and the result is cached for the life of the
+process. That cache only helps a long-lived process (the MCP daemon): a hook
+is a FRESH process on every turn, so it would pay the full cost each time.
+Hook call sites therefore gate on a config-free shape pre-check
+(`cortex_bridge.could_carry_marker`) and only reach here for a prompt that
+could actually be a cortex marker line.
 
 Cortex disabled / unconfigured / the command failing all raise
 CortexConfigError. There are no literal fallbacks here: a cortex value that
@@ -20,7 +26,7 @@ from pathlib import Path
 from . import config
 
 _ARGS = ("-m", "cortex.ctl", "config", "--resolved")
-_TIMEOUT = 20.0
+_TIMEOUT = 3.0  # reachable from a per-turn hook — never hang a prompt
 _MISSING = object()
 
 # cortex [paths] entries marrow resolves. An empty value in cortex config means

@@ -266,6 +266,12 @@ def _wake_bell_row_re():
 
 
 def _is_wake_bell_row(text: str) -> bool:
+    # The template comes from cortex (a subprocess), so rows that cannot hold a
+    # marker at all are answered from the raw text — an ingest run with no bell
+    # rows never reaches cortex.
+    from .cortex_bridge import could_carry_marker
+    if not could_carry_marker(text):
+        return False
     rx = _wake_bell_row_re()
     if rx is None:
         return False
