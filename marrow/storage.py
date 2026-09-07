@@ -419,7 +419,7 @@ def connect(path: str | None = None) -> sqlite3.Connection:
 def init_db(path: str | None = None) -> sqlite3.Connection:
     cfg = config.load()
     conn = connect(path)
-    dim = int(cfg.get("embedding", {}).get("dim", 1024))
+    dim = int(cfg["embedding"]["dim"])
     with conn:
         # Pre-_TABLES renames: legacy populated tables (`threads`, `vocab`)
         # must be renamed BEFORE CREATE TABLE IF NOT EXISTS runs, or both

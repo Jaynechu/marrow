@@ -32,10 +32,10 @@ def _now_utc() -> str:
 
 
 def _dedup_cfg() -> dict:
-    cfg = config.load().get("memes_dedup", {}) or {}
+    cfg = config.load()["memes_dedup"]
     return {
-        "cosine_threshold": float(cfg.get("cosine_threshold", 0.85)),
-        "fast_skip_count": int(cfg.get("fast_skip_count", 3)),
+        "cosine_threshold": float(cfg["cosine_threshold"]),
+        "fast_skip_count": int(cfg["fast_skip_count"]),
     }
 
 

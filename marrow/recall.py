@@ -566,18 +566,11 @@ def _is_dormant(importance: int | None, age_days: float) -> bool:
 
 # Staged additive recall boost for self-authored (role='tl') rows, indexed by
 # events.imp (0..5). imp 1-2 sit level with plain events; 5 = milestone-tier.
-_IMP_BOOST_DEFAULT = (0.0, 0.0, 0.0, 0.02, 0.035, 0.05)
 
 
 def _imp_boost_table() -> tuple[float, ...]:
-    try:
-        from . import config as _config
-        arr = _config.load().get("recall", {}).get("imp_boost")
-        if isinstance(arr, list) and arr:
-            return tuple(float(x) for x in arr)
-    except Exception:
-        pass
-    return _IMP_BOOST_DEFAULT
+    from . import config as _config
+    return tuple(float(x) for x in _config.load()["recall"]["imp_boost"])
 
 
 def _imp_boost(imp, table: tuple[float, ...]) -> float:
@@ -745,39 +738,24 @@ def _apply_stopwords(q: str, stopwords: list[str]) -> str:
 # on strong raw score). Anchors (milestones / memes / tasks / entity
 # force-include) are evergreen and skip the bucket bias entirely.
 #
-# Defaults below are the FALLBACK shape used when no [recall.buckets] config
-# section is present (e.g. test fixtures, fork without config). Live config
-# wins via _load_bucket_rules() — see config.default.toml [recall.buckets].
-_DEFAULT_BUCKETS: tuple[tuple[str, str], ...] = (
-    ("/cc-lab", "project"),
-    ("/desktop/ny", "daily"),
-    ("/study", "study"),
-)
-_DEFAULT_SAME_BOOST = 0.10
-_DEFAULT_DIFF_PENALTY = 0.10
+# Needle lists, same_boost and diff_penalty all live in config.default.toml
+# [recall.buckets]; empty needle lists mean the bucket is disabled.
+_NO_BUCKETS: tuple[tuple[str, str], ...] = ()
 
 
 def _load_bucket_rules() -> tuple[tuple[tuple[str, str], ...], float, float]:
-    """Read [recall.buckets] from live config. Falls back to _DEFAULT_* on
-    missing section / parse error. Returns (needle->bucket tuples, same_boost,
-    diff_penalty). Empty needle lists mean the bucket is disabled.
+    """Read [recall.buckets] from live config. Returns (needle->bucket tuples,
+    same_boost, diff_penalty). Empty needle lists mean the bucket is disabled.
     """
-    try:
-        from . import config as _config
-        bcfg = _config.load().get("recall", {}).get("buckets", {})
-    except Exception:
-        bcfg = {}
-    if not bcfg:
-        return _DEFAULT_BUCKETS, _DEFAULT_SAME_BOOST, _DEFAULT_DIFF_PENALTY
+    from . import config as _config
+    bcfg = _config.load()["recall"]["buckets"]
     pairs: list[tuple[str, str]] = []
     for bucket in ("project", "daily", "study"):
-        for needle in (bcfg.get(bucket) or []):
+        for needle in (bcfg[bucket] or []):
             if isinstance(needle, str) and needle:
                 pairs.append((needle.lower(), bucket))
-    same = float(bcfg.get("same_boost", _DEFAULT_SAME_BOOST))
-    diff = float(bcfg.get("diff_penalty", _DEFAULT_DIFF_PENALTY))
-    if not pairs:
-        return _DEFAULT_BUCKETS, same, diff
+    same = float(bcfg["same_boost"])
+    diff = float(bcfg["diff_penalty"])
     return tuple(pairs), same, diff
 
 
@@ -792,7 +770,7 @@ def _cwd_bucket(cwd: str | None, rules: tuple[tuple[str, str], ...] | None = Non
     if not cwd:
         return ""
     p = cwd.lower()
-    pairs = rules if rules is not None else _DEFAULT_BUCKETS
+    pairs = rules if rules is not None else _NO_BUCKETS
     for needle, bucket in pairs:
         if needle in p:
             return bucket
@@ -1288,11 +1266,8 @@ def recall_fusion(
 
     # Stopword filter: strip config-driven tokens before FTS + vec.
     # List is empty by default; populated by the user after reviewing candidates.
-    try:
-        from . import config as _cfg
-        _sw = _cfg.load().get("recall", {}).get("stopwords", []) or []
-    except Exception:
-        _sw = []
+    from . import config as _cfg
+    _sw = _cfg.load()["recall"]["stopwords"]
     if _sw:
         q = _apply_stopwords(q, _sw)
         if not q:
@@ -1831,7 +1806,7 @@ def recall_with_config(
     sid (its content is already in context); MCP callers leave it None.
     """
     from . import config as _config
-    rcfg = _config.load().get("recall", {})
+    rcfg = _config.load()["recall"]
     _weight_keys = {
         "w_vec", "w_bm25", "w_recency", "w_affect",
         "w_memes_vec", "w_entities_vec", "w_milestones_vec",
@@ -1845,7 +1820,7 @@ def recall_with_config(
     # passthrough — callers that want a hard char cap pass it explicitly.
     return recall_fusion(
         conn, q,
-        limit=int(limit if limit is not None else rcfg.get("limit", 6)),
+        limit=int(limit if limit is not None else rcfg["limit"]),
         budget_chars=budget_chars,
         current_cwd=current_cwd,
         exclude_kinds=exclude_kinds,

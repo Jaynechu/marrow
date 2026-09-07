@@ -10,17 +10,10 @@ from .. import config
 # guard's whitelist (deny tier) and the git-revert guard's exemption (ask
 # tier): destructive housekeeping inside these zones can't lose the user's or
 # another session's work. Config: [hooks].isolation_prefixes.
-_ISOLATION_DEFAULT_PREFIXES = [
-    ".claude/worktrees/",
-    "/private/tmp/claude-",
-    "/tmp/claude-",
-]
-
 
 def _isolation_prefixes(hooks_cfg: dict) -> list[str]:
-    out = [p for p in (hooks_cfg or {}).get("isolation_prefixes") or []
-           if isinstance(p, str) and p.strip()]
-    return out or list(_ISOLATION_DEFAULT_PREFIXES)
+    return [p for p in hooks_cfg["isolation_prefixes"]
+            if isinstance(p, str) and p.strip()]
 
 
 def _isolation_hit(text: str, prefixes: list[str]) -> bool:
@@ -94,9 +87,9 @@ def _bg_is_whitelisted_path(p: str) -> bool:
     if pp.startswith("/tmp/") or pp.startswith("/private/tmp/"):
         return True
     try:
-        prefixes = _isolation_prefixes(config.load().get("hooks", {}) or {})
-    except Exception:  # noqa: BLE001 — fail-open to the built-in zones
-        prefixes = list(_ISOLATION_DEFAULT_PREFIXES)
+        prefixes = _isolation_prefixes(config.load()["hooks"])
+    except Exception:  # noqa: BLE001 — fail-open to the built-in whitelist
+        prefixes = []
     # Probe with a trailing slash so `<...>/scratchpad` matches "/scratchpad/".
     probe = pp if pp.endswith("/") else pp + "/"
     return any(f in probe for f in _BG_WHITELIST_FRAGMENTS + prefixes)
@@ -311,10 +304,10 @@ def _backup_guard_deny(inp: dict) -> str | None:
     try:
         if not isinstance(inp, dict):
             return None
-        hooks_cfg = config.load().get("hooks", {}) or {}
-        if not hooks_cfg.get("backup_guard", True):
+        hooks_cfg = config.load()["hooks"]
+        if not hooks_cfg["backup_guard"]:
             return None
-        if not hooks_cfg.get("backup_guard_intercept", True):
+        if not hooks_cfg["backup_guard_intercept"]:
             return None
         tool_name = inp.get("tool_name", "") or ""
         ti = inp.get("tool_input", {}) or {}
@@ -336,14 +329,14 @@ def _backup_guard_line(inp: dict) -> str | None:
     try:
         if not isinstance(inp, dict):
             return None
-        hooks_cfg = config.load().get("hooks", {}) or {}
-        if not hooks_cfg.get("backup_guard", True):
+        hooks_cfg = config.load()["hooks"]
+        if not hooks_cfg["backup_guard"]:
             return None
         tool_name = inp.get("tool_name", "") or ""
         ti = inp.get("tool_input", {}) or {}
         cwd = inp.get("cwd") or ""
         cat = _bg_category(tool_name, ti, cwd)
-        if cat == "deny" and not hooks_cfg.get("backup_guard_intercept", True):
+        if cat == "deny" and not hooks_cfg["backup_guard_intercept"]:
             cat = "remind"  # downgraded — no deny gate, surface the reminder
         if cat != "remind":
             return None
@@ -368,7 +361,7 @@ _RM_TRASH_SPLIT_RE = _re.compile("(" + _BG_SHELL_SEP_RE.pattern + ")")
 def _rm_trash_prefixes(hooks_cfg: dict) -> list[str]:
     """Expanded, normalised trash_paths prefixes (each ends with '/')."""
     out: list[str] = []
-    for p in hooks_cfg.get("trash_paths") or []:
+    for p in hooks_cfg["trash_paths"]:
         if not isinstance(p, str) or not p.strip():
             continue
         e = os.path.normpath(os.path.expanduser(p.strip()))
@@ -435,8 +428,8 @@ def _rm_to_trash_rewrite(inp: dict) -> tuple[dict | None, str | None]:
     try:
         if not isinstance(inp, dict) or inp.get("tool_name") != "Bash":
             return None, None
-        hooks_cfg = config.load().get("hooks", {}) or {}
-        if not hooks_cfg.get("rm_to_trash", True):
+        hooks_cfg = config.load()["hooks"]
+        if not hooks_cfg["rm_to_trash"]:
             return None, None
         prefixes = _rm_trash_prefixes(hooks_cfg)
         if not prefixes:

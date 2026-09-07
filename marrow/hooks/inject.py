@@ -26,21 +26,21 @@ def _kickout_context(channel: str, now: datetime, transcript_path: str | None = 
     is immune (env marker OR a manually registered resident window)."""
     if cortex_bridge.is_cortex_session(transcript_path):
         return ""
-    kc = config.load().get("kickout", {}) or {}
-    if not kc.get("enabled", True):
+    kc = config.load()["kickout"]
+    if not kc["enabled"]:
         return ""
     now_min = now.hour * 60 + now.minute
     if channel == "cli":
-        if _in_time_window(now_min, kc.get("cli_wind_down_start", "21:30"),
-                            kc.get("cli_wind_down_end", "22:00")):
-            return kc.get("cli_wind_down_text", "")
-        if _in_time_window(now_min, kc.get("cli_leave_start", "22:00"),
-                            kc.get("cli_leave_end", "06:00")):
-            return kc.get("cli_leave_text", "")
+        if _in_time_window(now_min, kc["cli_wind_down_start"],
+                            kc["cli_wind_down_end"]):
+            return kc["cli_wind_down_text"]
+        if _in_time_window(now_min, kc["cli_leave_start"],
+                            kc["cli_leave_end"]):
+            return kc["cli_leave_text"]
     elif channel in ("wx", "tg"):
-        if _in_time_window(now_min, kc.get("im_quiet_start", "23:00"),
-                            kc.get("im_quiet_end", "06:00")):
-            return kc.get("im_quiet_text", "")
+        if _in_time_window(now_min, kc["im_quiet_start"],
+                            kc["im_quiet_end"]):
+            return kc["im_quiet_text"]
     return ""
 
 
@@ -84,9 +84,9 @@ def _usage_threshold_context(sid: str, tpath: str) -> str:
         return ""
     try:
         from .. import usage
-        cu = config.load().get("cortex_usage", {}) or {}
-        start = int(cu.get("threshold_start", 100_000) or 0)
-        step = int(cu.get("threshold_step", 50_000) or 0)
+        cu = config.load()["cortex_usage"]
+        start = int(cu["threshold_start"] or 0)
+        step = int(cu["threshold_step"] or 0)
         if start <= 0 or step <= 0:
             return ""
         main_occ = _window_tokens_from_transcript(tpath)
@@ -222,7 +222,7 @@ def turn_inject() -> int:
     # Absorbed global turn-inject: per-turn care directive (config-lives).
     care_ctx = ""
     try:
-        care = (config.load().get("turn_inject", {}) or {}).get("care_text", "")
+        care = config.load()["turn_inject"]["care_text"]
         care = (care or "").strip()
         if care:
             care_ctx = f"\n\n{care}"

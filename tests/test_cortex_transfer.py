@@ -224,6 +224,9 @@ def test_transfer_timeout_is_config_driven(monkeypatch):
     assert cortex_bridge._transfer_timeout() == 90.0
 
 
-def test_bad_transfer_timeout_falls_back_to_the_default(monkeypatch):
+def test_bad_transfer_timeout_raises(monkeypatch):
+    """No shadow default: an unusable config value surfaces, never silently
+    swaps in a number the table never carried."""
     _force_cortex(monkeypatch, transfer_timeout_sec="soon")
-    assert cortex_bridge._transfer_timeout() == cortex_bridge._DEFAULT_TRANSFER_TIMEOUT
+    with pytest.raises(ValueError):
+        cortex_bridge._transfer_timeout()

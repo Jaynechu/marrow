@@ -233,8 +233,10 @@ class TestUserPromptSubmitWorktreeGate:
             "cwd": primary,
             "prompt": "what's left on this branch",
         })
-        with patch.object(hooks.config, "load",
-                          return_value={"recall": {"vector": False}}) as mload:
+        with patch.object(
+            hooks.config, "load",
+            return_value={"recall": {"vector": False, "exclude_cwds": []}},
+        ) as mload:
             rc = user_prompt_submit()
         assert rc == 0
         mload.assert_called()

@@ -92,9 +92,9 @@ def test_idle_over_threshold_renders_inactive(env, monkeypatch):
     assert presence.render("s1") == "💻 Inactive: 25m Safari"
 
 
-def test_away_idle_min_defaults_to_30_when_absent(env, monkeypatch):
+def test_away_idle_min_comes_from_the_defaults_table(env, monkeypatch):
+    """30 arrives from config.default.toml [cortex].away_idle_min, not code."""
     monkeypatch.setattr(presence, "_idle_seconds", lambda: 25 * 60)
-    monkeypatch.setattr(config, "load", lambda: {"presence": CFG["presence"]})
     assert presence.render("s1") == "💻 Active: Telegram"
 
 

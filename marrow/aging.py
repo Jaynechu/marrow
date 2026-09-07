@@ -272,7 +272,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = config.load()
     backup_dir = cfg["paths"]["backup_dir"]
-    window_days = int(cfg.get("recall", {}).get("vec_window_days", 90))
+    window_days = int(cfg["recall"]["vec_window_days"])
 
     conn = storage.init_db()
     # Alerts must land in the same DB main() operates on (init_db may be

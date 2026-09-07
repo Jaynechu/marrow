@@ -1,8 +1,8 @@
 """tl_add nudge — hint a session that has gone N turns without a tl_add.
 
-DEFAULT OFF ([tl_nudge].enabled=false). Pure counting + text plumbing; the
+Toggle + threshold live in [tl_nudge]. Pure counting + text plumbing; the
 caller (a per-turn hook) decides when to inject. Injection text is data
-(marrow/data/tl_nudge.txt), pending user review.
+(marrow/data/tl_nudge.txt, or [tl_nudge].text_file).
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from . import config
 
 
 def _cfg() -> dict:
-    return config.load().get("tl_nudge", {}) or {}
+    return config.load()["tl_nudge"]
 
 
 # ── session-silent state (/tl-) ──────────────────────────────────────────────
@@ -35,18 +35,15 @@ def is_silent(sid: str) -> bool:
 
 
 def enabled() -> bool:
-    return bool(_cfg().get("enabled", False))
+    return bool(_cfg()["enabled"])
 
 
 def threshold() -> int:
-    try:
-        return max(1, int(_cfg().get("threshold", 5)))
-    except (TypeError, ValueError):
-        return 5
+    return max(1, int(_cfg()["threshold"]))
 
 
 def nudge_text() -> str:
-    p = _cfg().get("text_file") or ""
+    p = _cfg()["text_file"] or ""
     path = Path(p).expanduser() if p else Path(__file__).parent / "data" / "tl_nudge.txt"
     try:
         raw = path.read_text(encoding="utf-8")

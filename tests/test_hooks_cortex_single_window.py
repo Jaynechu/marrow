@@ -13,6 +13,16 @@ import pytest
 from marrow import config, cortex_bridge, hooks
 
 
+def _packaged_defaults() -> dict:
+    """config.default.toml as-is — stubs override on top so a test config is
+    never missing a key the table guarantees."""
+    import tomllib
+    from pathlib import Path
+    path = Path(config.__file__).with_name("config.default.toml")
+    with path.open("rb") as f:
+        return tomllib.load(f)
+
+
 def _stdin(monkeypatch, payload):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
 
@@ -42,13 +52,18 @@ def cortex_env(tmp_path, monkeypatch):
     root.mkdir()
     db = str(tmp_path / "t.db")
     monkeypatch.setattr(config, "db_path", lambda: db)
+    defaults = _packaged_defaults()
     monkeypatch.setattr(config, "load", lambda: {
+        **defaults,
         "cortex": {
+            **defaults["cortex"],
             "enabled": True, "home": str(home),
             "venv_python": str(py), "repo_root": str(root),
             "wake_state_file": "wake_state.json",
             "watchdog_pidfile": "watchdog.pid",
             "tuck_in_marker": "[TUCK-IN]",
+            "wake_bell_template": "⏰ {hm}",
+            "spawn_opener_template": "☀️ {hm}",
             "machine_markers": ["[NEW ROUND]", "[TUCK-IN]",
                                 "[NIGHT]", "[FUSE]", "[CTL]", "[CMD"],
             "compact_markers": ["===== BEGIN ORIGINAL TRANSCRIPT",
@@ -58,8 +73,8 @@ def cortex_env(tmp_path, monkeypatch):
             "handoff_file": "handoff.md",
             "wake_signal_log_file": "state/wake_signal.log",
         },
-        "recall": {"exclude_cwds": []},
-        "replay": {"enabled": False},
+        "recall": {**defaults["recall"], "exclude_cwds": []},
+        "replay": {**defaults["replay"], "enabled": False},
     })
     monkeypatch.setenv("MARROW_CORTEX", "1")
     monkeypatch.setattr(cortex_bridge, "_spawn_watchdog_if_absent", lambda: None)

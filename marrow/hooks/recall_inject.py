@@ -244,7 +244,7 @@ def user_prompt_submit() -> int:
                 pass
 
     # cwd exclude gate — opt-out per-dir via config.toml [recall].exclude_cwds.
-    _ex_cwds = config.load().get("recall", {}).get("exclude_cwds", []) or []
+    _ex_cwds = config.load()["recall"]["exclude_cwds"]
     if cwd and any(cwd.startswith(p) for p in _ex_cwds):
         return 0
 
@@ -302,7 +302,7 @@ def user_prompt_submit() -> int:
         pass
 
     cfg = config.load()
-    if not cfg.get("recall", {}).get("vector", False):
+    if not cfg["recall"]["vector"]:
         return 0
 
     if not prompt_text:
@@ -317,13 +317,12 @@ def user_prompt_submit() -> int:
     if not recall_query or not _WX_TIME_PREFIX_RE.sub("", recall_query).strip():
         return 0
 
-    rcfg = cfg.get("recall", {})
-    ctx_n = int(rcfg.get("event_context_window", 1))
-    budget_chars = int(rcfg.get("budget_chars", 800))
-    timelane_budget = int(rcfg.get("timelane_budget", 400))
-    _default_rank_caps = [300, 120, 120, 40, 40]
-    rank_caps: list[int] = rcfg.get("rank_caps", _default_rank_caps) or _default_rank_caps
-    rel_cutoff: float = float(rcfg.get("rel_cutoff", 0.6))
+    rcfg = cfg["recall"]
+    ctx_n = int(rcfg["event_context_window"])
+    budget_chars = int(rcfg["budget_chars"])
+    timelane_budget = int(rcfg["timelane_budget"])
+    rank_caps: list[int] = list(rcfg["rank_caps"])
+    rel_cutoff: float = float(rcfg["rel_cutoff"])
 
     # ── time-lane: detect cue, run windowed recall first ─────────────────────
     windowed_hits: list[dict] = []

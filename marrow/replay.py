@@ -105,10 +105,10 @@ def _is_slash_command(text: str, max_chars: int) -> bool:
 
 def _drop_filters(cfg: dict):
     slash_max = None
-    if cfg.get("drop_slash_commands", True):
-        slash_max = int(cfg.get("slash_command_max_chars", 40))
+    if cfg["drop_slash_commands"]:
+        slash_max = int(cfg["slash_command_max_chars"])
     pats = []
-    for p in (cfg.get("drop_patterns", []) or []):
+    for p in cfg["drop_patterns"]:
         try:
             pats.append(_re.compile(p))
         except _re.error:
@@ -216,13 +216,13 @@ def latest_block(key: str, *, sid: str = "", exclude: list[str] | None = None,
 
     First call for a key (no marker) = seed: render the latest window and record
     it, which is also the SessionStart semantics."""
-    cfg = (config.load().get("replay", {}) or {})
-    if not cfg.get("enabled", True):
+    cfg = config.load()["replay"]
+    if not cfg["enabled"]:
         return ""
-    max_turns = int(cfg.get("max_turns", 2))
-    per_chars = int(cfg.get("per_msg_chars", 250))
-    max_lines = int(cfg.get("max_lines", 4))
-    header = cfg.get("header", "## Recent replay from other sessions")
+    max_turns = int(cfg["max_turns"])
+    per_chars = int(cfg["per_msg_chars"])
+    max_lines = int(cfg["max_lines"])
+    header = cfg["header"]
 
     own = conn is None
     if own:
@@ -277,8 +277,8 @@ def context(sid: str, channel: str, *, transcript_path: str | None = None) -> st
     exclusion is opt-in via cortex.toml [note].shell_replay_exclude."""
     if not sid:
         return ""
-    cfg = (config.load().get("replay", {}) or {})
-    if not cfg.get("enabled", True):
+    cfg = config.load()["replay"]
+    if not cfg["enabled"]:
         return ""
 
     is_cortex = False
@@ -291,7 +291,7 @@ def context(sid: str, channel: str, *, transcript_path: str | None = None) -> st
         exclude = shell_exclude_channels(cortex_bridge._cortex_shell_id())
         return latest_block(sid, sid=sid, exclude=exclude)
 
-    if channel in (cfg.get("exclude_target_channels", []) or []):
+    if channel in cfg["exclude_target_channels"]:
         return ""
 
     conn = storage.connect(config.db_path())
@@ -299,7 +299,7 @@ def context(sid: str, channel: str, *, transcript_path: str | None = None) -> st
         # Idle gate: inject only when her last completed turn in THIS sid is
         # >= idle_gate_min old. Nothing is lost while gated — the next ungated
         # turn still shows the latest window. 0 disables the gate.
-        idle_gate_min = float(cfg.get("idle_gate_min", 20))
+        idle_gate_min = float(cfg["idle_gate_min"])
         if idle_gate_min > 0:
             age = _last_user_age_min(conn, sid)
             if age is not None and age < idle_gate_min:

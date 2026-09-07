@@ -373,8 +373,7 @@ def test_config_values_read_from_section(db, monkeypatch):
     assert loop._fail_streak_max == 9
 
 
-def test_config_defaults_when_section_absent(db, monkeypatch):
-    monkeypatch.setattr(config, "load", lambda: {})
+def test_config_defaults_come_from_the_defaults_table(db):
     loop = EmbedLoop(lambda: db)
     assert loop.enabled is True
     assert (loop._tick_s, loop._batch, loop._max_batches) == (300.0, 50, 20)

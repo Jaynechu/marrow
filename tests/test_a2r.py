@@ -13,7 +13,7 @@ from marrow import config, hooks, install, recall, storage, tl_writer
 # ── recall: staged imp boost + [tl]/[event] source tag ───────────────────────
 
 def test_imp_boost_staged():
-    tbl = recall._IMP_BOOST_DEFAULT
+    tbl = recall._imp_boost_table()
     assert recall._imp_boost(None, tbl) == 0.0
     assert recall._imp_boost(1, tbl) == 0.0
     assert recall._imp_boost(2, tbl) == 0.0

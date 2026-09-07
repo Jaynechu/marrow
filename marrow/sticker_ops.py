@@ -19,7 +19,7 @@ def _resolve_stickers_dir() -> Path:
     if STICKERS_DIR is not None:
         return Path(STICKERS_DIR).expanduser()
     from . import config as _config
-    val = _config.load().get("paths", {}).get("stickers_dir", "")
+    val = _config.load()["paths"]["stickers_dir"]
     if val:
         return Path(val).expanduser()
     from .paths import paths as _mpaths

@@ -388,16 +388,16 @@ class EmbedLoop:
 
     def __init__(self, conn_factory, cfg: dict | None = None) -> None:
         if cfg is None:
-            cfg = config.load().get("embed_loop", {}) or {}
+            cfg = config.load()["embed_loop"]
         self._conn_factory = conn_factory
         self._conn: sqlite3.Connection | None = None
-        self.enabled = bool(cfg.get("enabled", True))
-        self._tick_s = float(cfg.get("tick_s", 300) or 300)
-        self._batch = int(cfg.get("batch", 50) or 50)
-        self._max_batches = int(cfg.get("max_batches", 20) or 20)
-        self._backlog_count = int(cfg.get("backlog_alert_count", 100) or 100)
-        self._backlog_hours = float(cfg.get("backlog_alert_hours", 6) or 6)
-        self._fail_streak_max = int(cfg.get("fail_alert_streak", 3) or 3)
+        self.enabled = bool(cfg["enabled"])
+        self._tick_s = float(cfg["tick_s"])
+        self._batch = int(cfg["batch"])
+        self._max_batches = int(cfg["max_batches"])
+        self._backlog_count = int(cfg["backlog_alert_count"])
+        self._backlog_hours = float(cfg["backlog_alert_hours"])
+        self._fail_streak_max = int(cfg["fail_alert_streak"])
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._child = None

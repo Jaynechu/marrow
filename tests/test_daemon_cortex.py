@@ -168,7 +168,8 @@ def test_lie_down_no_human_override_flag_by_default(env, monkeypatch, tmp_path):
 
 
 def test_cortex_tool_not_configured(env, monkeypatch):
-    monkeypatch.setattr(config, "load", lambda: {"cortex": {}})
+    monkeypatch.setattr(config, "load", lambda: {
+        "cortex": {"venv_python": "", "repo_root": ""}})
     out = cortex_bridge.lie_down(next_wake_min=20)
     assert out["ok"] is False
     assert "not configured" in out["error"]
@@ -176,7 +177,8 @@ def test_cortex_tool_not_configured(env, monkeypatch):
 
 def test_cortex_tool_surfaces_stderr(env, monkeypatch, tmp_path):
     monkeypatch.setattr(config, "load", lambda: {
-        "cortex": {"venv_python": str(tmp_path / "py"), "repo_root": str(tmp_path)},
+        "cortex": {"venv_python": str(tmp_path / "py"),
+                   "repo_root": str(tmp_path), "transfer_timeout_sec": 240},
     })
 
     class _P:
