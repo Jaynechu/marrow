@@ -11,7 +11,7 @@ import sqlite3
 
 def _birth_year() -> int:
     from . import config
-    return int(config.load().get("persona", {}).get("birth_year", 0) or 0)
+    return int(config.load()["persona"]["birth_year"] or 0)
 
 
 def parse_events_2026(text: str) -> list[dict]:

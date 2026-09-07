@@ -19,8 +19,6 @@ _SNAPSHOT_DIR = config.DATA_DIR / "schedule-snapshots"
 _TIMEOUT = 5
 _MAX_CHARS = 8000
 
-_DEFAULT_FLAG_NOTE = ""
-
 _REM_GLOB_BASE = str(
     Path.home() / "Library" / "Group Containers"
     / "group.com.apple.reminders" / "Container_v1" / "Stores"
@@ -34,35 +32,34 @@ _PRIORITY_LABELS = {1: "⚡"}
 
 
 def _schedule_cfg() -> dict:
-    return config.load().get("schedule", {}) or {}
+    return config.load()["schedule"]
 
 
 def is_enabled() -> bool:
-    val = _schedule_cfg().get("enabled", True)
+    val = _schedule_cfg()["enabled"]
     return bool(val)
 
 
 def _cadence_bin() -> str:
     """Configured cadence binary, `~` expanded — the config comment offers a
     home-relative example and subprocess does not expand it."""
-    raw = str(_schedule_cfg().get("cadence_bin", "") or "").strip()
+    raw = str(_schedule_cfg()["cadence_bin"] or "").strip()
     return str(Path(raw).expanduser()) if raw else _CADENCE_DEFAULT
 
 
 def _flag_note() -> str:
-    note = _schedule_cfg().get("flag_note", "")
-    return note if note else _DEFAULT_FLAG_NOTE
+    return str(_schedule_cfg()["flag_note"])
 
 
 def _cal_exclude() -> set[str]:
-    val = _schedule_cfg().get("cal_exclude", [])
+    val = _schedule_cfg()["cal_exclude"]
     if not isinstance(val, list):
         return set()
     return {str(v) for v in val}
 
 
 def _cal_keep_re():
-    pattern = _schedule_cfg().get("cal_keep", "")
+    pattern = _schedule_cfg()["cal_keep"]
     if not pattern:
         return None
     try:

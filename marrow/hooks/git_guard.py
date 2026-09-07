@@ -13,6 +13,11 @@ from .. import config
 from .bash_guard import _isolation_hit, _isolation_prefixes
 from .lifecycle import _is_worktree_session
 
+
+def _hooks_cfg() -> dict:
+    return config.load()["hooks"]
+
+
 # ── git force-push guard (PreToolUse) — hard deny ─────────────────────────────
 # Force push rewrites remote history: a hard deny, no escape hatch, no worktree
 # exemption. Tokenized per shell segment so a commit -m "...--force..." message
@@ -54,8 +59,8 @@ def _git_force_push_guard(inp: dict) -> str | None:
     try:
         if not isinstance(inp, dict) or inp.get("tool_name") != "Bash":
             return None
-        hooks_cfg = config.load().get("hooks", {}) or {}
-        if not hooks_cfg.get("git_force_push_guard", True):
+        hooks_cfg = config.load()["hooks"]
+        if not hooks_cfg["git_force_push_guard"]:
             return None
         cmd = (inp.get("tool_input") or {}).get("command", "") or ""
         if not isinstance(cmd, str) or not _git_force_push_matches(cmd):
@@ -70,30 +75,6 @@ def _git_force_push_guard(inp: dict) -> str | None:
 # risk is WHOSE work. Decision is "ask" (surface to the user), not a silent
 # deny — the model must first verify the diff's authorship. Worktree/agent
 # cleanup (branch -D teardown, worktree remove) is exempt.
-_GIT_REVERT_DEFAULT_PATTERNS = [
-    r"\bgit\s+reset\s+--hard\b",
-    # Every `git checkout`, with or without `--`, and with global flags
-    # between `git` and the subcommand (`git -C <dir> checkout f`,
-    # `git --work-tree=… checkout f`). Only dash-tokens (plus the value of a
-    # value-taking global flag) may sit in between, so a `checkout` word
-    # inside a quoted argument of another subcommand can't drag it in.
-    # Branch switch vs file overwrite is decided in code, not here
-    # (_git_revert_loss_holds → _git_checkout_file_operands).
-    r"\bgit\s+(?:(?:-C|--git-dir|--work-tree|--namespace)\s+\S+\s+|-\S+\s+)*"
-    r"checkout\b",
-    r"\bgit\s+restore\b",                            # worktree discard
-    r"\bgit\s+clean\s+-\w*f",                        # -f / -fd
-    r"\bgit\s+branch\s+-\w*D\w*\b",
-    r"\bgit\s+stash\s+(?:drop|clear)\b",
-    r"\bgit\s+revert\b[^\n]*--no-edit\b",
-    r"\bgit\s+switch\b[^\n]*--discard-changes\b",
-    r"\bgit\s+worktree\s+remove\b",
-]
-
-_GIT_REVERT_MSG = (
-    "BLOCKED — git revert/reset requested. Confirm with the user before "
-    "proceeding."
-)
 
 
 # Split on shell control operators (&&, ||, ;, |, &, newline) so pattern
@@ -287,9 +268,6 @@ def _git_revert_own_writes(seg: str, cwd: str, write_set_fn) -> bool:
     return True
 
 
-_AGENT_BRANCH_DEFAULT_PREFIXES = ["worktree-agent-"]
-
-
 def _git_seg_tokens(seg: str) -> list[str]:
     import shlex
     try:
@@ -321,8 +299,8 @@ def _git_branch_delete_holds(seg: str, cwd: str, hooks_cfg: dict) -> bool:
     if parsed["action"] != "branch-D":
         return False
     ops = [r for r in parsed["refs"] if r != "branch"]
-    pres = [p for p in (hooks_cfg or {}).get("agent_branch_prefixes") or []
-            if isinstance(p, str) and p.strip()] or _AGENT_BRANCH_DEFAULT_PREFIXES
+    pres = [p for p in (hooks_cfg or _hooks_cfg())["agent_branch_prefixes"]
+            if isinstance(p, str) and p.strip()]
     return not (ops and all(any(o.startswith(p) for p in pres) for o in ops))
 
 
@@ -369,8 +347,8 @@ def _git_revert_matches(cmd: str, cwd: str = "", hooks_cfg: dict | None = None,
     if not cmd:
         return False
     if hooks_cfg is None:
-        hooks_cfg = config.load().get("hooks", {}) or {}
-    pats = hooks_cfg.get("git_revert_patterns") or _GIT_REVERT_DEFAULT_PATTERNS
+        hooks_cfg = _hooks_cfg()
+    pats = hooks_cfg["git_revert_patterns"]
     for seg in _GIT_REVERT_SEP_RE.split(cmd):
         seg = seg.strip()
         if seg and _git_revert_segment_matches(seg, pats, cwd, hooks_cfg,
@@ -380,10 +358,6 @@ def _git_revert_matches(cmd: str, cwd: str = "", hooks_cfg: dict | None = None,
 
 
 # ── revert-guard reason enrichment ───────────────────────────────────────────
-# Last-resort {action} filler when config carries no `unknown` label (English
-# in code; the user-facing copy lives in git_revert_action_labels).
-_GIT_REVERT_UNKNOWN_ACTION = "touch your git history"
-
 # The ask reason must answer "whose work is about to be destroyed": a config
 # action phrase, the git op as invoked, the affected paths, the LOC delta and
 # an ownership verdict. Every step below is best-effort and read-only — any
@@ -648,9 +622,9 @@ def _git_revert_reason(inp: dict, hooks_cfg: dict, cmd: str,
                        write_set_fn=None) -> str:
     """Full ask reason: headline + Action/File/LOC/By. Degrades to headline +
     Action, and to the bare headline, when git or the DB can't answer."""
-    template = hooks_cfg.get("git_revert_guard_message") or _GIT_REVERT_MSG
-    pats = hooks_cfg.get("git_revert_patterns") or _GIT_REVERT_DEFAULT_PATTERNS
-    labels = hooks_cfg.get("git_revert_action_labels") or {}
+    template = hooks_cfg["git_revert_guard_message"]
+    pats = hooks_cfg["git_revert_patterns"]
+    labels = hooks_cfg["git_revert_action_labels"]
     parsed = None
     hook_cwd = inp.get("cwd") or ""
     for seg in _GIT_REVERT_SEP_RE.split(cmd):
@@ -663,7 +637,7 @@ def _git_revert_reason(inp: dict, hooks_cfg: dict, cmd: str,
         # Matched the pattern but not classifiable (e.g. the git text sits
         # inside a quoted argument). Generic label — never an empty {action}.
         return template.replace(
-            "{action}", str(labels.get("unknown") or _GIT_REVERT_UNKNOWN_ACTION)
+            "{action}", str(labels["unknown"])
         ).strip()
     action = parsed["action"]
     lines = [template.replace("{action}", str(labels.get(action) or action))]
@@ -705,8 +679,8 @@ def _git_revert_guard(inp: dict) -> str | None:
     try:
         if not isinstance(inp, dict) or inp.get("tool_name") != "Bash":
             return None
-        hooks_cfg = config.load().get("hooks", {}) or {}
-        if not hooks_cfg.get("git_revert_guard", True):
+        hooks_cfg = config.load()["hooks"]
+        if not hooks_cfg["git_revert_guard"]:
             return None
         cmd = (inp.get("tool_input") or {}).get("command", "") or ""
         cwd = inp.get("cwd") or ""
@@ -734,6 +708,6 @@ def _git_revert_guard(inp: dict) -> str | None:
         except Exception:  # noqa: BLE001 — enrichment is additive, never fatal
             reason = ""
         # Never return "" here — the caller reads "" as worktree-exempt allow.
-        return reason or hooks_cfg.get("git_revert_guard_message") or _GIT_REVERT_MSG
+        return reason or hooks_cfg["git_revert_guard_message"]
     except Exception:  # noqa: BLE001 — fail-open, never blocks the hook
         return None

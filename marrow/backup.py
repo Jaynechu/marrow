@@ -21,7 +21,6 @@ from pathlib import Path
 
 from marrow import config, repo
 
-DEFAULT_KEEP = 14
 _NAME_RE = re.compile(r"^marrow-\d{4}-\d{2}-\d{2}\.db$")
 
 
@@ -100,13 +99,13 @@ def _prune(targets: list[Path]) -> None:
 
 def run(*, apply: bool = False, db: str | None = None,
         local_dir: str | None = None, offsite_dir: str | None = None,
-        keep: int = DEFAULT_KEEP, today: str | None = None,
+        keep: int | None = None, today: str | None = None,
         alert_db: str | None = None) -> dict:
     cfg = config.load()
     db = db or cfg["paths"]["db"]
     local_dir = local_dir or cfg["paths"]["backup_dir"]
     offsite_dir = offsite_dir or cfg["paths"]["offsite_backup_dir"]
-    keep = keep or int(cfg.get("backup", {}).get("keep", DEFAULT_KEEP))
+    keep = keep or int(cfg["backup"]["keep"])
     today = today or date.today().isoformat()
     p = plan(local_dir=local_dir, keep=keep, today=today,
              offsite_dir=offsite_dir)
@@ -169,8 +168,8 @@ def main(argv=None) -> int:
     g.add_argument("--dry-run", action="store_true",
                    help="print plan only (default)")
     ap.add_argument("--keep", type=int, default=0,
-                    help=f"daily dumps to retain each side "
-                         f"(default {DEFAULT_KEEP})")
+                    help="daily dumps to retain each side "
+                         "(default: [backup].keep)")
     a = ap.parse_args(argv)
     rep = run(apply=a.apply, keep=a.keep or 0)
     if not a.apply:

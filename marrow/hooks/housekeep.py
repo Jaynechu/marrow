@@ -14,45 +14,22 @@ from .. import config, repo
 # ── git housekeep ────────────────────────────────────────────────────────────
 
 # Files whose deletion must never be auto-committed away silently (Part A only).
-_HOUSEKEEP_PROTECTED_DEFAULT = [
-    "CLAUDE.md", "settings.json", "keybindings.json", "statusline.py",
-    "output-styles/ny.md",
-]
-
 
 def _housekeep_protected_files() -> list[str]:
-    try:
-        return config.load().get("hooks", {}).get(
-            "housekeep_protected_files", _HOUSEKEEP_PROTECTED_DEFAULT
-        )
-    except Exception:
-        return _HOUSEKEEP_PROTECTED_DEFAULT
+    return config.load()["hooks"]["housekeep_protected_files"]
 
 
 # Docs/config-shaped files: committed unconditionally. Everything else waits
 # until it has gone quiet for `housekeep_stale_hours` (likely another live
 # session's WIP otherwise).
-_HOUSEKEEP_DOCS_EXTS_DEFAULT = [".md", ".toml", ".json", ".txt"]
-_HOUSEKEEP_STALE_HOURS_DEFAULT = 2.0
-
 
 def _housekeep_docs_exts() -> set[str]:
-    try:
-        exts = config.load().get("hooks", {}).get(
-            "housekeep_docs_extensions", _HOUSEKEEP_DOCS_EXTS_DEFAULT
-        )
-    except Exception:
-        exts = _HOUSEKEEP_DOCS_EXTS_DEFAULT
+    exts = config.load()["hooks"]["housekeep_docs_extensions"]
     return {str(e).lower() for e in exts}
 
 
 def _housekeep_stale_hours() -> float:
-    try:
-        return float(config.load().get("hooks", {}).get(
-            "housekeep_stale_hours", _HOUSEKEEP_STALE_HOURS_DEFAULT
-        ))
-    except Exception:
-        return _HOUSEKEEP_STALE_HOURS_DEFAULT
+    return float(config.load()["hooks"]["housekeep_stale_hours"])
 
 
 def _unquote_porcelain(path: str) -> str:
@@ -391,16 +368,8 @@ def _git_housekeep_block(
 
 # ── ~/.claude.json mcpServers snapshot ───────────────────────────────────────
 
-_CLAUDE_JSON_SNAPSHOT_KEEP_DEFAULT = 10
-
-
 def _claude_json_snapshot_keep() -> int:
-    try:
-        return int(config.load().get("hooks", {}).get(
-            "claude_json_snapshot_keep", _CLAUDE_JSON_SNAPSHOT_KEEP_DEFAULT
-        ))
-    except Exception:
-        return _CLAUDE_JSON_SNAPSHOT_KEEP_DEFAULT
+    return int(config.load()["hooks"]["claude_json_snapshot_keep"])
 
 
 def _claude_json_snapshot_block() -> str | None:

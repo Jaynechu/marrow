@@ -1,6 +1,6 @@
 """Sync loop — periodic md↔db reconcile/render for subpages + daybrief + monitor.
 
-5s tick: for each target (subpage + daybrief.md + monitor.md), compare md mtime
+[sync].tick_s: for each target (subpage + daybrief.md + monitor.md), compare md mtime
 vs db mtime. md newer → reconcile; db newer → render. Race防御: re-check md
 mtime after reconcile; if it advanced, skip render this tick.
 
@@ -11,7 +11,6 @@ down. Clean shutdown via threading.Event.
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
 import time
@@ -20,8 +19,17 @@ from typing import Callable
 
 from . import config, repo
 
-_SYNC_TICK_S = float(os.environ.get("MARROW_SYNC_TICK_S", "5.0"))
 _MTIME_EPSILON_S = 1.0  # jitter guard
+
+
+def _sync_tick_s() -> float:
+    return float(config.load()["sync"]["tick_s"])
+
+
+def _atlas_sweep_tick_s() -> float:
+    return float(config.load()["sync"]["atlas_sweep_tick_s"])
+
+
 # If md was touched within this window, skip render this tick — protects
 # user keystrokes from inserter force_sort_consistency bootstrap rewriting
 # the file under the cursor (atlas.md "modified externally" toast).
@@ -109,10 +117,8 @@ _SUBPAGE_DB_SOURCES: dict[str, list[tuple[str, str]]] = {
     "atlas":     [("atlas", "updated_at")],
 }
 
-# Atlas-sweep tick: independent of the 5s md/db sync. Runs atlas_sweep_fs
-# every N seconds to pick up new dirs and mark stale ones.
-# S2b sync_loop integration wires this after merge; scaffold lives here.
-_ATLAS_SWEEP_TICK_S = float(os.environ.get("MARROW_ATLAS_SWEEP_TICK_S", "60.0"))
+# Atlas-sweep tick: independent of the md/db sync. Runs atlas_sweep_fs
+# every [sync].atlas_sweep_tick_s seconds to pick up new dirs and mark stale ones.
 
 # Timeline-only subset feeding daybrief.md. Restricted to the rows
 # render_timeline actually renders, via (table, expr, where) triples so raw
@@ -184,11 +190,11 @@ class SyncLoop:
 
     def __init__(self, conn_factory: Callable[[], sqlite3.Connection],
                  targets: list[SyncTarget],
-                 tick_s: float = _SYNC_TICK_S) -> None:
+                 tick_s: float | None = None) -> None:
         self._conn_factory = conn_factory
         self._conn: sqlite3.Connection | None = None
         self._targets = targets
-        self._tick_s = tick_s
+        self._tick_s = tick_s if tick_s is not None else _sync_tick_s()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._consecutive_fails: dict[str, int] = {}
@@ -305,10 +311,10 @@ class AtlasSweepLoop:
     """Runs atlas_sweep_fs on a periodic tick, owning its own connection."""
 
     def __init__(self, conn_factory: Callable[[], sqlite3.Connection],
-                 tick_s: float = _ATLAS_SWEEP_TICK_S) -> None:
+                 tick_s: float | None = None) -> None:
         self._conn_factory = conn_factory
         self._conn: sqlite3.Connection | None = None
-        self._tick_s = tick_s
+        self._tick_s = tick_s if tick_s is not None else _atlas_sweep_tick_s()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -357,9 +363,7 @@ class AtlasSweepLoop:
 # ---------------------------------------------------------------------------
 
 def _usage_snapshot_tick_s() -> float:
-    from . import config as _config
-    return float((_config.load().get("cortex_usage", {}) or {}).get(
-        "snapshot_tick_s", 300) or 300)
+    return float(config.load()["cortex_usage"]["snapshot_tick_s"])
 
 
 class UsageSnapshotLoop:

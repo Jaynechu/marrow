@@ -225,8 +225,8 @@ class LLMClient:
         return self._run_claude_stream(spec, model, prompt)
 
     def _run_claude_stream(self, spec: dict, model: str, prompt: str) -> str:
-        timeout = spec.get("timeout_s", 120)
-        effort = spec.get("effort")
+        timeout = spec["timeout_s"]
+        effort = spec["effort"]
         cmd = [_claude_bin(), "--output-format", "stream-json",
                "--input-format", "stream-json", "--verbose",
                "--model", model, *_ISOLATION]
@@ -315,12 +315,12 @@ class LLMClient:
         return "\n".join(lines)
 
     def _run_claude_p(self, spec: dict, model: str, prompt: str) -> str:
-        effort = spec.get("effort")
+        effort = spec["effort"]
         cmd = [_claude_bin(), "-p", prompt, "--model", model,
                *_ISOLATION, "--output-format", "json"]
         if effort:
             cmd.extend(["--effort", effort])
-        timeout = spec.get("timeout_s", 120)
+        timeout = spec["timeout_s"]
         env = {**os.environ, "MARROW_PIPELINE": "1"}
         try:
             p = subprocess.Popen(

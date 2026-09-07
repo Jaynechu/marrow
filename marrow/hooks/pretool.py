@@ -30,7 +30,7 @@ def agent_guard() -> int:
             return 0
         ti = inp.get("tool_input") or {}
         sub = (ti.get("subagent_type") or "general-purpose").strip()
-        deny = config.load().get("agent_guard", {}).get("deny", ["general-purpose"])
+        deny = config.load()["agent_guard"]["deny"]
         if sub in deny:
             print(
                 f"[burst-guard] subagent_type={sub!r} is denied — it spawns "

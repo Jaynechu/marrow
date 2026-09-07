@@ -25,7 +25,7 @@ _WORD_MAX = 8
 
 
 def _body_max() -> int:
-    return int(_config.load().get("tl", {}).get("body_max", 50))
+    return int(_config.load()["tl"]["body_max"])
 _LABEL_RE = re.compile(r"^\s*(【[^】]*】)?(.*)$", re.DOTALL)
 _TRAIL_IMP_RE = re.compile(r"\s*\[\d\]\s*$")
 

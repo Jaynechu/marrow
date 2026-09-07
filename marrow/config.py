@@ -86,7 +86,6 @@ def load() -> dict:
     # gets the same path.
     paths["sub_pages"] = paths["db_pages"]
     paths["sub_pages_state"] = paths["db_pages_state"]
-    cfg.setdefault("backup", {}).setdefault("keep", 14)
     Path(backup).mkdir(parents=True, exist_ok=True)
     return cfg
 

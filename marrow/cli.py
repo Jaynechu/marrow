@@ -683,7 +683,7 @@ def cmd_ls(args) -> int:
 
 
 def _embed_cfg() -> dict:
-    return config.load().get("embed_loop", {}) or {}
+    return config.load()["embed_loop"]
 
 
 def cmd_embed(args) -> int:
@@ -694,9 +694,9 @@ def cmd_embed(args) -> int:
     from . import recall
 
     cfg = _embed_cfg()
-    batch = int(args.batch if args.batch is not None else cfg.get("batch", 50))
+    batch = int(args.batch if args.batch is not None else cfg["batch"])
     max_batches = int(args.max_batches if args.max_batches is not None
-                      else cfg.get("max_batches", 20))
+                      else cfg["max_batches"])
     lock_path = Path(config.DATA_DIR) / "embed.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "w") as lock:
@@ -714,6 +714,15 @@ def cmd_embed(args) -> int:
                     break
         print(f"embed: {total} rows")
         return 0
+
+
+def cmd_config(args) -> int:
+    """Print the packaged defaults file or the effective merged config."""
+    from . import config_dump
+    text = (config_dump.defaults_text() if args.defaults
+            else config_dump.resolved_text())
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+    return 0
 
 
 def cmd_install(args) -> int:
@@ -902,6 +911,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="max passes before giving up "
                           "(default [embed_loop].max_batches)")
     emb.set_defaults(fn=cmd_embed)
+
+    cf = sub.add_parser("config", parents=[common],
+                        help="print the packaged defaults or the merged config")
+    cf_g = cf.add_mutually_exclusive_group(required=True)
+    cf_g.add_argument("--defaults", action="store_true",
+                      help="print config.default.toml verbatim")
+    cf_g.add_argument("--resolved", action="store_true",
+                      help="print the effective merged config as TOML")
+    cf.set_defaults(fn=cmd_config)
 
     ins = sub.add_parser("install", help="Set up marrow globally")
     ins.add_argument("--update", action="store_true",

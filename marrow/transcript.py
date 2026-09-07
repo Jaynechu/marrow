@@ -218,8 +218,8 @@ def _load_machine_markers() -> tuple[str, ...]:
     empty/missing config -> no filtering."""
     try:
         from . import config
-        cx = config.load().get("cortex", {}) or {}
-        return tuple(str(m) for m in (cx.get("machine_markers") or []) if str(m))
+        markers = config.load()["cortex"]["machine_markers"]
+        return tuple(str(m) for m in markers if str(m))
     except Exception:
         return ()
 
@@ -248,8 +248,7 @@ def _wake_bell_row_re():
     keeps flowing."""
     try:
         from . import config
-        cx = config.load().get("cortex", {}) or {}
-        tmpl = str(cx.get("wake_bell_template") or "☀️ {hm}")
+        tmpl = str(config.load()["cortex"]["wake_bell_template"])
     except Exception:
         return None
     cached = getattr(_wake_bell_row_re, "_cache", None)

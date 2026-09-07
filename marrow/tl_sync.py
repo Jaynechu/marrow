@@ -23,11 +23,11 @@ _MAX_ROWS = 5
 
 
 def _cfg() -> dict:
-    return config.load().get("tl_sync", {}) or {}
+    return config.load()["tl_sync"]
 
 
 def enabled() -> bool:
-    return bool(_cfg().get("enabled", True))
+    return bool(_cfg()["enabled"])
 
 
 def _seen_path(sid: str):

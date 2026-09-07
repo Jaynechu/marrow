@@ -24,9 +24,6 @@ from . import config
 from .paths import paths
 
 _PROBE_TIMEOUT_S = 1.5
-_DEFAULT_INTERVAL_MIN = 30
-_DEFAULT_AWAY_IDLE_MIN = 30
-_DEFAULT_CHANNELS = ("cli", "tg", "wx")
 
 
 def _channel() -> str:
@@ -140,12 +137,8 @@ def _activity_piece(away_idle_min: int) -> str:
 
 
 def _away_idle_min(cfg: dict) -> int:
-    try:
-        value = int((cfg.get("cortex", {}) or {}).get(
-            "away_idle_min", _DEFAULT_AWAY_IDLE_MIN))
-    except (TypeError, ValueError):
-        return _DEFAULT_AWAY_IDLE_MIN
-    return value if value >= 0 else _DEFAULT_AWAY_IDLE_MIN
+    value = int(cfg["cortex"]["away_idle_min"])
+    return value if value >= 0 else 0
 
 
 def _throttle_open(sid: str, interval_min: int, now_epoch: int) -> bool:
@@ -175,18 +168,13 @@ def render(sid: str) -> str:
     if not sid:
         return ""
     cfg = config.load()
-    pc = cfg.get("presence", {}) or {}
-    if not pc.get("enabled", True):
+    pc = cfg["presence"]
+    if not pc["enabled"]:
         return ""
-    channels = pc.get("channels")
-    if not isinstance(channels, list):
-        channels = list(_DEFAULT_CHANNELS)
+    channels = pc["channels"]
     if _channel() not in [str(c).strip().lower() for c in channels]:
         return ""
-    try:
-        interval_min = int(pc.get("interval_min", _DEFAULT_INTERVAL_MIN))
-    except (TypeError, ValueError):
-        interval_min = _DEFAULT_INTERVAL_MIN
+    interval_min = int(pc["interval_min"])
     now_epoch = int(time.time())
     if not _throttle_open(sid, interval_min, now_epoch):
         return ""

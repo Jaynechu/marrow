@@ -34,14 +34,11 @@ _DRIFT_CFG: dict | None = None
 
 
 def _drift_cfg() -> dict:
-    """Return the merged [drift] config (defaults + user overrides), cached."""
+    """Return the merged [drift] config, cached."""
     global _DRIFT_CFG
     if _DRIFT_CFG is None:
-        try:
-            from marrow import config
-            _DRIFT_CFG = dict(config.load().get("drift", {}))
-        except Exception:
-            _DRIFT_CFG = {}
+        from marrow import config
+        _DRIFT_CFG = dict(config.load()["drift"])
     return _DRIFT_CFG
 
 
@@ -52,18 +49,15 @@ def _reset_drift_cfg() -> None:
 
 
 def _cfg_exclude_dirs() -> set[str]:
-    return EXCLUDE_DIRS_SCAN | set(_drift_cfg().get("exclude_dirs", []) or [])
+    return EXCLUDE_DIRS_SCAN | set(_drift_cfg()["exclude_dirs"])
 
 
 def _cfg_name_parts() -> tuple[str, ...]:
-    return tuple(_drift_cfg().get("exclude_name_parts", []) or [])
+    return tuple(_drift_cfg()["exclude_name_parts"])
 
 
 def _cfg_ref_cap() -> int:
-    try:
-        return int(_drift_cfg().get("ref_cap", 200))
-    except (TypeError, ValueError):
-        return 200
+    return int(_drift_cfg()["ref_cap"])
 
 
 def _is_artifact_file(name: str) -> bool:

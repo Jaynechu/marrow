@@ -42,8 +42,8 @@ from . import config
 # ── gates ─────────────────────────────────────────────────────────────────────
 
 def enabled() -> bool:
-    """Master switch: [cortex].enabled in config (default false when absent)."""
-    return bool(config.load().get("cortex", {}).get("enabled", False))
+    """Master switch: [cortex].enabled in config."""
+    return bool(config.load()["cortex"]["enabled"])
 
 
 def is_cortex_session(transcript_path: str | None = None) -> bool:
@@ -91,9 +91,9 @@ def _cortex_paths() -> tuple[str, str]:
     """(venv_python, repo_root) from marrow config [cortex]; either empty =
     not configured. Both drive the cortex subprocess; repo_root is the cwd so
     `python -m cortex.X` resolves the package regardless of the caller's cwd."""
-    c = config.load().get("cortex", {})
-    return (str(c.get("venv_python") or "").strip(),
-            str(c.get("repo_root") or "").strip())
+    c = config.load()["cortex"]
+    return (str(c["venv_python"] or "").strip(),
+            str(c["repo_root"] or "").strip())
 
 
 def _run_cortex_module(module: str, extra_args: list[str] | None = None,
@@ -269,19 +269,12 @@ def lie_down(next_wake_min: float, rotate: bool = False,
     return out
 
 
-_DEFAULT_TRANSFER_TIMEOUT = 240.0
-
-
 def _transfer_timeout() -> float:
     """[cortex].transfer_timeout_sec — ceiling for the whole duty transition
     subprocess. Must stay above cortex's own wake ceiling (an unheard bell on a
     live cli window costs [wake].ear_timeout_sec twice, bell + retype ladder),
     or a normal-but-slow handover is killed mid-wake."""
-    cx = config.load().get("cortex", {}) or {}
-    try:
-        return float(cx.get("transfer_timeout_sec") or _DEFAULT_TRANSFER_TIMEOUT)
-    except (TypeError, ValueError):
-        return _DEFAULT_TRANSFER_TIMEOUT
+    return float(config.load()["cortex"]["transfer_timeout_sec"])
 
 
 def transfer(rotate: bool = False) -> dict:
@@ -489,23 +482,20 @@ def _cortex_handoff_path():
     if not _cortex_shell_id():
         return None
     try:
-        cx = config.load().get("cortex", {}) or {}
-        home = (cx.get("home") or "~/.config/marrow/cortex")
-        return Path(home).expanduser() / (cx.get("handoff_file") or "handoff.md")
+        cx = config.load()["cortex"]
+        return Path(cx["home"]).expanduser() / cx["handoff_file"]
     except Exception:
         return None
 
 
 def _cortex_home() -> Path:
-    cx = config.load().get("cortex", {}) or {}
-    return Path(cx.get("home") or "~/.config/marrow/cortex").expanduser()
+    return Path(config.load()["cortex"]["home"]).expanduser()
 
 
-def _cortex_path(key: str, default_name: str) -> Path:
+def _cortex_path(key: str) -> Path:
     """Resolve a cortex-home file config value: absolute path used as-is,
     bare name resolved under <home>."""
-    cx = config.load().get("cortex", {}) or {}
-    raw = (cx.get(key) or default_name)
+    raw = config.load()["cortex"][key]
     p = Path(raw).expanduser()
     return p if p.is_absolute() else _cortex_home() / raw
 
@@ -563,24 +553,18 @@ def _render_note_fresh(transcript_path: str | None,
 
 def wake_bell_template(cfg: dict | None = None) -> str:
     """Template of the bell TYPED into a live resident cortex window."""
-    cx = (cfg or config.load()).get("cortex", {}) or {}
-    return str(cx.get("wake_bell_template") or "⏰ {hm}")
+    return str((cfg or config.load())["cortex"]["wake_bell_template"])
 
 
 def spawn_opener_template(cfg: dict | None = None) -> str:
     """Template of the first prompt baked into a FRESHLY SPAWNED cortex window
     (cortex [wake].spawn_opener_template). A distinct shape from the resident
     bell, so the receipt-less shape fallback must accept both."""
-    cx = (cfg or config.load()).get("cortex", {}) or {}
-    return str(cx.get("spawn_opener_template") or "☀️ {hm}")
+    return str((cfg or config.load())["cortex"]["spawn_opener_template"])
 
 
 def _receipt_ttl_sec(cfg: dict | None = None) -> float:
-    cx = (cfg or config.load()).get("cortex", {}) or {}
-    try:
-        return float(cx.get("receipt_ttl_min", 15)) * 60.0
-    except (TypeError, ValueError):
-        return 15 * 60.0
+    return float((cfg or config.load())["cortex"]["receipt_ttl_min"]) * 60.0
 
 
 def _load_wake_receipt() -> dict | None:
@@ -742,7 +726,7 @@ def wakeup_note_text(transcript_path: str | None = None,
     if fresh:
         return fresh
     try:
-        raw = _cortex_path("wakeup_note_file", "wakeup_note.md").read_text(
+        raw = _cortex_path("wakeup_note_file").read_text(
             encoding="utf-8")
     except OSError:
         return None
@@ -784,7 +768,7 @@ def free_round_note_text() -> str | None:
     receipt_ttl_min: a payload whose marker turn never arrived (window died
     between staging and the prompt landing) is dropped instead of surfacing on
     an unrelated later round. None when absent/empty/stale."""
-    p = _cortex_path("free_round_note_file", "free_round_note.md")
+    p = _cortex_path("free_round_note_file")
     try:
         text = p.read_text(encoding="utf-8").strip()
         fresh = (datetime.now().timestamp() - p.stat().st_mtime) <= _receipt_ttl_sec()
@@ -801,8 +785,7 @@ def tuck_in_marker() -> str:
     """Marker inside the free-round line the cortex watchdog appends to
     wake_signal.log (surfaces down the ear channel). A prompt carrying it is a
     machine line, not a real user message — excluded from the user-wake reset."""
-    cx = config.load().get("cortex", {}) or {}
-    return str(cx.get("tuck_in_marker") or "[NEW ROUND]").strip()
+    return str(config.load()["cortex"]["tuck_in_marker"]).strip()
 
 
 # ── Covert machine-marker bodies (FUSE / CTL). Cortex writes only the marker line
@@ -887,14 +870,11 @@ def is_compact_injection(prompt: str) -> bool:
     banner text stays customisable ([cortex].compact_markers)."""
     if not prompt:
         return False
-    cx = config.load().get("cortex", {}) or {}
-    markers = cx.get("compact_markers") or []
+    cx = config.load()["cortex"]
+    markers = cx["compact_markers"]
     if not markers:
         return False
-    try:
-        head_len = int(cx.get("compact_marker_head_chars") or 200)
-    except (TypeError, ValueError):
-        head_len = 200
+    head_len = int(cx["compact_marker_head_chars"])
     head = prompt.lstrip()[:head_len]
     return any(str(m) in head for m in markers if m)
 
@@ -920,8 +900,8 @@ def machine_markers() -> tuple[str, ...]:
     """Line-start machine-marker family ([cortex].machine_markers) — the wake
     bell, free-round, fuse, ctl and ⚙️ [CMD ct-*] slash-command bodies.
     Shared by the user-wake reset (below) and marrow.transcript ingestion."""
-    cx = config.load().get("cortex", {}) or {}
-    return tuple(str(m) for m in (cx.get("machine_markers") or []) if str(m))
+    markers = config.load()["cortex"]["machine_markers"]
+    return tuple(str(m) for m in markers if str(m))
 
 
 def _line_starts_with(prompt: str, marker: str) -> bool:
@@ -998,7 +978,7 @@ def is_machine_line(prompt: str) -> bool:
 # with the SAME flock + atomic-replace protocol as cortex.wake_state. ──────────
 
 def _cortex_wake_state_path() -> Path:
-    return _cortex_path("wake_state_file", "state/wake_state.json")
+    return _cortex_path("wake_state_file")
 
 
 def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
@@ -1008,7 +988,7 @@ def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
     [cortex].wake_audit_log_file (default wake_audit.log under cortex home)."""
     try:
         from datetime import timezone as _tz
-        path = _cortex_path("wake_audit_log_file", "state/wake_audit.log")
+        path = _cortex_path("wake_audit_log_file")
         path.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(_tz.utc).isoformat()
         line = "\t".join((ts, action, reason.replace("\t", " "),
@@ -1020,7 +1000,7 @@ def _wake_audit(action: str, reason: str = "", detail: str = "") -> None:
 
 
 def _cortex_watchdog_pidfile() -> Path:
-    return _cortex_path("watchdog_pidfile", "state/watchdog.pid")
+    return _cortex_path("watchdog_pidfile")
 
 
 class WakeStateLockTimeout(RuntimeError):
@@ -1553,11 +1533,11 @@ def _cortex_page_turn(p: Path, old_text: str) -> None:
     raises one alert (deduped, so a persistent failure updates the same row
     instead of flooding new ones) since a silent retry-forever would
     otherwise go unnoticed."""
-    cx = config.load().get("cortex", {}) or {}
-    home_p = Path(cx.get("home") or "~/.config/marrow/cortex").expanduser()
-    archive_dir = home_p / (cx.get("handoff_archive_dir") or "handoff_archive")
-    template_p = home_p / (cx.get("handoff_template_file") or "handoff_template.md")
-    carry_n = int(cx.get("handoff_carry_lines", 10) or 0)
+    cx = config.load()["cortex"]
+    home_p = Path(cx["home"]).expanduser()
+    archive_dir = home_p / cx["handoff_archive_dir"]
+    template_p = home_p / cx["handoff_template_file"]
+    carry_n = int(cx["handoff_carry_lines"] or 0)
     todo_h, act_h, _carry_h = _handoff_headings()
     try:
         template_text = template_p.read_text(encoding="utf-8")
@@ -1635,8 +1615,7 @@ def _cortex_handoff_page_turn_if_stale() -> None:
             return
         if not text.strip():
             return
-        cx = config.load().get("cortex", {}) or {}
-        max_lines = int(cx.get("handoff_max_lines", 150) or 0)
+        max_lines = int(config.load()["cortex"]["handoff_max_lines"] or 0)
         if max_lines > 0 and len(text.splitlines()) > max_lines:
             _cortex_page_turn(p, text)
 
@@ -1653,8 +1632,7 @@ _SHOW_TEXT = (
 def _show_tokens() -> int:
     """[cortex_rotate].show_tokens — the window-occupancy threshold shared by the
     UserPromptSubmit 亮牌 and the lie_down rotate hint. <= 0 = both inert."""
-    cr = config.load().get("cortex_rotate", {}) or {}
-    return int(cr.get("show_tokens", 150_000) or 0)
+    return int(config.load()["cortex_rotate"]["show_tokens"] or 0)
 
 
 def _cortex_show_context(tpath: str, prompt: str | None) -> str:
