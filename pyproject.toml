@@ -18,6 +18,7 @@ mw = "marrow.cli:main"
 markers = [
     "manual: only when PYTEST_RUN_MANUAL=1",
     "live_embedd: opt out of the autouse embedd-service kill switch",
+    "live_cortex_cfg: opt out of the autouse cortex-config stub loader",
 ]
 pythonpath = ["."]
 
