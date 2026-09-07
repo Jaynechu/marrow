@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from marrow import config, cortex_bridge, daemon, storage
+from marrow import config, cortex_bridge, cortex_cfg, daemon, storage
 
 
 @pytest.fixture()
@@ -360,13 +360,17 @@ def test_shell_state_path_defaults_to_data_dir_and_env_shell(monkeypatch):
 
 # ── T9: lie_down routing for a non-cli shell ──────────────────────────────────
 
-def _tg_lie_down_env(monkeypatch, tmp_path, sock="", wake=None):
-    """tg-shell window with its own state dir; cortex.toml supplies the bands."""
-    (tmp_path / "cortex.toml").write_text(
-        wake or "[wake]\nnext_wake_low_max = 55\nnext_wake_high_min = 180\n"
-                "next_wake_max = 360\n")
-    monkeypatch.setattr(cortex_bridge, "_cortex_toml_path",
-                        lambda: tmp_path / "cortex.toml")
+def _cortex_bands(monkeypatch, low_max=55, high_min=180, day_max=360):
+    """Serve the wake bands from cortex's own resolved config. The cortex CLI is
+    never spawned — only the loader is stubbed."""
+    monkeypatch.setattr(cortex_cfg, "load", lambda: {
+        "wake": {"next_wake_low_max": low_max, "next_wake_high_min": high_min,
+                 "next_wake_max": day_max}})
+
+
+def _tg_lie_down_env(monkeypatch, tmp_path, sock="", bands=None):
+    """tg-shell window with its own state dir; cortex supplies the bands."""
+    _cortex_bands(monkeypatch, *(bands or ()))
     _force_enabled(monkeypatch, True,
                    extra={"shells": ["cli", "tg"], "shell_socket": sock,
                           "shell_state_dir": str(tmp_path / "shells")})
@@ -444,9 +448,7 @@ def test_tg_lie_down_human_override_pierces_the_bands(monkeypatch, tmp_path):
 
 def test_tg_lie_down_band_edges_come_from_cortex_config(monkeypatch, tmp_path):
     """Band edges are config, not constants: a custom [wake] moves the snap."""
-    _tg_lie_down_env(monkeypatch, tmp_path,
-                     wake="[wake]\nnext_wake_low_max = 20\n"
-                          "next_wake_high_min = 100\nnext_wake_max = 200\n")
+    _tg_lie_down_env(monkeypatch, tmp_path, bands=(20, 100, 200))
     monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
     assert 19 < _tg_booked_minutes(55) <= 20
     assert 99 < _tg_booked_minutes(70) <= 100
@@ -582,11 +584,9 @@ def test_cli_lie_down_path_untouched_by_the_shell_route(env, monkeypatch, tmp_pa
 
 
 def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_path):
-    """C9: lie_down description renders the two legal bands from cortex.toml at
-    register(), never hardcoded."""
-    (tmp_path / "cortex.toml").write_text(
-        "[wake]\nnext_wake_low_max = 20\nnext_wake_high_min = 100\n"
-        "next_wake_max = 200\n")
+    """C9: lie_down description renders the two legal bands from cortex's own
+    config at register(), never hardcoded."""
+    _cortex_bands(monkeypatch, 20, 100, 200)
     monkeypatch.setattr(cortex_bridge.config, "db_path",
                         lambda: str(tmp_path / "marrow.db"))
     _force_enabled(monkeypatch, True)
@@ -599,18 +599,21 @@ def test_tool_descriptions_render_clamp_numbers_from_config(monkeypatch, tmp_pat
     assert "16-55" not in ld and "N=0-200" not in ld
 
 
-def test_tool_descriptions_fall_back_to_defaults(monkeypatch, tmp_path):
-    """No cortex.toml -> tolerant defaults for both bands."""
+def test_unreadable_cortex_config_raises_instead_of_inventing_bands(
+        monkeypatch, tmp_path):
+    """Marrow stores no copy of the bands, so an unreadable cortex config is a
+    loud error at registration — never a made-up range in the tool description."""
+    def _boom():
+        raise cortex_cfg.CortexConfigError("cortex is disabled")
+
+    monkeypatch.setattr(cortex_cfg, "load", _boom)
     monkeypatch.setattr(cortex_bridge.config, "db_path",
-                        lambda: str(tmp_path / "marrow.db"))  # no cortex.toml here
+                        lambda: str(tmp_path / "marrow.db"))
     _force_enabled(monkeypatch, True)
     m, mt = _fresh_mcp()
     monkeypatch.setattr(cortex_bridge, "_CORTEX", True)
-    cortex_bridge.register(mt)
-    ld = m._tool_manager._tools["lie_down"].description
-    assert ld == ('lie_down(next_wake_min=N) [N=0-55 ∪ 180-360]; '
-                  'rotate to next window - lie_down(next_wake_min=N, '
-                  'rotate=True) [N=0-55 ∪ 180-360, 0=rotate now]')
+    with pytest.raises(cortex_cfg.CortexConfigError):
+        cortex_bridge.register(mt)
 
 
 def test_switch_off_show_context_gated_empty(monkeypatch, tmp_path):
@@ -685,8 +688,7 @@ def test_tg_lie_down_writes_one_wake_log_row(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "db_path", lambda: db)
     _force_enabled(monkeypatch, True,
                    extra={"shell_state_dir": str(tmp_path / "shells")})
-    monkeypatch.setattr(cortex_bridge, "_cortex_toml_section",
-                        lambda *a, **k: 240)
+    _cortex_bands(monkeypatch)
     monkeypatch.setattr(cortex_bridge, "_shell_kick", lambda shell: True)
     monkeypatch.setenv("MARROW_CORTEX", "tg")
 

@@ -20,7 +20,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cortex_bridge, storage, transcript
+from . import config, cortex_bridge, cortex_cfg, storage, transcript
 
 # No channel is excluded by default: every consumer sees the ONE global latest
 # window and drops only its own session_id. cortex.toml [note].shell_replay_exclude
@@ -175,10 +175,14 @@ def render(rows, header: str, max_turns: int, per_chars: int,
 
 
 def shell_exclude_channels(shell: str | None) -> list[str]:
-    """The channels a cortex `shell` drops from replay — empty unless cortex.toml
-    [note].shell_replay_exclude configures one. Unmapped or unusable shell id ->
-    the unqualified exclude list."""
-    mapping = cortex_bridge._cortex_toml_section("note", "shell_replay_exclude", None)
+    """The channels a cortex `shell` drops from replay — empty unless cortex
+    [note].shell_replay_exclude configures one (optional key, absent from the
+    cortex defaults table). Unmapped or unusable shell id -> the unqualified
+    exclude list."""
+    try:
+        mapping = cortex_cfg.get("note", "shell_replay_exclude", None)
+    except cortex_cfg.CortexConfigError:
+        mapping = None
     if not isinstance(mapping, dict):
         mapping = _DEFAULT_SHELL_EXCLUDE
     channels = mapping.get(str(shell))

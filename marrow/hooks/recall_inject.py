@@ -163,8 +163,11 @@ def user_prompt_submit() -> int:
     # Cortex wake-turn injections (cortex window only). The cortex daemon types
     # the wake bell / machine marker straight into the window as a user turn;
     # each shape is handled here and stops before recall, while ordinary chat
-    # turns fall through untouched. Text + paths are config-routed.
-    if cortex_bridge.is_cortex_session(tpath):
+    # turns fall through untouched. Text + paths are config-routed, and the
+    # cortex-owned ones are read from cortex, so the master switch gates the
+    # whole branch: switch cortex off and a window still carrying the env
+    # marker runs plain.
+    if cortex_bridge.is_cortex_session(tpath) and cortex_bridge.enabled():
         _prompt = (inp.get("prompt") or "").strip() if isinstance(inp, dict) else ""
         # Free-round tuck-in ([NEW ROUND]): only the short marker line is typed
         # into the window; its diff-mode note (and any ct notes claimed for that

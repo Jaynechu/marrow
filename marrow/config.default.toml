@@ -440,27 +440,21 @@ wakeup_note_file = "wakeup_note.md"
 # deletes the file. Must match cortex [paths].free_round_note_file.
 free_round_note_file = "free_round_note.md"
 wake_signal_log_file = "state/wake_signal.log"
-# Visible wake lines = human text only. The producer writes the exact rendered
-# text + the template it used into the wake_state receipt at send time; the hook
-# exact-matches the on-screen line against that receipt. {hm} = local HH:MM. The
-# static prefix (text before {hm}) is the shape the consumer falls back to when
-# the receipt is missing/unreadable (fail-open) — BOTH templates are candidates.
-#   spawn_opener_template = first prompt of a freshly spawned cortex window
-#     (must match cortex [wake].spawn_opener_template).
-#   wake_bell_template = line typed into a live resident window
-#     (must match cortex [wake].wake_bell_template).
-spawn_opener_template = "[☀️ {hm}]"
-wake_bell_template = "⏰ {hm}"
 # Receipt time-to-live (minutes): a pending receipt older than this is ignored
-# (stale hygiene). Must match cortex [wake].receipt_ttl_min.
+# (stale hygiene). Marrow-owned — cortex writes the receipt, marrow decides how
+# long it trusts one.
 receipt_ttl_min = 15
 # The wake-ear guidance lines (fresh-window arm, mid-window rearm, resumed-window
 # re-arm, retired-window read-only) are mechanism-defining copy and live in code.
 # Each renders {signal_log} with the resolved absolute path at inject time.
-# Marker in the free-round line the cortex watchdog appends to wake_signal.log
-# (arrives down the ear channel). A cortex-window prompt carrying it is a machine
-# line, excluded from the user-wake reset — must match cortex tuck_in_text.
-tuck_in_marker = "[NEW ROUND]"
+# Cortex-owned, read live from cortex (marrow.cortex_cfg), never copied here:
+#   [wake].spawn_opener_template / [wake].wake_bell_template — the visible wake
+#     lines, matched against the wake_state receipt.
+#   [wake].tuck_in_text — free-round marker, excluded from the user-wake reset.
+#   [wake].next_wake_* — lie_down clamp bands.
+#   [paths].wake_state_file / [paths].watchdog_pidfile — the shared wake ledger
+#     and watchdog pid.
+#   [daemon].socket_path / shell / kick_timeout_sec — the daemon kick socket.
 # Markers that identify an auto-compact continuation injection. Claude Code
 # replays the archived transcript as a user-role turn; without this it is
 # misread as a real user message and silently kills the pending wake alarm.
@@ -482,11 +476,9 @@ machine_markers = ["[NEW ROUND]", "[FUSE]", "[CTL]", "[CMD"]
 # awake flip). Bare name resolves under cortex home. Never silently destroy a
 # scheduled alarm again.
 wake_audit_log_file = "state/wake_audit.log"
-# Wake ledger (session_id / next_wake_at / sentinel) shared with cortex, and the
-# watchdog pidfile. Bare name resolves under cortex home; absolute used as-is.
-wake_state_file = "state/wake_state.json"
-watchdog_pidfile = "state/watchdog.pid"
 # HID idle (minutes) above which presence renders Inactive instead of Active.
+# Marrow-owned: presence works with cortex off, and cortex reads THIS key as
+# the live source for its own note (cortex.config.away_idle_min).
 away_idle_min = 30
 
 # Circuit breaker ("main switch"): ONE persistent file that stops cortex
