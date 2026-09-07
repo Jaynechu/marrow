@@ -18,6 +18,8 @@ cal_exclude = []
 # Regex against event title: if set and it matches, rescue an event that
 # would otherwise be dropped by cal_exclude. Invalid regex = no rescue.
 cal_keep = ""
+# Trailing note appended to the rendered schedule block. Empty = no note.
+flag_note = "Background info ONLY — never proactively mention upcoming events or overdue tasks."
 
 [paths]
 # Empty = use defaults under ~/.config/marrow/
@@ -49,11 +51,19 @@ dir_tree_md = "~/.config/marrow/dir_tree.md"
 # Watcher/pipeline logs + runtime state.
 logs_dir = "~/.config/marrow/logs"
 state_dir = "~/.config/marrow/state"
+# Sticker library folder. Empty = <ny_root>/stickers, else <DATA_DIR>/stickers.
+stickers_dir = ""
 
 [backup]
 # Daily DB snapshots to retain each side (local + offsite). Conservative
 # flat count; calendar/GFS rotation is DESIGN-Pending.
 keep = 14
+
+[sync]
+# Watcher md<->db sync loop. tick_s = md/db mtime comparison cadence;
+# atlas_sweep_tick_s = how often atlas_sweep_fs rescans the file tree.
+tick_s = 5.0
+atlas_sweep_tick_s = 60.0
 
 [drift]
 # Reference-matcher tuning for drift_sweep. All lists deep-merge onto the
@@ -89,6 +99,8 @@ kind = "claude_cli"
 # (not the 6/15 credit pool). "p" = legacy headless fallback (-p).
 mode = "stream"
 timeout_s = 240
+# --effort passed to the claude CLI (low/medium/high/xhigh). Empty = CLI default.
+effort = ""
 
 [tiers]
 # Intent -> model. Passed to `claude -p --model`; CC resolves aliases.
@@ -173,6 +185,8 @@ imp_boost = [0.0, 0.0, 0.0, 0.02, 0.035, 0.05]
 limit = 5
 # Final injected-block char cap (hook backstop).
 budget_chars = 800
+# Char cap for the timeline lane inside the same injected block.
+timelane_budget = 400
 # Per-rank content caps [rank1, rank2, rank3, rank4, rank5].
 # rank1 gets ±1 context turns; ranks 2-3 snippet only; ranks 4-5 label only.
 # Anchor rows (milestones/memes/entities) also truncated at their rank cap.
@@ -263,6 +277,8 @@ care_text = """
 """
 
 [kickout]
+# false = no kickout injection at all, regardless of window or text.
+enabled = false
 # B8 anti-late-night deterministic nudge (UserPromptSubmit). Times are local
 # ([core].timezone), HH:MM 24h. cli_* windows apply when MARROW_CHANNEL=cli
 # (default channel); im_* applies to wx/tg. All skipped when MARROW_CORTEX=1.
@@ -466,6 +482,12 @@ machine_markers = ["[NEW ROUND]", "[FUSE]", "[CTL]", "[CMD"]
 # awake flip). Bare name resolves under cortex home. Never silently destroy a
 # scheduled alarm again.
 wake_audit_log_file = "state/wake_audit.log"
+# Wake ledger (session_id / next_wake_at / sentinel) shared with cortex, and the
+# watchdog pidfile. Bare name resolves under cortex home; absolute used as-is.
+wake_state_file = "state/wake_state.json"
+watchdog_pidfile = "state/watchdog.pid"
+# HID idle (minutes) above which presence renders Inactive instead of Active.
+away_idle_min = 30
 
 # Circuit breaker ("main switch"): ONE persistent file that stops cortex
 # AUTONOMOUS activity (auto wake / spawn / fed round) for the shells it covers.
