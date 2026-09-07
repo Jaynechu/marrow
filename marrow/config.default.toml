@@ -98,9 +98,9 @@ kind = "claude_cli"
 # stream = no-`-p` stream-json, rides the OAuth 5h subscription window
 # (not the 6/15 credit pool). "p" = legacy headless fallback (-p).
 mode = "stream"
-timeout_s = 240
+timeout_s = 600
 # --effort passed to the claude CLI (low/medium/high/xhigh). Empty = CLI default.
-effort = ""
+effort = "high"
 
 [tiers]
 # Intent -> model. Passed to `claude -p --model`; CC resolves aliases.
@@ -263,7 +263,7 @@ birth_year = 0
 # `top` = content (numbered in the `## Content` list). `bottom` = utility
 # (unnumbered). `hidden` = built but not listed in `## Content`.
 top = ["profile", "milestone", "memes", "stickers", "wallet"]
-bottom = ["study", "projects", "cheatsheet"]
+bottom = ["study", "projects", "cheatsheet", "atlas"]
 hidden = []
 
 [transcript]
@@ -344,10 +344,10 @@ enabled = true
 
 [sensors]
 # OwnTracks-compatible HTTP receiver: any app POSTing the same JSON to /pub
-# works. Off by default — no listener, no state files, no rendered location.
+# works. false = no listener, no state files, no rendered location.
 # auth_user empty = no HTTP Basic check. silent_alert_hours = raise a
 # sensor_silent alert when no POST has arrived for that many hours.
-enabled = false
+enabled = true
 port = 8043
 bind = "0.0.0.0"
 auth_user = ""
@@ -367,11 +367,11 @@ channels = ["cli", "tg", "wx"]
 
 [cortex]
 # Master switch: cortex is an optional autonomous-wake layer living in a separate repo; false = clean marrow, no cortex organs.
-enabled = false
+enabled = true
 # Per-shell switch. A shell id (MARROW_CORTEX value; legacy "1" = cli) absent
 # from this list runs plain: no cortex tools, no cortex hook branches, no
 # heartbeat. lie_down serves every listed shell, say the cli shell only.
-shells = ["cli"]
+shells = ["cli", "tg"]
 # Per-shell state files (<dir>/<shell>.json, keys session_id / next_wake_at /
 # last_note_ts), written by the shell's host. flock + atomic replace. The cli
 # shell keeps its own wake_state.json. Empty = <DATA_DIR>/state/shells.
@@ -387,9 +387,9 @@ home = "~/.config/marrow/cortex"
 # Model tier (see [tiers]) for the cortex runner.
 tier = "top"
 # Explicit model id override, bypasses tier mapping. Empty = use tier.
-model = ""
+model = "claude-opus-4-6"
 # --effort passed to the cortex CLI (low/medium/high/xhigh/max). Empty = CLI default.
-effort = ""
+effort = "high"
 # Cortex repo + its venv — power the cortex-only lie_down / say MCP tools
 # (registered only when the daemon runs under MARROW_CORTEX). The subprocess
 # runs from repo_root so `python -m cortex.X` resolves from any cwd. Both empty
