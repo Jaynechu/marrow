@@ -9,7 +9,8 @@ from marrow.llm import LLMClient, LLMError
 CFG = {
     "llm": {
         "default": "claude_cli",
-        "claude_cli": {"kind": "claude_cli", "mode": "json", "timeout_s": 5},
+        "claude_cli": {"kind": "claude_cli", "mode": "json", "timeout_s": 5,
+                       "effort": ""},
     },
     "tiers": {"cheap": "claude-haiku-4-5-20251001"},
 }
@@ -115,7 +116,7 @@ def test_p_timeout_kills_process_group(tmp_path, monkeypatch):
     monkeypatch.setattr("marrow.llm._claude_bin", lambda: bin_)
     c = LLMClient(CFG)
     with pytest.raises(LLMError, match="timeout"):
-        c._run_claude_p({"timeout_s": 1}, "m", "hi")
+        c._run_claude_p({"timeout_s": 1, "effort": ""}, "m", "hi")
     gc = _grandchild_pid(pidfile)
     assert _wait_dead(gc), f"orphan grandchild {gc} survived -p timeout"
 
@@ -182,7 +183,7 @@ def test_stream_timeout_kills_process_group(tmp_path, monkeypatch):
     monkeypatch.setattr("marrow.llm._claude_bin", lambda: bin_)
     c = LLMClient(CFG)
     with pytest.raises(LLMError):
-        c._run_claude_stream({"timeout_s": 1}, "m", "hi")
+        c._run_claude_stream({"timeout_s": 1, "effort": ""}, "m", "hi")
     gc = _grandchild_pid(pidfile)
     assert _wait_dead(gc), f"orphan grandchild {gc} survived stream timeout"
 
@@ -445,7 +446,7 @@ def test_isolation_flags_still_present_on_default_stream(monkeypatch):
         return _stream_out("ok")
 
     monkeypatch.setattr(c, "_stream_subprocess", fake_stream)
-    c._run_claude_stream({"timeout_s": 5, "mode": "stream"}, "m", "hi")
+    c._run_claude_stream({"timeout_s": 5, "mode": "stream", "effort": ""}, "m", "hi")
     assert "--setting-sources" in captured["cmd"]
     assert "--strict-mcp-config" in captured["cmd"]
     assert captured["env"]["MARROW_PIPELINE"] == "1"

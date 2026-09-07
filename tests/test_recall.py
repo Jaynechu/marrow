@@ -656,7 +656,10 @@ def test_recall_with_config_reads_rcfg(db, monkeypatch):
     fake_cfg = {"recall": {
         "vector": True, "limit": 5, "budget_chars": 2000,
         "w_vec": 0.55, "w_bm25": 0.30, "w_recency": 0.15,
-        "w_affect": 0.10, "min_score": 0.1,
+        "w_affect": 0.10, "min_score": 0.1, "stopwords": [],
+        "imp_boost": [0.0, 0.0, 0.0, 0.02, 0.035, 0.05],
+        "buckets": {"project": [], "daily": [], "study": [],
+                    "same_boost": 0.05, "diff_penalty": 0.00},
     }}
     monkeypatch.setattr(cfg_mod, "load", lambda: fake_cfg)
     mock_emb = _make_mock_emb(vec)
