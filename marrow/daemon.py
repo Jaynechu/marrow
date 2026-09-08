@@ -272,7 +272,7 @@ def _tl_clear(event_id: int | None, sid: str | None,
 
 
 def tl(
-    action: Annotated[str, Field(description="add / update / clear / query. update: only provided fields change. clear: 1 row = no DB backup, deleted line returned; 2+ rows = DB backup + deleted lines capped at 20.")],
+    action: Annotated[str, Field(description="add / update / clear / query. update: only provided fields change. clear: deleted lines returned, capped at 20.")],
     timerange: Annotated[str | None, Field(description="'HH:mm-HH:mm'.")] = None,
     body: Annotated[str | None, Field(description="Plain text <=30 chars. Real-world task/event + shared activities, vivid not work-log — life details in, tech details out (meals, chat topics, plays, tiny/silly/funny moments). 以assistant第一人称描述（我），user=“你”, never third person.")] = None,
     user_word: Annotated[str | None, Field(description="User's mood right now; 1-4 chars. e.g. 烦/心虚/紧张激动/好可爱. Single side fine. On update, providing either user_word or assistant_word replaces the whole label.")] = None,
@@ -1057,7 +1057,7 @@ def event_clear(
     last: Annotated[int, Field(ge=0, description="Delete the N most recent events; mutually exclusive with before/after/sid. 0 = unused. With no before/after/last/sid set, ALL events are purged.")] = 0,
     sid: Annotated[str, Field(description="Delete events of this session_id (prefix match, e.g. '9039'). Combinable with before/after; mutually exclusive with last. Empty = no session filter.")] = "",
 ) -> dict:
-    """Delete raw events (recall corpus) incl. FTS+vectors+tombstones. DB backup first.
+    """Delete raw events (recall corpus) incl. FTS+vectors+tombstones.
     Full clear auto-pauses ingest (resume via ingest tool)."""
     return _do_event_clear(before or None, after or None, last or None, sid or None)
 
