@@ -1,7 +1,6 @@
 """Tests for reconcile_inserter — md hand-edit → DB write-back."""
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -164,7 +163,7 @@ def test_profile_md_edit_writes_back_to_db(tmp_path):
     assert row["fact"] == "doctor"
 
 
-def test_profile_md_delete_soft_deletes(tmp_path):
+def test_profile_md_delete_hard_deletes(tmp_path):
     db_path = _db(tmp_path)
     conn = _conn(db_path)
     with conn:
@@ -184,12 +183,51 @@ def test_profile_md_delete_soft_deletes(tmp_path):
 
     rpt = reconcile_profile(conn, md)
     row = conn.execute(
-        "SELECT superseded_by FROM entities WHERE id=?", (id2,)
+        "SELECT id FROM entities WHERE id=?", (id2,)
     ).fetchone()
     conn.close()
 
     assert rpt.deleted == 1
-    assert row["superseded_by"] == id2  # self-ref sentinel
+    assert row is None
+
+
+def test_profile_hand_removed_line_deletes_entity_row(tmp_path):
+    db_path = _db(tmp_path)
+    conn = _conn(db_path)
+    spec = subpage_specs.build_profile_spec(str(tmp_path))
+    with conn:
+        keep = conn.execute(
+            "INSERT INTO entities(kind,name,fact)"
+            " VALUES('person','Alice','nurse')"
+        ).lastrowid
+        drop = conn.execute(
+            "INSERT INTO entities(kind,name,fact)"
+            " VALUES('place','Clayton','home')"
+        ).lastrowid
+
+    md = tmp_path / "profile.md"
+    lines = [
+        spec.render_row({"id": keep, "kind": "person", "name": "Alice",
+                         "fact": "nurse"}),
+        spec.render_row({"id": drop, "kind": "place", "name": "Clayton",
+                         "fact": "home"}),
+    ]
+    md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    reconcile_profile(conn, md)
+
+    md.write_text(lines[0] + "\n", encoding="utf-8")
+    rpt = reconcile_profile(conn, md)
+
+    rows = conn.execute("SELECT id FROM entities").fetchall()
+    action = conn.execute(
+        "SELECT action FROM audit_log WHERE target_table='entities'"
+        " AND target_id=? ORDER BY id DESC LIMIT 1", (str(drop),)
+    ).fetchone()
+    conn.close()
+
+    assert rpt.deleted == 1
+    assert [r["id"] for r in rows] == [keep]
+    assert action["action"] == "delete"
 
 
 def test_profile_parse_row_handles_optional_fact(tmp_path):

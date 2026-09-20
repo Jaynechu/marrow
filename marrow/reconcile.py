@@ -3,7 +3,7 @@
 Scope today:
 - milestone subpage (reconcile_milestones)
 - memes subpage (reconcile_memes) — anchor-scan delete
-- profile subpage (reconcile_profile) — anchor-scan soft-delete via superseded_by
+- profile subpage (reconcile_profile) — anchor-scan delete
 - monitor alerts block (reconcile_alerts) — md-delete = resolve
 - daybrief timeline block (reconcile_timeline) — life_lines per-line anchor.
 

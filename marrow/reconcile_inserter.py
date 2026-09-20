@@ -126,7 +126,6 @@ def reconcile_inserter_sync(
     table: str,
     *,
     editable_cols: list[str],
-    soft_delete: bool = False,
     block_id_col: str = "id",
     bare_cols: tuple[str, str] | None = None,
 ) -> ReconcileReport:
@@ -134,7 +133,7 @@ def reconcile_inserter_sync(
 
     Pass 1 (UPDATE): for each `<!-- id:N -->` line, call spec.parse_row;
     compare parsed editable_cols against DB row; UPDATE on diff.
-    Pass 2 (DELETE/soft-delete): DB ids absent from md → remove. Rows whose
+    Pass 2 (DELETE): DB ids absent from md → remove. Rows whose
     `updated_at` post-dates the md snapshot are spared — they were written
     after md was last rendered (e.g. daily.py insert in the same refresh
     pass) and absence from md is expected, not a user deletion. Mirrors the
@@ -331,22 +330,13 @@ def reconcile_inserter_sync(
         gate_params = [md_mtime_iso]
 
     try:
-        if soft_delete:
-            db_active = {
-                r[0] for r in conn.execute(
-                    f"SELECT {block_id_col} FROM {table}"
-                    f" WHERE superseded_by IS NULL" + gate_sql,
-                    gate_params,
-                ).fetchall()
-            }
-        else:
-            db_active = {
-                r[0] for r in conn.execute(
-                    f"SELECT {block_id_col} FROM {table}"
-                    + (f" WHERE 1=1{gate_sql}" if gate_sql else ""),
-                    gate_params,
-                ).fetchall()
-            }
+        db_active = {
+            r[0] for r in conn.execute(
+                f"SELECT {block_id_col} FROM {table}"
+                + (f" WHERE 1=1{gate_sql}" if gate_sql else ""),
+                gate_params,
+            ).fetchall()
+        }
     except sqlite3.Error:
         return rpt
 
@@ -356,20 +346,11 @@ def reconcile_inserter_sync(
 
     with conn:
         for rid in to_remove:
-            if soft_delete:
-                conn.execute(
-                    f"UPDATE {table} SET superseded_by=?"
-                    f" WHERE {block_id_col}=?",
-                    (rid, rid),
-                )
-                _audit(conn, table, str(rid), "soft_delete",
-                       "md-reconcile: removed from md")
-            else:
-                conn.execute(
-                    f"DELETE FROM {table} WHERE {block_id_col}=?", (rid,)
-                )
-                _audit(conn, table, str(rid), "delete",
-                       "md-reconcile: removed from md")
+            conn.execute(
+                f"DELETE FROM {table} WHERE {block_id_col}=?", (rid,)
+            )
+            _audit(conn, table, str(rid), "delete",
+                   "md-reconcile: removed from md")
             rpt.deleted += 1
 
     return rpt
@@ -657,7 +638,6 @@ def reconcile_memes(conn: sqlite3.Connection, md_path: Path) -> ReconcileReport:
         conn, spec, md_path, "memes",
         editable_cols=["type", "key", "value"],
         bare_cols=("key", "value"),
-        soft_delete=False,
     )
     _insert_memes(conn, spec, Path(md_path), rpt)
     return rpt
@@ -665,14 +645,13 @@ def reconcile_memes(conn: sqlite3.Connection, md_path: Path) -> ReconcileReport:
 
 def reconcile_profile(conn: sqlite3.Connection,
                       md_path: Path) -> ReconcileReport:
-    """INSERT unanchored rows; UPDATE editable fields; soft-delete absent rows."""
+    """INSERT unanchored rows; UPDATE editable fields; DELETE absent rows."""
     from . import subpage_specs
     spec = subpage_specs.build_profile_spec(str(Path(md_path).parent))
     rpt = reconcile_inserter_sync(
         conn, spec, md_path, "entities",
         editable_cols=["name", "kind", "fact"],
         bare_cols=("name", "fact"),
-        soft_delete=True,
     )
     _insert_profile(conn, spec, Path(md_path), rpt)
     return rpt
@@ -694,7 +673,6 @@ def reconcile_stickers(conn: sqlite3.Connection,
     rpt = reconcile_inserter_sync(
         conn, spec, md_path, "stickers",
         editable_cols=["desc"],
-        soft_delete=False,
     )
     if rpt.deleted:
         survivors = {r[0] for r in conn.execute(
@@ -713,5 +691,4 @@ def reconcile_wallet(conn: sqlite3.Connection,
     return reconcile_inserter_sync(
         conn, spec, md_path, "wallet",
         editable_cols=["summary"],
-        soft_delete=False,
     )
