@@ -521,15 +521,26 @@ def init_db(path: str | None = None) -> sqlite3.Connection:
                             " VALUES ('warn','embedding_dim_mismatch',?,?,'storage.py:init_db')",
                             (_fp, _msg))
             conn.execute(_vec_table(dim, lane))
-        # Cascade vec/meta cleanup on event deletion — separate trigger
-        # so it's created after vec tables exist (events_ad only handles FTS).
-        conn.execute("""
-            CREATE TRIGGER IF NOT EXISTS events_ad_vec
-            AFTER DELETE ON events BEGIN
-                DELETE FROM events_vec WHERE rowid = old.id;
-                DELETE FROM events_vec_meta WHERE rowid = old.id;
-            END
-        """)
+        # Cascade vec/meta cleanup on row deletion, one trigger per vec lane —
+        # created after the vec tables exist (the *_ad triggers only do FTS).
+        _vec_bases = tuple(
+            v.removesuffix("_vec") for v in ("events_vec",) + _VEC_LANES)
+        for _t in _vec_bases:
+            conn.execute(f"""
+                CREATE TRIGGER IF NOT EXISTS {_t}_ad_vec
+                AFTER DELETE ON {_t} BEGIN
+                    DELETE FROM {_t}_vec WHERE rowid = old.id;
+                    DELETE FROM {_t}_vec_meta WHERE rowid = old.id;
+                END
+            """)
+        # Orphan sweep: rows deleted before the trigger existed left vectors
+        # behind, and they eat top-k slots in every vec MATCH. Idempotent.
+        for _t in _vec_bases:
+            conn.execute(
+                f"DELETE FROM {_t}_vec WHERE rowid NOT IN (SELECT id FROM {_t})")
+            conn.execute(
+                f"DELETE FROM {_t}_vec_meta "
+                f"WHERE rowid NOT IN (SELECT id FROM {_t})")
         # Schema-evolution backfill: a column added after a db already
         # exists is not applied by CREATE IF NOT EXISTS. Idempotent —
         # duplicate-column ALTER is swallowed; add a row per new column.

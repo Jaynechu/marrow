@@ -1,4 +1,5 @@
 import sqlite3
+import struct
 
 import pytest
 
@@ -335,9 +336,13 @@ def test_vec_dim_migration_preserves_when_nonempty(tmp_path, monkeypatch):
     monkeypatch.setattr(st, "_vec_table", _patched_vec_table)
     _force_dim(monkeypatch, st, 384)
     conn = st.init_db(p)
+    eid = conn.execute(
+        "INSERT INTO events(session_id,timestamp,role,content)"
+        " VALUES('s','2026-05-17T00:00:00Z','user','vec dim probe')"
+    ).lastrowid
     conn.execute(
-        "INSERT INTO events_vec(rowid,embedding) VALUES(1,?)",
-        (b"\x00" * (384 * 4),))
+        "INSERT INTO events_vec(rowid,embedding) VALUES(?,?)",
+        (eid, b"\x00" * (384 * 4)))
     conn.commit()
     conn.close()
     monkeypatch.undo()
@@ -515,3 +520,91 @@ def test_v34_ct_first_tick_status_default_done(db):
         "SELECT status FROM ct_first_tick WHERE item='probe-item'"
     ).fetchone()
     assert row["status"] == "done"
+
+
+_VEC_BLOB = struct.pack("1024f", *([0.1] * 1024))
+
+
+def _ins_vec(conn, table, rowid):
+    conn.execute(
+        f"INSERT INTO {table}_vec(rowid, embedding) VALUES (?, ?)",
+        (rowid, _VEC_BLOB),
+    )
+    conn.execute(
+        f"INSERT INTO {table}_vec_meta(rowid, embedder_id, dim)"
+        " VALUES (?, 'bge-m3', 1024)",
+        (rowid,),
+    )
+
+
+def test_all_vec_lanes_have_delete_trigger(db):
+    names = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger'")}
+    for lane in ("events", "memes", "entities", "milestones", "tasks",
+                 "stickers"):
+        assert f"{lane}_ad_vec" in names
+
+
+def test_meme_delete_cascades_vec_and_meta(db):
+    mid = db.execute(
+        "INSERT INTO memes(type,key,value) VALUES('fact','k','v')"
+    ).lastrowid
+    _ins_vec(db, "memes", mid)
+    db.commit()
+    assert db.execute(
+        "SELECT count(*) FROM memes_vec WHERE rowid=?", (mid,)
+    ).fetchone()[0] == 1
+
+    db.execute("DELETE FROM memes WHERE id=?", (mid,))
+    db.commit()
+    assert db.execute(
+        "SELECT count(*) FROM memes_vec WHERE rowid=?", (mid,)
+    ).fetchone()[0] == 0
+    assert db.execute(
+        "SELECT count(*) FROM memes_vec_meta WHERE rowid=?", (mid,)
+    ).fetchone()[0] == 0
+
+
+def test_init_db_sweeps_preexisting_vec_orphans(tmp_path):
+    p = str(tmp_path / "t.db")
+    conn = storage.init_db(p)
+    conn.execute("DROP TRIGGER memes_ad_vec")
+    mid = conn.execute(
+        "INSERT INTO memes(type,key,value) VALUES('fact','k','v')"
+    ).lastrowid
+    _ins_vec(conn, "memes", mid)
+    _ins_vec(conn, "milestones", 4242)
+    conn.execute("DELETE FROM memes WHERE id=?", (mid,))
+    conn.commit()
+    assert conn.execute("SELECT count(*) FROM memes_vec").fetchone()[0] == 1
+    conn.close()
+
+    conn = storage.init_db(p)
+    try:
+        for lane in ("memes", "milestones"):
+            assert conn.execute(
+                f"SELECT count(*) FROM {lane}_vec").fetchone()[0] == 0
+            assert conn.execute(
+                f"SELECT count(*) FROM {lane}_vec_meta").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_init_db_sweep_keeps_live_vectors(tmp_path):
+    p = str(tmp_path / "t.db")
+    conn = storage.init_db(p)
+    mid = conn.execute(
+        "INSERT INTO memes(type,key,value) VALUES('fact','k','v')"
+    ).lastrowid
+    _ins_vec(conn, "memes", mid)
+    conn.commit()
+    conn.close()
+
+    conn = storage.init_db(p)
+    try:
+        assert conn.execute(
+            "SELECT count(*) FROM memes_vec").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT count(*) FROM memes_vec_meta").fetchone()[0] == 1
+    finally:
+        conn.close()
