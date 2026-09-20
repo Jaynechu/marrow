@@ -891,3 +891,58 @@ def test_write_pending_no_cap_under_limit(drift_env, monkeypatch):
     data = json.loads((env.pending_dir / f"{pid}.json").read_text())
     assert len(data["refs"]) == 3
     assert data["truncated"] is False
+
+
+# ---------------------------------------------------------------------------
+# I. Build-artefact / binary / minified noise
+# ---------------------------------------------------------------------------
+
+def test_find_refs_skips_build_dir(drift_env, monkeypatch):
+    """A `.build` (Swift PM) dir under root must NOT appear in find_refs results."""
+    env = drift_env
+    build_dir = env.root_a / ".build" / "plugins" / "cache"
+    build_dir.mkdir(parents=True)
+    (build_dir / "widget.py.swiftmodule").write_text(
+        "see src/widget.py here\n", encoding="utf-8")
+    live = env.root_a / "live.md"
+    live.write_text("see src/widget.py here\n", encoding="utf-8")
+
+    from marrow.drift_sweep import find_refs
+    monkeypatch.setattr("marrow.drift_sweep._rg_binary", lambda: None)
+    refs = find_refs("widget.py", roots=[env.root_a])
+    files = {r["file"] for r in refs}
+    assert str(live) in files, "live ref should be found"
+    assert not any(".build" in f for f in files), f".build dir refs leaked: {files}"
+
+
+def test_find_refs_skips_binary_nul_content(drift_env, monkeypatch):
+    """An extensionless file with a NUL byte in its first 8KB is skipped."""
+    env = drift_env
+    binary_file = env.root_a / "GenerateDoccReference"
+    binary_file.write_bytes(b"src/widget.py\x00" + b"\x00" * 100)
+    live = env.root_a / "live.md"
+    live.write_text("see src/widget.py here\n", encoding="utf-8")
+
+    from marrow.drift_sweep import find_refs
+    monkeypatch.setattr("marrow.drift_sweep._rg_binary", lambda: None)
+    refs = find_refs("widget.py", roots=[env.root_a])
+    files = {r["file"] for r in refs}
+    assert str(live) in files
+    assert str(binary_file) not in files, f"binary file ref leaked: {files}"
+
+
+def test_find_refs_skips_long_minified_line(drift_env, monkeypatch):
+    """A single 5000-char minified line containing the old path yields no ref."""
+    env = drift_env
+    minified = env.root_a / "main.js"
+    padding = "x" * 5000
+    minified.write_text(f'{padding}"src/widget.py"{padding}\n', encoding="utf-8")
+    live = env.root_a / "live.md"
+    live.write_text("see src/widget.py here\n", encoding="utf-8")
+
+    from marrow.drift_sweep import find_refs
+    monkeypatch.setattr("marrow.drift_sweep._rg_binary", lambda: None)
+    refs = find_refs("widget.py", roots=[env.root_a])
+    files = {r["file"] for r in refs}
+    assert str(live) in files
+    assert str(minified) not in files, f"minified-line ref leaked: {files}"

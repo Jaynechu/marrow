@@ -84,7 +84,8 @@ AUTHORIZED_ROOTS: list[Path] = [
 BINARY_EXTS = {
     ".jpg", ".jpeg", ".png", ".gif", ".pdf", ".db", ".sqlite",
     ".sqlite-wal", ".sqlite-shm", ".pyc", ".zip", ".whl", ".tar",
-    ".gz", ".dmg", ".so", ".dylib", ".o",
+    ".gz", ".dmg", ".so", ".dylib", ".o", ".a",
+    ".pcm", ".swiftmodule", ".swiftdoc",
 }
 
 # Under ~/.claude only these top-level names are swept; everything else
@@ -135,6 +136,7 @@ EXCLUDE_DIRS_SCAN = {
     ".DS_Store", "logs", "archives", "archive", "drift_backup",
     "drift_pending",
     ".obsidian", ".pytest_cache", "raycast", "worktrees",
+    ".build", "build", "dist", "DerivedData", ".swiftpm",
 }
 
 # Watcher pre-enqueue noise filter (path-segment match). Any event whose
@@ -144,6 +146,7 @@ NOISE_DIRS: set[str] = {
     ".git", "__pycache__", ".venv", "venv", "node_modules",
     "drift_pending", "drift_backup", "logs", "archives", "archive",
     ".obsidian", ".pytest_cache", "raycast", "worktrees",
+    ".build", "build", "dist", "DerivedData", ".swiftpm",
 }
 
 # Atomic-write artefact patterns. Different tools use different schemes:
@@ -159,9 +162,10 @@ _NUMERIC_TAIL_RE = re.compile(r"\.\d+$")
 _ICLOUD_DUP_RE = re.compile(r" \d+$")
 
 # Suffix-substring exclusions for the ref-scan filename gate (in addition
-# to exact-suffix SKIP_SCAN_EXTS). Catches `.bak-20260518-220058` and
-# `.venv*.bak/...` artefacts that exact-suffix matching misses.
-SKIP_SCAN_SUFFIX_PARTS: tuple[str, ...] = (".bak",)
+# to exact-suffix SKIP_SCAN_EXTS). Catches `.bak-20260518-220058`,
+# `.venv*.bak/...` artefacts that exact-suffix matching misses, and
+# `Foo.dSYM/` debug-symbol bundles (a directory, not a file extension).
+SKIP_SCAN_SUFFIX_PARTS: tuple[str, ...] = (".bak", ".dSYM")
 
 # Dir-tree exclude: cosmetic — additionally hide cc / marrow runtime state
 # whose contents are high-cardinality session/UUID noise that adds nothing
@@ -290,6 +294,25 @@ def _is_path_shaped(token: str) -> bool:
     return False
 
 
+# Files are treated as binary if a NUL byte appears in this many leading
+# bytes (extensionless compiled artefacts like dSYM DWARF payloads carry no
+# recognisable extension, so extension-based skip lists can't catch them).
+_BINARY_SNIFF_BYTES = 8192
+# Lines longer than this are minified/generated output, never a hand-written
+# doc reference — skip them regardless of what they contain.
+_MAX_SCAN_LINE_LEN = 2000
+
+
+def _has_binary_content(path: Path) -> bool:
+    """True if the first _BINARY_SNIFF_BYTES bytes of `path` contain a NUL byte."""
+    try:
+        with open(path, "rb") as fh:
+            chunk = fh.read(_BINARY_SNIFF_BYTES)
+    except OSError:
+        return False
+    return b"\x00" in chunk
+
+
 def _rg_binary() -> str | None:
     """Return path to rg binary, or None if not available as an executable."""
     import shutil
@@ -349,7 +372,11 @@ def _find_refs_rg(old_name: str, rg_bin: str, roots: list[Path]) -> list[dict] |
         fpath, lineno, col, text = parts[0], parts[1], parts[2], parts[3]
         if _is_artifact_file(Path(fpath).name):
             continue
+        if len(text) > _MAX_SCAN_LINE_LEN:
+            continue
         if not _path_in_line(old_name, text):
+            continue
+        if _has_binary_content(Path(fpath)):
             continue
         refs.append({"file": fpath, "line": int(lineno), "col": int(col), "text": text})
     return refs
@@ -399,10 +426,14 @@ def _find_refs_python(old_name: str, roots: list[Path]) -> list[dict]:
                 try:
                     if fpath.stat().st_size > 10 * 1024 * 1024:
                         continue
+                    if _has_binary_content(fpath):
+                        continue
                     text_content = fpath.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
                 for lineno, line in enumerate(text_content.splitlines(), 1):
+                    if len(line) > _MAX_SCAN_LINE_LEN:
+                        continue
                     if old_name in line and _path_in_line(old_name, line):
                         col = line.index(old_name) + 1
                         refs.append({
