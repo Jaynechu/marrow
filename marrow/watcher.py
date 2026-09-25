@@ -404,6 +404,7 @@ class EmbedLoop:
         self._fails = 0
         self._backlog_alerted = False
         self._count_over_prev = False
+        self._age_over_prev = False
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -482,26 +483,28 @@ class EmbedLoop:
     def _check_backlog(self, total: int) -> None:
         """Last-line defence: alert once while the backlog stays over the mark.
 
-        The count rule needs the line breached on two consecutive ticks. The
-        check runs before the spawn, so a healthy bulk rebuild (event_clear
-        reimport, migration re-embed) is over the line on the tick that
-        triggers the drain — only a stalled pipeline is still over on the next
-        one. The age rule stays immediate: a hours-old unembedded row is
-        already proof the drain is not happening.
+        Both rules (pending count, oldest pending events.created_at age) need
+        their line breached on two consecutive ticks. The check runs before
+        the spawn, so a healthy bulk rebuild (event_clear reimport, migration
+        re-embed) or an old row turned pending by an edit/restore is over the
+        line on the tick that triggers the drain — only a stalled pipeline is
+        still over on the next one.
         """
         from . import recall
         from .sync_loop import _iso_to_posix
         count_over = total > self._backlog_count
+        age_h = None
+        posix = _iso_to_posix(recall.pending_oldest_event_ts(self._conn) or "")
+        if posix is not None:
+            age_h = (time.time() - posix) / 3600.0
+        age_over = age_h is not None and age_h > self._backlog_hours
         reason = None
         if count_over and self._count_over_prev:
             reason = f"{total} rows pending"
+        elif age_over and self._age_over_prev:
+            reason = f"oldest pending event {age_h:.1f}h old"
         self._count_over_prev = count_over
-        if reason is None:
-            posix = _iso_to_posix(recall.pending_oldest_event_ts(self._conn) or "")
-            if posix is not None:
-                age_h = (time.time() - posix) / 3600.0
-                if age_h > self._backlog_hours:
-                    reason = f"oldest pending event {age_h:.1f}h old"
+        self._age_over_prev = age_over
         if reason is None:
             self._backlog_alerted = False
             return

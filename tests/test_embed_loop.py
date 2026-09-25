@@ -309,17 +309,49 @@ def test_backlog_alert_rearms_after_backlog_clears(db, spawns):
     assert loop._backlog_alerted is False
 
 
-def test_backlog_age_alert_is_immediate(db, spawns):
-    """The age rule needs no streak — one stale row already proves the stall."""
+def _stale_event(conn, hours=10):
     old = time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                        time.gmtime(time.time() - 10 * 3600))
-    _add_event(db, "stale", created_at=old)
+                        time.gmtime(time.time() - hours * 3600))
+    _add_event(conn, "stale", created_at=old)
+
+
+def test_backlog_age_silent_on_first_tick_over(db, spawns):
+    """An edited/restored old row is pending with an old created_at until drained."""
+    _stale_event(db)
     loop = _loop(db, backlog_alert_count=1000, backlog_alert_hours=6)
+    loop.tick()
+    assert _alerts(db, "embed") == []
+    assert loop._age_over_prev is True
+
+
+def test_backlog_age_alerts_once_on_second_consecutive_tick(db, spawns):
+    _stale_event(db)
+    loop = _loop(db, backlog_alert_count=1000, backlog_alert_hours=6)
+    loop.tick()
+    loop._child = None
     loop.tick()
     rows = _alerts(db, "embed")
     assert len(rows) == 1
     assert rows[0]["fingerprint"] == "embed_backlog"
     assert "old" in rows[0]["message"]
+    assert rows[0]["hit_count"] == 1
+    loop._child = None
+    loop.tick()
+    rows = _alerts(db, "embed")
+    assert len(rows) == 1 and rows[0]["hit_count"] == 1
+
+
+def test_backlog_age_drained_before_second_tick_stays_silent(db, spawns):
+    _stale_event(db)
+    loop = _loop(db, backlog_alert_count=1000, backlog_alert_hours=6)
+    loop.tick()
+    db.execute("DELETE FROM events")
+    db.commit()
+    loop._child = None
+    loop.tick()
+    assert _alerts(db, "embed") == []
+    assert loop._age_over_prev is False
+    assert loop._backlog_alerted is False
 
 
 def test_no_backlog_alert_under_thresholds(db, spawns):
