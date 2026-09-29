@@ -28,7 +28,7 @@ _marrow_cc_loop() {
 
 switch() {
   local marker="$HOME/.config/marrow/next-resume.sid"
-  local tsv sid8 project tag hhmm epoch
+  local tsv sid8 project tag hhmm
   tsv=$(mw list-recent-sessions --limit 10 2>/dev/null) || { echo "mw failed"; return 1; }
   [[ -z "$tsv" ]] && { echo "(no sessions)"; return 0; }
 
@@ -44,12 +44,7 @@ switch() {
     project="${cwd##*/}"
     [[ -n "$project" ]] && tag="[${channel}·${project}]" || tag="[${channel}]"
     [[ -z "$title" || "$title" == "-" ]] && title="(untitled)"
-    epoch=$(TZ=UTC date -jf '%Y-%m-%dT%H:%M:%SZ' "$last_active" '+%s' 2>/dev/null)
-    if [[ -n "$epoch" ]]; then
-      hhmm=$(date -r "$epoch" '+%H:%M')
-    else
-      hhmm="${last_active:11:5}"
-    fi
+    hhmm="${last_active:11:5}"
     printf "  %2d. %s %s (%s) %s %s\n" "$i" "$tag" "$title" "$sid8" "$model" "$hhmm"
   done <<< "$tsv"
 

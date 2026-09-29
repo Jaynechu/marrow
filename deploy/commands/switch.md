@@ -15,7 +15,7 @@ Reply with a number to resume; anything else cancels.
 ```
 - `sid8` = first 8 chars of full sid.
 - `project` = last path component of cwd (e.g. `/Users/.../marrow` → `marrow`). Omit `·project` if cwd empty.
-- `HH:MM` = extracted from last_active ISO timestamp (chars 11-16). Omit if missing.
+- `HH:MM` = chars 11-16 of last_active (already local time with offset, e.g. `2026-09-30T03:40:12+10:00` → `03:40`; no conversion). Omit if `-`.
 
 When the user replies:
 - Digit in range → write THREE lines (sid + cwd + effort) to `~/.config/marrow/next-resume.sid` via Bash:

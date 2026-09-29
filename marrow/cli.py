@@ -18,7 +18,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import config, repo, storage, subpages
+from . import config, repo, storage, subpages, timeutil
 
 
 PROTECTED = {"id", "created_at", "updated_at", "source_hash", "occurred_at"}
@@ -218,7 +218,8 @@ def _split_csv(value: str | None) -> list[str]:
 
 
 def cmd_list_recent_sessions(args) -> int:
-    """B6: print the N most-recent sessions, one per line."""
+    """B6: print the N most-recent sessions, one per line; last_active is
+    local ISO with offset."""
     include = _split_csv(getattr(args, "channels", None))
     exclude = _split_csv(getattr(args, "exclude_channels", None))
     if include and exclude:
@@ -235,7 +236,7 @@ def cmd_list_recent_sessions(args) -> int:
         model = r.get("model") or "-"
         channel = r.get("channel") or "-"
         cwd = r.get("cwd") or ""
-        last = r.get("last_active") or "-"
+        last = timeutil.utc_iso_to_local_iso(r.get("last_active") or "") or "-"
         title = r.get("title") or ""
         effort = r.get("effort") or ""
         print(f"{sid}\t{model}\t{channel}\t{cwd}\t{last}\t{title}\t{effort}")

@@ -107,6 +107,25 @@ def test_cli_list_recent_sessions_tab_separated(db, capsys) -> None:
                for line in out)
 
 
+@pytest.mark.parametrize("stored, shown", [
+    ("2026-09-29T17:40:12Z", "2026-09-30T03:40:12+10:00"),
+    ("2026-09-29T17:40:12.456Z", "2026-09-30T03:40:12+10:00"),
+    ("2026-10-04T16:05:00Z", "2026-10-05T03:05:00+11:00"),
+])
+def test_cli_list_recent_sessions_last_active_is_local(db, capsys, stored, shown) -> None:
+    repo.upsert_session("sid-t", "m", "wx", db=db)
+    conn = sqlite3.connect(db)
+    try:
+        with conn:
+            conn.execute("UPDATE sessions SET last_active = ? WHERE sid = ?",
+                         (stored, "sid-t"))
+    finally:
+        conn.close()
+    assert cli.main(["list-recent-sessions", "--db", db, "--limit", "5"]) == 0
+    line = capsys.readouterr().out.strip().split("\n")[0]
+    assert line.split("\t")[4] == shown
+
+
 def test_cli_get_session_cwd_prints_value(db, capsys) -> None:
     repo.upsert_session("sid-cwd", "m", "wx", db=db)
     # Directly write cwd via raw SQL (upsert_session doesn't expose cwd param in tests)

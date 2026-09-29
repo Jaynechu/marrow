@@ -139,6 +139,13 @@ def utc_iso_to_local_datetime(s: str) -> str:
     return local.strftime("%Y-%m-%d %H:%M") if local else s[:16].replace("T", " ")
 
 
+def utc_iso_to_local_iso(s: str) -> str:
+    """UTC ISO string -> local ISO with offset, whole seconds
+    ('YYYY-MM-DDTHH:MM:SS+HH:MM'). Returns the input unchanged on parse error."""
+    local = to_local(s or "")
+    return local.isoformat(timespec="seconds") if local else (s or "")
+
+
 def utc_iso_to_local_hm(s: str, default: str | None = "??:??") -> str | None:
     """UTC ISO string -> local 'HH:MM'; `default` on empty/invalid input."""
     local = to_local(s or "")
