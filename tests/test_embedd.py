@@ -127,6 +127,62 @@ def test_client_embed_round_trip(server, monkeypatch):
 
 
 @pytest.mark.live_embedd
+def test_client_embed_splits_into_pieces_in_order(server, monkeypatch):
+    _srv, _holder, fake = server
+    monkeypatch.setattr(embedd, "_PIECE", 2)
+    texts = ["a", "bb", "ccc", "dddd", "eeeee"]
+    vecs = embedd.client_embed(texts)
+    assert fake.calls == [["a", "bb"], ["ccc", "dddd"], ["eeeee"]]
+    assert vecs.shape == (5, 4) and vecs.dtype == np.float32
+    assert np.array_equal(vecs, _FakeEmbedder().embed(texts))
+
+
+@pytest.mark.live_embedd
+def test_client_embed_smaller_than_piece_is_one_request(server, monkeypatch):
+    _srv, _holder, fake = server
+    monkeypatch.setattr(embedd, "_PIECE", 8)
+    vecs = embedd.client_embed(["x", "yy", "zzz"])
+    assert fake.calls == [["x", "yy", "zzz"]]
+    assert vecs.shape == (3, 4)
+
+
+@pytest.mark.live_embedd
+def test_client_embed_empty_input_sends_no_embed(server):
+    _srv, _holder, fake = server
+    vecs = embedd.client_embed([])
+    assert vecs.shape == (0, 0) and vecs.dtype == np.float32
+    assert fake.calls == []
+
+
+class _FailsOnSecondPiece(_FakeEmbedder):
+    def embed(self, texts):
+        if self.calls:
+            raise RuntimeError("boom")
+        return super().embed(texts)
+
+
+@pytest.mark.live_embedd
+def test_embed_texts_falls_back_whole_batch_when_a_piece_fails(
+    server, state_dir, monkeypatch
+):
+    srv, _holder, _fake = server
+    monkeypatch.setattr(embedd, "enabled", lambda: True)
+    monkeypatch.setattr(embedd, "_PIECE", 2)
+    srv.holder._model = _FailsOnSecondPiece()
+    local = _FakeEmbedder()
+    monkeypatch.setattr(recall, "_ensure_embedder", lambda: local)
+    alerts: list = []
+    monkeypatch.setattr(embedd, "alert_unreachable", lambda d: alerts.append(d))
+
+    texts = ["a", "bb", "ccc", "dddd"]
+    vecs = recall.embed_texts(texts)
+
+    assert local.calls == [texts]
+    assert np.array_equal(vecs, _FakeEmbedder().embed(texts))
+    assert len(alerts) == 1
+
+
+@pytest.mark.live_embedd
 def test_ping_reports_loaded_state(server):
     _srv, _holder, _fake = server
     assert embedd.ping() == {"ok": True, "loaded": False}

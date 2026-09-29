@@ -44,6 +44,7 @@ _STAMP_NAME = "embedd_alert.stamp"
 _LOCK_NAME = "embedd.lock"
 _SOCK_NAME = "embedd.sock"
 _MAX_LINE = 64 * 1024 * 1024
+_PIECE = 4
 _IS_SERVICE = False
 
 
@@ -129,24 +130,38 @@ def unpack_vecs(payload: dict) -> NDArray[np.float32]:
 # ── client ───────────────────────────────────────────────────────────────────
 
 def client_embed(texts: list[str]) -> NDArray[np.float32]:
-    """Embed via the service. Raises ServiceAbsent / ServiceUnreachable."""
+    """Embed via the service. Raises ServiceAbsent / ServiceUnreachable.
+
+    Sent as requests of at most _PIECE texts on one connection, so the service
+    lock is free between pieces and a concurrent short query only waits for
+    the piece in flight, not the whole batch.
+    """
     cfg = _cfg()
     path = socket_path()
     if not path.exists():
         raise ServiceAbsent(str(path))
     connect_timeout = float(cfg.get("connect_timeout_s") or 0.5)
     read_timeout = float(cfg.get("read_timeout_s") or 120)
+    texts = list(texts)
+    out: list[NDArray[np.float32]] = []
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(connect_timeout)
         sock.connect(str(path))
         sock.settimeout(read_timeout)
         with sock, sock.makefile("rwb") as f:
-            f.write(encode_message({"op": "embed", "texts": list(texts)}))
-            f.flush()
-            line = f.readline(_MAX_LINE)
+            for i in range(0, len(texts), _PIECE):
+                f.write(encode_message({"op": "embed", "texts": texts[i:i + _PIECE]}))
+                f.flush()
+                out.append(_read_vecs(path, f.readline(_MAX_LINE)))
     except (OSError, socket.timeout) as e:
         raise ServiceUnreachable(f"{path}: {e}") from e
+    if not out:
+        return np.zeros((0, 0), dtype=np.float32)
+    return np.concatenate(out, axis=0)
+
+
+def _read_vecs(path: Path, line: bytes) -> NDArray[np.float32]:
     if not line:
         raise ServiceUnreachable(f"{path}: empty response")
     try:

@@ -687,9 +687,10 @@ def _embed_cfg() -> dict:
 
 
 def cmd_embed(args) -> int:
-    """Drain the vector backfill queue. Loads the ONNX model — meant to run as
-    a short-lived process (watcher EmbedLoop child) so its memory is returned
-    on exit. flock keeps two runs from embedding the same rows."""
+    """Drain the vector backfill queue. Meant to run as a short-lived process
+    (watcher EmbedLoop child). Embeds through the shared embedd service; the
+    ONNX model loads in this process only on fallback, and that memory is
+    returned on exit. flock keeps two runs from embedding the same rows."""
     import fcntl
     from . import recall
 
