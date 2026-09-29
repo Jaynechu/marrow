@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from marrow import config, cortex_bridge, daemon, storage
+from marrow import config, cortex_bridge, daemon, purge, storage
 
 
 @pytest.fixture()
@@ -18,6 +18,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "db_path", lambda: db)
     monkeypatch.setattr(daemon.subprocess, "run", lambda *a, **k: None)
     monkeypatch.setattr(daemon, "_PAUSE_INGEST_PATH", tmp_path / "pause_ingest")
+    monkeypatch.setattr(purge, "_BACKUP_DIR", str(tmp_path))
     return db
 
 
@@ -90,11 +91,10 @@ def test_tl_clear_multi_row_backs_up_and_returns_lines(env, tmp_path):
     assert out["ok"] is True
     assert out["deleted"] == 2
     assert "backup" in out
-    assert out["backup"].startswith("/tmp/marrow-backup-tlclear-")
+    assert out["backup"].startswith(f"{tmp_path}/marrow-backup-tlclear-")
     assert os.path.exists(out["backup"])
     assert len(out["lines"]) == 2
     assert {"行一" in l or "行二" in l for l in out["lines"]} == {True}
-    os.remove(out["backup"])
 
 
 def test_tl_clear_requires_selector(env):
@@ -762,10 +762,9 @@ def test_event_clear_range_skips_null_source_hash(env):
 def test_event_clear_backs_up_db_first(env, tmp_path):
     _insert_event(env, "2026-06-01T00:00:00Z")
     out = daemon.event_clear()
-    assert out["backup"].startswith("/tmp/marrow-backup-purge-")
+    assert out["backup"].startswith(f"{tmp_path}/marrow-backup-purge-")
     import os
     assert os.path.exists(out["backup"])
-    os.remove(out["backup"])
 
 
 # ── _localize_ts ─────────────────────────────────────────────────────────────
