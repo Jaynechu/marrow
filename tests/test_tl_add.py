@@ -108,6 +108,22 @@ def test_no_self_rows_render_unchanged(conn):
     assert md == "## Timeline\n_none_"
 
 
+def test_24h_queries_classify_millis_rows_by_instant(conn):
+    stamps = ["2026-09-29T13:59:59.999Z", "2026-09-29T14:00:00.000Z",
+              "2026-09-30T13:59:59.999Z", "2026-09-30T14:00:00.001Z"]
+    with conn:
+        for i, ts in enumerate(stamps):
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content, channel)"
+                " VALUES ('s', ?, 'tl', ?, 'cli')", (ts, f"tl{i}"))
+            conn.execute(
+                "INSERT INTO events (session_id, timestamp, role, content, channel)"
+                " VALUES ('s', ?, 'user', ?, 'manual')", (ts, f"m{i}"))
+    lo, hi = "2026-09-29T14:00:00Z", "2026-09-30T14:00:00Z"
+    assert [r["ts"] for r in timeline._query_self_rows_24h(conn, lo, hi)] == stamps[1:3]
+    assert [r["timestamp"] for r in timeline._query_manual_events_24h(conn, lo, hi)] == stamps[1:3]
+
+
 # ── reconcile round-trip ─────────────────────────────────────────────────────
 
 def _write_dash(dash: Path, text: str):

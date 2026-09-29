@@ -854,7 +854,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
                         "SELECT id FROM events"
                         " WHERE (channel='manual' OR role='tl')"
                         " AND timestamp >= ? AND timestamp < ?",
-                        (from_utc, to_utc),
+                        (timeutil.sql_bound(from_utc), timeutil.sql_bound(to_utc)),
                     ).fetchall()
                 }
             expected_eps = {

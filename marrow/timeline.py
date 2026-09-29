@@ -167,7 +167,7 @@ def _query_manual_events_24h(conn: sqlite3.Connection,
         "SELECT id, timestamp, content FROM events"
         " WHERE channel='manual' AND timestamp >= ? AND timestamp < ?"
         " ORDER BY timestamp ASC",
-        (from_utc, to_utc),
+        (timeutil.sql_bound(from_utc), timeutil.sql_bound(to_utc)),
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -187,7 +187,7 @@ def _query_self_rows_24h(conn: sqlite3.Connection,
         " FROM events e"
         " WHERE e.role='tl' AND e.timestamp >= ? AND e.timestamp < ?"
         " ORDER BY e.timestamp ASC",
-        (from_utc, to_utc),
+        (timeutil.sql_bound(from_utc), timeutil.sql_bound(to_utc)),
     ).fetchall()
     out: list[dict] = []
     for r in rows:

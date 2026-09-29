@@ -301,3 +301,37 @@ def test_recall_seen_digest_dedup(db):
     rows2 = rm.fetch_window_digests(db, since, until)
     deduped2 = [r for r in rows2 if (r.get("kind") or "event", r.get("id")) not in seen]
     assert len(deduped2) == 0
+
+
+# ── sub-second rows at a window bound ────────────────────────────────────────
+
+def _millis(bound: str, ms: str) -> str:
+    return bound[:-1] + f".{ms}Z"
+
+
+def _prev_second_millis(bound: str) -> str:
+    dt = datetime.fromisoformat(bound.replace("Z", "+00:00")) - timedelta(seconds=1)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + ".999Z"
+
+
+def test_fts_window_classifies_millis_rows_at_since_bound(db):
+    day, _ = _recent_melb_event()
+    since, until = local_day_range(day)
+    _make_event(db, "uniquetoken444 edge", "in", _millis(since, "500"))
+    _make_event(db, "uniquetoken444 edge", "out", _prev_second_millis(since))
+
+    with patch("marrow.recall._ensure_embedder", return_value=None):
+        hits = rm.recall_fusion(db, "uniquetoken444", limit=10,
+                                since=since, until=until)
+
+    assert {h["session_id"] for h in hits} == {"in"}
+
+
+def test_fetch_window_digests_millis_ts_at_bounds(db):
+    since, until = local_day_range("2026-06-09")
+    _make_digest(db, "in", "2026-06-09", "at start", ts=_millis(since, "000"))
+    _make_digest(db, "next", "2026-06-10", "at next start", ts=_millis(until, "001"))
+    _make_digest(db, "prev", "2026-06-08", "just before", ts=_prev_second_millis(since))
+
+    rows = rm.fetch_window_digests(db, since, until)
+    assert [r["id"] for r in rows] == ["in"]

@@ -169,7 +169,7 @@ def _tl_resolve(conn, match: str | None, date: str | None) -> list[dict]:
         since_utc, until_utc = timeutil.local_day_range(date)
         clauses.append("COALESCE(ts_start, timestamp) >= ?"
                        " AND COALESCE(ts_start, timestamp) < ?")
-        params.extend([since_utc, until_utc])
+        params.extend([timeutil.sql_bound(since_utc), timeutil.sql_bound(until_utc)])
     rows = conn.execute(
         "SELECT id, ts_start, ts_end, timestamp, content FROM events"
         f" WHERE {' AND '.join(clauses)}"

@@ -119,6 +119,15 @@ def local_bound_to_utc(value: str) -> str:
     return fmt_utc(dt)
 
 
+def sql_bound(utc_iso: str) -> str:
+    """UTC 'Z' bound -> the same instant without the trailing 'Z', for string
+    comparison against stored timestamps. Stored '...SSZ' and '...SS.fffZ'
+    both sort at-or-after 'SS', so `< bound` / `>= bound` split rows by true
+    instant; with the 'Z' kept, '.fffZ' rows in the bound's second sort
+    before it ('.' < 'Z')."""
+    return utc_iso[:-1] if utc_iso.endswith("Z") else utc_iso
+
+
 # ── render ───────────────────────────────────────────────────────────────────
 
 def utc_iso_to_local_date(s: str) -> str:

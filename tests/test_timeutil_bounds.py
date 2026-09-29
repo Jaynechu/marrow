@@ -72,3 +72,14 @@ def test_render_roundtrip():
     assert timeutil.utc_iso_to_local_hm(utc) == "09:05"
     assert timeutil.utc_iso_to_local_hm("garbage") == "??:??"
     assert timeutil.utc_iso_to_local_hm("garbage", default=None) is None
+
+
+def test_sql_bound_orders_z_and_millis_rows_by_instant():
+    bound = timeutil.sql_bound("2026-09-29T14:00:00Z")
+    assert bound == "2026-09-29T14:00:00"
+    before = ["2026-09-29T13:59:59Z", "2026-09-29T13:59:59.999Z"]
+    at_or_after = ["2026-09-29T14:00:00Z", "2026-09-29T14:00:00.000Z",
+                   "2026-09-29T14:00:00.001Z", "2026-09-29T14:00:01Z"]
+    assert all(ts < bound for ts in before)
+    assert all(ts >= bound for ts in at_or_after)
+    assert timeutil.sql_bound("2026-09-29T14:00:00") == "2026-09-29T14:00:00"

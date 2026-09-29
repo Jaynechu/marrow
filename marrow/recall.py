@@ -29,6 +29,8 @@ import numpy as np
 import onnxruntime as ort
 from tokenizers import Tokenizer
 
+from .timeutil import sql_bound
+
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
@@ -1253,6 +1255,8 @@ def recall_fusion(
     q = query.strip()
     if not q:
         return []
+    since = sql_bound(since) if since else None
+    until = sql_bound(until) if until else None
 
     # Strip emotion punctuation (?/!/？/！, single + repeated) — no FTS/vec signal.
     q = re.sub(r"[？?！!]+", " ", q).strip()
@@ -1852,7 +1856,7 @@ def fetch_window_digests(
         "SELECT sid, date, text, ts FROM session_digests "
         "WHERE ts >= ? AND ts < ? "
         "ORDER BY ts DESC LIMIT ?",
-        (since_utc, until_utc, cap),
+        (sql_bound(since_utc), sql_bound(until_utc), cap),
     ).fetchall()
 
     if not rows:

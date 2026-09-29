@@ -36,10 +36,10 @@ def _time_clauses(col: str, before_utc: str | None, after_utc: str | None
     clauses, params = [], []
     if before_utc:
         clauses.append(f"{col} < ?")
-        params.append(before_utc)
+        params.append(timeutil.sql_bound(before_utc))
     if after_utc:
         clauses.append(f"{col} >= ?")
-        params.append(after_utc)
+        params.append(timeutil.sql_bound(after_utc))
     return clauses, params
 
 

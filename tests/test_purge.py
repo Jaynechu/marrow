@@ -222,3 +222,49 @@ def test_tl_clear_bad_bound_errors(env):
     assert out["ok"] is False
     assert "bad time" in out["error"]
     assert len(_remaining(db, "tl")) == 4
+
+
+# ── sub-second rows at a bound ───────────────────────────────────────────────
+
+BEFORE_BOUND = ("2026-09-29T13:59:59Z", "2026-09-29T13:59:59.999Z")
+AT_OR_AFTER_BOUND = ("2026-09-29T14:00:00Z", "2026-09-29T14:00:00.000Z",
+                     "2026-09-29T14:00:00.001Z")
+
+
+def _seed_subsecond(db, role="user"):
+    for ts in BEFORE_BOUND + AT_OR_AFTER_BOUND:
+        _insert(db, ts, role=role)
+
+
+def test_event_clear_before_splits_same_second_by_instant(env):
+    db, _ = env
+    _seed_subsecond(db)
+    out = daemon.event_clear(before="2026-09-30")
+    assert out["deleted"] == len(BEFORE_BOUND)
+    assert _remaining(db) == sorted(AT_OR_AFTER_BOUND)
+
+
+def test_event_clear_after_splits_same_second_by_instant(env):
+    db, _ = env
+    _seed_subsecond(db)
+    out = daemon.event_clear(after="2026-09-30")
+    assert out["deleted"] == len(AT_OR_AFTER_BOUND)
+    assert _remaining(db) == sorted(BEFORE_BOUND)
+
+
+def test_tl_clear_splits_same_second_by_instant(env):
+    db, _ = env
+    _seed_subsecond(db, role="tl")
+    out = daemon.tl("clear", after="2026-09-30", dry_run=True)
+    assert out["matched"] == len(AT_OR_AFTER_BOUND)
+    out = daemon.tl("clear", before="2026-09-30", dry_run=True)
+    assert out["matched"] == len(BEFORE_BOUND)
+
+
+def test_tl_query_date_includes_millis_row_at_midnight(env):
+    db, _ = env
+    _seed_subsecond(db, role="tl")
+    out = daemon.tl("query", date="2026-09-30")
+    assert len(out["matches"]) == len(AT_OR_AFTER_BOUND)
+    out = daemon.tl("query", date="2026-09-29")
+    assert len(out["matches"]) == len(BEFORE_BOUND)
