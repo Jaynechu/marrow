@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from marrow import schedule
+from marrow import schedule, timeutil
 
 
 TODAY = "2026-07-10"
@@ -206,11 +206,8 @@ def test_date_rollover_forces_full(monkeypatch, tmp_path):
     import marrow.config as cfg
     from datetime import datetime, timezone
 
-    class _Now:
-        @staticmethod
-        def now(tz=None):
-            return datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(schedule, "datetime", _Now)
+    monkeypatch.setattr(timeutil, "utc_now",
+                        lambda: datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc))
 
     out = schedule.check_and_inject(sid)
     # full content returned despite matching mtime, because date rolled
@@ -230,11 +227,8 @@ def test_mtime_early_exit_same_day(monkeypatch, tmp_path):
 
     from datetime import datetime, timezone
 
-    class _Now:
-        @staticmethod
-        def now(tz=None):
-            return datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc)
-    monkeypatch.setattr(schedule, "datetime", _Now)
+    monkeypatch.setattr(timeutil, "utc_now",
+                        lambda: datetime(2026, 7, 10, 10, 0, tzinfo=timezone.utc))
     (d / f"{sid}.date").write_text("2026-07-10")
 
     assert schedule.check_and_inject(sid) is None

@@ -7,10 +7,9 @@ import os
 import re as _re
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config
+from . import config, timeutil
 from ._atomic import atomic_write
 
 _CADENCE_DEFAULT = str(Path.home() / "CC-Lab" / "cadence" / ".build" / "debug" / "cadence")
@@ -98,7 +97,7 @@ def _log_fail(kind: str, args: list[str], rc: int | None, err: str) -> None:
     _fail_streak += 1
     try:
         _FAIL_LOG.parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().astimezone().isoformat(timespec="seconds")
+        ts = timeutil.local_now().isoformat(timespec="seconds")
         caller = f"pid={os.getpid()} ppid={os.getppid()} argv0={sys.argv[0]}"
         with open(_FAIL_LOG, "a") as f:
             f.write(f"{ts} kind={kind} rc={rc} {caller} args={' '.join(args)}"
@@ -304,8 +303,7 @@ def render_daily(cadence_bin: str | None = None) -> str:
     if not os.path.isfile(binary):
         return ""
 
-    tz = config.get_tz()
-    now = datetime.now(timezone.utc).astimezone(tz)
+    now = timeutil.local_now()
     today = now.strftime("%Y-%m-%d")
     day_name = now.strftime("%A")
     time_str = now.strftime("%H:%M")
@@ -490,8 +488,7 @@ def check_and_inject(
     daily_path = daily_path or _DAILY_PATH
     binary = cadence_bin or _cadence_bin()
 
-    tz = config.get_tz()
-    today = datetime.now(timezone.utc).astimezone(tz).strftime("%Y-%m-%d")
+    today = timeutil.local_today().isoformat()
 
     mt_file = _mtime_path(session_id)
     content_file = _content_path(session_id)

@@ -17,9 +17,7 @@ import datetime as _dt
 import hashlib as _hashlib
 import re as _re
 import sqlite3
-from . import config as _config
-
-_TZ = _config.get_tz()
+from . import timeutil
 
 # Matches leading HH:MM in a LIFE line (e.g. "21:40 买了b5精华")
 _LIFE_TS_RE = _re.compile(r"^(\d{2}:\d{2})(?:-\d{2}:\d{2})?(?:\s+|(?=【))(.*)", _re.DOTALL)
@@ -29,47 +27,10 @@ _INJECT_CAP = 20       # max film-strip lines injected into context
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-def _now_local() -> _dt.datetime:
-    return _dt.datetime.now(_TZ)
-
-
 def _calendar_date_from_utc(utc_iso: str) -> _dt.date:
     """UTC ISO → local calendar date (configured tz), natural midnight."""
-    s = (utc_iso or "").strip().replace("Z", "+00:00")
-    try:
-        d = _dt.datetime.fromisoformat(s)
-    except ValueError:
-        return _now_local().date()
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=_dt.timezone.utc)
-    return d.astimezone(_TZ).date()
-
-
-def _parse_utc(utc_iso: str) -> _dt.datetime | None:
-    s = (utc_iso or "").strip().replace("Z", "+00:00")
-    try:
-        d = _dt.datetime.fromisoformat(s)
-    except ValueError:
-        return None
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=_dt.timezone.utc)
-    return d.astimezone(_dt.timezone.utc)
-
-
-def _utc_iso(d: _dt.datetime) -> str:
-    return d.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _hhmm_local(utc_iso: str) -> str:
-    """UTC ISO → local HH:MM display (configured tz)."""
-    s = (utc_iso or "").strip().replace("Z", "+00:00")
-    try:
-        d = _dt.datetime.fromisoformat(s)
-    except ValueError:
-        return "??:??"
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=_dt.timezone.utc)
-    return d.astimezone(_TZ).strftime("%H:%M")
+    local = timeutil.to_local(utc_iso or "")
+    return local.date() if local else timeutil.local_today()
 
 
 def _period_of_hhmm(hhmm: str) -> str:
@@ -92,15 +53,9 @@ def _period_local_date(utc_iso: str) -> tuple[_dt.date, str]:
     Natural midnight: local_date = local calendar date. Period is a display
     label (AM/PM/ND); 00-06 keeps the ND label of that same calendar day.
     """
-    s = (utc_iso or "").strip().replace("Z", "+00:00")
-    try:
-        d = _dt.datetime.fromisoformat(s)
-    except ValueError:
-        today = _now_local().date()
-        return today, "ND"
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=_dt.timezone.utc)
-    local = d.astimezone(_TZ)
+    local = timeutil.to_local(utc_iso or "")
+    if local is None:
+        return timeutil.local_today(), "ND"
     period = _period_of_hhmm(local.strftime("%H:%M"))
     return local.date(), period
 
@@ -144,16 +99,13 @@ def _life_line_utc_and_date(item: str, session_utc_iso: str,
     except ValueError:
         return session_utc_iso, _calendar_date_from_utc(session_utc_iso)
 
-    sess_dt = _parse_utc(session_utc_iso)
-    if sess_dt is None:
+    sess_local = timeutil.to_local(session_utc_iso or "")
+    if sess_local is None:
         return session_utc_iso, _calendar_date_from_utc(session_utc_iso)
-    sess_local = sess_dt.astimezone(_TZ)
 
-    cal_date = sess_local.date()
-    candidate = _dt.datetime(cal_date.year, cal_date.month, cal_date.day,
-                             h, mi, 0, tzinfo=_TZ)
+    candidate = timeutil.local_at(sess_local.date(), h, mi)
 
-    return _utc_iso(candidate), candidate.date()
+    return timeutil.fmt_utc(candidate), candidate.date()
 
 
 def _life_line_local_date(item: str, session_date: _dt.date,
@@ -172,10 +124,7 @@ def _life_line_local_date(item: str, session_date: _dt.date,
     except ValueError:
         return session_date
     # Build candidate on the given calendar date; natural midnight boundary.
-    candidate = _dt.datetime(
-        session_date.year, session_date.month, session_date.day,
-        h, mi, 0, tzinfo=_TZ)
-    return candidate.date()
+    return timeutil.local_at(session_date, h, mi).date()
 
 
 # ── DB queries ───────────────────────────────────────────────────────────────
@@ -243,9 +192,9 @@ def _query_self_rows_24h(conn: sqlite3.Connection,
     out: list[dict] = []
     for r in rows:
         ts_start = r["ts_start"] or r["ts"]
-        hhmm = _hhmm_local(ts_start)
+        hhmm = timeutil.utc_iso_to_local_hm(ts_start)
         end = r["ts_end"]
-        rng = f"{hhmm}-{_hhmm_local(end)}" if end else hhmm
+        rng = f"{hhmm}-{timeutil.utc_iso_to_local_hm(end)}" if end else hhmm
         body = (r["body"] or "").strip()
         out.append({
             "id": r["id"],
@@ -298,17 +247,13 @@ def _render_24h(digests: list[dict],
     if exclude_full_session_sids is None:
         exclude_full_session_sids = set()
 
-    to_dt = _parse_utc(to_utc or _utc_iso(_dt.datetime.now(_dt.timezone.utc)))
-    if to_dt is None:
-        to_dt = _dt.datetime.now(_dt.timezone.utc)
-    from_dt = _parse_utc(from_utc or _utc_iso(to_dt - _dt.timedelta(hours=24)))
-    if from_dt is None:
-        from_dt = to_dt - _dt.timedelta(hours=24)
+    to_dt = timeutil.parse_utc(to_utc) or timeutil.utc_now().replace(microsecond=0)
+    from_dt = timeutil.parse_utc(from_utc) or to_dt - _dt.timedelta(hours=24)
 
     entries: list[dict] = []
 
     def _in_window(ts_iso: str) -> _dt.datetime | None:
-        ts_dt = _parse_utc(ts_iso)
+        ts_dt = timeutil.parse_utc(ts_iso)
         if ts_dt is None or ts_dt < from_dt or ts_dt >= to_dt:
             return None
         return ts_dt
@@ -320,7 +265,7 @@ def _render_24h(digests: list[dict],
             return
         entries.append({
             "ts": ts_dt,
-            "local_date": ts_dt.astimezone(_TZ).date(),
+            "local_date": timeutil.to_local(ts_dt).date(),
             "sid": sd["sid"],
             "segment_seq": sd.get("segment_seq", 0),
             "line_index": idx,
@@ -339,28 +284,25 @@ def _render_24h(digests: list[dict],
         except ValueError:
             return [context_ts]
 
-        context_dt = _parse_utc(context_ts)
+        context_dt = timeutil.parse_utc(context_ts)
         if context_dt is None:
             return []
         span_start_utc = span_end_utc = None
         if span is not None:
-            span_start_utc = _parse_utc(span[0] or "")
-            span_end_utc = _parse_utc(span[1] or "")
+            span_start_utc = timeutil.parse_utc(span[0])
+            span_end_utc = timeutil.parse_utc(span[1])
         if span_start_utc is None or span_end_utc is None:
-            context_date = context_dt.astimezone(_TZ).date()
+            context_date = timeutil.to_local(context_dt).date()
             span_start = span_end = None
             dates = (context_date, context_date - _dt.timedelta(days=1))
         else:
-            span_start = span_start_utc.astimezone(_TZ)
-            span_end = span_end_utc.astimezone(_TZ)
+            span_start = timeutil.to_local(span_start_utc)
+            span_end = timeutil.to_local(span_end_utc)
             days = (span_end.date() - span_start.date()).days
             dates = tuple(span_start.date() + _dt.timedelta(days=i)
                           for i in range(days + 1))
 
-        candidates = [
-            _dt.datetime(d.year, d.month, d.day, h, mi, 0, tzinfo=_TZ)
-            for d in dates
-        ]
+        candidates = [timeutil.local_at(d, h, mi) for d in dates]
         if span_start is not None and span_end is not None:
             in_span = [c for c in candidates if span_start <= c <= span_end]
             if in_span:
@@ -372,15 +314,15 @@ def _render_24h(digests: list[dict],
                                       abs((c - span_end).total_seconds())),
                 )]
         for candidate in candidates:
-            if from_dt <= candidate.astimezone(_dt.timezone.utc) < to_dt:
-                return [_utc_iso(candidate)]
+            if from_dt <= candidate < to_dt:
+                return [timeutil.fmt_utc(candidate)]
         return []
 
     for sd in digests:
         if sd["sid"] == current_sid:
             continue
         ts = sd.get("ts") or ""
-        sess_hhmm = _hhmm_local(ts)
+        sess_hhmm = timeutil.utc_iso_to_local_hm(ts)
         life_raw = sd.get("life_lines") or ""
         life_items = [x.strip() for x in life_raw.splitlines() if x.strip()]
 
@@ -404,11 +346,11 @@ def _render_24h(digests: list[dict],
             continue
         entries.append({
             "ts": ts_dt,
-            "local_date": ts_dt.astimezone(_TZ).date(),
+            "local_date": timeutil.to_local(ts_dt).date(),
             "sid": None,
             "event_id": ev["id"],
             "line_index": None,
-            "hhmm": _hhmm_local(ts),
+            "hhmm": timeutil.utc_iso_to_local_hm(ts),
             "text": content,
         })
 
@@ -419,11 +361,11 @@ def _render_24h(digests: list[dict],
             continue
         entries.append({
             "ts": ts_dt,
-            "local_date": ts_dt.astimezone(_TZ).date(),
+            "local_date": timeutil.to_local(ts_dt).date(),
             "sid": None,
             "event_id": sr["id"],
             "line_index": None,
-            "hhmm": sr.get("hhmm") or _hhmm_local(sr.get("ts") or ""),
+            "hhmm": sr.get("hhmm") or timeutil.utc_iso_to_local_hm(sr.get("ts") or ""),
             "text": composed,
             "self_row": True,
         })
@@ -465,15 +407,10 @@ def render_timeline(conn: sqlite3.Connection,
     Never naive datetime. Returns empty string if DB is empty/cold.
     When inject_cap is set, the film-strip is truncated to that many entries.
     """
-    now_utc = _dt.datetime.now(_dt.timezone.utc)
-    now_utc_iso = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-    now_local = now_utc.astimezone(_TZ)
-    yesterday_start_utc = _dt.datetime.combine(
-        (now_local - _dt.timedelta(days=1)).date(),
-        _dt.time.min,
-        tzinfo=_TZ,
-    ).astimezone(_dt.timezone.utc)
-    yesterday_start_utc_iso = _utc_iso(yesterday_start_utc)
+    now_utc = timeutil.utc_now()
+    now_utc_iso = timeutil.fmt_utc(now_utc)
+    yesterday = timeutil.to_local(now_utc).date() - _dt.timedelta(days=1)
+    yesterday_start_utc_iso = timeutil.fmt_utc(timeutil.local_at(yesterday))
 
     current_sid = _query_current_sid(conn)
 
@@ -527,7 +464,7 @@ def render_timeline(conn: sqlite3.Connection,
 
 
 def _now_utc_iso() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return timeutil.fmt_utc(timeutil.utc_now())
 
 
 _TL_TRAIL_LINE_RE = _re.compile(r"\n?<!--\s*tl-rendered:[^>]+-->\s*$")

@@ -5,11 +5,11 @@ import json
 import os
 import re as _re
 import sys
-from datetime import datetime, timezone
-from .. import config, cortex_bridge, repo, storage
+from .. import config, cortex_bridge, repo, storage, timeutil
 from ..timeutil import (
     utc_iso_to_local_datetime,
     format_recall_ts,
+    local_mmdd_or_year,
     reltime_short,
 )
 from ._shared import _read_input
@@ -47,24 +47,6 @@ _KIND_ABBREV = {
 }
 
 
-def _meme_date(ts: str) -> str:
-    """Meme creation date as 'MM-DD' (configured local timezone), or 'YYYY' if >1y old.
-    Empty on missing/unparseable timestamp."""
-    if not ts:
-        return ""
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        local = dt.astimezone(config.get_tz())
-        if (now - dt).total_seconds() >= 365 * 86400:
-            return local.strftime("%Y")
-        return local.strftime("%m-%d")
-    except Exception:
-        return ""
-
-
 def _milestone_date(ts: str) -> str:
     """Milestone date with the T00:00 junk stripped. Keeps calendar precision:
     'YYYY' / 'YYYY-MM' / 'YYYY-MM-DD' (whatever the stored date carried).
@@ -91,7 +73,7 @@ def _recall_head(h: dict) -> str:
         rt = reltime_short(h.get("timestamp") or "")
         return f"[{ch} {rt}] {ref}" if rt else f"[{ch}] {ref}"
     if kind == "memes":
-        d = _meme_date(h.get("timestamp") or "")
+        d = local_mmdd_or_year(h.get("timestamp") or "")
         return f"[{d}] {ref}" if d else ref
     if kind == "milestone":
         d = _milestone_date(h.get("timestamp") or "")
@@ -559,10 +541,10 @@ def _append_recall_log(sid: str, prompt_text: str, hits: list[dict]) -> None:
     Each block: timestamp header + prompt (truncated) + bullet list of hits
     with kind, id, score, content snippet.
     """
-    now_utc = datetime.now(timezone.utc)
+    now_utc = timeutil.utc_now()
     log_path = _recall_session_log_path(sid, now_utc)
     is_new = not log_path.exists()
-    now_local = now_utc.astimezone()
+    now_local = timeutil.to_local(now_utc)
     ts = now_local.strftime("%Y-%m-%d %H:%M:%S")
     prompt_oneline = prompt_text.replace("\n", " ")[:200]
     parts: list[str] = []

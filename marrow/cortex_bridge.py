@@ -36,7 +36,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import config, cortex_cfg
+from . import config, cortex_cfg, timeutil
 from .cortex_cfg import CortexConfigError
 
 
@@ -215,7 +215,7 @@ def _lie_down_shell(shell: str, next_wake_min: float, rotate: bool = False,
     The sleep also lands one ct_wake_log row stamped with this shell, so the
     ledger records every shell's sleep (_log_shell_sleep_row)."""
     mins = _wake_band_clamp(next_wake_min, human_override)
-    when = datetime.now(config.get_tz()) + timedelta(minutes=mins)
+    when = timeutil.local_now() + timedelta(minutes=mins)
     payload = {"next_wake_at": when.isoformat()}
     if rotate:
         payload["rotate_pending"] = True
@@ -781,7 +781,7 @@ def free_round_note_text() -> str | None:
     p = _cortex_path("free_round_note_file")
     try:
         text = p.read_text(encoding="utf-8").strip()
-        fresh = (datetime.now().timestamp() - p.stat().st_mtime) <= _receipt_ttl_sec()
+        fresh = (time.time() - p.stat().st_mtime) <= _receipt_ttl_sec()
     except OSError:
         return None
     try:
@@ -1501,7 +1501,7 @@ def _section_span(lines: list[str], heading: str) -> tuple[int, int] | None:
 def _handoff_page_range(old_text: str) -> tuple[str | None, str]:
     """(start_date, end_date) for the archive name. start = first
     `### YYYY-MM-DD` in the page's log; end = today (rotate day)."""
-    end = datetime.now(config.get_tz()).date().isoformat()
+    end = timeutil.local_today().isoformat()
     for ln in old_text.splitlines():
         m = _HANDOFF_LOG_DATE_RE.match(ln)
         if m:

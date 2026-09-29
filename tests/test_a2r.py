@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from marrow import config, hooks, install, recall, storage, tl_writer
+from marrow import hooks, install, recall, storage, timeutil
 
 
 # ── recall: staged imp boost + [tl]/[event] source tag ───────────────────────
@@ -78,20 +78,14 @@ def test_turn_inject_wx_emits_schedule_no_time_line(monkeypatch, capsys):
 # ── B8: anti-late-night kickout nudge (turn_inject) ──────────────────────────
 
 def _freeze_melb(monkeypatch, hour, minute):
-    """Freeze hooks.inject.datetime.now() + config.get_tz() to a fixed Melbourne
-    wall-clock instant, independent of the test env's default config
-    (core.timezone defaults to Asia/Shanghai in config.default.toml)."""
+    """Freeze timeutil's clock + local tz to a fixed Melbourne wall-clock
+    instant, independent of the host / test-env timezone."""
     from datetime import datetime as _datetime
     from zoneinfo import ZoneInfo
     melb = ZoneInfo("Australia/Melbourne")
-
-    class _Fake:
-        @classmethod
-        def now(cls, tz=None):
-            return _datetime(2026, 7, 8, hour, minute, tzinfo=melb)
-
-    monkeypatch.setattr(hooks.inject, "datetime", _Fake)
-    monkeypatch.setattr(config, "get_tz", lambda: melb)
+    fixed = _datetime(2026, 7, 8, hour, minute, tzinfo=melb)
+    monkeypatch.setattr(timeutil, "_TZ", melb)
+    monkeypatch.setattr(timeutil, "utc_now", lambda: fixed.astimezone(timeutil._UTC))
 
 
 def test_kickout_cli_wind_down_window(monkeypatch, capsys):
@@ -135,7 +129,7 @@ def test_kickout_cortex_immune(monkeypatch, capsys):
     hooks.turn_inject()
     # cortex short-circuits _kickout_context before it even reads config —
     # verify directly rather than via injected ctx (defaults ship text-empty).
-    assert hooks._kickout_context("ct", hooks.inject.datetime.now(config.get_tz())) == ""
+    assert hooks._kickout_context("ct", timeutil.local_now()) == ""
 
 
 def test_kickout_wx_quiet_window(monkeypatch, capsys):
@@ -169,7 +163,7 @@ def test_kickout_inert_when_text_empty(monkeypatch, capsys):
     hooks.turn_inject()
     ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "kickout" not in ctx.lower()
-    assert hooks._kickout_context("cli", hooks.inject.datetime.now(config.get_tz())) == ""
+    assert hooks._kickout_context("cli", timeutil.local_now()) == ""
 
 
 # ── agent_guard: burst protection ────────────────────────────────────────────

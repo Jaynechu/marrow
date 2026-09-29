@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from ._atomic import atomic_write as _atomic_write
-from .timeutil import _MELB as _MELB_TZ
+from . import timeutil
 
 
 MILESTONE_KEY = "milestone"
@@ -42,12 +42,6 @@ _H5_RE = re.compile(
 )
 _H5_AGE_RE = re.compile(r"^##### \[(?P<title>.+?)\]\s*$")
 _ID_RE = re.compile(r"<!-- id:(?P<id>\d+) -->")
-
-
-def _today_melb() -> str:
-    """Return today's date as YYYY-MM-DD in configured local timezone."""
-    import datetime
-    return datetime.datetime.now(datetime.timezone.utc).astimezone(_MELB_TZ).strftime("%Y-%m-%d")
 
 
 @dataclass
@@ -171,7 +165,7 @@ def _parse(md_text: str) -> list[dict]:
         if cur is None and section is not None and s and not _ID_RE.search(s):
             cur = {
                 "scope": section,
-                "date": _today_melb(),
+                "date": timeutil.local_today().isoformat(),
                 "title": s.strip(),
                 "theme": None,
                 "pinned": 1,
@@ -324,7 +318,7 @@ def reconcile_milestones(conn: sqlite3.Connection,
                     # Unanchored single-bracket Me row (##### [label]) carries
                     # no date and no anchor. Insert with today's configured-local-timezone date
                     # and write anchor back — same path as bare-text inserts.
-                    row["date"] = _today_melb()
+                    row["date"] = timeutil.local_today().isoformat()
                 # Safety net: exact-match dedup. Prevents runaway loop if the
                 # md anchor-write fails for any reason (file lock, perm, race).
                 existing = conn.execute(
@@ -567,16 +561,11 @@ _TL_DAY_DIVIDER_RE = re.compile(r"^-+\s*(?P<mmdd>\d{2}-\d{2})\s*-+\s*$")
 _TL_DAY_HEADER_RE = re.compile(
     r"^\**(?P<mmdd>\d{2}-\d{2})\s+\w"
 )
-_TZ_MELB      = _MELB_TZ
 _TL_PERIOD_HOUR = {"AM": 9, "PM": 15, "ND": 21}
 
 
 def _strip_tl_anchor(line: str) -> str:
     return _TL_ANCHOR_RE.sub("", line).rstrip()
-
-
-def _tl_now_melb() -> _dt.datetime:
-    return _dt.datetime.now(_TZ_MELB)
 
 
 def _resolve_tl_mmdd(mmdd: str, today: _dt.date) -> _dt.date | None:
@@ -608,20 +597,19 @@ def _timeline_day_context(line: str, today: _dt.date) -> _dt.date | None:
 def _manual_event_ts_utc(day: _dt.date, explicit_day: bool,
                          hhmm_str: str | None,
                          period_str: str | None) -> str:
-    now_melb = _tl_now_melb()
+    now_local = timeutil.local_now()
     if hhmm_str:
         h, mi = int(hhmm_str[:2]), int(hhmm_str[3:5])
-        ts_melb = _dt.datetime(day.year, day.month, day.day, h, mi, tzinfo=_TZ_MELB)
-        if not explicit_day and day == now_melb.date() and ts_melb > now_melb:
-            ts_melb -= _dt.timedelta(days=1)
+        ts_local = timeutil.local_at(day, h, mi)
+        if not explicit_day and day == now_local.date() and ts_local > now_local:
+            ts_local -= _dt.timedelta(days=1)
     elif period_str:
-        h = _TL_PERIOD_HOUR[period_str.upper()]
-        ts_melb = _dt.datetime(day.year, day.month, day.day, h, 0, tzinfo=_TZ_MELB)
-    elif day == now_melb.date():
-        ts_melb = now_melb.replace(microsecond=0)
+        ts_local = timeutil.local_at(day, _TL_PERIOD_HOUR[period_str.upper()])
+    elif day == now_local.date():
+        ts_local = now_local.replace(microsecond=0)
     else:
-        ts_melb = _dt.datetime(day.year, day.month, day.day, 12, 0, tzinfo=_TZ_MELB)
-    return ts_melb.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts_local = timeutil.local_at(day, 12)
+    return timeutil.fmt_utc(ts_local)
 
 
 _TL_SELF_RE = re.compile(
@@ -736,8 +724,8 @@ def reconcile_timeline(conn: sqlite3.Connection,
     present_eps:   set[int] = set()
     plus_lines:    list[tuple[_dt.date, bool, str]] = []
     evt_edits:     dict[int, str] = {}
-    now_melb = _tl_now_melb()
-    current_day = now_melb.date()
+    today = timeutil.local_today()
+    current_day = today
     current_day_explicit = False
 
     for raw in block.splitlines():
@@ -745,7 +733,7 @@ def reconcile_timeline(conn: sqlite3.Connection,
         # Skip the trail marker line itself
         if _TL_TRAIL_RE.search(line):
             continue
-        day_context = _timeline_day_context(line, now_melb.date())
+        day_context = _timeline_day_context(line, today)
         if day_context is not None:
             current_day = day_context
             current_day_explicit = True
@@ -858,14 +846,8 @@ def reconcile_timeline(conn: sqlite3.Connection,
                     ).fetchall()
                 }
                 min_d, max_d = min(scope_dates), max(scope_dates)
-                from_utc = _dt.datetime.combine(
-                    _dt.date.fromisoformat(min_d), _dt.time.min,
-                    tzinfo=_TZ_MELB,
-                ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                to_utc = _dt.datetime.combine(
-                    _dt.date.fromisoformat(max_d) + _dt.timedelta(days=1),
-                    _dt.time.min, tzinfo=_TZ_MELB,
-                ).astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                from_utc = timeutil.local_day_range(min_d)[0]
+                to_utc = timeutil.local_day_range(max_d)[1]
                 expected_evts = {
                     r["id"]
                     for r in conn.execute(

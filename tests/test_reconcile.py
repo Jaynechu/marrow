@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from marrow import reconcile, storage, subpages
+from marrow import reconcile, storage, subpages, timeutil
 
 
 @pytest.fixture()
@@ -482,7 +482,7 @@ def test_reconcile_memes_missing_file_noop(tmp_path):
 
 # ── Task 2a: bare-text insert in ## Us / ## Me ────────────────────────────────
 
-_MELB_DATE = reconcile._today_melb()
+_LOCAL_DATE = timeutil.local_today().isoformat()
 
 _BARE_US_MD = f"""\
 <!-- marrow:milestone:start -->
@@ -528,7 +528,7 @@ def test_bare_text_us_inserts(tmp_path):
     ).fetchone()
     assert row is not None
     assert row["scope"] == "us"
-    assert row["date"] == _MELB_DATE
+    assert row["date"] == _LOCAL_DATE
     assert row["pinned"] == 1
     conn.close()
 
@@ -558,7 +558,7 @@ def test_bare_text_writeback_canonical_line(tmp_path):
     rid = conn.execute(
         "SELECT id FROM milestones WHERE title=?", ("这是一个新里程碑",)
     ).fetchone()["id"]
-    assert f"##### [{_MELB_DATE}] 这是一个新里程碑 <!-- id:{rid} -->" in txt
+    assert f"##### [{_LOCAL_DATE}] 这是一个新里程碑 <!-- id:{rid} -->" in txt
     conn.close()
 
 
@@ -630,7 +630,7 @@ def test_single_bracket_unanchored_me_inserts(tmp_path):
     ).fetchone()
     assert row is not None
     assert row["scope"] == "me"
-    assert row["date"] == _MELB_DATE
+    assert row["date"] == _LOCAL_DATE
     conn.close()
 
 

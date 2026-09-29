@@ -17,7 +17,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import config, repo
+from . import config, repo, timeutil
 from ._atomic import atomic_write
 from .paths import paths
 
@@ -66,12 +66,8 @@ def _transitions_file() -> Path:
     return _state_dir() / "transitions.jsonl"
 
 
-def _now() -> datetime.datetime:
-    return datetime.datetime.now(config.get_tz())
-
-
-def _iso(dt: datetime.datetime) -> str:
-    return dt.isoformat(timespec="seconds")
+def _local_now_iso() -> str:
+    return timeutil.local_now().isoformat(timespec="seconds")
 
 
 def _epoch_iso(tst: object) -> str | None:
@@ -80,8 +76,7 @@ def _epoch_iso(tst: object) -> str | None:
         epoch = int(tst)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
-    utc = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
-    return _iso(utc.astimezone(config.get_tz()))
+    return timeutil.epoch_to_local(epoch).isoformat(timespec="seconds")
 
 
 def _read_state() -> dict:
@@ -124,7 +119,7 @@ def handle_payload(payload: dict) -> dict:
         event = payload.get("event")
         if ptype == "transition" and event in ("enter", "leave"):
             desc = payload.get("desc") or ""
-            ts = _epoch_iso(payload.get("tst")) or _iso(_now())
+            ts = _epoch_iso(payload.get("tst")) or _local_now_iso()
             cur = _current_event(state)
             dup = (cur is not None and cur["event"] == event
                    and cur["zone"] == desc and cur["ts"] == ts)
@@ -141,7 +136,7 @@ def handle_payload(payload: dict) -> dict:
             regions = payload.get("inregions") or []
             if isinstance(regions, list) and regions:
                 state = {**state, "zone": regions[0], "since": None, "seeded": True}
-        state = {**_BLANK, **state, "last_seen": _iso(_now())}
+        state = {**_BLANK, **state, "last_seen": _local_now_iso()}
         _write_state(state)
         return state
 
@@ -156,13 +151,10 @@ def check_silent(*, now: datetime.datetime | None = None) -> bool:
     last = _read_state().get("last_seen")
     if not last:
         return False
-    try:
-        dt = datetime.datetime.fromisoformat(str(last))
-    except ValueError:
+    dt = timeutil.parse_local(str(last))
+    if dt is None:
         return False
-    ref = now or _now()
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ref.tzinfo)
+    ref = now or timeutil.local_now()
     if (ref - dt).total_seconds() < hours * 3600:
         return False
     repo.add_alert("warn", _ALERT_TYPE, fingerprint=_FINGERPRINT,

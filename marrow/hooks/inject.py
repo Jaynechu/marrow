@@ -4,8 +4,8 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
-from .. import config, cortex_bridge, replay, storage
+from datetime import datetime
+from .. import config, cortex_bridge, replay, storage, timeutil
 from ._shared import _read_input
 
 
@@ -134,8 +134,7 @@ def turn_inject() -> int:
     if not sid:
         return 0
 
-    tz = config.get_tz()
-    now = datetime.now(timezone.utc).astimezone(tz)
+    now = timeutil.local_now()
     kickout_ctx = _kickout_context(channel, now, tpath)
     # The ONLY replay outlet for a window session — the wakeup note carries none.
     def _replay_fragment() -> str:

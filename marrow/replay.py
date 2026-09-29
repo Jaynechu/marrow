@@ -17,10 +17,9 @@ import fcntl
 import os
 import re as _re
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, cortex_bridge, cortex_cfg, storage, transcript
+from . import config, cortex_bridge, cortex_cfg, storage, timeutil, transcript
 
 # No channel is excluded by default: every consumer sees the ONE global latest
 # window and drops only its own session_id. cortex.toml [note].shell_replay_exclude
@@ -75,16 +74,6 @@ def save_marker(key: str, row_id: int) -> None:
         pass
 
 
-def local_hm(ts: str, tz) -> str:
-    try:
-        dt = datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(tz).strftime("%H:%M")
-    except ValueError:
-        return "??:??"
-
-
 def truncate(text: str, limit: int) -> str:
     text = text or ""
     if len(text) <= limit:
@@ -129,7 +118,6 @@ def render(rows, header: str, max_turns: int, per_chars: int,
     matching [replay].drop_patterns. A slash command drops its WHOLE turn (the
     command line AND the assistant rows answering it), otherwise the reply
     survives as an orphan."""
-    tz = config.get_tz()
     slash_max, drop_pats = _drop_filters(
         (config.load().get("replay", {}) or {}))
     turns: list[list[dict]] = []
@@ -148,7 +136,7 @@ def render(rows, header: str, max_turns: int, per_chars: int,
         item = {
             "channel": r["channel"] or "?",
             "sid4": (r["session_id"] or "")[:4],
-            "hm": local_hm(r["timestamp"], tz),
+            "hm": timeutil.utc_iso_to_local_hm(r["timestamp"]),
             "role": "N" if r["role"] == "user" else "Y",
             "content": truncate(content, per_chars),
         }
@@ -264,13 +252,10 @@ def _last_user_age_min(conn, sid: str) -> float | None:
         return None
     if not row or not row["ts"]:
         return None
-    try:
-        dt = datetime.fromisoformat(str(row["ts"]).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-    except ValueError:
+    dt = timeutil.parse_utc(str(row["ts"]))
+    if dt is None:
         return None
-    return (datetime.now(timezone.utc) - dt).total_seconds() / 60.0
+    return (timeutil.utc_now() - dt).total_seconds() / 60.0
 
 
 def context(sid: str, channel: str, *, transcript_path: str | None = None) -> str:

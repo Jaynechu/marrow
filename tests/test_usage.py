@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from marrow import config, cortex_bridge, hooks, repo, storage, usage
+from marrow import config, cortex_bridge, hooks, repo, storage, timeutil, usage
 
 
 def _assistant(cache_creation=0, output=0, cache_read=0, input_=0):
@@ -320,7 +320,7 @@ def test_page_turn_over_cap_archives_and_carries(tmp_path, monkeypatch):
     cortex_bridge._cortex_handoff_page_turn_if_stale()
 
     # archive: range name, holds the whole old page
-    archived = home / "handoff_archive" / f"2026-07-01~{datetime.now(config.get_tz()).strftime('%m-%d')}.md"
+    archived = home / "handoff_archive" / f"2026-07-01~{timeutil.local_now().strftime('%m-%d')}.md"
     assert archived.exists()
     assert "line0" in archived.read_text(encoding="utf-8")
 
@@ -336,7 +336,7 @@ def test_page_turn_over_cap_archives_and_carries(tmp_path, monkeypatch):
 
 def test_page_turn_single_day_archive_name(tmp_path, monkeypatch):
     logs = [f"- l{i}" for i in range(160)]
-    today = datetime.now(config.get_tz()).date().isoformat()
+    today = timeutil.local_today().isoformat()
     body = _handoff_body([], logs, log_date=today)
     home, hp = _page_setup(tmp_path, monkeypatch, body)
     cortex_bridge._cortex_handoff_page_turn_if_stale()
@@ -345,7 +345,7 @@ def test_page_turn_single_day_archive_name(tmp_path, monkeypatch):
 
 def test_page_turn_collision_suffix(tmp_path, monkeypatch):
     logs = [f"- l{i}" for i in range(160)]
-    today = datetime.now(config.get_tz()).date().isoformat()
+    today = timeutil.local_today().isoformat()
     body = _handoff_body([], logs, log_date=today)
     home, hp = _page_setup(tmp_path, monkeypatch, body)
     archive_dir = home / "handoff_archive"
@@ -362,7 +362,7 @@ def test_page_turn_write_failure_keeps_the_live_page(tmp_path, monkeypatch):
     SessionStart retries onto the same archive name. It also raises exactly
     one alert via the existing repo.add_alert mechanism."""
     logs = [f"- l{i}" for i in range(160)]
-    today = datetime.now(config.get_tz()).date().isoformat()
+    today = timeutil.local_today().isoformat()
     body = _handoff_body(["[] survive"], logs, log_date=today)
     home, hp = _page_setup(tmp_path, monkeypatch, body)
 
@@ -418,7 +418,7 @@ def test_page_turn_same_file_for_every_shell(tmp_path, monkeypatch):
 
 def test_page_turn_concurrent_shells_turn_once(tmp_path, monkeypatch):
     logs = [f"- HH:mm: line{i}" for i in range(160)]
-    today = datetime.now(config.get_tz()).date().isoformat()
+    today = timeutil.local_today().isoformat()
     body = _handoff_body(["[] survive"], logs, log_date=today)
     home, hp = _page_setup(tmp_path, monkeypatch, body)
 

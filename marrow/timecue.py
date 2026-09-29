@@ -1,18 +1,15 @@
 """Time-cue parser: detect natural-language date references in prompt text.
 
-Converts configured-local-timezone cues (昨天, 上周X, N天前, etc.) to UTC ISO windows.
-All output timestamps are UTC ISO strings; all day boundaries computed in the configured local timezone.
+Converts local-time cues (昨天, 上周X, N天前, etc.) to UTC ISO windows.
+Day boundaries and tz conversion come from timeutil.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, timedelta
 
-from . import config as _config
-
-_MELB = _config.get_tz()
+from . import timeutil
 
 _CN_DIGIT = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
              "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
@@ -26,29 +23,12 @@ class TimeCue:
     stripped: str    # prompt text with the matched cue phrase removed
 
 
-def _melb_now(now: datetime | None) -> datetime:
-    ref = now if now is not None else datetime.now(timezone.utc)
-    return ref.astimezone(_MELB)
+def _day(d: date) -> tuple[str, str]:
+    return timeutil.local_day_range(d.isoformat())
 
 
-def _day_bounds(local_date, tz: ZoneInfo = _MELB) -> tuple[datetime, datetime]:
-    """Return (start, end) aware UTC datetimes for a configured-local-timezone calendar day."""
-    start = datetime(local_date.year, local_date.month, local_date.day,
-                     0, 0, 0, tzinfo=tz)
-    end = start + timedelta(days=1)
-    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
-
-
-def _fmt(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def melb_day_range(date_str: str) -> tuple[str, str]:
-    """Convert YYYY-MM-DD configured-local-timezone day to (since_utc, until_utc) ISO strings."""
-    from datetime import date as _date
-    d = _date.fromisoformat(date_str)
-    s, e = _day_bounds(d)
-    return _fmt(s), _fmt(e)
+def _span(first: date, last: date) -> tuple[str, str]:
+    return _day(first)[0], _day(last)[1]
 
 
 def _strip_and_collapse(text: str, match: re.Match) -> str:
@@ -78,146 +58,128 @@ def _cn_to_int(s: str) -> int | None:
 
 
 # ── pattern list — ordered; first match wins ─────────────────────────────────
-# Each entry: (compiled_regex, handler(match, now_melb) -> (since, until) or None)
+# Each entry: (compiled_regex, handler(match, now_local) -> (since, until) or None)
 # Handler returns None to signal "future cue → skip".
 
-def _h_yesterday(m: re.Match, now_melb: datetime):
-    d = (now_melb - timedelta(days=1)).date()
-    s, e = _day_bounds(d)
-    return _fmt(s), _fmt(e)
+def _h_yesterday(m: re.Match, now_local: datetime):
+    d = (now_local - timedelta(days=1)).date()
+    return _day(d)
 
 
-def _h_today(m: re.Match, now_melb: datetime):
-    s, e = _day_bounds(now_melb.date())
-    return _fmt(s), _fmt(e)
+def _h_today(m: re.Match, now_local: datetime):
+    return _day(now_local.date())
 
 
-def _h_qiantian(m: re.Match, now_melb: datetime):
-    d = (now_melb - timedelta(days=2)).date()
-    s, e = _day_bounds(d)
-    return _fmt(s), _fmt(e)
+def _h_qiantian(m: re.Match, now_local: datetime):
+    d = (now_local - timedelta(days=2)).date()
+    return _day(d)
 
 
-def _h_daqiantian(m: re.Match, now_melb: datetime):
-    d = (now_melb - timedelta(days=3)).date()
-    s, e = _day_bounds(d)
-    return _fmt(s), _fmt(e)
+def _h_daqiantian(m: re.Match, now_local: datetime):
+    d = (now_local - timedelta(days=3)).date()
+    return _day(d)
 
 
-def _h_n_days_ago_cn(m: re.Match, now_melb: datetime):
+def _h_n_days_ago_cn(m: re.Match, now_local: datetime):
     n = _cn_to_int(m.group(1))
     if n is None or n < 1 or n > 30:
         return None
-    d = (now_melb - timedelta(days=n)).date()
-    s, e = _day_bounds(d)
-    return _fmt(s), _fmt(e)
+    d = (now_local - timedelta(days=n)).date()
+    return _day(d)
 
 
-def _h_n_days_ago_en(m: re.Match, now_melb: datetime):
+def _h_n_days_ago_en(m: re.Match, now_local: datetime):
     n = int(m.group(1))
     if n < 1 or n > 30:
         return None
-    d = (now_melb - timedelta(days=n)).date()
-    s, e = _day_bounds(d)
-    return _fmt(s), _fmt(e)
+    d = (now_local - timedelta(days=n)).date()
+    return _day(d)
 
 
-def _h_last_week(m: re.Match, now_melb: datetime):
+def _h_last_week(m: re.Match, now_local: datetime):
     # Previous Mon-Sun full week
-    today = now_melb.date()
+    today = now_local.date()
     this_mon = today - timedelta(days=today.weekday())
     prev_mon = this_mon - timedelta(days=7)
     prev_sun = prev_mon + timedelta(days=6)
-    s, _ = _day_bounds(prev_mon)
-    _, e = _day_bounds(prev_sun)
-    return _fmt(s), _fmt(e)
+    return _span(prev_mon, prev_sun)
 
 
-def _h_last_week_day(m: re.Match, now_melb: datetime):
+def _h_last_week_day(m: re.Match, now_local: datetime):
     # (上周X / 上星期X): that specific weekday in the previous week
     wd = _CN_WEEKDAY.get(m.group(1))
     if wd is None:
         return None
-    today = now_melb.date()
+    today = now_local.date()
     this_mon = today - timedelta(days=today.weekday())
     prev_mon = this_mon - timedelta(days=7)
     target = prev_mon + timedelta(days=wd)
-    s, e = _day_bounds(target)
-    return _fmt(s), _fmt(e)
+    return _day(target)
 
 
-def _h_this_week(m: re.Match, now_melb: datetime):
+def _h_this_week(m: re.Match, now_local: datetime):
     # This week Mon..today
-    today = now_melb.date()
+    today = now_local.date()
     this_mon = today - timedelta(days=today.weekday())
-    s, _ = _day_bounds(this_mon)
-    _, e = _day_bounds(today)
-    return _fmt(s), _fmt(e)
+    return _span(this_mon, today)
 
 
-def _h_weekday_bare(m: re.Match, now_melb: datetime):
+def _h_weekday_bare(m: re.Match, now_local: datetime):
     # (周X / 星期X) no prefix: most recent past occurrence within last 7 days
     wd = _CN_WEEKDAY.get(m.group(1))
     if wd is None:
         return None
-    today = now_melb.date()
+    today = now_local.date()
     for delta in range(7):
         candidate = today - timedelta(days=delta)
         if candidate.weekday() == wd:
-            s, e = _day_bounds(candidate)
-            return _fmt(s), _fmt(e)
+            return _day(candidate)
     return None
 
 
-def _h_last_month(m: re.Match, now_melb: datetime):
-    today = now_melb.date()
+def _h_last_month(m: re.Match, now_local: datetime):
+    today = now_local.date()
     first_this = today.replace(day=1)
     last_prev = first_this - timedelta(days=1)
     first_prev = last_prev.replace(day=1)
-    s, _ = _day_bounds(first_prev)
-    _, e = _day_bounds(last_prev)
-    return _fmt(s), _fmt(e)
+    return _span(first_prev, last_prev)
 
 
-def _h_month_day(m: re.Match, now_melb: datetime):
+def _h_month_day(m: re.Match, now_local: datetime):
     month = int(m.group(1))
     day = int(m.group(2))
-    today = now_melb.date()
+    today = now_local.date()
     try:
-        from datetime import date as _date
-        candidate = _date(today.year, month, day)
+        candidate = date(today.year, month, day)
         if candidate > today:
-            candidate = _date(today.year - 1, month, day)
-        s, e = _day_bounds(candidate)
-        return _fmt(s), _fmt(e)
+            candidate = date(today.year - 1, month, day)
+        return _day(candidate)
     except ValueError:
         return None
 
 
-def _h_day_of_month(m: re.Match, now_melb: datetime):
+def _h_day_of_month(m: re.Match, now_local: datetime):
     day = int(m.group(1))
     if day < 1 or day > 31:
         return None
-    today = now_melb.date()
+    today = now_local.date()
     try:
-        from datetime import date as _date
-        candidate = _date(today.year, today.month, day)
+        candidate = date(today.year, today.month, day)
         if candidate > today:
             # Go to previous month
             first_this = today.replace(day=1)
             prev_last = first_this - timedelta(days=1)
-            candidate = _date(prev_last.year, prev_last.month, day)
-        s, e = _day_bounds(candidate)
-        return _fmt(s), _fmt(e)
+            candidate = date(prev_last.year, prev_last.month, day)
+        return _day(candidate)
     except ValueError:
         return None
 
 
-def _h_tomorrow(m: re.Match, now_melb: datetime):
+def _h_tomorrow(m: re.Match, now_local: datetime):
     return None  # future → skip
 
 
-def _h_next_week(m: re.Match, now_melb: datetime):
+def _h_next_week(m: re.Match, now_local: datetime):
     return None  # future → skip
 
 
@@ -268,7 +230,7 @@ def parse_time_cue(text: str, now: datetime | None = None) -> TimeCue | None:
     Returns TimeCue(since_utc, until_utc, stripped) or None if no cue found
     or cue refers to the future.
     """
-    now_melb = _melb_now(now)
+    now_local = timeutil.to_local(now) if now is not None else timeutil.local_now()
     best_pos: int = len(text) + 1
     best_match: re.Match | None = None
     best_handler = None
@@ -285,10 +247,9 @@ def parse_time_cue(text: str, now: datetime | None = None) -> TimeCue | None:
     if best_match is None:
         return None
 
-    result = best_handler(best_match, now_melb)
+    result = best_handler(best_match, now_local)
     if result is None:
         return None  # future cue
     since, until = result
     stripped = _strip_and_collapse(text, best_match)
     return TimeCue(since_utc=since, until_utc=until, stripped=stripped)
-    return None

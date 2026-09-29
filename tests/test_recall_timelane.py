@@ -3,7 +3,7 @@
 Covers:
 - recall_fusion window filters events (in/out of window)
 - fetch_window_digests (ts-based and date fallback)
-- daemon param conversion via melb_day_range
+- daemon param conversion via local_day_range
 - hooks merge ordering (windowed first)
 - digest fallback when no keyword (empty stripped)
 - timelane budget cap
@@ -21,7 +21,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from marrow import recall as rm, repo, storage
-from marrow.timecue import melb_day_range, parse_time_cue
+from marrow.timecue import parse_time_cue
+from marrow.timeutil import local_day_range
 
 _MELB = ZoneInfo("Australia/Melbourne")
 
@@ -78,7 +79,7 @@ def test_fts_window_filters_in_range(db):
     # Out of window: two days earlier
     _make_event(db, "uniquetoken111 seen here", "s2", out_ts)
 
-    since, until = melb_day_range(day)
+    since, until = local_day_range(day)
 
     with patch("marrow.recall._ensure_embedder", return_value=None):
         hits = rm.recall_fusion(db, "uniquetoken111", limit=10,
@@ -110,7 +111,7 @@ def test_vec_window_python_filter(db):
     _make_event(db, "uniquetoken333 alpha", "s1", in_ts)
     _make_event(db, "uniquetoken333 alpha", "s2", out_ts)
 
-    since, until = melb_day_range(day)
+    since, until = local_day_range(day)
 
     with patch("marrow.recall._ensure_embedder", return_value=None):
         hits = rm.recall_fusion(db, "uniquetoken333", limit=10,
@@ -123,7 +124,7 @@ def test_vec_window_python_filter(db):
 # ── fetch_window_digests ──────────────────────────────────────────────────────
 
 def test_fetch_window_digests_ts_based(db):
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     # ts inside window
     _make_digest(db, "sid1", "2026-06-09", "had coffee", ts="2026-06-09T02:00:00Z")
     # ts outside window
@@ -136,7 +137,7 @@ def test_fetch_window_digests_ts_based(db):
 
 
 def test_fetch_window_digests_date_fallback(db):
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     # Insert with ts that's a dummy old value (won't match) but date matches
     db.execute(
         "INSERT OR REPLACE INTO session_digests(sid, date, text, ts) VALUES(?,?,?,?)",
@@ -151,7 +152,7 @@ def test_fetch_window_digests_date_fallback(db):
 
 
 def test_fetch_window_digests_truncates_content(db):
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     long_text = "x" * 300
     _make_digest(db, "sid4", "2026-06-09", long_text, ts="2026-06-09T02:00:00Z")
     rows = rm.fetch_window_digests(db, since, until)
@@ -159,7 +160,7 @@ def test_fetch_window_digests_truncates_content(db):
 
 
 def test_fetch_window_digests_cap(db):
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     for i in range(10):
         _make_digest(db, f"s{i}", "2026-06-09", f"text {i}",
                      ts=f"2026-06-09T0{i % 10}:00:00Z" if i < 10 else "2026-06-09T09:00:00Z")
@@ -168,7 +169,7 @@ def test_fetch_window_digests_cap(db):
 
 
 def test_fetch_window_digests_newest_first(db):
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     _make_digest(db, "early", "2026-06-09", "early session", ts="2026-06-09T01:00:00Z")
     _make_digest(db, "late", "2026-06-09", "late session", ts="2026-06-09T09:00:00Z")
     rows = rm.fetch_window_digests(db, since, until)
@@ -177,19 +178,19 @@ def test_fetch_window_digests_newest_first(db):
 
 # ── daemon param conversion ───────────────────────────────────────────────────
 
-def test_melb_day_range_since_until():
+def test_local_day_range_since_until():
     # since="2026-06-09" → since_utc = start of that Melbourne day
-    s, _ = melb_day_range("2026-06-09")
+    s, _ = local_day_range("2026-06-09")
     assert s == "2026-06-08T14:00:00Z"  # AEST = UTC+10
 
     # until="2026-06-09" → until_utc = END of that Melbourne day (start of next)
-    _, e = melb_day_range("2026-06-09")
+    _, e = local_day_range("2026-06-09")
     assert e == "2026-06-09T14:00:00Z"
 
 
 def test_daemon_empty_query_returns_digests(db):
     """Empty query with window → fetch_window_digests, not fusion."""
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     _make_digest(db, "dgs1", "2026-06-09", "walked to the park", ts="2026-06-09T02:00:00Z")
 
     rows = rm.fetch_window_digests(db, since, until)
@@ -203,7 +204,7 @@ def test_recall_with_config_threads_window(db):
     _make_event(db, "uniqueword999 at the cafe", "s1", in_ts)
     _make_event(db, "uniqueword999 at the cafe", "s2", out_ts)
 
-    since, until = melb_day_range(day)
+    since, until = local_day_range(day)
     with patch("marrow.recall._ensure_embedder", return_value=None):
         hits = rm.recall_with_config(db, "uniqueword999",
                                      since=since, until=until,
@@ -223,7 +224,7 @@ def test_hooks_windowed_hits_come_first(db, tmp_path):
     _make_event(db, "uniqueterm888 walked the dog", "sw1", in_ts)
     _make_event(db, "unrelated old content extra", "so1", "2026-04-01T05:00:00Z")
 
-    since, until = melb_day_range(day)
+    since, until = local_day_range(day)
 
     # Simulate what the hook does: windowed hits should come before semantic
     with patch("marrow.recall._ensure_embedder", return_value=None):
@@ -244,7 +245,7 @@ def test_hooks_windowed_hits_come_first(db, tmp_path):
 
 def test_digest_fallback_trivial_stripped(db):
     """When cue stripped text is trivial, fetch_window_digests is used."""
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     _make_digest(db, "fd1", "2026-06-09", "morning run details", ts="2026-06-09T02:00:00Z")
 
     # Prompt: only a time cue, nothing else substantive
@@ -278,7 +279,7 @@ def test_timelane_budget_cap():
 
 def test_recall_seen_digest_dedup(db):
     """Digest rows use ("digest", sid) key in recall_seen."""
-    since, until = melb_day_range("2026-06-09")
+    since, until = local_day_range("2026-06-09")
     _make_digest(db, "dedup1", "2026-06-09", "coffee and cake", ts="2026-06-09T02:00:00Z")
 
     rows = rm.fetch_window_digests(db, since, until)

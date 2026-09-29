@@ -772,7 +772,7 @@ def test_event_clear_backs_up_db_first(env, tmp_path):
 def test_localize_ts_converts_utc_fields(monkeypatch):
     from zoneinfo import ZoneInfo
     from marrow import timeutil
-    monkeypatch.setattr(timeutil, "_MELB", ZoneInfo("Asia/Tokyo"))
+    monkeypatch.setattr(timeutil, "_TZ", ZoneInfo("Asia/Tokyo"))
     row = {"id": 1, "created_at": "2026-07-27T00:30:00Z", "sent_at": None, "body": "x"}
     out = daemon._localize_ts(row, ("created_at", "sent_at", "replied_at"))
     assert out["created_at"] == "2026-07-27 09:30"  # UTC+9

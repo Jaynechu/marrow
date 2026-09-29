@@ -7,9 +7,8 @@ import os
 import re as _re
 import sqlite3
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
-from .. import config
+from .. import config, timeutil
 from .bash_guard import _isolation_hit, _isolation_prefixes
 from .lifecycle import _is_worktree_session
 
@@ -553,19 +552,6 @@ def _commit_ts(cwd: str, ref: str) -> float | None:
         return None
 
 
-def _iso_utc(s: str | None) -> datetime | None:
-    if not s:
-        return None
-    try:
-        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except ValueError:
-        try:
-            d = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
-
-
 def _cwd_related(a: str | None, b: str | None) -> bool:
     """Same directory, or one is an ancestor of the other."""
     if not a or not b:
@@ -592,18 +578,15 @@ def _git_revert_owner(sid: str, cwd: str, ts: float | None) -> str | None:
     cur = next((r for r in rows if r["sid"] == sid), None)
     if cur is None:
         return None
-    created = _iso_utc(cur["created_at"]) or _iso_utc(cur["last_active"])
+    created = timeutil.parse_utc(cur["created_at"]) or timeutil.parse_utc(cur["last_active"])
     if created is None:
         return None
-    ts_dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-    try:
-        hhmm = ts_dt.astimezone(config.get_tz()).strftime("%H:%M")
-    except Exception:  # noqa: BLE001
-        hhmm = ts_dt.strftime("%H:%M")
+    ts_dt = timeutil.epoch_to_local(ts)
+    hhmm = ts_dt.strftime("%H:%M")
 
     def _covers(r) -> bool:
-        st = _iso_utc(r["created_at"])
-        en = _iso_utc(r["ended_at"]) or _iso_utc(r["last_active"])
+        st = timeutil.parse_utc(r["created_at"])
+        en = timeutil.parse_utc(r["ended_at"]) or timeutil.parse_utc(r["last_active"])
         return bool(st and en and st <= ts_dt <= en)
 
     others = [r for r in rows

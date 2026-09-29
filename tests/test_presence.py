@@ -4,11 +4,11 @@ from __future__ import annotations
 import io
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pytest
 
-from marrow import config, hooks, presence
+from marrow import config, hooks, presence, timeutil
 from marrow.paths import paths as _paths
 
 CFG = {"presence": {"enabled": True, "interval_min": 30,
@@ -44,7 +44,7 @@ def _write_location(tmp_path, payload):
 
 
 def _ago(minutes: int) -> str:
-    dt = datetime.now(config.get_tz()) - timedelta(minutes=minutes)
+    dt = timeutil.local_now() - timedelta(minutes=minutes)
     return dt.isoformat(timespec="seconds")
 
 

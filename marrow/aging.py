@@ -24,15 +24,14 @@ Passes (single txn):
 from __future__ import annotations
 
 import argparse
-import glob
 import re
 import shutil
 import sqlite3
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
-from . import config, repo, storage
+from . import config, repo, storage, timeutil
 
 
 def confirm_milestone_alerts(conn: sqlite3.Connection) -> int:
@@ -148,7 +147,7 @@ def evict_vec_window(
 
     # Backup gate: skip destructive pass if backup missing or stale.
     newest = _newest_backup(backup_dir)
-    today = date.today()
+    today = timeutil.local_today()
     if newest is None or (today - newest).days > _BACKUP_STALE_DAYS:
         age_str = str((today - newest).days) + "d" if newest else "missing"
         result["pending_alerts"].append({

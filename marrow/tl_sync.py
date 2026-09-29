@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlite3
 
 from . import config
-from .timeline import _hhmm_local
+from .timeutil import utc_iso_to_local_hm
 
 _MAX_ROWS = 5
 
@@ -68,7 +68,7 @@ def last_tl_hhmm(conn: sqlite3.Connection, sid: str) -> str:
     ).fetchone()
     if not row:
         return "n/a"
-    return _hhmm_local(row["ts_end"] or row["ts_start"])
+    return utc_iso_to_local_hm(row["ts_end"] or row["ts_start"])
 
 
 def render_update(conn: sqlite3.Connection, sid: str) -> str:
@@ -113,8 +113,8 @@ def render_update(conn: sqlite3.Connection, sid: str) -> str:
         start = r["ts_start"]
         rng = ""
         if start:
-            s = _hhmm_local(start)
-            e = _hhmm_local(r["ts_end"]) if r["ts_end"] else None
+            s = utc_iso_to_local_hm(start)
+            e = utc_iso_to_local_hm(r["ts_end"]) if r["ts_end"] else None
             rng = (f"{s}-{e} " if e else f"{s} ")
         lines.append(f"- {rng}{r['content']} ({ch})")
     return "\n".join(lines)

@@ -7,9 +7,7 @@ import re as _re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from .. import config
-
-_RECALL_TZ = config.get_tz()
+from .. import config, timeutil
 
 
 # ── recall dedup state (per-session, hook-only) ──────────────────────────────
@@ -149,14 +147,9 @@ def _recall_log_dir() -> Path:
     return d
 
 
-def _recall_local_date(utc_now: datetime) -> str:
-    """UTC datetime → local recall-day string (YYYY-MM-DD), natural midnight."""
-    return utc_now.astimezone(_RECALL_TZ).date().isoformat()
-
-
 def _recall_session_log_path(sid: str, utc_now: datetime) -> Path:
     """Per-session recall log: recall/recall-YYYY-MM-DD-<sid8>.md."""
-    day = _recall_local_date(utc_now)
+    day = timeutil.to_local(utc_now).date().isoformat()
     sid8 = (sid or "unknown")[:8]
     return _recall_log_dir() / f"recall-{day}-{sid8}.md"
 
@@ -167,9 +160,10 @@ def _prune_recall_logs() -> None:
     Mirrors digest prune: natural midnight local-day boundary, mtime-based
     safety floor, today/yesterday whitelisted by filename."""
     try:
-        now = datetime.now(timezone.utc)
-        today = _recall_local_date(now)
-        yesterday = _recall_local_date(now - timedelta(days=1))
+        now = timeutil.utc_now()
+        local_day = timeutil.to_local(now).date()
+        today = local_day.isoformat()
+        yesterday = (local_day - timedelta(days=1)).isoformat()
         cutoff = now.timestamp() - 1.5 * 24 * 3600
         log_dir = _recall_log_dir()
         for f in log_dir.glob("recall-*.md"):

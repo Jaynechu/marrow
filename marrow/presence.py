@@ -20,7 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from . import config
+from . import config, timeutil
 from .paths import paths
 
 _PROBE_TIMEOUT_S = 1.5
@@ -51,11 +51,6 @@ def _duration(seconds: float) -> str:
     return f"{hours // 24}d{hours % 24}h"
 
 
-def _parse_local(ts: str, tz) -> datetime:
-    dt = datetime.fromisoformat(ts)
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=tz)
-
-
 def _location_piece(now: datetime) -> str:
     try:
         loc = json.loads(_location_file().read_text(encoding="utf-8"))
@@ -73,10 +68,10 @@ def _location_piece(now: datetime) -> str:
     zone = zone.strip()
     if not isinstance(since, str) or not since:
         return f"📍 {zone}" if zone != "out" else ""
-    try:
-        dur = _duration((now - _parse_local(since, now.tzinfo)).total_seconds())
-    except (TypeError, ValueError):
+    since_dt = timeutil.parse_local(since)
+    if since_dt is None:
         return f"📍 {zone}" if zone != "out" else ""
+    dur = _duration((now - since_dt).total_seconds())
     return f"📍 {zone} ({dur})"
 
 
@@ -178,7 +173,7 @@ def render(sid: str) -> str:
     now_epoch = int(time.time())
     if not _throttle_open(sid, interval_min, now_epoch):
         return ""
-    now = datetime.now(config.get_tz())
+    now = timeutil.local_now()
     pieces = [p for p in (_location_piece(now),
                           _activity_piece(_away_idle_min(cfg))) if p]
     _write_stamp(sid, now_epoch)

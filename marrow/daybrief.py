@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from datetime import datetime, timezone
-
-from . import config, cortex_bridge, repo, schedule, timeline, usage
+from . import config, cortex_bridge, repo, schedule, timeline, timeutil, usage
 from ._atomic import atomic_write
 from .md_index import MdIndex, _hash
 from .reconcile import emit_conflict_alerts, reconcile_timeline
@@ -57,22 +55,13 @@ def _sleep_status_line() -> str:
     """Compact per-shell alarm line: a shell with a future next_wake_at shows
     `😴 <shell> → HH:MM` (config tz); an awake shell is omitted entirely. Empty
     string when nobody is asleep, so the Status block gains no extra line."""
-    now = datetime.now(timezone.utc)
-    tz = config.get_tz()
+    now = timeutil.utc_now()
     parts = []
     for shell in cortex_bridge._shells():
-        raw = cortex_bridge.next_wake_at(shell)
-        if not raw:
+        when = timeutil.parse_local(cortex_bridge.next_wake_at(shell))
+        if when is None or when <= now:
             continue
-        try:
-            when = datetime.fromisoformat(raw)
-        except ValueError:
-            continue
-        if when.tzinfo is None:
-            when = when.replace(tzinfo=tz)
-        if when <= now:
-            continue
-        parts.append(f"😴 {shell} → {when.astimezone(tz).strftime('%H:%M')}")
+        parts.append(f"😴 {shell} → {timeutil.to_local(when).strftime('%H:%M')}")
     return " · ".join(parts)
 
 
@@ -142,7 +131,7 @@ def _timeline_body(conn: sqlite3.Connection, existing: str | None,
 
 def render(conn: sqlite3.Connection, existing: str | None = None,
            absorbed: bool = False) -> str:
-    now = datetime.now(timezone.utc).astimezone(config.get_tz())
+    now = timeutil.local_now()
     date = now.strftime("%Y-%m-%d")
     first_body = _extract_bounded(existing, FIRST_START, FIRST_END, _FIRST_PLACEHOLDER)
     track_body = _extract_bounded(

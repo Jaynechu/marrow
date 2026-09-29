@@ -37,23 +37,10 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from marrow import config  # noqa: E402
+from marrow import config, timeutil  # noqa: E402
 
-_TZ = config.get_tz()
 # Leading HH:MM not already followed by a "-HH:MM" range.
 _SINGLE_HHMM_RE = re.compile(r"^(\d{2}:\d{2})(?!-\d{2}:\d{2})")
-
-
-def _local_hhmm(utc_iso: str) -> str | None:
-    """UTC ISO timestamp -> local HH:MM. None on parse error."""
-    s = (utc_iso or "").strip().replace("Z", "+00:00")
-    try:
-        d = _dt.datetime.fromisoformat(s)
-    except ValueError:
-        return None
-    if d.tzinfo is None:
-        d = d.replace(tzinfo=_dt.timezone.utc)
-    return d.astimezone(_TZ).strftime("%H:%M")
 
 
 def _segment_bounds(conn: sqlite3.Connection, sid: str,
@@ -127,8 +114,8 @@ def _build_plan(conn: sqlite3.Connection) -> list[dict]:
             plan.append({"sid": sid, "segment_seq": seg, "action": "skip:no_events",
                         "old": life_lines, "new": None})
             continue
-        start_hhmm = _local_hhmm(first_ts)
-        end_hhmm = _local_hhmm(last_ts)
+        start_hhmm = timeutil.utc_iso_to_local_hm(first_ts, default=None)
+        end_hhmm = timeutil.utc_iso_to_local_hm(last_ts, default=None)
         if start_hhmm is None or end_hhmm is None:
             plan.append({"sid": sid, "segment_seq": seg, "action": "skip:parse_error",
                         "old": life_lines, "new": None})

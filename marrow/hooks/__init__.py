@@ -90,7 +90,6 @@ from .recall_inject import (  # noqa: F401
     user_prompt_submit,
 )
 from .state import (  # noqa: F401
-    _RECALL_TZ,
     _load_recall_seen,
     _load_sticker_nudge,
     _prune_recall_logs,

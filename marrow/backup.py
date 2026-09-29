@@ -16,10 +16,9 @@ import re
 import sqlite3
 import tempfile
 import time
-from datetime import date
 from pathlib import Path
 
-from marrow import config, repo
+from marrow import config, repo, timeutil
 
 _NAME_RE = re.compile(r"^marrow-\d{4}-\d{2}-\d{2}\.db$")
 
@@ -106,7 +105,7 @@ def run(*, apply: bool = False, db: str | None = None,
     local_dir = local_dir or cfg["paths"]["backup_dir"]
     offsite_dir = offsite_dir or cfg["paths"]["offsite_backup_dir"]
     keep = keep or int(cfg["backup"]["keep"])
-    today = today or date.today().isoformat()
+    today = today or timeutil.local_today().isoformat()
     p = plan(local_dir=local_dir, keep=keep, today=today,
              offsite_dir=offsite_dir)
     rep = {

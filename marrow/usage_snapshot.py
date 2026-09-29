@@ -26,13 +26,12 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import storage
+from . import storage, timeutil
 
 CDX_AUTH = Path.home() / ".codex" / "auth.json"
 CDX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
@@ -120,11 +119,8 @@ def _window_reset_iso(window: object) -> str | None:
     s = window.get("resets_at")
     if not isinstance(s, str):
         return None
-    try:
-        dt = datetime.fromisoformat(s)
-    except ValueError:
-        return None
-    return dt.astimezone(timezone.utc).isoformat()
+    dt = timeutil.parse_utc(s)
+    return dt.isoformat() if dt is not None else None
 
 
 def _rows_from_usage(data: dict) -> list[tuple[str, str]]:
@@ -218,7 +214,7 @@ def _codex_rows() -> list[tuple[str, str]]:
 def _today_net_rows() -> list[tuple[str, str]]:
     """Global net spend today (cacheCreation + output) via ccusage, when it is
     runnable. Best-effort — no ccusage / any failure returns no rows."""
-    day = time.strftime("%Y%m%d")
+    day = timeutil.local_today().strftime("%Y%m%d")
     try:
         out = subprocess.run(
             ["npx", "--yes", "ccusage@latest", "daily", "--json", "--since", day],

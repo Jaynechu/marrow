@@ -11,12 +11,10 @@ by turn_inject) and the line renderers.
 """
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
-from . import storage, config
+from . import storage, config, timeutil
 
 _SUBAGENT_RE = re.compile(r"subagent_tokens[:>]?\s*([0-9][0-9,]*)")
 
@@ -96,14 +94,6 @@ def _as_float(raw) -> float | None:
         return None
 
 
-def _local_hm(iso: str) -> str | None:
-    try:
-        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    return dt.astimezone(config.get_tz()).strftime("%H:%M")
-
-
 def _countdown(iso: str) -> str | None:
     try:
         dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
@@ -133,7 +123,7 @@ def _plan_used_segments(kv: dict, with_cdx: bool) -> list[str]:
     five = _as_float(kv.get("five_hour_pct"))
     if five is not None:
         seg = f"5h {five:.0f}%"
-        hm = _local_hm(kv.get("five_hour_reset_at", "")) if kv.get("five_hour_reset_at") else None
+        hm = timeutil.utc_iso_to_local_hm(kv.get("five_hour_reset_at"), default=None)
         if hm:
             seg += f" ({hm})"
         parts.append(seg)

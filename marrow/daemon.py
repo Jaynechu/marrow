@@ -20,6 +20,7 @@ from pydantic import Field
 
 from . import config, cortex_bridge, recall as _recall_mod, repo, storage
 from .llm import LLMClient
+from . import timeutil
 from .timeutil import utc_iso_to_local_datetime, reltime_short
 
 mcp = FastMCP("marrow")
@@ -52,18 +53,17 @@ def recall(
     query: Annotated[str, Field(description="Search text; matched over the event corpus via fused semantic+FTS+recency. Empty/whitespace query with since+until returns that window's digest rows instead.")],
     limit: Annotated[int, Field(ge=1, description="Max rows returned (default 10); also caps window-digest rows when query is empty.")] = 10,
     context: Annotated[bool, Field(description="When true, attaches ±1 adjacent same-session turns as _context to each non-dim event/task row (default false).")] = False,
-    since: Annotated[str | None, Field(description="Lower time bound as a configured-local-timezone day string YYYY-MM-DD; converted to that day's start. Optional.")] = None,
-    until: Annotated[str | None, Field(description="Upper time bound as a configured-local-timezone day string YYYY-MM-DD; converted to that day's end. Optional.")] = None,
+    since: Annotated[str | None, Field(description="Lower time bound as a local day YYYY-MM-DD; converted to that day's start. Optional.")] = None,
+    until: Annotated[str | None, Field(description="Upper time bound as a local day YYYY-MM-DD; converted to that day's end. Optional.")] = None,
 ) -> list[dict]:
     """Recall events from db. Call when the user mentions the past that you don't know.
     e.g. 你记得我上周说xxx？"""
-    from .timecue import melb_day_range
     since_utc: str | None = None
     until_utc: str | None = None
     if since:
-        since_utc, _ = melb_day_range(since)
+        since_utc, _ = timeutil.local_day_range(since)
     if until:
-        _, until_utc = melb_day_range(until)
+        _, until_utc = timeutil.local_day_range(until)
 
     conn = storage.connect(_DB)
     try:
@@ -158,8 +158,8 @@ def _like_escape(s: str) -> str:
 
 
 def _tl_resolve(conn, match: str | None, date: str | None) -> list[dict]:
-    """Find role='tl' rows by content substring (`match`) and/or configured-local-timezone
-    day (`date`, YYYY-MM-DD). Returns [{event_id, line}] rendered with configured local timezone
+    """Find role='tl' rows by content substring (`match`) and/or local day
+    (`date`, YYYY-MM-DD). Returns [{event_id, line}] rendered with local
     hh:mm, newest first, capped at 20. Raises ValueError on a malformed date."""
     clauses = ["role='tl'"]
     params: list = []
@@ -167,8 +167,7 @@ def _tl_resolve(conn, match: str | None, date: str | None) -> list[dict]:
         clauses.append("content LIKE ? ESCAPE '\\'")
         params.append(f"%{_like_escape(match)}%")
     if date:
-        from .timecue import melb_day_range
-        since_utc, until_utc = melb_day_range(date)  # ValueError on bad date
+        since_utc, until_utc = timeutil.local_day_range(date)
         clauses.append("COALESCE(ts_start, timestamp) >= ?"
                        " AND COALESCE(ts_start, timestamp) < ?")
         params.extend([since_utc, until_utc])
@@ -177,13 +176,12 @@ def _tl_resolve(conn, match: str | None, date: str | None) -> list[dict]:
         f" WHERE {' AND '.join(clauses)}"
         " ORDER BY COALESCE(ts_start, timestamp) DESC LIMIT 20", params
     ).fetchall()
-    from .timeline import _hhmm_local
     from . import tl_writer
     out = []
     for r in rows:
         ts_start = r["ts_start"] or r["timestamp"]
-        hhmm_start = _hhmm_local(ts_start)
-        hhmm_end = _hhmm_local(r["ts_end"]) if r["ts_end"] else None
+        hhmm_start = timeutil.utc_iso_to_local_hm(ts_start)
+        hhmm_end = timeutil.utc_iso_to_local_hm(r["ts_end"]) if r["ts_end"] else None
         out.append({
             "event_id": r["id"],
             "line": tl_writer.render_line(hhmm_start, hhmm_end, r["content"]),
@@ -227,13 +225,12 @@ def _tl_clear(event_id: int | None, sid: str | None,
         if not rows:
             return {"ok": True, "cleared": 0}
 
-        from .timeline import _hhmm_local
         from . import tl_writer
         lines = []
         for r in rows:
             ts_start = r["ts_start"] or r["timestamp"]
-            hhmm_start = _hhmm_local(ts_start)
-            hhmm_end = _hhmm_local(r["ts_end"]) if r["ts_end"] else None
+            hhmm_start = timeutil.utc_iso_to_local_hm(ts_start)
+            hhmm_end = timeutil.utc_iso_to_local_hm(r["ts_end"]) if r["ts_end"] else None
             lines.append(tl_writer.render_line(hhmm_start, hhmm_end, r["content"]))
         ids = [r["id"] for r in rows]
 

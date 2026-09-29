@@ -19,8 +19,8 @@ import os
 import re
 
 from . import config as _config
+from . import timeutil
 
-_TZ = _config.get_tz()
 _WORD_MAX = 8
 
 
@@ -89,11 +89,8 @@ def _norm_hhmm(s: str) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def _hhmm_to_utc(hhmm: str, base_date: _dt.date, now_local: _dt.datetime) -> str:
-    h, m = int(hhmm[:2]), int(hhmm[3:5])
-    local = _dt.datetime(base_date.year, base_date.month, base_date.day,
-                         h, m, tzinfo=_TZ)
-    return local.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _hhmm_to_utc(hhmm: str, base_date: _dt.date) -> str:
+    return timeutil.fmt_utc(timeutil.local_at(base_date, int(hhmm[:2]), int(hhmm[3:5])))
 
 
 def _compose_label(user_word, assistant_word) -> str:
@@ -148,25 +145,25 @@ def tl_add(conn, timerange: str, body: str,
     content = f"【{label}】{body} [{imp}]" if label else f"{body} [{imp}]"
 
     hhmm_start, hhmm_end = _parse_timerange(timerange)
-    now_local = _dt.datetime.now(_TZ)
+    now_local = timeutil.local_now()
     if date:
         try:
             base_date = _dt.date.fromisoformat(date)
         except ValueError as exc:
             raise TlError(f"bad date {date!r}: {exc}")
-        ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
+        ts_start = _hhmm_to_utc(hhmm_start, base_date)
     else:
         base_date = now_local.date()
-        ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
-        now_utc = now_local.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts_start = _hhmm_to_utc(hhmm_start, base_date)
+        now_utc = timeutil.fmt_utc(now_local)
         if ts_start > now_utc:
             base_date -= _dt.timedelta(days=1)
-            ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
+            ts_start = _hhmm_to_utc(hhmm_start, base_date)
     ts_end = None
     if hhmm_end is not None:
-        ts_end = _hhmm_to_utc(hhmm_end, base_date, now_local)
+        ts_end = _hhmm_to_utc(hhmm_end, base_date)
         if ts_end < ts_start:  # range crosses midnight
-            ts_end = _hhmm_to_utc(hhmm_end, base_date + _dt.timedelta(days=1), now_local)
+            ts_end = _hhmm_to_utc(hhmm_end, base_date + _dt.timedelta(days=1))
 
     if not sid:
         from .timeline import _query_current_sid
@@ -215,7 +212,7 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
     if ev["role"] != "tl":
         raise TlError(f"event_id {event_id} is not a tl row (role={ev['role']!r})")
 
-    now_local = _dt.datetime.now(_TZ)
+    now_local = timeutil.local_now()
     ts_start = ev["ts_start"] or ev["timestamp"]
     ts_end = ev["ts_end"]
     target_date = None
@@ -228,30 +225,25 @@ def tl_update(conn, event_id: int, timerange: str | None = None,
         hhmm_start, hhmm_end = _parse_timerange(timerange)
         if target_date:
             base_date = target_date
-            ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
+            ts_start = _hhmm_to_utc(hhmm_start, base_date)
         else:
             base_date = now_local.date()
-            ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
-            now_utc = now_local.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            ts_start = _hhmm_to_utc(hhmm_start, base_date)
+            now_utc = timeutil.fmt_utc(now_local)
             if ts_start > now_utc:
                 base_date -= _dt.timedelta(days=1)
-                ts_start = _hhmm_to_utc(hhmm_start, base_date, now_local)
-        ts_end = _hhmm_to_utc(hhmm_end, base_date, now_local) if hhmm_end else None
+                ts_start = _hhmm_to_utc(hhmm_start, base_date)
+        ts_end = _hhmm_to_utc(hhmm_end, base_date) if hhmm_end else None
         if ts_end and ts_end < ts_start:
-            ts_end = _hhmm_to_utc(hhmm_end, base_date + _dt.timedelta(days=1), now_local)
+            ts_end = _hhmm_to_utc(hhmm_end, base_date + _dt.timedelta(days=1))
     elif target_date:
-        start_loc = _dt.datetime.fromisoformat(
-            ts_start.replace("Z", "+00:00")).astimezone(_TZ)
+        start_loc = timeutil.to_local(ts_start)
         span = None
         if ts_end:
-            end_loc = _dt.datetime.fromisoformat(
-                ts_end.replace("Z", "+00:00")).astimezone(_TZ)
-            span = end_loc - start_loc
-        ts_start = _hhmm_to_utc(f"{start_loc:%H:%M}", target_date, now_local)
+            span = timeutil.parse_utc(ts_end) - start_loc
+        ts_start = _hhmm_to_utc(f"{start_loc:%H:%M}", target_date)
         if span is not None:
-            new_end = _dt.datetime.fromisoformat(
-                ts_start.replace("Z", "+00:00")) + span
-            ts_end = new_end.strftime("%Y-%m-%dT%H:%M:%SZ")
+            ts_end = timeutil.fmt_utc(timeutil.parse_utc(ts_start) + span)
 
     label_part, body_part = _split_content(ev["content"])
     if body is not None:

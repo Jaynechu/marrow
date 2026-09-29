@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 
 import pytest
 
-from marrow import config, sensors
+from marrow import config, sensors, timeutil
 
 T0 = 1753830000  # arbitrary fixed epochs
 T1 = T0 + 3600
@@ -208,9 +208,10 @@ def alerts(monkeypatch):
 
 
 def _seed_last_seen(hours_ago: float) -> None:
-    ref = sensors._now() - datetime.timedelta(hours=hours_ago)
+    ref = timeutil.local_now() - datetime.timedelta(hours=hours_ago)
     sensors._write_state({**sensors._BLANK, "zone": "Deakin",
-                          "since": _iso(T0), "last_seen": sensors._iso(ref)})
+                          "since": _iso(T0),
+                          "last_seen": ref.isoformat(timespec="seconds")})
 
 
 def test_watchdog_alerts_when_silent(state_dir, cfg, alerts):

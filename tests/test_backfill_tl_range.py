@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from marrow import config, storage
+from marrow import config, storage, timeutil
 
 _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
@@ -40,19 +40,23 @@ def _insert_user_events(db: str, sid: str, timestamps: list[str]) -> None:
     conn.close()
 
 
-# ── _local_hhmm / _rewrite_line / _SINGLE_HHMM_RE ──────────────────────────
+# ── local HH:MM / _rewrite_line / _SINGLE_HHMM_RE ──────────────────────────
+
+def _local_hhmm(ts: str) -> str | None:
+    return timeutil.utc_iso_to_local_hm(ts, default=None)
+
 
 def test_local_hhmm_converts_utc_to_melbourne():
     # July = AEST, UTC+10.
-    assert bf._local_hhmm("2026-07-01T05:00:00Z") == "15:00"
+    assert _local_hhmm("2026-07-01T05:00:00Z") == "15:00"
 
 
 def test_local_hhmm_cross_midnight():
-    assert bf._local_hhmm("2026-07-01T17:09:00Z") == "03:09"
+    assert _local_hhmm("2026-07-01T17:09:00Z") == "03:09"
 
 
 def test_local_hhmm_parse_error_returns_none():
-    assert bf._local_hhmm("not-a-timestamp") is None
+    assert _local_hhmm("not-a-timestamp") is None
 
 
 def test_rewrite_line_produces_range():
