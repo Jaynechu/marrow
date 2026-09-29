@@ -37,7 +37,7 @@
   <integer>5</integer>
 
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
 
   <key>StandardOutPath</key>
   <string>__DATA_DIR__/logs/embedd-launchd.log</string>
