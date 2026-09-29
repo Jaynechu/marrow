@@ -412,6 +412,15 @@ def test_edit_manual_event_updates_content(conn, dash_path):
     assert row["content"] == "修改后的内容"
 
 
+def test_edit_deleted_event_line_no_conflict(conn, dash_path):
+    """md still shows a tl:e anchor whose row was deliberately deleted
+    (tl clear / event_clear) → stale line skipped silently, no conflict."""
+    dash_path.write_text("## Timeline\n14:00 早已删除的事件 <!-- tl:e:99999 -->")
+    rpt = reconcile_timeline(conn, dash_path)
+    assert rpt.conflicts == []
+    assert rpt.updated == 0
+
+
 def test_delete_manual_event_line_removes_row(conn, dash_path):
     import datetime as _dt
     ts_utc = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

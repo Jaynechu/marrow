@@ -998,7 +998,6 @@ def reconcile_timeline(conn: sqlite3.Connection,
                 (eid,)
             ).fetchone()
             if row is None:
-                rpt.conflicts.append(f"tl:e:{eid} not in events")
                 continue
             # Freshness gate: DB row content-written after the render (t=) AND
             # md text still differs → md is the stale second surface, DB wins.
