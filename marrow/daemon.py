@@ -18,9 +18,8 @@ from typing import Annotated
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
-from . import config, cortex_bridge, recall as _recall_mod, repo, storage
+from . import config, cortex_bridge, purge, recall as _recall_mod, repo, storage, timeutil
 from .llm import LLMClient
-from . import timeutil
 from .timeutil import utc_iso_to_local_datetime, reltime_short
 
 mcp = FastMCP("marrow")
@@ -189,87 +188,8 @@ def _tl_resolve(conn, match: str | None, date: str | None) -> list[dict]:
     return out
 
 
-def _tl_where(event_id, sid, before, after):
-    if event_id is not None:
-        return "role='tl' AND id=?", [event_id]
-    if sid:
-        return "role='tl' AND session_id=?", [sid]
-    clauses = ["role='tl'"]
-    params: list = []
-    if before:
-        clauses.append("timestamp < ?")
-        params.append(before)
-    if after:
-        clauses.append("timestamp >= ?")
-        params.append(after)
-    return " AND ".join(clauses), params
-
-
-def _tl_clear(event_id: int | None, sid: str | None,
-              before: str | None, after: str | None) -> dict:
-    import shutil
-    from datetime import datetime, timezone
-
-    selectors = [event_id is not None, bool(sid), bool(before or after)]
-    if sum(selectors) == 0:
-        return {"ok": False, "error": "one of event_id / sid / before-after required"}
-    if sum(selectors) > 1:
-        return {"ok": False, "error": "event_id / sid / before-after are mutually exclusive"}
-
-    where, params = _tl_where(event_id, sid, before, after)
-    conn = storage.connect(_DB)
-    try:
-        rows = conn.execute(
-            f"SELECT id, ts_start, ts_end, timestamp, content FROM events"
-            f" WHERE {where}", params).fetchall()
-        if not rows:
-            return {"ok": True, "cleared": 0}
-
-        from . import tl_writer
-        lines = []
-        for r in rows:
-            ts_start = r["ts_start"] or r["timestamp"]
-            hhmm_start = timeutil.utc_iso_to_local_hm(ts_start)
-            hhmm_end = timeutil.utc_iso_to_local_hm(r["ts_end"]) if r["ts_end"] else None
-            lines.append(tl_writer.render_line(hhmm_start, hhmm_end, r["content"]))
-        ids = [r["id"] for r in rows]
-
-        backup = None
-        if len(ids) > 1:
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-            backup = f"/tmp/marrow-backup-tlclear-{ts}.db"
-            shutil.copy2(str(_DB), backup)
-
-        placeholders = ",".join("?" * len(ids))
-        with conn:
-            conn.execute(f"DELETE FROM events WHERE id IN ({placeholders})", ids)
-            conn.execute(
-                "INSERT INTO audit_log (target_table, target_id, action, summary)"
-                " VALUES ('events', ?, 'tl_clear', ?)",
-                (",".join(str(i) for i in ids),
-                 f"selector={'event_id' if event_id is not None else 'sid' if sid else 'range'}"),
-            )
-    finally:
-        conn.close()
-    # DB rows are gone; re-render surviving surfaces so the tl line clears from
-    # daybrief (a DELETE bumps no surviving row's mtime, so the 5s loop can't
-    # detect it on its own).
-    if ids:
-        subprocess.run(["mw", "refresh", "--all"], capture_output=True, text=True)
-
-    result = {"ok": True, "cleared": len(ids), "ids": ids}
-    if len(lines) > 20:
-        result["deleted"] = lines[:20]
-        result["truncated"] = True
-    else:
-        result["deleted"] = lines
-    if backup is not None:
-        result["backup"] = backup
-    return result
-
-
 def tl(
-    action: Annotated[str, Field(description="add / update / clear / query. update: only provided fields change. clear: deleted lines returned, capped at 20.")],
+    action: Annotated[str, Field(description="add / update / clear / query. update: only provided fields change. clear: deleted count + lines returned (lines capped at 20); 0 matches = ok:false, nothing deleted.")],
     timerange: Annotated[str | None, Field(description="'HH:mm-HH:mm'.")] = None,
     body: Annotated[str | None, Field(description="Plain text <=30 chars. Real-world task/event + shared activities, vivid not work-log — life details in, tech details out (meals, chat topics, plays, tiny/silly/funny moments). 以assistant第一人称描述（我），user=“你”, never third person.")] = None,
     user_word: Annotated[str | None, Field(description="User's mood right now; 1-4 chars. e.g. 烦/心虚/紧张激动/好可爱. Single side fine. On update, providing either user_word or assistant_word replaces the whole label.")] = None,
@@ -277,10 +197,11 @@ def tl(
     importance: Annotated[int | None, Field(ge=1, le=5, description="ONE event-level composite (not per person): intensity (current) * importance (future). 1-2 = low-medium & short-term, routine (casual chat, life admin, study, coding); 3 = both medium ~1 week (funny moments, light quarrels, outing); 4 = either high (major conflict, final exam); 5 = milestone (both high — worth recording forever). Omitted -> 3 on add, kept on update.")] = None,
     sid: Annotated[str | None, Field(description="Session id. add: overrides the auto-resolved current session for the row. clear: delete all tl rows for this session (mutually exclusive with event_id and before/after).")] = None,
     event_id: Annotated[int | None, Field(description="Target tl row id for update/clear. Get it from a 'query' call.")] = None,
-    before: Annotated[str | None, Field(description="clear only: delete tl rows with timestamp < this value (ISO). Combine with after for a range; mutually exclusive with event_id and sid.")] = None,
-    after: Annotated[str | None, Field(description="clear only: delete tl rows with timestamp >= this value (ISO). Combine with before for a range; mutually exclusive with event_id and sid.")] = None,
+    before: Annotated[str | None, Field(description="clear only: delete tl rows before this local time (exclusive). YYYY-MM-DD = start of that local day; YYYY-MM-DD HH:MM = local time; ISO with Z/offset is taken as-is. after=2026-09-30 + before=2026-10-01 = the whole local day 30th. Mutually exclusive with event_id and sid.")] = None,
+    after: Annotated[str | None, Field(description="clear only: delete tl rows at/after this local time (inclusive). Same formats as before. Mutually exclusive with event_id and sid.")] = None,
     match: Annotated[str | None, Field(description="Content substring to resolve a row for query/update/clear when you don't have event_id; matched case-sensitively, newest-first, capped at 20. Must resolve to a single row for update/clear.")] = None,
-    date: Annotated[str | None, Field(description="Optional YYYY-MM-DD, backdates the row.")] = None,
+    date: Annotated[str | None, Field(description="Optional local day YYYY-MM-DD. add/update: backdates the row. query/clear with match: narrows to that day.")] = None,
+    dry_run: Annotated[bool, Field(description="clear only: report match count + earliest/latest local timestamp without deleting.")] = False,
 ) -> dict:
     """Summarise each session into tl lines.
     Call tl BEFORE composing your final reply — tool calls first, prose last.
@@ -383,7 +304,8 @@ def tl(
             return {"ok": False, "error": "multiple matches — refine or pass event_id",
                     "matches": hits}
         event_id = hits[0]["event_id"]
-    return _tl_clear(event_id=event_id, sid=sid, before=before, after=after)
+    return purge.tl_clear(_DB, event_id=event_id, sid=sid, before=before,
+                          after=after, dry_run=dry_run)
 
 
 # Inject persona markers into the tl docstring before MCP registration reads it.
@@ -936,127 +858,19 @@ def alert(
 
 # ── event_clear ──────────────────────────────────────────────────────────────
 
-def _time_where(col, before, after):
-    clauses, params = [], []
-    if before:
-        clauses.append(f"{col} < ?")
-        params.append(before)
-    if after:
-        clauses.append(f"{col} >= ?")
-        params.append(after)
-    if clauses:
-        return " WHERE " + " AND ".join(clauses), params
-    return "", []
-
-
-def _tombstone_deleted(conn, select_sql: str, params, reason: str) -> None:
-    """Record event_tombstones for rows about to be deleted, so a later
-    catchup/SessionEnd re-archive can't resurrect them (mirrors
-    clean_harness_events.py). Keyed by the existing events.source_hash;
-    rows with NULL source_hash are skipped by the caller's SQL."""
-    hashes = [r[0] for r in conn.execute(select_sql, params).fetchall()]
-    if hashes:
-        conn.executemany(
-            "INSERT OR IGNORE INTO event_tombstones (source_hash, reason)"
-            " VALUES (?, ?)", [(h, reason) for h in hashes])
-
-
-def _do_event_clear(before: str | None, after: str | None, last: int | None, sid: str | None = None) -> dict:
-    import shutil
-    from datetime import datetime, timezone
-
-    time_filtered = bool(before or after or sid)
-    if time_filtered and last:
-        return {"ok": False, "error": "before/after/sid and last are mutually exclusive"}
-
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    backup = f"/tmp/marrow-backup-purge-{ts}.db"
-    shutil.copy2(str(_DB), backup)
-
-    conn = storage.connect(_DB)
-    counts = {}
-    try:
-        if last:
-            _sub = "(SELECT id FROM events ORDER BY timestamp DESC LIMIT ?)"
-            sids = [r[0] for r in conn.execute(
-                "SELECT DISTINCT session_id FROM events WHERE id IN "
-                + _sub, [last]).fetchall()]
-            _tombstone_deleted(
-                conn,
-                "SELECT source_hash FROM events WHERE id IN " + _sub
-                + " AND source_hash IS NOT NULL",
-                [last], "event_clear: last=N")
-            conn.execute("DELETE FROM events WHERE id IN " + _sub, [last])
-            if sids:
-                conn.executemany(
-                    "DELETE FROM audit_log WHERE action='sessionend_extract' AND target_id=?",
-                    [(s,) for s in sids])
-            counts["events"] = last
-        elif time_filtered:
-            where, params = _time_where("timestamp", before, after)
-            if sid:
-                where = (where + " AND " if where else " WHERE ") + "session_id LIKE ?"
-                params = list(params) + [sid + "%"]
-            sids = [r[0] for r in conn.execute(
-                "SELECT DISTINCT session_id FROM events" + where, params).fetchall()]
-            _tombstone_deleted(
-                conn,
-                "SELECT source_hash FROM events" + where
-                + " AND source_hash IS NOT NULL", params,
-                "event_clear: range")
-            conn.execute("DELETE FROM events" + where, params)
-            if sids:
-                conn.executemany(
-                    "DELETE FROM audit_log WHERE action='sessionend_extract' AND target_id=?",
-                    [(s,) for s in sids])
-        else:
-            _PAUSE_INGEST_PATH.touch()
-            triggers = conn.execute(
-                "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name='events'"
-            ).fetchall()
-            for t in triggers:
-                conn.execute(f"DROP TRIGGER IF EXISTS {t['name']}")
-            conn.execute("DELETE FROM events")
-            conn.execute("DELETE FROM sqlite_sequence WHERE name='events'")
-            conn.execute("DELETE FROM event_tombstones")
-            conn.execute("INSERT INTO events_fts(events_fts) VALUES('rebuild')")
-            conn.execute("DELETE FROM events_vec")
-            # Triggers are dropped above so events_ad_vec does not cascade —
-            # clear meta manually or freed ids inherit orphan meta rows that
-            # poison the vec dedup on reuse.
-            conn.execute("DELETE FROM events_vec_meta")
-            conn.execute("DELETE FROM audit_log WHERE action='sessionend_extract'")
-            for t in triggers:
-                conn.execute(t["sql"])
-        conn.commit()
-    finally:
-        conn.close()
-
-    subprocess.run(["mw", "refresh", "--all"], capture_output=True, text=True)
-    result = {"ok": True, "purged": ["events"], "backup": backup}
-    if before:
-        result["before"] = before
-    if after:
-        result["after"] = after
-    if last:
-        result["last"] = last
-    if sid:
-        result["sid"] = sid
-    if counts:
-        result["counts"] = counts
-    return result
-
-
 @marrow_tool()
 def event_clear(
-    before: Annotated[str, Field(description="Delete events with timestamp < this (ISO or YYYY-MM-DD). Combine with after for a range; mutually exclusive with last. Empty = no bound.")] = "",
-    after: Annotated[str, Field(description="Delete events with timestamp >= this (ISO or YYYY-MM-DD). Combine with before for a range; mutually exclusive with last. Empty = no bound.")] = "",
+    before: Annotated[str, Field(description="Delete events before this local time (exclusive). YYYY-MM-DD = start of that local day; YYYY-MM-DD HH:MM = local time; ISO with Z/offset is taken as-is. after=2026-09-30 + before=2026-10-01 = the whole local day 30th. Mutually exclusive with last. Empty = no bound.")] = "",
+    after: Annotated[str, Field(description="Delete events at/after this local time (inclusive). Same formats as before. Mutually exclusive with last. Empty = no bound.")] = "",
     last: Annotated[int, Field(ge=0, description="Delete the N most recent events; mutually exclusive with before/after/sid. 0 = unused. With no before/after/last/sid set, ALL events are purged.")] = 0,
     sid: Annotated[str, Field(description="Delete events of this session_id (prefix match, e.g. '9039'). Combinable with before/after; mutually exclusive with last. Empty = no session filter.")] = "",
+    dry_run: Annotated[bool, Field(description="Report match count + earliest/latest local timestamp without deleting.")] = False,
 ) -> dict:
     """Delete raw events (recall corpus) incl. FTS+vectors+tombstones.
+    Returns the deleted count and the UTC/local bounds used; 0 matches = ok:false, nothing deleted.
     Full clear auto-pauses ingest (resume via ingest tool)."""
-    return _do_event_clear(before or None, after or None, last or None, sid or None)
+    return purge.event_clear(_DB, _PAUSE_INGEST_PATH, before or None, after or None,
+                             last or None, sid or None, dry_run=dry_run)
 
 
 def main() -> None:

@@ -14,7 +14,7 @@ commands submitted WITH args (e.g. "/model\\n \\n opusplan", "/effort\\n \\n max
 carry real text after stripping and are NOT touched.
 
 Deleted rows are tombstoned via their existing events.source_hash (mirrors
-daemon._do_event_clear), so archive_events cannot resurrect them. events_vec /
+purge.event_clear), so archive_events cannot resurrect them. events_vec /
 events_vec_meta / events_fts cleanup is handled by the events_ad / events_ad_vec
 AFTER DELETE triggers — no manual touch needed (verified in schema).
 

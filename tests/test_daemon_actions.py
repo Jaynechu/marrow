@@ -51,7 +51,7 @@ def test_tl_clear_by_event_id(env):
     _insert_tl(env, "row two")
     out = daemon.tl("clear", event_id=eid)
     assert out["ok"] is True
-    assert out["cleared"] == 1
+    assert out["deleted"] == 1
     assert _event_count(env) == 1
 
 
@@ -60,7 +60,7 @@ def test_tl_clear_by_sid(env):
     _insert_tl(env, "b", sid="sess-x")
     _insert_tl(env, "c", sid="sess-y")
     out = daemon.tl("clear", sid="sess-x")
-    assert out["cleared"] == 2
+    assert out["deleted"] == 2
     assert _event_count(env) == 1
 
 
@@ -68,7 +68,7 @@ def test_tl_clear_by_range(env):
     _insert_tl(env, "old", ts="2026-06-01T00:00:00Z")
     _insert_tl(env, "new", ts="2026-07-01T00:00:00Z")
     out = daemon.tl("clear", before="2026-06-15T00:00:00Z")
-    assert out["cleared"] == 1
+    assert out["deleted"] == 1
     assert _event_count(env) == 1
 
 
@@ -76,10 +76,10 @@ def test_tl_clear_single_row_no_backup_returns_line(env):
     eid = _insert_tl(env, "【N愉悦】只有一行 [3]")
     out = daemon.tl("clear", event_id=eid)
     assert out["ok"] is True
-    assert out["cleared"] == 1
+    assert out["deleted"] == 1
     assert "backup" not in out
-    assert len(out["deleted"]) == 1
-    assert "只有一行" in out["deleted"][0]
+    assert len(out["lines"]) == 1
+    assert "只有一行" in out["lines"][0]
 
 
 def test_tl_clear_multi_row_backs_up_and_returns_lines(env, tmp_path):
@@ -88,12 +88,12 @@ def test_tl_clear_multi_row_backs_up_and_returns_lines(env, tmp_path):
     _insert_tl(env, "【N愉悦】行二 [3]", sid="sess-x")
     out = daemon.tl("clear", sid="sess-x")
     assert out["ok"] is True
-    assert out["cleared"] == 2
+    assert out["deleted"] == 2
     assert "backup" in out
     assert out["backup"].startswith("/tmp/marrow-backup-tlclear-")
     assert os.path.exists(out["backup"])
-    assert len(out["deleted"]) == 2
-    assert {"行一" in l or "行二" in l for l in out["deleted"]} == {True}
+    assert len(out["lines"]) == 2
+    assert {"行一" in l or "行二" in l for l in out["lines"]} == {True}
     os.remove(out["backup"])
 
 
@@ -118,7 +118,8 @@ def test_tl_clear_ignores_non_tl_rows(env):
     finally:
         conn.close()
     out = daemon.tl("clear", before="2026-08-01T00:00:00Z")
-    assert out["cleared"] == 0
+    assert out["ok"] is False
+    assert out["error"] == "0 rows matched"
     assert _event_count(env) == 1
 
 
@@ -235,7 +236,7 @@ def test_tl_clear_by_match_single(env):
     _insert_tl(env, "other row", ts="2026-07-05T06:00:00Z")
     out = daemon.tl("clear", match="千层")
     assert out["ok"] is True
-    assert out["cleared"] == 1
+    assert out["deleted"] == 1
     assert _event_count(env) == 1
 
 
@@ -704,7 +705,7 @@ def test_event_clear_last_n(env):
     _insert_event(env, "2026-06-01T00:00:00Z")
     _insert_event(env, "2026-07-01T00:00:00Z")
     out = daemon.event_clear(last=1)
-    assert out["counts"]["events"] == 1
+    assert out["deleted"] == 1
     assert _event_count(env) == 1
 
 
