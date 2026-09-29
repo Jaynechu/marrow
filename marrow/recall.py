@@ -111,12 +111,15 @@ def _release_embedder() -> None:
 
 # ── embed chokepoint ─────────────────────────────────────────────────────────
 
-def embed_texts(texts: list[str]) -> "NDArray[np.float32] | None":
+def embed_texts(
+    texts: list[str], *, local: bool = True
+) -> "NDArray[np.float32] | None":
     """Embed via the shared embedd service, else in-process. None = no model.
 
     A missing socket file means the service was never installed — fall back
     silently. A socket that exists but cannot serve is a real fault: fall back
-    and raise a rate-limited warn alert.
+    and raise a rate-limited warn alert. local=False never loads the model in
+    this process: no service answer → None.
     """
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
@@ -127,21 +130,29 @@ def embed_texts(texts: list[str]) -> "NDArray[np.float32] | None":
         except embedd.ServiceAbsent:
             pass
         except embedd.ServiceUnreachable as e:
-            logger.warning("embedd unreachable, falling back locally: %s", e)
+            logger.warning("embedd unreachable: %s", e)
             embedd.alert_unreachable(str(e))
+    if not local:
+        return None
     emb = _ensure_embedder()
     if emb is None:
         return None
     return emb.embed(texts)
 
 
-def embed_available() -> bool:
+def embed_available(*, local: bool = True) -> bool:
     """True when embedding can run. A live service answers without any local
-    load; only when it cannot does this fall back to loading in-process."""
+    load; only when it cannot does this fall back to loading in-process.
+    local=False never loads: a present socket that does not answer raises the
+    rate-limited unreachable alert and returns False."""
     from . import embedd
     if embedd.enabled() and not embedd.is_service_process():
         if embedd.ping() is not None:
             return True
+        if not local and embedd.socket_path().exists():
+            embedd.alert_unreachable("ping got no answer")
+    if not local:
+        return False
     return _ensure_embedder() is not None
 
 
@@ -378,9 +389,11 @@ def _embed_pending_lane(
     batch: int,
     embedder_id: str,
     dim: int,
+    *,
+    local: bool = True,
 ) -> int:
-    """Backfill one lane. Returns count written. Caller ensures embedder loaded."""
-    if not embed_available():
+    """Backfill one lane. Returns count written."""
+    if not embed_available(local=local):
         return 0
     cfg = _LANES[lane]
     rows = conn.execute(cfg["pending_sql"], (batch,)).fetchall()
@@ -411,7 +424,7 @@ def _embed_pending_lane(
         return 0
     _CHUNK = 50
     chunks = [texts[i:i + _CHUNK] for i in range(0, len(texts), _CHUNK)]
-    chunk_vecs = [embed_texts(c) for c in chunks]
+    chunk_vecs = [embed_texts(c, local=local) for c in chunks]
     if any(cv is None for cv in chunk_vecs):
         return 0
     vecs = np.concatenate(chunk_vecs, axis=0)
@@ -444,39 +457,33 @@ def embed_pending(
     batch: int = 50,
     embedder_id: str = "bge-m3",
     dim: int = 1024,
+    *,
+    local: bool = True,
 ) -> int:
     """Backfill all six lanes (events + memes + entities + milestones + tasks
     + stickers).
 
     Per-lane budget = `batch` so a large events backlog cannot starve the
-    cross-table lanes on a single hook firing. Returns total rows written.
+    cross-table lanes on a single call. local=False = embedd service only,
+    never the in-process model; rows stay pending when it cannot serve.
+    Returns total rows written.
     """
-    if not embed_available():
+    if not embed_available(local=local):
         return 0
     total = 0
     for lane in _LANES:
-        total += _embed_pending_lane(conn, lane, batch, embedder_id, dim)
+        total += _embed_pending_lane(conn, lane, batch, embedder_id, dim,
+                                     local=local)
     return total
 
 
-# ── backlog probe (cheap SQL, never loads the embedder) ──────────────────────
-
-# Same predicate as the events lane in _LANES, ordered oldest-first so the
-# watcher can age the backlog without a full aggregate scan.
-_PENDING_OLDEST_EVENT_SQL = (
-    "SELECT e.created_at FROM events e "
-    "WHERE NOT EXISTS (SELECT 1 FROM events_vec_rowids v WHERE v.rowid=e.id) "
-    "  AND NOT EXISTS (SELECT 1 FROM events_vec_meta m WHERE m.rowid=e.id) "
-    "ORDER BY e.id ASC LIMIT 1"
-)
-
+# ── pending probe (cheap SQL, never loads the embedder) ──────────────────────
 
 def pending_counts(conn: sqlite3.Connection, cap: int = 1000) -> dict[str, int]:
     """Rows `embed_pending` would pick up per lane, each capped at `cap`.
 
     Reuses the lane pending_sql verbatim so detection can never drift from the
-    write path. Pure SQL — safe to call from the watcher process, which must
-    never load the ONNX model.
+    write path. Pure SQL — never loads the ONNX model.
     """
     out: dict[str, int] = {}
     for lane, cfg in _LANES.items():
@@ -489,15 +496,6 @@ def pending_counts(conn: sqlite3.Connection, cap: int = 1000) -> dict[str, int]:
             continue  # table/vec module absent — lane invisible, not fatal
         out[lane] = int(row[0]) if row else 0
     return out
-
-
-def pending_oldest_event_ts(conn: sqlite3.Connection) -> str | None:
-    """created_at of the oldest unembedded events row, or None if none pending."""
-    try:
-        row = conn.execute(_PENDING_OLDEST_EVENT_SQL).fetchone()
-    except sqlite3.OperationalError:
-        return None
-    return row[0] if row and row[0] else None
 
 
 # ── recall-count bump ────────────────────────────────────────────────────────

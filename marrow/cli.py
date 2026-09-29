@@ -683,14 +683,14 @@ def cmd_ls(args) -> int:
 
 
 def _embed_cfg() -> dict:
-    return config.load()["embed_loop"]
+    return config.load()["embed"]
 
 
 def cmd_embed(args) -> int:
-    """Drain the vector backfill queue. Meant to run as a short-lived process
-    (watcher EmbedLoop child). Embeds through the shared embedd service; the
-    ONNX model loads in this process only on fallback, and that memory is
-    returned on exit. flock keeps two runs from embedding the same rows."""
+    """Drain the vector backfill queue. Meant to run as a short-lived process.
+    Embeds through the shared embedd service; the ONNX model loads in this
+    process only on fallback, and that memory is returned on exit. flock keeps
+    two runs (or a run and the Stop hook) from embedding the same rows."""
     import fcntl
     from . import recall
 
@@ -907,10 +907,10 @@ def build_parser() -> argparse.ArgumentParser:
                          help="backfill pending vectors (loads the model; "
                               "run as a short-lived process)")
     emb.add_argument("--batch", type=int, default=None,
-                     help="rows per lane per pass (default [embed_loop].batch)")
+                     help="rows per lane per pass (default [embed].batch)")
     emb.add_argument("--max-batches", type=int, default=None,
                      help="max passes before giving up "
-                          "(default [embed_loop].max_batches)")
+                          "(default [embed].max_batches)")
     emb.set_defaults(fn=cmd_embed)
 
     cf = sub.add_parser("config", parents=[common],

@@ -116,32 +116,20 @@ model = "BAAI/bge-m3"
 id = "bge-m3"
 dim = 1024
 
-[embed_loop]
-# Watcher-hosted vector backfill. Each tick counts unembedded rows with cheap
-# SQL; if any are pending it spawns a short-lived `mw embed` child so the ONNX
-# model loads there and its memory is returned on exit — the watcher process
-# never loads the embedder. false = no automatic backfill (manual `mw embed` /
-# event_embed MCP tool only); the backlog alert goes quiet too.
-enabled = true
-tick_s = 300
-# Rows per lane per embed pass, and max passes per child run.
+[embed]
+# Vector backfill runs at the end of every turn (Stop hook) through the embedd
+# service only; the hook never loads the model itself. Rows per lane per turn.
+turn_cap = 20
+# Manual `mw embed`: rows per lane per pass, and max passes per run.
 batch = 50
 max_batches = 20
-# Backlog watermark — last-line defence, fires even if the spawn path is
-# broken. One warn/embed alert per episode.
-# count: needs the line breached on TWO consecutive ticks, so a healthy bulk
-# rebuild (reimport / re-embed) that the next spawn drains never alarms.
-# hours: oldest unembedded event older than this alerts immediately.
-backlog_alert_count = 100
-backlog_alert_hours = 6
-# Consecutive non-zero child exits before a warn/embed alert.
-fail_alert_streak = 3
 
 [embedd]
 # Shared embed service (com.marrow.embedd): one process holds the bge-m3 ONNX
 # model (~1.3GB RSS) and answers over a unix socket, so every other marrow
 # process stays thin. Callers fall back to loading the model in-process when
-# the socket is absent (service not installed) or unusable.
+# the socket is absent (service not installed) or unusable — except the Stop
+# hook, which skips the turn instead.
 enabled = true
 # Drop the model after this long without an embed request; RSS returns to the
 # OS and the next request reloads it. 0 = never evict.

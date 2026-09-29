@@ -570,11 +570,34 @@ def _tail_chain_connects(new_records: list[dict], last_uuid: str | None) -> bool
     return cur == last_uuid
 
 
+def _embed_turn(conn: sqlite3.Connection) -> None:
+    """Embed pending rows across all lanes through the embedd service only.
+
+    Capped per lane by [embed].turn_cap; empty queue = no service round trip.
+    Service off / absent / unreachable → rows stay pending for the next turn.
+    Skips while another embed run holds the shared flock."""
+    import fcntl
+
+    from .. import recall
+    if not any(recall.pending_counts(conn, cap=1).values()):
+        return
+    cap = int(config.load()["embed"]["turn_cap"])
+    lock_path = Path(config.DATA_DIR) / "embed.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+        recall.embed_pending(conn, batch=cap, local=False)
+
+
 def stop() -> int:
     """Per-turn ingest fired after each completed assistant turn.
 
     Archives the newly completed user+assistant pair (idempotent by
-    source_hash) and logs a ct_activity row. Tail-reads from the per-sid cursor
+    source_hash), logs a ct_activity row, then embeds pending vectors via the
+    embedd service (_embed_turn). Tail-reads from the per-sid cursor
     for cheap long-session appends; when the parentUuid walk can't reach the
     last-ingested uuid (rewind / bridge rewrite / stale offset) it falls back to
     a full-file live-chain rebuild via transcript.rows_from_records purely to
@@ -647,4 +670,12 @@ def stop() -> int:
     finally:
         conn.close()
     _save_ct_cursor(sid, new_last_uuid, size)
+    try:
+        conn = storage.connect(config.db_path())
+        try:
+            _embed_turn(conn)
+        finally:
+            conn.close()
+    except Exception as e:  # noqa: BLE001 — never block stop
+        sys.stderr.write(f"[stop] embed step failed: {e}\n")
     return 0
