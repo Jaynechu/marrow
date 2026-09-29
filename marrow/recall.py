@@ -143,14 +143,17 @@ def embed_texts(
 def embed_available(*, local: bool = True) -> bool:
     """True when embedding can run. A live service answers without any local
     load; only when it cannot does this fall back to loading in-process.
-    local=False never loads: a present socket that does not answer raises the
-    rate-limited unreachable alert and returns False."""
+    local=False never loads: an enabled service that does not answer (socket
+    absent or dead) raises the rate-limited unreachable alert and returns
+    False."""
     from . import embedd
     if embedd.enabled() and not embedd.is_service_process():
         if embedd.ping() is not None:
             return True
-        if not local and embedd.socket_path().exists():
-            embedd.alert_unreachable("ping got no answer")
+        if not local:
+            embedd.alert_unreachable(
+                "ping got no answer" if embedd.socket_path().exists()
+                else "socket absent")
     if not local:
         return False
     return _ensure_embedder() is not None

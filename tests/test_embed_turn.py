@@ -153,14 +153,14 @@ def test_stop_skips_when_service_disabled(env, monkeypatch):
     assert alerts == []
 
 
-def test_stop_skips_when_socket_absent(env, monkeypatch):
+def test_stop_socket_absent_alerts_and_keeps_pending(env, monkeypatch):
     db, tmp, alerts = env
     monkeypatch.setattr(embedd, "enabled", lambda: True)
     assert not embedd.socket_path().exists()
     _run_stop(monkeypatch, tmp)
     assert _embedded(db) == 0
     assert _pending(db) == 2
-    assert alerts == []
+    assert alerts == ["socket absent"]
 
 
 def test_stop_socket_present_but_dead_alerts_and_keeps_pending(env, monkeypatch):

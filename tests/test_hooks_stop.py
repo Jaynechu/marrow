@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from marrow import config, hooks, storage
+from marrow.hooks import lifecycle
 
 
 @pytest.fixture()
@@ -27,6 +28,7 @@ def env(tmp_path, monkeypatch):
     storage.init_db(db).close()
     monkeypatch.setattr(config, "db_path", lambda: db)
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(lifecycle, "_PAUSE_INGEST_PATH", tmp_path / "pause_ingest")
     return db, tmp_path
 
 
