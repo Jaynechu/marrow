@@ -867,6 +867,7 @@ def event_clear(
     dry_run: Annotated[bool, Field(description="Report match count + earliest/latest local timestamp without deleting.")] = False,
 ) -> dict:
     """Delete raw events (recall corpus) incl. FTS+vectors+tombstones.
+    tl will also be deleted as events.
     Returns the deleted count and the UTC/local bounds used; 0 matches = ok:false, nothing deleted.
     Full clear auto-pauses ingest (resume via ingest tool)."""
     return purge.event_clear(_DB, _PAUSE_INGEST_PATH, before or None, after or None,
