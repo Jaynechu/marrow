@@ -3,8 +3,9 @@
 State lives in <state_dir>/housekeep/report.json ({items, log}); the file is a
 render of it, written only when the render differs from what is on disk.
 Items are keyed `<kind>:<subject>` and owned by the pass that raised them; a
-pass that ran and no longer raises an item closes it. A Log line is added only
-when items opened/closed, a pass failed, or new entries were seen.
+pass that ran and no longer raises an item closes it; an open item keeps its
+detail as of open time. A Log line is added only when items opened/closed, a
+pass failed, or new entries were seen.
 """
 from __future__ import annotations
 
@@ -40,9 +41,7 @@ def merge(old: dict, items: dict, ran: set[str],
         else:
             nxt[k] = it
     for k, it in items.items():
-        if k in old:
-            nxt[k] = {**old[k], "detail": it["detail"]}
-        else:
+        if k not in old:
             nxt[k] = {**it, "date": today}
             opened.append(k)
     return nxt, opened, closed

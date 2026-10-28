@@ -34,6 +34,20 @@ def test_no_change_run_leaves_file_byte_identical(tmp_path):
     assert ctx.report_path.stat().st_mtime_ns == mtime
 
 
+def test_detail_change_on_open_item_keeps_file_and_state(tmp_path):
+    def _growth(n):
+        return {"sizes": result(todo=[("growth", "~/x", f"~/x now {n} GB")])}
+    ctx = _ctx(tmp_path)
+    report.update(ctx, _growth(3))
+    before = ctx.report_path.read_bytes()
+    state = (ctx.hk_state / "report.json").read_bytes()
+    rep = report.update(_ctx(tmp_path, 1), _growth(4))
+    assert rep["wrote"] is False
+    assert ctx.report_path.read_bytes() == before
+    assert (ctx.hk_state / "report.json").read_bytes() == state
+    assert "~/x now 3 GB" in before.decode()
+
+
 def test_open_then_close_logs_once_each(tmp_path):
     report.update(_ctx(tmp_path), _launchd("com.marrow.x"))
     report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x"))
