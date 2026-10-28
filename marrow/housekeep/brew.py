@@ -1,8 +1,10 @@
 """Brew + uv + package-cache passes, python EOL watch.
 
 Pinned brew pythons keep their Cellar path (TCC/FDA is keyed on it): pins go
-first, and cleanup aborts if its plan still names a pinned Cellar dir. A
-changed brew triggers an import health probe per repo venv; no kickstart.
+first (formulae not installed are skipped), and cleanup aborts if its plan
+still names a pinned Cellar dir. A changed brew, or an open health To-do,
+triggers an import health probe per repo venv; an item closes only on a passing
+probe. No kickstart.
 The runner disables brew auto-update/auto-cleanup so both happen only here.
 Dry-run runs only `brew upgrade -n` and `brew cleanup -n`.
 """
@@ -10,7 +12,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import Ctx, result
+from . import Ctx, report, result
 
 
 def _err(step: str, out: str, **extra) -> dict:
@@ -46,6 +48,33 @@ def _health(ctx: Ctx) -> list[str]:
     return bad
 
 
+def _upgrade(ctx: Ctx, pinned: list[str], prune: str) -> tuple[dict, bool]:
+    before = _versions(ctx)
+    installed = {ln.split()[0] for ln in before.splitlines() if ln.strip()}
+    for f in pinned:
+        if f not in installed:
+            continue
+        rc, out = ctx.run(["brew", "pin", f])
+        if rc != 0:
+            return _err(f"brew pin {f}", out), False
+    for cmd in (["brew", "update"], ["brew", "upgrade"]):
+        rc, out = ctx.run(cmd)
+        if rc != 0:
+            return _err(" ".join(cmd), out), _versions(ctx) != before
+    changed = _versions(ctx) != before
+    rc, plan = ctx.run(["brew", "cleanup", "-n", prune])
+    if rc != 0:
+        return _err("brew cleanup -n", plan), changed
+    hits = _pinned_hits(plan, pinned)
+    if hits:
+        return result(error=f"cleanup skipped, plan names pinned Cellar: "
+                            f"{hits}"), changed
+    rc, out = ctx.run(["brew", "cleanup", prune])
+    if rc != 0:
+        return _err("brew cleanup", out), changed
+    return result(len(_items(plan)), lines=[f"brew changed: {changed}"]), changed
+
+
 def brew(ctx: Ctx) -> dict:
     pinned = list(ctx.hk["brew_pinned"])
     prune = f"--prune={int(ctx.hk['brew_prune_days'])}"
@@ -63,34 +92,17 @@ def brew(ctx: Ctx) -> dict:
         lines.append(f"pinned at apply: {', '.join(pinned)}")
         err = f"cleanup plan names pinned Cellar: {hits}" if hits else None
         return result(len(ups) + len(clean), error=err, lines=lines)
-    for f in pinned:
-        rc, out = ctx.run(["brew", "pin", f])
-        if rc != 0:
-            return _err(f"brew pin {f}", out)
-    before = _versions(ctx)
-    for cmd in (["brew", "update"], ["brew", "upgrade"]):
-        rc, out = ctx.run(cmd)
-        if rc != 0:
-            return _err(" ".join(cmd), out)
-    after = _versions(ctx)
-    changed = before != after
-    rc, plan = ctx.run(["brew", "cleanup", "-n", prune])
-    if rc != 0:
-        return _err("brew cleanup -n", plan)
-    hits = _pinned_hits(plan, pinned)
-    if hits:
-        return result(error=f"cleanup skipped, plan names pinned Cellar: {hits}")
-    rc, out = ctx.run(["brew", "cleanup", prune])
-    if rc != 0:
-        return _err("brew cleanup", out)
-    n = len(_items(plan))
-    if changed:
-        bad = _health(ctx)
-        if bad:
-            return result(n, error=f"health: import failed in {', '.join(bad)}",
-                          error_reported=True, todo=[("health", r, f"{r} venv import failed after "
-                                 "brew upgrade") for r in bad])
-    return result(n, lines=[f"brew changed: {changed}"])
+    r, changed = _upgrade(ctx, pinned, prune)
+    if not (changed or report.open_subjects(ctx, "health")):
+        return r
+    bad = _health(ctx)
+    if not bad:
+        return r
+    health = f"health: import failed in {', '.join(bad)}"
+    return {**r, "error": "; ".join(filter(None, [r["error"], health])),
+            "error_reported": r["error"] is None,
+            "todo": [("health", b, f"{b} venv import failed after brew upgrade")
+                     for b in bad]}
 
 
 def _steps(ctx: Ctx, cmds: list[list[str]]) -> dict:

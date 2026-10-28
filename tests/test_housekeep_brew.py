@@ -13,6 +13,7 @@ _CLEAN_N = ("Would remove: /opt/homebrew/Cellar/ripgrep/14.0 (10 files, 4MB)\n"
             "This operation would free approximately 4MB of disk space.\n")
 _PINNED_HIT = "Would remove: /opt/homebrew/Cellar/python@3.13/3.13.12 (3k files)\n"
 _WRITES = {"pin", "update", "upgrade", "cleanup"}
+_PYS = (0, "python@3.13 3.13.13_1\npython@3.14 3.14.6")
 
 
 def _brew_writes(calls):
@@ -48,7 +49,8 @@ def test_dry_run_other_steps_run_nothing(tmp_path):
 
 
 def test_apply_order_pins_first(tmp_path):
-    run = FakeRun({("brew", "cleanup", "-n"): (0, _CLEAN_N)})
+    run = FakeRun({("brew", "cleanup", "-n"): (0, _CLEAN_N),
+                   ("brew", "list", "--formula"): _PYS})
     r = brew.brew(make_ctx(tmp_path, run=run))
     assert r["error"] is None
     seq = [c[:2] for c in _brew_writes(run.calls)]
@@ -58,10 +60,19 @@ def test_apply_order_pins_first(tmp_path):
 
 
 def test_pin_failure_aborts_before_upgrade(tmp_path):
-    run = FakeRun({("brew", "pin", "python@3.13"): (1, "Error: No such keg")})
+    run = FakeRun({("brew", "pin", "python@3.13"): (1, "Error: No such keg"),
+                   ("brew", "list", "--formula"): _PYS})
     r = brew.brew(make_ctx(tmp_path, run=run))
     assert r["error"] == "brew pin python@3.13: Error: No such keg"
     assert not any(c[:2] == ("brew", "upgrade") for c in run.calls)
+
+
+def test_pin_skips_formula_not_installed(tmp_path):
+    run = FakeRun({("brew", "list", "--formula"): (0, "python@3.14 3.14.6")})
+    r = brew.brew(make_ctx(tmp_path, run=run))
+    assert r["error"] is None
+    pins = [c for c in run.calls if c[:2] == ("brew", "pin")]
+    assert pins == [("brew", "pin", "python@3.14")]
 
 
 def test_cleanup_skipped_when_plan_names_pinned(tmp_path):
@@ -130,3 +141,43 @@ def test_python_eol_window(tmp_path):
     r = brew.python_eol(ctx)
     assert r["todo"] == [("python-eol", "python@3.13", "python@3.13 EOL 2029-10-31")]
     assert brew.python_eol(make_ctx(tmp_path, today=date(2026, 10, 29)))["todo"] == []
+
+
+def _open_health(ctx, *repos):
+    from marrow.housekeep import write_json
+    write_json(ctx.hk_state / "report.json", {"log": [], "items": {
+        f"health:{r}": {"kind": "health", "detail": "x", "owner": "brew",
+                        "date": "2026-10-01"} for r in repos}})
+
+
+def test_open_health_item_reprobes_without_brew_change(tmp_path):
+    ctx = make_ctx(tmp_path)
+    _open_health(ctx, "synapse")
+    syn_py = str(ctx.repos_root / "synapse" / ".venv" / "bin" / "python")
+    ctx.run = FakeRun({(syn_py,): (1, "ModuleNotFoundError")})
+    r = brew.brew(ctx)
+    assert r["error"] == "health: import failed in synapse"
+    assert [t[:2] for t in r["todo"]] == [("health", "synapse")]
+
+
+def test_open_health_item_passing_probe_clears(tmp_path):
+    ctx = make_ctx(tmp_path)
+    _open_health(ctx, "synapse")
+    run = FakeRun()
+    ctx.run = run
+    r = brew.brew(ctx)
+    assert r["error"] is None and not r.get("todo")
+    assert any(c[1:3] == ("-B", "-c") for c in run.calls)
+
+
+def test_step_failure_still_probes_open_health(tmp_path):
+    ctx = make_ctx(tmp_path)
+    _open_health(ctx, "synapse")
+    syn_py = str(ctx.repos_root / "synapse" / ".venv" / "bin" / "python")
+    ctx.run = FakeRun({("brew", "update"): (1, "network down"),
+                       (syn_py,): (1, "ModuleNotFoundError")})
+    r = brew.brew(ctx)
+    assert r["error"].startswith("brew update: network down")
+    assert "health: import failed in synapse" in r["error"]
+    assert not r.get("error_reported")
+    assert [t[:2] for t in r["todo"]] == [("health", "synapse")]

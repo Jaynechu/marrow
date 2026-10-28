@@ -12,6 +12,11 @@ from . import Ctx, read_json, write_json
 from .._atomic import atomic_write
 
 
+def open_subjects(ctx: Ctx, kind: str) -> list[str]:
+    items = read_json(ctx.hk_state / "report.json", {"items": {}})["items"]
+    return [k.partition(":")[2] for k in items if k.startswith(f"{kind}:")]
+
+
 def collect(results: dict[str, dict]) -> dict[str, dict]:
     items: dict[str, dict] = {}
     for name, r in results.items():
