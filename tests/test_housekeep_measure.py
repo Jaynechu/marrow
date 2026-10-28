@@ -78,6 +78,13 @@ def test_unruled_growth_opens_at_threshold(tmp_path):
     assert todo[0][2] == "~/.config/marrow/cortex 1.0 MB -> 101.0 MB"
 
 
+def test_live_db_exempt_from_unruled_growth(tmp_path):
+    ctx = make_ctx(tmp_path)
+    measure.known(ctx)
+    _sparse(ctx.data_dir / "marrow.db", 500 * _MB)
+    assert measure.known(ctx)["todo"] == []
+
+
 def _plist(ctx, label, args, wd=None):
     spec = {"Label": label, "ProgramArguments": args}
     if wd:

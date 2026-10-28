@@ -62,7 +62,7 @@ def _entries(ctx: Ctx) -> dict[str, Path]:
 def _ruled(ctx: Ctx) -> set[Path]:
     b = ctx.backup_root
     ruled = {b / "manual", b / "daily", b / "weekly", b / "claude-json",
-             ctx.drift_dir}
+             ctx.drift_dir, Path(ctx.db).expanduser()}
     ruled |= {ctx.state_dir / d for d in ctx.hk["state_dirs"]}
     ruled |= {ctx.data_dir / d for d in ctx.hk["snapshot_dirs"]}
     return ruled
