@@ -106,6 +106,14 @@ def test_apply_writes_one_audit_row(tmp_path, groups):
     assert rows[0]["passes"]["bad"]["error"] == "boom"
 
 
+def test_apply_writes_report_with_failed_item(tmp_path, groups):
+    groups["b"] = [("bad", _bad_pass)]
+    ctx = make_ctx(tmp_path)
+    hk.execute(ctx, None, force=True)
+    text = ctx.report_path.read_text()
+    assert f"- [{date.today().isoformat()}] failed: bad: boom" in text
+
+
 def test_raising_pass_isolated(tmp_path, groups):
     def _raise(ctx):
         raise RuntimeError("kaput")
@@ -179,11 +187,20 @@ def _tree_digest(root):
 
 
 def test_dry_run_writes_nothing(tmp_path, capsys):
-    ctx = make_ctx(tmp_path, dry_run=True)
+    from _housekeep_shared import FakeRun
+    run = FakeRun()
+    ctx = make_ctx(tmp_path, dry_run=True, run=run)
+    (ctx.data_dir / "x.bak").write_text("b")
+    (ctx.repos_root / "r" / "__pycache__").mkdir(parents=True)
     before = _tree_digest(tmp_path)
     assert hk.execute(ctx, None, force=True) == 0
     assert _tree_digest(tmp_path) == before
-    assert "(dry-run)" in capsys.readouterr().out
+    assert not ctx.report_path.exists()
+    assert set(run.calls) == {("brew", "upgrade", "-n"),
+                              ("brew", "cleanup", "-n", "--prune=30"),
+                              ("launchctl", "list")}
+    out = capsys.readouterr().out
+    assert "(dry-run)" in out and "would open" in out
 
 
 def test_main_dry_run_uses_ctx(tmp_path, monkeypatch, groups, capsys):

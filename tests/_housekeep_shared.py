@@ -62,6 +62,7 @@ def make_ctx(tmp_path: Path, *, dry_run: bool = False, today: date | None = None
         projects_dir=home / ".claude" / "projects",
         launch_agents=home / "Library" / "LaunchAgents",
         home=home,
+        report_path=home / "CC-Lab" / "docs" / "mw-housekeep-report.md",
         vec_window_days=90,
         run=run or FakeRun(),
         disk_free=lambda: free,

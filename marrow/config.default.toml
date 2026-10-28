@@ -71,6 +71,10 @@ weekly_keep = 13
 # next day. fail_alert_days failed days in a row = one housekeep_failed alert.
 interval_days = 7
 fail_alert_days = 3
+# Report file: To do (open items, auto-closed when cleared) on top, Log below
+# (newest first, one line per run that changed something, capped).
+report_path = "~/.config/marrow/housekeep-report.md"
+report_log_cap = 50
 # Per external command (brew/uv/pip/npm/launchctl/venv probes), seconds.
 cmd_timeout_s = 1800
 # Root holding the repos (each <repos_root>/<repo>/ with its own .venv).

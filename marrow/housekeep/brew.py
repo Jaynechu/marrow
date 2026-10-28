@@ -86,7 +86,7 @@ def brew(ctx: Ctx) -> dict:
         bad = _health(ctx)
         if bad:
             return result(n, error=f"health: import failed in {', '.join(bad)}",
-                          todo=[("health", r, f"{r} venv import failed after "
+                          error_reported=True, todo=[("health", r, f"{r} venv import failed after "
                                  "brew upgrade") for r in bad])
     return result(n, lines=[f"brew changed: {changed}"])
 

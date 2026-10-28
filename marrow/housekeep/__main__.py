@@ -3,8 +3,8 @@
 A run does work only when the last ok full run is at least
 [housekeep].interval_days old, so a failed run retries the next day. Each pass
 is isolated. --apply writes one audit_log row (action=housekeep, JSON {ok,
-passes, sizes}); fail_alert_days failed days in a row raise one
-housekeep_failed alert per streak. --dry-run writes nothing.
+passes, sizes}) and updates the report file; fail_alert_days failed days in
+a row raise one housekeep_failed alert per streak. --dry-run writes nothing.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import sys
 from datetime import date
 
 from .. import repo, storage, timeutil
-from . import Ctx, brew, build_ctx, db, files, fmt_size, measure, result
+from . import Ctx, brew, build_ctx, db, files, fmt_size, measure, report, result
 
 GROUPS: dict[str, list] = {
     "db": db.PASSES,
@@ -131,7 +131,8 @@ def maybe_alert_streak(ctx: Ctx, failed: list[str]) -> bool:
         return False
     repo.add_alert(
         "warn", "housekeep_failed", "housekeep_failed", source="housekeep",
-        message=f"housekeep failed {n} days in a row: {', '.join(failed)}",
+        message=(f"housekeep failed {n} days in a row: {', '.join(failed)}. "
+                 f"See {ctx.report_path}"),
         db=ctx.db)
     return True
 
@@ -158,9 +159,21 @@ def execute(ctx: Ctx, only: str | None, force: bool) -> int:
     ok_row = last_ok(hist)
     ctx.prev_sizes = (ok_row or {}).get("sizes", {})
     results = run_passes(ctx, [only] if only else list(GROUPS))
+    try:
+        rep = report.update(ctx, results)
+    except Exception as e:  # noqa: BLE001
+        rep = None
+        results["report"] = result(error=f"{type(e).__name__}: {e}")
     failed = [n for n, r in results.items() if r.get("error")]
     ok = not failed
     _print(ctx, results)
+    if rep:
+        verb = "would " if ctx.dry_run else ""
+        print(f"[housekeep] report: {verb}open {len(rep['opened'])}, "
+              f"{verb}close {len(rep['closed'])}"
+              + (f"; {verb}write {ctx.report_path}" if rep["wrote"] else ""))
+        if ctx.dry_run and rep["line"]:
+            print(f"    {rep['line']}")
     if ctx.dry_run:
         return 0
     record(ctx, results, ok, only)

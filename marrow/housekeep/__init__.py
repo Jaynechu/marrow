@@ -30,6 +30,7 @@ class Ctx:
     projects_dir: Path
     launch_agents: Path
     home: Path
+    report_path: Path
     vec_window_days: int
     run: Runner
     disk_free: Callable[[], int]
@@ -73,6 +74,7 @@ def build_ctx(dry_run: bool) -> Ctx:
         projects_dir=home / ".claude" / "projects",
         launch_agents=home / "Library" / "LaunchAgents",
         home=home,
+        report_path=Path(hk["report_path"]).expanduser(),
         vec_window_days=int(cfg["recall"]["vec_window_days"]),
         run=make_runner(int(hk["cmd_timeout_s"])),
         disk_free=lambda: shutil.disk_usage(home).free,
