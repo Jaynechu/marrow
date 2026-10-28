@@ -15,10 +15,11 @@ import sys
 from datetime import date
 
 from .. import repo, storage, timeutil
-from . import Ctx, build_ctx, db, fmt_size, result
+from . import Ctx, build_ctx, db, files, fmt_size, result
 
 GROUPS: dict[str, list] = {
     "db": db.PASSES,
+    "files": files.PASSES,
 }
 
 

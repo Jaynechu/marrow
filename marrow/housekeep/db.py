@@ -1,4 +1,4 @@
-"""DB passes: md_index tombstones, worktree slug shells, vec window eviction.
+"""DB passes: md_index tombstones, worktree slug shells, vec window, ct tables.
 
 Memes are permanent — no aging/DELETE pass. Dry-run opens the DB read-only
 and counts what a real run would delete.
@@ -220,6 +220,32 @@ def evict_vec_window(
     return result
 
 
+def prune_ct_tables(conn: sqlite3.Connection, *, collector_days: int,
+                    activity_days: int, dry_run: bool = False) -> dict[str, int]:
+    """DELETE cortex ct_collector_log / ct_activity rows past their window.
+
+    Absent tables (cortex never ran) count 0.
+    """
+    out: dict[str, int] = {}
+    for table, days in (("ct_collector_log", collector_days),
+                        ("ct_activity", activity_days)):
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name=?", (table,)).fetchone():
+            out[table] = 0
+            continue
+        where = f"ts < strftime('%Y-%m-%dT%H:%M:%SZ','now', '-{int(days)} days')"
+        out[table] = _delete(conn, table, where, dry_run)
+    return out
+
+
+def ct_prune(ctx: Ctx) -> dict:
+    counts = _with_conn(ctx, lambda c: prune_ct_tables(
+        c, collector_days=ctx.hk["ct_collector_log_days"],
+        activity_days=ctx.hk["ct_activity_days"], dry_run=ctx.dry_run))
+    return pass_result(sum(counts.values()),
+                       lines=[f"{t}={n}" for t, n in counts.items()])
+
+
 def md_tombstones(ctx: Ctx) -> dict:
     return pass_result(_with_conn(
         ctx, lambda c: prune_md_index_tombstones(c, ctx.dry_run)))
@@ -241,4 +267,5 @@ PASSES = [
     ("md_tombstones", md_tombstones),
     ("worktree_shells", worktree_shells),
     ("vec_evict", vec_evict),
+    ("ct_prune", ct_prune),
 ]

@@ -75,6 +75,21 @@ fail_alert_days = 3
 cmd_timeout_s = 1800
 # Root holding the repos (each <repos_root>/<repo>/ with its own .venv).
 repos_root = "~/CC-Lab"
+# Expiry in days by newest mtime; expired = unlinked. manual/ under
+# [paths].backup_dir, drift = [paths].drift_backup_dir, state_dirs under
+# [paths].state_dir, snapshot_dirs under ~/.config/marrow. Stray *.bak* in
+# ~/.config/marrow move to backup/manual/.
+manual_backup_days = 30
+drift_backup_days = 30
+state_days = 30
+ct_collector_log_days = 30
+ct_activity_days = 90
+state_dirs = ["backup_guard", "ct_cursor", "outbound", "presence", "recall_seen", "replay", "sticker_nudge", "tl_nudge", "tl_seen", "tl_silent", "turn_delta", "usage_watermark", "write_ledger"]
+snapshot_dirs = ["schedule-snapshots"]
+# Dirs removed under every repo in repos_root; exclude = dir names (or a/b
+# path tails) never descended.
+repo_sweep_names = ["__pycache__", ".pytest_cache"]
+repo_sweep_exclude = [".venv", ".build", "node_modules", ".git", ".claude/worktrees"]
 
 [sync]
 # Watcher md<->db sync loop. tick_s = md/db mtime comparison cadence;
