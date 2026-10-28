@@ -53,9 +53,9 @@ _MARROW_HOOKS: dict[str, list[dict]] = {
 }
 
 _ALL_PLISTS: list[tuple[str, str]] = [
-    ("mw-aging.plist",          "com.marrow.aging"),
     ("mw-db-backup.plist",      "com.marrow.db-backup"),
     ("mw-embedd.plist",         "com.marrow.embedd"),
+    ("mw-housekeep.plist",      "com.marrow.housekeep"),
     ("mw-refresh.plist",        "com.marrow.refresh"),
     ("mw-sensors.plist",        "com.marrow.sensors"),
     ("mw-watcher.plist",        "com.marrow.watcher"),
@@ -75,6 +75,7 @@ _OBSOLETE_PLISTS: list[tuple[str, ...]] = [
     ("com.marrow.dashboard-tick", "mw-dashboard-tick.plist"),
     ("com.marrow.daily-routine",  "mw-daily-routine.plist"),
     ("com.marrow.daily-catchup",  "mw-daily-catchup.plist"),
+    ("com.marrow.aging",          "mw-aging.plist"),
 ]
 
 

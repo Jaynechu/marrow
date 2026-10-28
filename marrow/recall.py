@@ -198,7 +198,7 @@ _LANES: dict[str, dict[str, str]] = {
         # Primary truth: a real vector row (events_vec) means embedded. Meta is
         # bookkeeping — freed/reused ids inherit orphan meta with no vector, so
         # a meta-only test skips them forever (vec-lane poisoning). The second
-        # clause keeps intentionally-evicted rows (aging.py drops the vector but
+        # clause keeps intentionally-evicted rows (housekeep drops the vector but
         # KEEPS the meta as an eviction tombstone) out of the pending set.
         "pending_sql": (
             "SELECT e.id AS id, e.content AS text FROM events e "

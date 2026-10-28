@@ -31,7 +31,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from marrow import config, storage  # noqa: E402
-from marrow.aging import _BACKUP_STALE_DAYS, _newest_backup  # noqa: E402
+from marrow.housekeep.db import _BACKUP_STALE_DAYS, _newest_backup  # noqa: E402
 
 # md filename -> SQL producing the set of live block_ids for that page.
 # Mirrors the fetch() of each InserterSpec in marrow/subpage_specs.py.

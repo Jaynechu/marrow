@@ -4,13 +4,13 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.marrow.aging</string>
+  <string>com.marrow.housekeep</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>__VENV_PYTHON__</string>
     <string>-m</string>
-    <string>marrow.aging</string>
+    <string>marrow.housekeep</string>
     <string>--apply</string>
   </array>
 
@@ -25,7 +25,6 @@
 
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Weekday</key><integer>0</integer>
     <key>Hour</key><integer>12</integer>
     <key>Minute</key><integer>0</integer>
   </dict>
@@ -37,8 +36,8 @@
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>__LOG_DIR__/mw-jobs/aging.log</string>
+  <string>__LOG_DIR__/mw-jobs/housekeep.log</string>
   <key>StandardErrorPath</key>
-  <string>__LOG_DIR__/mw-jobs/aging.log</string>
+  <string>__LOG_DIR__/mw-jobs/housekeep.log</string>
 </dict>
 </plist>

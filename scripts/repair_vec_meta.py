@@ -25,7 +25,7 @@ so mutating it here would break that design.
 After --apply, run `/embed` (embed_pending) to re-embed the freed rows.
 
 WARNING — one-shot. Do NOT re-run after vec eviction has begun keeping meta
-tombstones (aging.evict_vec_window now deletes only the vector and KEEPS the
+tombstones (housekeep.db.evict_vec_window now deletes only the vector and KEEPS the
 meta row): categories 2/3 cannot distinguish an eviction tombstone from poison,
 so a later run would delete legitimate tombstones and trigger re-embedding.
 
@@ -47,7 +47,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from marrow import config, storage  # noqa: E402
-from marrow.aging import _BACKUP_STALE_DAYS, _newest_backup  # noqa: E402
+from marrow.housekeep.db import _BACKUP_STALE_DAYS, _newest_backup  # noqa: E402
 from marrow.transcript import _is_harness_row  # noqa: E402
 
 # Cheap prefilter for whole-row junk; the authoritative decision is made in

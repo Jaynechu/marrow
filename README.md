@@ -28,7 +28,7 @@ $EDITOR ~/.config/marrow/config.toml
 - Registers 4 Claude Code hooks in `~/.claude/settings.json` (SessionStart, SessionEnd, UserPromptSubmit, PreToolUse)
 - Registers the `marrow` MCP server with Claude Code
 - Symlinks slash commands and agents into `~/.claude/`
-- Installs launchd jobs: watcher (live md sync), backup (03:00), aging (weekly)
+- Installs launchd jobs: watcher (live md sync), backup (03:00), housekeep (weekly)
 - Downloads the bge-m3 ONNX embedding model (~600 MB); gracefully degrades to FTS5-only if absent
 
 To pre-download the model (recommended):

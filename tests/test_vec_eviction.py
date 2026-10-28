@@ -1,4 +1,4 @@
-"""Tests for aging.evict_vec_window — vec rolling window eviction.
+"""Tests for housekeep.db.evict_vec_window — vec rolling window eviction.
 Covers: window math, exemptions, safety caps, backup gate, dry-run."""
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from marrow import aging, storage
+from marrow import storage
+from marrow.housekeep import db as hdb
 
 
 @pytest.fixture()
@@ -63,8 +64,8 @@ def test_out_window_evicted_in_window_kept(db, fresh_backup):
     new = _ins_event(conn, "new turn", age_days=10)
     _ins_vec(conn, old)
     _ins_vec(conn, new)
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup
     )
     assert res["evicted"] == 1 and not res["skipped"] and not res["aborted"]
     assert _vec_ids(conn) == {new}
@@ -78,8 +79,8 @@ def test_evicted_row_keeps_meta_tombstone(db, fresh_backup):
     conn, p = db
     old = _ins_event(conn, "old turn", age_days=100)
     _ins_vec(conn, old)
-    aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, alert_db=p
+    hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup
     )
     assert conn.execute(
         "SELECT COUNT(*) FROM events_vec WHERE rowid=?", (old,)
@@ -99,8 +100,8 @@ def test_exempt_affect_importance_link(db, fresh_backup):
         " 'test', ?)",
         (old,),
     )
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup
     )
     assert res["evicted"] == 0 and res["exempted"] == 1
     assert _vec_ids(conn) == {old}
@@ -111,8 +112,8 @@ def test_exempt_recall_count(db, fresh_backup):
     old = _ins_event(conn, "frequently recalled", age_days=100)
     _ins_vec(conn, old)
     conn.execute("UPDATE events SET recall_count=2 WHERE id=?", (old,))
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup
     )
     assert res["evicted"] == 0 and res["exempted"] == 1
     assert _vec_ids(conn) == {old}
@@ -128,8 +129,8 @@ def test_low_importance_link_not_exempt(db, fresh_backup):
         " 'test', ?)",
         (old,),
     )
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup
     )
     assert res["evicted"] == 1
     assert _vec_ids(conn) == set()
@@ -137,12 +138,12 @@ def test_low_importance_link_not_exempt(db, fresh_backup):
 
 def test_cap_pct_aborts_with_critical_alert(db, fresh_backup, monkeypatch):
     conn, p = db
-    monkeypatch.setattr(aging, "_VEC_EVICT_CAP_MIN", 0)
+    monkeypatch.setattr(hdb, "_VEC_EVICT_CAP_MIN", 0)
     for i in range(4):
         eid = _ins_event(conn, f"old {i}", age_days=100)
         _ins_vec(conn, eid)
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup
     )
     assert res["aborted"] and res["evicted"] == 0
     assert len(_vec_ids(conn)) == 4
@@ -154,7 +155,7 @@ def test_cap_pct_aborts_with_critical_alert(db, fresh_backup, monkeypatch):
 
 def test_cap_abs_aborts(db, fresh_backup, monkeypatch):
     conn, p = db
-    monkeypatch.setattr(aging, "_VEC_EVICT_CAP_ABS", 3)
+    monkeypatch.setattr(hdb, "_VEC_EVICT_CAP_ABS", 3)
     # 16 vec rows total, 4 old → 25% == pct cap boundary (not >), abs 4 > 3.
     for i in range(4):
         eid = _ins_event(conn, f"old {i}", age_days=100)
@@ -162,8 +163,8 @@ def test_cap_abs_aborts(db, fresh_backup, monkeypatch):
     for i in range(12):
         eid = _ins_event(conn, f"new {i}", age_days=5)
         _ins_vec(conn, eid)
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup
     )
     assert res["aborted"] and len(_vec_ids(conn)) == 16
     alerts = res["pending_alerts"]
@@ -178,8 +179,8 @@ def test_stale_backup_skips_with_warn(db, tmp_path):
     d.mkdir()
     stale = (date.today() - timedelta(days=8)).isoformat()
     (d / f"marrow-{stale}.db").touch()
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=str(d), alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=str(d)
     )
     assert res["skipped"] and res["evicted"] == 0
     assert _vec_ids(conn) == {old}
@@ -195,8 +196,8 @@ def test_missing_backup_skips(db, tmp_path):
     _ins_vec(conn, old)
     empty = tmp_path / "no-backups"
     empty.mkdir()
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=str(empty), alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=str(empty)
     )
     assert res["skipped"]
     assert _vec_ids(conn) == {old}
@@ -206,8 +207,8 @@ def test_dry_run_writes_nothing(db, fresh_backup):
     conn, p = db
     old = _ins_event(conn, "old turn", age_days=100)
     _ins_vec(conn, old)
-    res = aging.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, dry_run=True, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=90, backup_dir=fresh_backup, dry_run=True
     )
     assert res["evicted"] == 1  # would-evict count
     assert _vec_ids(conn) == {old}  # nothing deleted
@@ -217,8 +218,8 @@ def test_window_zero_disables(db, fresh_backup):
     conn, p = db
     old = _ins_event(conn, "ancient turn", age_days=400)
     _ins_vec(conn, old)
-    res = aging.evict_vec_window(
-        conn, window_days=0, backup_dir=fresh_backup, alert_db=p
+    res = hdb.evict_vec_window(
+        conn, window_days=0, backup_dir=fresh_backup
     )
     assert res == {"evicted": 0, "exempted": 0, "skipped": False,
                    "aborted": False, "pending_alerts": []}

@@ -86,7 +86,7 @@ def test_rendered_plists_use_log_root(log_root, tmp_path, monkeypatch):
         "com.marrow.sensors": "mw-sensors/launchd.log",
         "com.marrow.db-backup": "mw-jobs/db-backup.log",
         "com.marrow.refresh": "mw-jobs/refresh.log",
-        "com.marrow.aging": "mw-jobs/aging.log",
+        "com.marrow.housekeep": "mw-jobs/housekeep.log",
     }
     for label, rel in expected.items():
         spec = plistlib.loads((tmp_path / "agents" / f"{label}.plist").read_bytes())
