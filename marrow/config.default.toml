@@ -90,6 +90,15 @@ snapshot_dirs = ["schedule-snapshots"]
 # path tails) never descended.
 repo_sweep_names = ["__pycache__", ".pytest_cache"]
 repo_sweep_exclude = [".venv", ".build", "node_modules", ".git", ".claude/worktrees"]
+# brew pin each pinned formula, update, upgrade, cleanup --prune=brew_prune_days,
+# then uv tool upgrade + uv/pip/npm cache clears. Pins keep python Cellar paths
+# (FDA grants) stable. A changed brew probes `import <module>` in
+# <repos_root>/<repo>/.venv. python_eol within eol_warn_days -> report To do.
+brew_pinned = ["python@3.13", "python@3.14"]
+brew_prune_days = 30
+python_eol = {"python@3.13" = "2029-10-31", "python@3.14" = "2030-10-31"}
+eol_warn_days = 183
+health_imports = {marrow = "marrow", synapse = "synapse_core", cortex = "cortex"}
 
 [sync]
 # Watcher md<->db sync loop. tick_s = md/db mtime comparison cadence;
