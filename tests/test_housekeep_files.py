@@ -101,6 +101,32 @@ def test_expiry_keeps_lock_files_and_sockets(tmp_path, monkeypatch):
     assert lock.exists() and (d / "x.sock").exists()
 
 
+def test_expiry_drops_orphan_lock_with_no_sibling(tmp_path):
+    ctx = make_ctx(tmp_path, hk={"state_dirs": ["replay"], "snapshot_dirs": []})
+    d = ctx.state_dir / "replay"
+    orphan = _file(d / "orphan.lock", 60, "")
+    r = files.state_expiry(ctx)
+    assert r["items"] == 1 and not orphan.exists()
+
+
+def test_expiry_keeps_fresh_orphan_lock(tmp_path):
+    ctx = make_ctx(tmp_path, hk={"state_dirs": ["replay"], "snapshot_dirs": []})
+    d = ctx.state_dir / "replay"
+    orphan = _file(d / "orphan.lock", 1, "")
+    r = files.state_expiry(ctx)
+    assert r["items"] == 0 and orphan.exists()
+
+
+def test_expiry_keeps_old_lock_with_dotted_sibling(tmp_path):
+    ctx = make_ctx(tmp_path, hk={"state_dirs": ["replay"], "snapshot_dirs": []})
+    d = ctx.state_dir / "replay"
+    marker = _file(d / "k2.json", 60)
+    lock = _file(d / "k2.lock", 60, "")
+    r = files.state_expiry(ctx)
+    assert not marker.exists()
+    assert lock.exists()
+
+
 def test_state_expiry_rejects_unsafe_dir_entries(tmp_path):
     for bad in ("", ".", "..", "a/b", "x..y"):
         ctx = make_ctx(tmp_path, hk={"state_dirs": ["tl_seen", bad],

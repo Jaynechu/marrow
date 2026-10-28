@@ -1,9 +1,11 @@
 """File passes: manual/drift backup + state expiry, stray .bak moves, repo caches.
 
-Expiry is by newest mtime inside an entry and unlinks (no trash); `*.lock`
-files and sockets are never expired. Stray `*.bak*` files in the data dir move
-to backup/manual/ (a taken name gets a `.<n>` suffix) after that dir's expiry
-ran, so a moved file survives at least until the next run.
+Expiry is by newest mtime inside an entry and unlinks (no trash); sockets are
+never expired. A `*.lock` is only a candidate once it has no sibling entry
+sharing its stem (`<name>` or `<name>.*`) left in the same directory — an
+active owner's marker protects its lock. Stray `*.bak*` files in the data dir
+move to backup/manual/ (a taken name gets a `.<n>` suffix) after that dir's
+expiry ran, so a moved file survives at least until the next run.
 """
 from __future__ import annotations
 
@@ -27,6 +29,14 @@ def _drop(ctx: Ctx, p: Path) -> int:
     return tree_size(p) if ctx.dry_run else remove(p)
 
 
+def _lock_has_sibling(names: set[str], lock_name: str) -> bool:
+    stem = lock_name[: -len(".lock")]
+    if stem in names:
+        return True
+    prefix = stem + "."
+    return any(n != lock_name and n.startswith(prefix) for n in names)
+
+
 def expire(ctx: Ctx, root: Path, days: int) -> dict:
     if not root.is_dir():
         return result()
@@ -34,8 +44,12 @@ def expire(ctx: Ctx, root: Path, days: int) -> dict:
     items = freed = 0
     lines: list[str] = []
     errors: list[str] = []
-    for e in sorted(root.iterdir()):
-        if e.name.endswith(".lock") or e.is_socket():
+    entries = sorted(root.iterdir())
+    names = {e.name for e in entries}
+    for e in entries:
+        if e.is_socket():
+            continue
+        if e.name.endswith(".lock") and _lock_has_sibling(names, e.name):
             continue
         try:
             if latest_mtime(e) >= cutoff:
