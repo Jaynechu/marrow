@@ -6,7 +6,6 @@ Exact indexes and which columns get embedded stay build-time, widened per phase.
 from __future__ import annotations
 
 import re
-import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1387,6 +1386,8 @@ def _backup_db_file(conn: sqlite3.Connection, tag: str) -> None:
     DBs (path empty) are skipped. Failure never aborts the migration.
     """
     try:
+        from . import repo
+
         row = conn.execute("PRAGMA database_list").fetchall()
         main = next((r[2] for r in row if r[1] == "main"), None)
         if not main or main == ":memory:" or not Path(main).exists():
@@ -1394,7 +1395,7 @@ def _backup_db_file(conn: sqlite3.Connection, tag: str) -> None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         d = config.backup_dir("manual")
         d.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(main, d / f"marrow-{tag}-{stamp}.db.bak")
+        repo.snapshot_db(main, d / f"marrow-{tag}-{stamp}.db.bak")
     except Exception:
         pass
 
