@@ -384,7 +384,7 @@ _CORTEX_TEST_TABLE = {
 
 
 @pytest.fixture(autouse=True)
-def _fake_cortex_cfg(monkeypatch, request):
+def _fake_cortex_cfg(monkeypatch, request, tmp_path):
     """No test spawns the real cortex CLI.
 
     `marrow.cortex_cfg` shells out to `cortex.ctl config --resolved`; here it is
@@ -407,6 +407,7 @@ def _fake_cortex_cfg(monkeypatch, request):
                  for section, keys in _CORTEX_TEST_TABLE.items()}
         home = Path(str(cx.get("home") or "~/.config/marrow/cortex")).expanduser()
         table["paths"]["cortex_home"] = str(home)
+        table["log"] = {"dir": str(tmp_path / "cortex-Logs")}
         for stub_key, (section, key) in _CORTEX_STUB_KEYS.items():
             if stub_key not in cx:
                 continue

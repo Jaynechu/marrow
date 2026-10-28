@@ -1265,8 +1265,8 @@ def _spawn_watchdog_if_absent() -> None:
         return
     py = str(Path(py).expanduser())
     root = str(Path(root).expanduser())
-    log = pf.with_suffix(".log")
     try:
+        log = cortex_cfg.watchdog_log()
         log.parent.mkdir(parents=True, exist_ok=True)
         f = open(log, "a")
         proc = subprocess.Popen(

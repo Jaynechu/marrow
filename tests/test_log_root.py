@@ -93,3 +93,28 @@ def test_rendered_plists_use_log_root(log_root, tmp_path, monkeypatch):
         assert spec["StandardOutPath"] == str(log_root / rel)
         assert spec["StandardErrorPath"] == str(log_root / rel)
         assert (log_root / rel).parent.is_dir()
+
+
+def test_cortex_watchdog_spawn_appends_to_cortex_log(tmp_path, monkeypatch):
+    from marrow import cortex_bridge, cortex_cfg
+    log = tmp_path / "cx" / "ct-wake-daemon" / "watchdog.log"
+    monkeypatch.setattr(cortex_cfg, "watchdog_log", lambda: log)
+    monkeypatch.setattr(cortex_bridge, "_cortex_watchdog_pidfile",
+                        lambda: tmp_path / "state" / "watchdog.pid")
+    monkeypatch.setattr(cortex_bridge, "_cortex_paths",
+                        lambda: (str(tmp_path / "py"), str(tmp_path)))
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+
+    def _popen(cmd, **kw):
+        seen["stdout"] = kw["stdout"].name
+        seen["stderr"] = kw["stderr"].name
+        return _Proc()
+
+    monkeypatch.setattr(cortex_bridge.subprocess, "Popen", _popen)
+    cortex_bridge._spawn_watchdog_if_absent()
+    assert seen == {"stdout": str(log), "stderr": str(log)}
+    assert log.parent.is_dir()
+    assert (tmp_path / "state" / "watchdog.pid").read_text() == "4242"

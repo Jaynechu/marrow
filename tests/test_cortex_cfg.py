@@ -31,6 +31,9 @@ next_wake_high_min = 120
 shell = "cli"
 socket_path = ""
 kick_timeout_sec = 1.0
+
+[log]
+dir = "/var/cx-logs"
 """
 
 
@@ -83,6 +86,10 @@ def test_result_is_cached_for_the_process(cortex):
 def test_empty_path_resolves_under_cortex_home(cortex, tmp_path):
     assert cortex_cfg.path("wake_state_file") == tmp_path / "home" / "state" / "wake_state.json"
     assert cortex_cfg.path("watchdog_pidfile") == tmp_path / "home" / "state" / "watchdog.pid"
+
+
+def test_watchdog_log_under_cortex_log_dir(cortex):
+    assert cortex_cfg.watchdog_log() == Path("/var/cx-logs/ct-wake-daemon/watchdog.log")
 
 
 def test_explicit_path_wins(monkeypatch, tmp_path):

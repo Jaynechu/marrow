@@ -105,6 +105,12 @@ def home() -> Path:
     return Path(config.load()["cortex"]["home"]).expanduser()
 
 
+def watchdog_log() -> Path:
+    """cortex watchdog log: <cortex [log].dir>/ct-wake-daemon/watchdog.log,
+    the same file cortex's own spawn path appends to."""
+    return Path(str(get("log", "dir"))).expanduser() / "ct-wake-daemon" / "watchdog.log"
+
+
 def path(key: str) -> Path:
     """A cortex [paths] file. Absolute value used as-is; empty = cortex's own
     default under home()."""
