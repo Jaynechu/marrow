@@ -90,6 +90,8 @@ drift_backup_days = 30
 state_days = 30
 ct_collector_log_days = 30
 ct_activity_days = 90
+# ~/.claude/projects/*worktrees* slug dirs idle this long are removed.
+worktree_shell_days = 7
 state_dirs = ["backup_guard", "ct_cursor", "outbound", "presence", "recall_seen", "replay", "sticker_nudge", "tl_nudge", "tl_seen", "tl_silent", "turn_delta", "usage_watermark", "write_ledger"]
 snapshot_dirs = ["schedule-snapshots"]
 # Dirs removed under every repo in repos_root; exclude = dir names (or a/b

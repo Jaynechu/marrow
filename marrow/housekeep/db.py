@@ -8,13 +8,14 @@ from __future__ import annotations
 import re
 import shutil
 import sqlite3
+import time
 from datetime import date
 from pathlib import Path
 
 import sqlite_vec
 
 from .. import storage, timeutil
-from . import Ctx, result as pass_result
+from . import Ctx, latest_mtime, result as pass_result
 
 _TOMBSTONE_WHERE = (
     "tombstone_at IS NOT NULL "
@@ -61,26 +62,30 @@ def prune_md_index_tombstones(conn: sqlite3.Connection,
     return _delete(conn, "md_index", _TOMBSTONE_WHERE, dry_run)
 
 
-def prune_projects_worktrees(projects_dir: Path, dry_run: bool = False) -> int:
-    """Delete every ~/.claude/projects/<slug>/ whose name contains "worktrees".
+def prune_projects_worktrees(projects_dir: Path, idle_days: int,
+                             dry_run: bool = False) -> int:
+    """Delete ~/.claude/projects/<slug>/ dirs containing "worktrees" in the name.
 
     Worktree sessions are task-isolated; cc ages their jsonls out but leaves
-    the slug shells, which are never revisited. Returns slug dirs removed.
+    the slug shells, which are never revisited. A slug whose newest mtime is
+    younger than idle_days may be a live session and stays. Returns slug dirs
+    removed.
     """
     if not projects_dir.is_dir():
         return 0
+    cutoff = time.time() - int(idle_days) * 86400
     purged = 0
     for child in sorted(projects_dir.iterdir()):
         if not child.is_dir() or "worktrees" not in child.name:
             continue
-        if dry_run:
-            purged += 1
-            continue
         try:
-            shutil.rmtree(child)
-            purged += 1
+            if latest_mtime(child) >= cutoff:
+                continue
+            if not dry_run:
+                shutil.rmtree(child)
         except OSError:
             continue
+        purged += 1
     return purged
 
 
@@ -252,7 +257,8 @@ def md_tombstones(ctx: Ctx) -> dict:
 
 
 def worktree_shells(ctx: Ctx) -> dict:
-    return pass_result(prune_projects_worktrees(ctx.projects_dir, ctx.dry_run))
+    return pass_result(prune_projects_worktrees(
+        ctx.projects_dir, ctx.hk["worktree_shell_days"], ctx.dry_run))
 
 
 def vec_evict(ctx: Ctx) -> dict:

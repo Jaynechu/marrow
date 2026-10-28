@@ -1,6 +1,8 @@
 """housekeep.db passes: md_index tombstones, worktree slug shells, vec pass error."""
 from __future__ import annotations
 
+import os
+import time
 from datetime import date
 from pathlib import Path
 
@@ -47,31 +49,43 @@ def test_prune_md_index_tombstones_empty_noop(db):
     assert hdb.prune_md_index_tombstones(db) == 0
 
 
-def _slugs(root: Path, names: list[str]) -> None:
+def _slugs(root: Path, names: list[str], age_days: float = 30) -> None:
     root.mkdir(parents=True, exist_ok=True)
+    t = time.time() - age_days * 86400
     for n in names:
         (root / n).mkdir()
         (root / n / "s.jsonl").write_text("{}\n")
+        for p in (root / n / "s.jsonl", root / n):
+            os.utime(p, (t, t))
 
 
 def test_prune_worktrees_removes_only_worktree_slugs(tmp_path):
     root = tmp_path / "projects"
     _slugs(root, ["-Users-x-CC-Lab-marrow", "-Users-x-marrow--claude-worktrees-agent-a"])
     (root / "stray-worktrees-file").write_text("x")
-    assert hdb.prune_projects_worktrees(root) == 1
+    assert hdb.prune_projects_worktrees(root, 7) == 1
     assert sorted(p.name for p in root.iterdir()) == [
         "-Users-x-CC-Lab-marrow", "stray-worktrees-file"]
+
+
+def test_prune_worktrees_keeps_recently_active_slug(tmp_path):
+    root = tmp_path / "projects"
+    _slugs(root, ["-a--claude-worktrees-agent-old"])
+    _slugs(root, ["-a--claude-worktrees-agent-live"], age_days=30)
+    (root / "-a--claude-worktrees-agent-live" / "new.jsonl").write_text("{}\n")
+    assert hdb.prune_projects_worktrees(root, 7) == 1
+    assert [p.name for p in root.iterdir()] == ["-a--claude-worktrees-agent-live"]
 
 
 def test_prune_worktrees_dry_run_keeps_dirs(tmp_path):
     root = tmp_path / "projects"
     _slugs(root, ["-Users-x-marrow--claude-worktrees-agent-a"])
-    assert hdb.prune_projects_worktrees(root, dry_run=True) == 1
+    assert hdb.prune_projects_worktrees(root, 7, dry_run=True) == 1
     assert len(list(root.iterdir())) == 1
 
 
 def test_prune_worktrees_missing_dir_noop(tmp_path):
-    assert hdb.prune_projects_worktrees(tmp_path / "nope") == 0
+    assert hdb.prune_projects_worktrees(tmp_path / "nope", 7) == 0
 
 
 def test_vec_evict_stale_backup_is_pass_error(tmp_path):
