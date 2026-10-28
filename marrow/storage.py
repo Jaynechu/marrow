@@ -661,8 +661,8 @@ def _migrate_to_v2(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_to_v3(conn: sqlite3.Connection) -> None:
-    """v3 schema: memes.pinned (LLM-written, aging exemption) +
-    memes.status (code-written by aging job — 'active' | 'dormant').
+    """v3 schema: memes.pinned (LLM-written) +
+    memes.status ('active' | 'dormant').
     Idempotent — duplicate ALTER swallowed; user_version short-circuits.
     Pre-v5 the table was named `vocab`; v5 renames it. This migration may
     therefore run against either name; resolve at call time.
@@ -889,7 +889,7 @@ def _migrate_to_v15(conn: sqlite3.Connection) -> None:
 
 def _migrate_to_v16(conn: sqlite3.Connection) -> None:
     """v16: events.recall_count + events.last_recalled_at — best-effort stats
-    updated on recall hits. recall_count feeds vec eviction exemption (aging)
+    updated on recall hits. recall_count feeds vec eviction exemption (housekeep)
     and future recall-hit boost. last_recalled_at is UTC ISO string.
     Idempotent — duplicate ALTER is swallowed; user_version short-circuits.
     """

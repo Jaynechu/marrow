@@ -256,7 +256,7 @@ _LANES: dict[str, dict[str, str]] = {
     },
     # Tasks lane covers study + projects (both live in `tasks` filtered by
     # category). Embed active + done so finished work stays surfaceable;
-    # skip archived (aging.py auto-applies after 30d of zero mentions).
+    # skip archived.
     "tasks": {
         "vec_table": "tasks_vec",
         "meta_table": "tasks_vec_meta",

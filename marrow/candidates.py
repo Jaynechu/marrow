@@ -132,8 +132,7 @@ def bump_use_counts(conn, rows: list[dict]) -> int:
 
     Substring match (case-insensitive) on memes.key — same approach as the
     insertion-time gate, so a key that passed the gate also bumps reliably.
-    Only status='active' rows participate; dormant memes don't auto-revive
-    here (aging.py owns revive).
+    Only status='active' rows participate; dormant memes don't auto-revive.
     """
     if not rows:
         return 0
