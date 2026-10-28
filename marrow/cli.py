@@ -577,7 +577,10 @@ def _launchctl(*args: str) -> tuple[int, str]:
 def _watcher_bootstrap() -> str:
     tgt = _watcher_plist_target()
     _LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(_WATCHER_PLIST_SRC, tgt)
+    from . import install
+    resolved = install._resolve_plist(_WATCHER_PLIST_SRC.read_text())
+    install._mkdir_plist_logs(resolved)
+    tgt.write_text(resolved)
     # Idempotent: bootout first, ignore not-loaded; then bootstrap.
     uid = subprocess.run(["id", "-u"], capture_output=True, text=True).stdout.strip()
     domain = f"gui/{uid}"

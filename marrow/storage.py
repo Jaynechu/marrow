@@ -1379,7 +1379,7 @@ def _migrate_to_v35(conn: sqlite3.Connection) -> None:
 
 
 def _backup_db_file(conn: sqlite3.Connection, tag: str) -> None:
-    """Best-effort copy of the live DB file to /tmp before a bulk rebuild.
+    """Best-effort copy of the live DB file to backup/manual/ before a bulk rebuild.
 
     init_db runs every migration inside one transaction, so a raised error
     already rolls the whole thing back (SQLite atomicity). This extra copy
@@ -1392,8 +1392,9 @@ def _backup_db_file(conn: sqlite3.Connection, tag: str) -> None:
         if not main or main == ":memory:" or not Path(main).exists():
             return
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        dst = Path("/tmp") / f"marrow-{tag}-{stamp}.db.bak"
-        shutil.copy2(main, dst)
+        d = config.backup_dir("manual")
+        d.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(main, d / f"marrow-{tag}-{stamp}.db.bak")
     except Exception:
         pass
 

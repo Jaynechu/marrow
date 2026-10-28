@@ -18,7 +18,13 @@ def fake_launch(tmp_path, monkeypatch):
                         lambda: plist_target)
     # Point the src plist at a real file we control.
     src = tmp_path / "src.plist"
-    src.write_text("<plist/>")
+    src.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<plist version="1.0"><dict>'
+        '<key>Label</key><string>com.marrow.watcher</string>'
+        '<key>ProgramArguments</key><array><string>__VENV_PYTHON__</string></array>'
+        '<key>StandardOutPath</key><string>__LOG_DIR__/mw-watcher/launchd.log</string>'
+        '</dict></plist>\n')
     monkeypatch.setattr(cli, "_WATCHER_PLIST_SRC", src)
 
     calls: list[tuple] = []
@@ -51,6 +57,16 @@ def test_watcher_start_bootstraps_and_kickstarts(fake_launch, capsys):
     assert "bootstrapped" in out
     assert "kickstarted" in out
     assert target.exists(), "plist should be copied to LaunchAgents"
+
+
+def test_watcher_start_renders_placeholders(fake_launch, tmp_path):
+    from marrow import install
+    _, target = fake_launch
+    cli.main(["watcher", "start"])
+    text = target.read_text()
+    assert "__" not in text
+    assert str(install._VENV_PYTHON) in text
+    assert str(tmp_path / "Logs" / "mw-watcher" / "launchd.log") in text
 
 
 def test_watcher_stop_calls_bootout(fake_launch, capsys):

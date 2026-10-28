@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from marrow import storage
+from marrow import config, storage
 from marrow.md_index import MdIndex, _canon
 
 _AUTOINC = ("events", "entities", "memes", "milestones", "stickers")
@@ -229,3 +229,17 @@ def test_md_index_canon_choke_point(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM md_index").fetchone()[0] == 1
     finally:
         conn.close()
+
+
+def test_pre_migration_backup_lands_in_manual(tmp_path):
+    db = tmp_path / "live.db"
+    conn = storage.init_db(str(db))
+    try:
+        storage._backup_db_file(conn, "probe")
+    finally:
+        conn.close()
+    manual = config.backup_dir("manual")
+    hits = list(manual.glob("marrow-probe-*.db.bak"))
+    assert len(hits) == 1
+    for h in hits:
+        h.unlink()
