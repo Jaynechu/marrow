@@ -66,9 +66,10 @@ keep = 14
 weekly_keep = 13
 
 [housekeep]
-# Weekly maintenance (python -m marrow.housekeep). launchd fires daily; a run does
-# work only when the last ok run is >= interval_days old, so a failure retries
-# next day. fail_alert_days failed days in a row = one housekeep_failed alert.
+# Weekly maintenance (python -m marrow.housekeep). launchd fires daily; a full
+# run is due when the last full run is >= interval_days old. Between full runs,
+# a day after a failed run reruns only the passes that failed. fail_alert_days
+# failed days in a row = one housekeep_failed alert.
 interval_days = 7
 fail_alert_days = 3
 # Report file: To do (open items, auto-closed when cleared) on top, Log below

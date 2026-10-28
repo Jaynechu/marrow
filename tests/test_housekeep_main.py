@@ -28,11 +28,13 @@ def groups(monkeypatch):
     return g
 
 
-def _row(ctx, ok, days_ago, *, only=None):
+def _row(ctx, ok, days_ago, *, only=None, passes=None, retry=None, sizes=None):
     ts = (date.today() - timedelta(days=days_ago)).isoformat() + "T02:00:00Z"
-    payload = {"ok": ok, "passes": {}, "sizes": {}}
+    payload = {"ok": ok, "passes": passes or {}, "sizes": sizes or {}}
     if only:
         payload["only"] = [only]
+    if retry is not None:
+        payload["retry"] = retry
     conn = storage.connect(ctx.db)
     with conn:
         conn.execute(
@@ -74,11 +76,56 @@ def test_not_due_inside_interval_due_at_interval(tmp_path):
     assert hk.is_due(ctx2, hk.history(ctx2))
 
 
-def test_failed_run_keeps_job_due(tmp_path):
+def test_failed_run_retries_only_failed_passes(tmp_path, groups):
+    calls = []
+
+    def _flaky(ctx):
+        calls.append("flaky")
+        return result(1)
+    groups["a"].append(("flaky", _flaky))
     ctx = make_ctx(tmp_path)
     _row(ctx, True, 10)
-    _row(ctx, False, 1)
+    _row(ctx, False, 1, passes={"good": {"error": None},
+                                "flaky": {"error": "x"}})
+    assert not hk.is_due(ctx, hk.history(ctx))
+    assert hk.execute(ctx, None, force=False) == 0
+    row = _audit_rows(ctx)[-1]
+    assert row["ok"] is True and row["retry"] == ["flaky"]
+    assert list(row["passes"]) == ["flaky"]
+    assert calls == ["flaky"]
+    hk.execute(ctx, None, force=False)
+    assert len(_audit_rows(ctx)) == 3
+
+
+def test_full_run_due_at_interval_even_while_retries_fail(tmp_path, groups):
+    ctx = make_ctx(tmp_path)
+    _row(ctx, False, 7, passes={"good": {"error": "x"}})
+    _row(ctx, False, 1, passes={"good": {"error": "x"}}, retry=["good"])
     assert hk.is_due(ctx, hk.history(ctx))
+    hk.execute(ctx, None, force=False)
+    assert "retry" not in _audit_rows(ctx)[-1]
+
+
+def test_retry_failures_count_toward_streak(tmp_path, groups):
+    groups["a"] = [("bad", _bad_pass), ("good", _ok_pass)]
+    ctx = make_ctx(tmp_path)
+    _row(ctx, True, 20)
+    _row(ctx, False, 2, passes={"bad": {"error": "boom"}, "good": {"error": None}})
+    _row(ctx, False, 1, passes={"bad": {"error": "boom"}}, retry=["bad"])
+    assert hk.execute(ctx, None, force=False) == 1
+    assert _audit_rows(ctx)[-1]["retry"] == ["bad"]
+    assert _alerts(ctx) == 1
+
+
+def test_growth_baseline_is_last_full_run_sizes(tmp_path, groups):
+    seen = {}
+    groups["a"] = [("probe", lambda c: seen.update(c.prev_sizes) or result())]
+    ctx = make_ctx(tmp_path)
+    _row(ctx, True, 20, sizes={"x": 1})
+    _row(ctx, False, 9, passes={"good": {"error": "x"}}, sizes={"x": 2})
+    _row(ctx, True, 8, passes={"good": {"error": None}}, retry=["good"])
+    hk.execute(ctx, None, force=False)
+    assert seen == {"x": 2}
 
 
 def test_partial_only_runs_ignored_by_due_check(tmp_path):

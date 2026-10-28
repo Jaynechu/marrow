@@ -1,10 +1,12 @@
 """python -m marrow.housekeep — weekly maintenance, fired daily by launchd.
 
-A run does work only when the last ok full run is at least
-[housekeep].interval_days old, so a failed run retries the next day. Each pass
+A full run is due when the last full run is at least
+[housekeep].interval_days old. Until then, a day after a failed run reruns
+only the passes that failed in it (a retry run, ok once they pass). Each pass
 is isolated. --apply writes one audit_log row (action=housekeep, JSON {ok,
-passes, sizes}) and updates the report file; fail_alert_days failed days in
-a row raise one housekeep_failed alert per streak. --dry-run writes nothing.
+passes, sizes[, retry]}) and updates the report file; fail_alert_days failed
+days in a row (full or retry) raise one housekeep_failed alert per streak.
+--dry-run writes nothing.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ GROUPS: dict[str, list] = {
 
 
 def history(ctx: Ctx) -> list[dict]:
-    """Full-run audit rows, newest first, each with local `date`."""
+    """Full and retry audit rows, newest first, each with local `date`."""
     conn = db.connect(ctx)
     try:
         rows = conn.execute(
@@ -54,16 +56,27 @@ def last_ok(hist: list[dict]) -> dict | None:
     return next((h for h in hist if h.get("ok")), None)
 
 
+def last_full(hist: list[dict]) -> dict | None:
+    return next((h for h in hist if "retry" not in h), None)
+
+
 def is_due(ctx: Ctx, hist: list[dict]) -> bool:
-    ok = last_ok(hist)
-    if ok is None:
+    full = last_full(hist)
+    if full is None:
         return True
-    age = (ctx.today - date.fromisoformat(ok["date"])).days
+    age = (ctx.today - date.fromisoformat(full["date"])).days
     return age >= int(ctx.hk["interval_days"])
 
 
+def retry_passes(hist: list[dict]) -> list[str] | None:
+    """Passes that failed in the newest run, or None when it was ok."""
+    if not hist or hist[0].get("ok"):
+        return None
+    return [n for n, p in hist[0].get("passes", {}).items() if p.get("error")]
+
+
 def fail_streak(hist: list[dict]) -> int:
-    """Distinct local days with a failed full run since the last ok one."""
+    """Distinct local days with a failed run since the last ok one."""
     days: set[str] = set()
     for h in hist:
         if h.get("ok"):
@@ -72,10 +85,13 @@ def fail_streak(hist: list[dict]) -> int:
     return len(days)
 
 
-def run_passes(ctx: Ctx, groups: list[str]) -> dict[str, dict]:
+def run_passes(ctx: Ctx, groups: list[str],
+               names: list[str] | None = None) -> dict[str, dict]:
     results: dict[str, dict] = {}
     for g in groups:
         for name, fn in GROUPS[g]:
+            if names is not None and name not in names:
+                continue
             try:
                 results[name] = fn(ctx)
             except Exception as e:  # noqa: BLE001
@@ -84,7 +100,7 @@ def run_passes(ctx: Ctx, groups: list[str]) -> dict[str, dict]:
 
 
 def _audit_payload(results: dict[str, dict], ok: bool,
-                   only: str | None) -> dict:
+                   only: str | None, retry: list[str] | None) -> dict:
     payload: dict = {
         "ok": ok,
         "passes": {
@@ -96,18 +112,21 @@ def _audit_payload(results: dict[str, dict], ok: bool,
     }
     if only:
         payload["only"] = [only]
+    if retry is not None:
+        payload["retry"] = retry
     return payload
 
 
 def record(ctx: Ctx, results: dict[str, dict], ok: bool,
-           only: str | None) -> None:
+           only: str | None, retry: list[str] | None) -> None:
     conn = storage.connect(ctx.db)
     try:
         with conn:
             conn.execute(
                 "INSERT INTO audit_log (target_table, target_id, action, summary) "
                 "VALUES ('housekeep', NULL, 'housekeep', ?)",
-                (json.dumps(_audit_payload(results, ok, only), sort_keys=True),),
+                (json.dumps(_audit_payload(results, ok, only, retry),
+                            sort_keys=True),),
             )
     finally:
         conn.close()
@@ -153,12 +172,17 @@ def _print(ctx: Ctx, results: dict[str, dict]) -> None:
 
 def execute(ctx: Ctx, only: str | None, force: bool) -> int:
     hist = history(ctx)
+    retry = None
     if not force and not is_due(ctx, hist):
-        print(f"[housekeep] not due (last ok {last_ok(hist)['date']})")
-        return 0
-    ok_row = last_ok(hist)
-    ctx.prev_sizes = (ok_row or {}).get("sizes", {})
-    results = run_passes(ctx, [only] if only else list(GROUPS))
+        retry = None if only else retry_passes(hist)
+        if retry is None:
+            print(f"[housekeep] not due (last full run "
+                  f"{last_full(hist)['date']})")
+            return 0
+        print(f"[housekeep] retry: {', '.join(retry) or '(report only)'}")
+    ctx.prev_sizes = next((h["sizes"] for h in hist
+                           if "retry" not in h and h.get("sizes")), {})
+    results = run_passes(ctx, [only] if only else list(GROUPS), retry)
     try:
         rep = report.update(ctx, results)
     except Exception as e:  # noqa: BLE001
@@ -176,7 +200,7 @@ def execute(ctx: Ctx, only: str | None, force: bool) -> int:
             print(f"    {rep['line']}")
     if ctx.dry_run:
         return 0
-    record(ctx, results, ok, only)
+    record(ctx, results, ok, only, retry)
     if not ok and not only:
         maybe_alert_streak(ctx, failed)
     for r in results.values():
@@ -197,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", choices=sorted(GROUPS),
                     help="run one pass group")
     ap.add_argument("--force", action="store_true",
-                    help="run even when the last ok run is recent")
+                    help="full run even when not due")
     a = ap.parse_args(argv)
     ctx = build_ctx(dry_run=not a.apply)
     if ctx.dry_run:
