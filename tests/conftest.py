@@ -75,6 +75,7 @@ _pin_local_tz_to_melbourne()
 
 # ── hard wall: no test may WRITE under the real ~/.config/marrow/ tree ─────────
 _REAL_MARROW_DIR = Path(os.path.expanduser("~/.config/marrow")).resolve()
+_REAL_LOG_DIR = Path(os.path.expanduser("~/Library/Logs")).resolve()
 _WRITE_MODE_CHARS = set("waxr+")  # any mode that can create/append/truncate
 
 
@@ -91,6 +92,14 @@ def _under_real_marrow(target) -> bool:
     except (TypeError, ValueError, OSError):
         return False
     return p == _REAL_MARROW_DIR or _REAL_MARROW_DIR in p.parents
+
+
+def _under_real_logs(target) -> bool:
+    try:
+        p = Path(os.fspath(target)).resolve()
+    except (TypeError, ValueError, OSError):
+        return False
+    return _REAL_LOG_DIR in p.parents
 
 
 def _sqlite_target_under_real(database, uri: bool) -> bool:
@@ -141,7 +150,7 @@ def _forbid_real_marrow_writes():
     _real_path_open = Path.open
 
     def _guard(target):
-        if _under_real_marrow(target):
+        if _under_real_marrow(target) or _under_real_logs(target):
             raise AssertionError(
                 f"test attempted a WRITE under the real ~/.config/marrow/ tree: "
                 f"{target!r} — this path must be isolated to tmp (see conftest "
@@ -252,6 +261,7 @@ def _redirect_marrow_data_dir(tmp_path_factory):
         cx = dict(cfg.get("cortex", {}) or {})
         cx["home"] = str(cortex_home)
         cfg["cortex"] = cx
+        cfg["log"] = {**cfg.get("log", {}), "dir": str(tmp / "Logs")}
         return cfg
 
     mp.setattr(config, "load", _load_isolated)
@@ -260,7 +270,7 @@ def _redirect_marrow_data_dir(tmp_path_factory):
     # tree; redirect them so migrate/drift never leak.
     from marrow import paths as _paths_mod
     for _f in ("marrow_db", "drift_pending_dir", "drift_backup_dir",
-               "dir_tree_md", "logs_dir", "state_dir"):
+               "dir_tree_md", "state_dir"):
         setattr(_paths_mod.paths, _f, tmp / Path(getattr(_paths_mod.paths, _f)).name)
     try:
         from marrow.hooks import lifecycle as _hooks_lifecycle
@@ -276,7 +286,6 @@ def _redirect_marrow_data_dir(tmp_path_factory):
     try:
         from marrow import schedule as _sched_mod
         mp.setattr(_sched_mod, "_SNAPSHOT_DIR", tmp / "schedule-snapshots")
-        mp.setattr(_sched_mod, "_FAIL_LOG", tmp / "logs" / "cadence_fail.log")
         mp.setattr(_sched_mod, "_DAILY_PATH", str(tmp / "daily.md"))
     except ImportError:
         pass

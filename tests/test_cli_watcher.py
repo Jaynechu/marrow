@@ -33,8 +33,8 @@ def fake_launch(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
-    (tmp_path / "data" / "logs").mkdir(parents=True)
+    monkeypatch.setattr(config, "log_root", lambda: tmp_path / "Logs")
+    (tmp_path / "Logs" / "mw-watcher").mkdir(parents=True)
     return calls, plist_target
 
 
@@ -70,7 +70,7 @@ def test_watcher_status_prints_state(fake_launch, capsys):
 
 
 def test_watcher_status_tails_log(fake_launch, capsys, tmp_path):
-    log = tmp_path / "data" / "logs" / "watcher.log"
+    log = tmp_path / "Logs" / "mw-watcher" / "watcher.log"
     log.write_text("\n".join(f"line {i}" for i in range(20)) + "\n")
     cli.main(["watcher", "status"])
     out = capsys.readouterr().out

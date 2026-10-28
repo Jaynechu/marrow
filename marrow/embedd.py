@@ -72,10 +72,9 @@ def _logger() -> logging.Logger:
     if log.handlers:
         return log
     log.setLevel(logging.INFO)
-    d = Path(config.DATA_DIR) / "logs" / "embedd"
-    d.mkdir(parents=True, exist_ok=True)
     handler = logging.handlers.TimedRotatingFileHandler(
-        d / "embedd.log", when="midnight", backupCount=7, encoding="utf-8",
+        config.log_dir("mw-embedd") / "embedd.log", when="midnight",
+        backupCount=config.log_keep_days(), encoding="utf-8",
     )
     handler.setFormatter(logging.Formatter(
         "%(asctime)sZ %(levelname)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S",

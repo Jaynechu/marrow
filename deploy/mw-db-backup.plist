@@ -36,8 +36,8 @@
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>__LOG_DIR__/mw-db-backup.log</string>
+  <string>__LOG_DIR__/mw-jobs/db-backup.log</string>
   <key>StandardErrorPath</key>
-  <string>__LOG_DIR__/mw-db-backup.log</string>
+  <string>__LOG_DIR__/mw-jobs/db-backup.log</string>
 </dict>
 </plist>

@@ -141,10 +141,8 @@ def _write_ct_activity(conn: sqlite3.Connection, sid: str, channel: str) -> None
 
 
 def _recall_log_dir() -> Path:
-    """~/.config/marrow/logs/recall/ — created on first use."""
-    d = config.DATA_DIR / "logs" / "recall"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    """<[log].dir>/mw-recall/ — created on first use."""
+    return config.log_dir("mw-recall")
 
 
 def _recall_session_log_path(sid: str, utc_now: datetime) -> Path:

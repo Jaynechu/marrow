@@ -37,8 +37,8 @@
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>__LOG_DIR__/mw-aging.log</string>
+  <string>__LOG_DIR__/mw-jobs/aging.log</string>
   <key>StandardErrorPath</key>
-  <string>__LOG_DIR__/mw-aging.log</string>
+  <string>__LOG_DIR__/mw-jobs/aging.log</string>
 </dict>
 </plist>

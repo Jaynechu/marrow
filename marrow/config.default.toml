@@ -48,11 +48,15 @@ ny_root = ""
 drift_pending_dir = "~/.config/marrow/drift_pending"
 drift_backup_dir = "~/.config/marrow/drift_backup"
 dir_tree_md = "~/.config/marrow/dir_tree.md"
-# Watcher/pipeline logs + runtime state.
-logs_dir = "~/.config/marrow/logs"
+# Runtime state.
 state_dir = "~/.config/marrow/state"
 # Sticker library folder. Empty = <ny_root>/stickers, else <DATA_DIR>/stickers.
 stickers_dir = ""
+
+[log]
+# Log root: each service writes under <dir>/mw-<service>/. keep_days = rotated files kept.
+dir = "~/Library/Logs"
+keep_days = 14
 
 [backup]
 # Daily DB snapshots to retain each side (local + offsite). Conservative

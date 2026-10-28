@@ -117,6 +117,20 @@ def db_path() -> str:
     return load()["paths"]["db"]
 
 
+def log_root() -> Path:
+    return Path(load()["log"]["dir"]).expanduser()
+
+
+def log_dir(service: str) -> Path:
+    d = log_root() / service
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def log_keep_days() -> int:
+    return int(load()["log"]["keep_days"])
+
+
 def db_pages_path() -> str:
     return load()["paths"]["db_pages"]
 

@@ -30,7 +30,7 @@ def test_db_pages_path_defaults_under_config_dir(monkeypatch, tmp_path):
         daybrief_md=Path(""),
         drift_pending_dir=tmp_path / "drift_pending",
         drift_backup_dir=tmp_path / "drift_backup", dir_tree_md=tmp_path / "dir_tree.md",
-        logs_dir=tmp_path / "logs", state_dir=tmp_path / "state",
+        state_dir=tmp_path / "state",
     ))
     p = config.db_pages_path()
     assert "db-pages" in p

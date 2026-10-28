@@ -40,8 +40,8 @@
   <string>Interactive</string>
 
   <key>StandardOutPath</key>
-  <string>__DATA_DIR__/logs/embedd-launchd.log</string>
+  <string>__LOG_DIR__/mw-embedd/launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>__DATA_DIR__/logs/embedd-launchd.log</string>
+  <string>__LOG_DIR__/mw-embedd/launchd.log</string>
 </dict>
 </plist>

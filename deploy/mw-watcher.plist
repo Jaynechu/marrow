@@ -35,8 +35,8 @@
   <string>Background</string>
 
   <key>StandardOutPath</key>
-  <string>__DATA_DIR__/logs/watcher-launchd.log</string>
+  <string>__LOG_DIR__/mw-watcher/launchd.log</string>
   <key>StandardErrorPath</key>
-  <string>__DATA_DIR__/logs/watcher-launchd.log</string>
+  <string>__LOG_DIR__/mw-watcher/launchd.log</string>
 </dict>
 </plist>

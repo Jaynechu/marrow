@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -166,7 +167,6 @@ def setup_venv() -> bool:
 
 def setup_config() -> bool:
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    (_CONFIG_DIR / "logs").mkdir(parents=True, exist_ok=True)
     (_CONFIG_DIR / "db-pages").mkdir(parents=True, exist_ok=True)
     # [paths] now lives in config.toml (seeded from config.default.toml below);
     # defaults under ~/.config/marrow suffice, so no separate seed step.
@@ -366,15 +366,22 @@ def sync_symlinks() -> bool:
 # ---------------------------------------------------------------------------
 
 def _resolve_plist(text: str) -> str:
-    log_dir = _CONFIG_DIR / "logs"
+    from . import config
+    log_dir = config.log_root()
     return (
         text
         .replace("__VENV_PYTHON__",  str(_VENV_PYTHON))
         .replace("__PROJECT_DIR__",  str(_REPO_ROOT))
         .replace("__LOG_DIR__",      str(log_dir))
-        .replace("__DATA_DIR__",     str(_CONFIG_DIR))
         .replace("__PATH_ENV__",     _PATH_ENV)
     )
+
+
+def _mkdir_plist_logs(resolved: str) -> None:
+    spec = plistlib.loads(resolved.encode("utf-8"))
+    for key in ("StandardOutPath", "StandardErrorPath"):
+        if spec.get(key):
+            Path(spec[key]).parent.mkdir(parents=True, exist_ok=True)
 
 
 def _remove_obsolete_plists(domain: str) -> None:
@@ -401,7 +408,6 @@ def _plist_gate_open(label: str) -> bool:
 
 def install_plists() -> bool:
     _LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
-    (_CONFIG_DIR / "logs").mkdir(parents=True, exist_ok=True)
     uid = _uid()
     domain = f"gui/{uid}"
     _remove_obsolete_plists(domain)
@@ -415,6 +421,7 @@ def install_plists() -> bool:
             _act(f"[skip] {label} — {_GATED_PLISTS[label][0]} disabled")
             continue
         resolved = _resolve_plist(src.read_text())
+        _mkdir_plist_logs(resolved)
         tgt = _LAUNCH_AGENTS / f"{label}.plist"
         tgt.write_text(resolved)
         _launchctl("bootout", domain, str(tgt))   # tolerated

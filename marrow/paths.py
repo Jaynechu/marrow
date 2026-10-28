@@ -26,7 +26,6 @@ _KEYS: dict[str, tuple[str, ...]] = {
     "drift_pending_dir": ("drift_pending_dir",),
     "drift_backup_dir": ("drift_backup_dir",),
     "dir_tree_md": ("dir_tree_md",),
-    "logs_dir": ("logs_dir",),
     "state_dir": ("state_dir",),
 }
 
@@ -37,7 +36,6 @@ _DEFAULTS = {
     "drift_pending_dir": "~/.config/marrow/drift_pending",
     "drift_backup_dir": "~/.config/marrow/drift_backup",
     "dir_tree_md": "~/.config/marrow/dir_tree.md",
-    "logs_dir": "~/.config/marrow/logs",
     "state_dir": "~/.config/marrow/state",
 }
 
@@ -50,7 +48,6 @@ class Paths:
     drift_pending_dir: Path
     drift_backup_dir: Path
     dir_tree_md: Path
-    logs_dir: Path
     state_dir: Path
 
 

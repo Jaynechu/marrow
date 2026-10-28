@@ -625,7 +625,7 @@ def cmd_watcher(args) -> int:
         return 0
     if args.action == "status":
         print(_watcher_state())
-        log_path = config.DATA_DIR / "logs" / "watcher.log"
+        log_path = config.log_root() / "mw-watcher" / "watcher.log"
         if log_path.exists():
             tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
             print("--- last 5 log lines ---")

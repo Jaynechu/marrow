@@ -13,7 +13,6 @@ def test_load_default(tmp_path):
     """When toml is absent (nonexistent path), fallback defaults are used and expanduser'd."""
     p = load_paths(toml_path=tmp_path / "nonexistent.toml")
     assert p.marrow_db == Path(_DEFAULTS["marrow_db"]).expanduser()
-    assert p.logs_dir == Path(_DEFAULTS["logs_dir"]).expanduser()
     assert p.state_dir == Path(_DEFAULTS["state_dir"]).expanduser()
     # ny_root and daybrief_md default to empty (user must configure)
     assert p.ny_root == Path("")
@@ -30,15 +29,13 @@ def test_load_custom_via_arg(tmp_path):
         "[paths]\n"
         f'db = "{custom_db}"\n'
         f'ny_root = "{tmp_path}"\n'
-        f'daybrief = "{tmp_path / "db.md"}"\n'
-        f'logs_dir = "{tmp_path / "my_logs"}"\n',
+        f'daybrief = "{tmp_path / "db.md"}"\n',
         encoding="utf-8",
     )
     p = load_paths(toml_path=custom_toml)
     assert p.marrow_db == custom_db
     assert p.ny_root == tmp_path
     assert p.daybrief_md == tmp_path / "db.md"
-    assert p.logs_dir == tmp_path / "my_logs"
 
 
 def test_legacy_key_fallback(tmp_path):
@@ -62,7 +59,6 @@ def test_no_regression_paths_import(tmp_path, monkeypatch):
     assert hasattr(mp, "paths")
     assert hasattr(mp.paths, "marrow_db")
     assert hasattr(mp.paths, "daybrief_md")
-    assert hasattr(mp.paths, "logs_dir")
     assert hasattr(mp.paths, "state_dir")
     assert hasattr(mp.paths, "ny_root")
 
@@ -87,9 +83,9 @@ def test_no_regression_hooks_import(monkeypatch):
 
 
 def test_no_regression_watcher_logs(tmp_path, monkeypatch):
-    """watcher._logs_dir() returns a Path under config.DATA_DIR (monkeypatch-safe)."""
+    """watcher._logs_dir() returns <[log].dir>/mw-watcher (monkeypatch-safe)."""
     from marrow import config, watcher
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "log_root", lambda: tmp_path)
     d = watcher._logs_dir()
-    assert d == tmp_path / "logs" / "watcher"
+    assert d == tmp_path / "mw-watcher"
     assert d.is_dir()

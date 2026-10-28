@@ -23,8 +23,8 @@
     <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>
-    <string>__LOG_DIR__/mw-refresh.log</string>
+    <string>__LOG_DIR__/mw-jobs/refresh.log</string>
     <key>StandardErrorPath</key>
-    <string>__LOG_DIR__/mw-refresh.log</string>
+    <string>__LOG_DIR__/mw-jobs/refresh.log</string>
 </dict>
 </plist>

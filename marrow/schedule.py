@@ -87,19 +87,21 @@ def get_data_mtime() -> float:
     return best
 
 
-_FAIL_LOG = config.DATA_DIR / "logs" / "cadence_fail.log"
 _ALERT_AFTER = 3
 _fail_streak = 0
+
+
+def _fail_log() -> Path:
+    return config.log_dir("mw-jobs") / "cadence-fail.log"
 
 
 def _log_fail(kind: str, args: list[str], rc: int | None, err: str) -> None:
     global _fail_streak
     _fail_streak += 1
     try:
-        _FAIL_LOG.parent.mkdir(parents=True, exist_ok=True)
         ts = timeutil.local_now().isoformat(timespec="seconds")
         caller = f"pid={os.getpid()} ppid={os.getppid()} argv0={sys.argv[0]}"
-        with open(_FAIL_LOG, "a") as f:
+        with open(_fail_log(), "a") as f:
             f.write(f"{ts} kind={kind} rc={rc} {caller} args={' '.join(args)}"
                     f" err={(err or '').strip()[:500]!r}\n")
     except OSError:

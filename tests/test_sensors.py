@@ -262,7 +262,8 @@ def test_install_plists_skips_sensors_when_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "_CONFIG_DIR", tmp_path / "cfg")
     monkeypatch.setattr(install, "_uid", lambda: "501")
     monkeypatch.setattr(install, "_launchctl", lambda *a: (0, ""))
-    monkeypatch.setattr(config, "load", lambda: {"sensors": {"enabled": False}})
+    monkeypatch.setattr(config, "load", lambda: {"sensors": {"enabled": False},
+                                                 "log": {"dir": str(tmp_path / "Logs")}})
     assert install.install_plists() is True
     written = {p.name for p in (tmp_path / "agents").iterdir()}
     assert "com.marrow.sensors.plist" not in written
@@ -275,7 +276,8 @@ def test_install_plists_writes_sensors_when_enabled(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "_CONFIG_DIR", tmp_path / "cfg")
     monkeypatch.setattr(install, "_uid", lambda: "501")
     monkeypatch.setattr(install, "_launchctl", lambda *a: (0, ""))
-    monkeypatch.setattr(config, "load", lambda: {"sensors": {"enabled": True}})
+    monkeypatch.setattr(config, "load", lambda: {"sensors": {"enabled": True},
+                                                 "log": {"dir": str(tmp_path / "Logs")}})
     assert install.install_plists() is True
     text = (tmp_path / "agents" / "com.marrow.sensors.plist").read_text()
     assert "marrow.sensors" in text

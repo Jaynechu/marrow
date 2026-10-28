@@ -39,9 +39,7 @@ _LOG_NAME = "watcher.log"
 
 
 def _logs_dir() -> Path:
-    d = Path(config.DATA_DIR) / "logs" / "watcher"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return config.log_dir("mw-watcher")
 
 
 def _setup_logger() -> logging.Logger:
@@ -50,7 +48,8 @@ def _setup_logger() -> logging.Logger:
         return log
     log.setLevel(logging.INFO)
     handler = logging.handlers.TimedRotatingFileHandler(
-        _logs_dir() / _LOG_NAME, when="midnight", backupCount=7, encoding="utf-8",
+        _logs_dir() / _LOG_NAME, when="midnight",
+        backupCount=config.log_keep_days(), encoding="utf-8",
     )
     handler.setFormatter(logging.Formatter(
         "%(asctime)sZ %(levelname)s %(message)s",
