@@ -6,10 +6,9 @@ refreshed. dry_run reports the match without touching the DB.
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 
-from . import config, storage, timeutil
+from . import config, repo, storage, timeutil
 
 NO_MATCH = "0 rows matched"
 _LINES_CAP = 20
@@ -57,7 +56,7 @@ def _backup(db: str, tag: str) -> str:
     d = config.backup_dir("manual")
     d.mkdir(parents=True, exist_ok=True)
     path = str(d / f"marrow-backup-{tag}-{ts}.db")
-    shutil.copy2(str(db), path)
+    repo.snapshot_db(db, path)
     return path
 
 

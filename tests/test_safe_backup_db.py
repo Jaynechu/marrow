@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 import time
 
 import pytest
@@ -10,11 +11,37 @@ import pytest
 from marrow import config, repo
 
 
+def _mkdb(path, *vals):
+    conn = sqlite3.connect(str(path))
+    with conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS t (v TEXT)")
+        conn.executemany("INSERT INTO t VALUES (?)", [(v,) for v in vals])
+    conn.close()
+
+
+def _vals(path):
+    conn = sqlite3.connect(str(path))
+    try:
+        return [r[0] for r in conn.execute("SELECT v FROM t ORDER BY rowid")]
+    finally:
+        conn.close()
+
+
+def _live_wal_db(path):
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA wal_autocheckpoint=0")
+    with conn:
+        conn.execute("CREATE TABLE t (v TEXT)")
+        conn.execute("INSERT INTO t VALUES ('in-wal')")
+    return conn
+
+
 @pytest.fixture()
 def db_and_manual(tmp_path, monkeypatch):
     """Minimal real db file + redirect DATA_DIR so safe_backup_db writes to tmp."""
     src = tmp_path / "marrow.db"
-    src.write_bytes(b"SQLITE-STUB")
+    _mkdb(src, "stub")
 
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
     monkeypatch.setattr(config, "db_path", lambda: str(src))
@@ -38,9 +65,28 @@ def test_dest_filename_format(db_and_manual):
 
 def test_copy_content_matches_source(db_and_manual):
     src, _ = db_and_manual
-    src.write_bytes(b"real-db-content-xyz")
+    _mkdb(src, "real-db-content-xyz")
     dest = repo.safe_backup_db("integrity", db_path=src)
-    assert dest.read_bytes() == b"real-db-content-xyz"
+    assert _vals(dest) == ["stub", "real-db-content-xyz"]
+
+
+def test_live_wal_rows_land_in_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    src = tmp_path / "live.db"
+    live = _live_wal_db(src)
+    try:
+        dest = repo.safe_backup_db("wal", db_path=src)
+    finally:
+        live.close()
+    assert _vals(dest) == ["in-wal"]
+    assert not dest.with_name(dest.name + "-wal").exists()
+
+
+def test_missing_source_raises_and_creates_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    with pytest.raises(sqlite3.Error):
+        repo.safe_backup_db("gone", db_path=tmp_path / "nope.db")
+    assert not (tmp_path / "nope.db").exists()
 
 
 # ── dest lands in backup/manual/ ─────────────────────────────────────────────
@@ -78,9 +124,13 @@ def test_purge_backup_lands_in_manual(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "load", _load)
     src = tmp_path / "marrow.db"
-    src.write_bytes(b"x")
-    out = purge._backup(str(src), "purge")
+    live = _live_wal_db(src)
+    try:
+        out = purge._backup(str(src), "purge")
+    finally:
+        live.close()
     assert out.startswith(str(tmp_path / "bk" / "manual" / "marrow-backup-purge-"))
+    assert _vals(out) == ["in-wal"]
 
 
 def test_drift_backup_default_under_backup_root():

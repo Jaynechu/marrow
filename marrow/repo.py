@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -17,6 +16,20 @@ from . import storage
 from . import recall as _recall_mod
 from . import entity_recall as _entity_recall
 from . import candidates as _candidates
+
+def snapshot_db(src: Path | str, dest: Path | str) -> None:
+    """Consistent copy of a live (WAL) db via the sqlite backup API."""
+    s = sqlite3.connect(Path(src).absolute().as_uri() + "?mode=ro", uri=True,
+                        timeout=30.0)
+    try:
+        d = sqlite3.connect(str(dest))
+        try:
+            s.backup(d)
+        finally:
+            d.close()
+    finally:
+        s.close()
+
 
 def safe_backup_db(reason: str, db_path: Path | None = None) -> Path:
     """Snapshot the live db to backup/manual/ before a destructive op.
@@ -30,7 +43,7 @@ def safe_backup_db(reason: str, db_path: Path | None = None) -> Path:
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = dest_dir / f"marrow-before-{reason}-{stamp}.db"
-    shutil.copy2(src, dest)
+    snapshot_db(src, dest)
     return dest
 
 
