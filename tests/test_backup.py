@@ -190,7 +190,7 @@ def test_same_day_rerun_is_idempotent(tmp_path):
     assert first == second == ["marrow-2026-05-19.db"]
 
 
-# ── weekly copy (Sunday only, local only) ────────────────────────────────────
+# ── weekly copy (newest weekly >= weekly_days old, local only) ───────────────
 
 def _weekly_kw(tmp_path, src, today):
     return dict(
@@ -200,24 +200,45 @@ def _weekly_kw(tmp_path, src, today):
     )
 
 
-def test_sunday_copies_daily_into_weekly(tmp_path):
+def test_first_weekly_copy_when_none_exists(tmp_path):
     src = tmp_path / "marrow.db"
     _seed_db(src)
-    rep = backup.run(**_weekly_kw(tmp_path, src, "2026-11-01"))
-    daily = tmp_path / "daily" / "marrow-2026-11-01.db"
-    weekly = tmp_path / "weekly" / "marrow-2026-11-01.db"
+    rep = backup.run(**_weekly_kw(tmp_path, src, "2026-11-03"))
+    daily = tmp_path / "daily" / "marrow-2026-11-03.db"
+    weekly = tmp_path / "weekly" / "marrow-2026-11-03.db"
     assert rep["weekly_ok"] is True
     assert weekly.read_bytes() == daily.read_bytes()
     assert not (tmp_path / "ic" / "weekly").exists()
 
 
-def test_weekday_writes_no_weekly(tmp_path):
+def test_recent_weekly_writes_no_weekly(tmp_path):
     src = tmp_path / "marrow.db"
     _seed_db(src)
+    weekly = tmp_path / "weekly"
+    weekly.mkdir()
+    (weekly / "marrow-2026-10-27.db").write_text("old")
     rep = backup.run(**_weekly_kw(tmp_path, src, "2026-11-02"))
     assert rep["weekly_ok"] is None
     assert rep["weekly_would_write"] is None
-    assert not (tmp_path / "weekly").exists()
+    assert sorted(p.name for p in weekly.iterdir()) == ["marrow-2026-10-27.db"]
+
+
+def test_missed_sunday_still_copies_once_seven_days_old(tmp_path):
+    src = tmp_path / "marrow.db"
+    _seed_db(src)
+    weekly = tmp_path / "weekly"
+    weekly.mkdir()
+    (weekly / "marrow-2026-10-25.db").write_text("old")
+    rep = backup.run(**_weekly_kw(tmp_path, src, "2026-11-03"))
+    assert rep["weekly_ok"] is True
+    assert (weekly / "marrow-2026-11-03.db").exists()
+
+
+def test_weekly_copy_failure_exits_nonzero(monkeypatch):
+    monkeypatch.setattr(backup, "run", lambda **kw: {
+        "applied": True, "would_write": "/x/d.db", "weekly_would_write": "/x/w.db",
+        "local_ok": True, "offsite_ok": True, "weekly_ok": False, "pruned": 0})
+    assert backup.main(["--apply"]) == 1
 
 
 def test_weekly_prunes_beyond_keep(tmp_path):
@@ -235,7 +256,7 @@ def test_weekly_prunes_beyond_keep(tmp_path):
     assert "marrow-2026-04-09.db" in names
 
 
-def test_dry_run_sunday_plans_weekly_without_writing(tmp_path):
+def test_dry_run_plans_weekly_without_writing(tmp_path):
     src = tmp_path / "marrow.db"
     _seed_db(src)
     kw = _weekly_kw(tmp_path, src, "2026-11-01")

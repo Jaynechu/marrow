@@ -62,8 +62,11 @@ keep_days = 14
 # Backups live under [paths].backup_dir/{daily,weekly,manual,drift,claude-json}/.
 # Daily DB snapshots to retain each side (local daily/ + offsite).
 keep = 14
-# Sunday copies of the daily snapshot kept in weekly/ (local only).
+# Weekly copies of the daily snapshot kept in weekly/ (local only). A copy is
+# made when the newest weekly/ file is weekly_days old (or none), so a missed
+# day still gets one.
 weekly_keep = 13
+weekly_days = 7
 
 [housekeep]
 # Weekly maintenance (python -m marrow.housekeep). launchd fires daily; a full
