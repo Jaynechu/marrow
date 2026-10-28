@@ -159,6 +159,12 @@ def write_json(p: Path, data) -> None:
     atomic_write(str(p), json.dumps(data, indent=1, sort_keys=True) + "\n")
 
 
+def unsafe_dirs(hk: dict) -> str | None:
+    bad = [f"{k}={n!r}" for k in ("state_dirs", "snapshot_dirs") for n in hk[k]
+           if n in ("", ".") or "/" in n or ".." in n]
+    return f"unsafe dir entries: {', '.join(bad)}" if bad else None
+
+
 def result(items: int = 0, bytes_freed: int = 0, error: str | None = None,
            **extra) -> dict:
     return {"items": items, "bytes_freed": bytes_freed, "error": error, **extra}

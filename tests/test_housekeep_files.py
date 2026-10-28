@@ -71,11 +71,46 @@ def test_stray_bak_moves_to_manual(tmp_path):
 
 def test_stray_bak_never_overwrites(tmp_path):
     ctx = make_ctx(tmp_path)
+    m = ctx.backup_root / "manual"
     _file(ctx.data_dir / "a.bak", 1, "new")
-    _file(ctx.backup_root / "manual" / "a.bak", 1, "old")
+    _file(m / "a.bak", 1, "old")
+    _file(m / "a.bak.1", 1, "older")
     r = files.stray_bak(ctx)
-    assert r["items"] == 0 and r["error"]
-    assert (ctx.backup_root / "manual" / "a.bak").read_text() == "old"
+    assert r["items"] == 1 and r["error"] is None
+    assert not (ctx.data_dir / "a.bak").exists()
+    assert (m / "a.bak").read_text() == "old"
+    assert (m / "a.bak.1").read_text() == "older"
+    assert (m / "a.bak.2").read_text() == "new"
+
+
+def test_expiry_keeps_lock_files_and_sockets(tmp_path, monkeypatch):
+    import socket
+    ctx = make_ctx(tmp_path, hk={"state_dirs": ["replay"], "snapshot_dirs": []})
+    d = ctx.state_dir / "replay"
+    old = _file(d / "k1", 60)
+    lock = _file(d / "k1.lock", 60, "")
+    monkeypatch.chdir(d)
+    s = socket.socket(socket.AF_UNIX)
+    s.bind("x.sock")
+    try:
+        _age(d / "x.sock", 60)
+        r = files.state_expiry(ctx)
+    finally:
+        s.close()
+    assert r["items"] == 1 and not old.exists()
+    assert lock.exists() and (d / "x.sock").exists()
+
+
+def test_state_expiry_rejects_unsafe_dir_entries(tmp_path):
+    for bad in ("", ".", "..", "a/b", "x..y"):
+        ctx = make_ctx(tmp_path, hk={"state_dirs": ["tl_seen", bad],
+                                     "snapshot_dirs": []})
+        old = _file(ctx.state_dir / "tl_seen" / "sid-old", 31)
+        r = files.state_expiry(ctx)
+        assert r["items"] == 0 and "state_dirs" in r["error"], bad
+        assert old.exists()
+    ctx = make_ctx(tmp_path, hk={"state_dirs": [], "snapshot_dirs": ["../x"]})
+    assert "snapshot_dirs" in files.state_expiry(ctx)["error"]
 
 
 def test_repo_caches_respect_excludes(tmp_path):

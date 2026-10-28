@@ -9,7 +9,8 @@ from __future__ import annotations
 import plistlib
 from pathlib import Path
 
-from . import Ctx, fmt_size, read_json, result, tilde, tree_size, write_json
+from . import (Ctx, fmt_size, read_json, result, tilde, tree_size,
+               unsafe_dirs, write_json)
 
 _GB = 1024 ** 3
 _MB = 1024 ** 2
@@ -69,6 +70,9 @@ def _ruled(ctx: Ctx) -> set[Path]:
 
 
 def known(ctx: Ctx) -> dict:
+    bad = unsafe_dirs(ctx.hk)
+    if bad:
+        return result(error=bad)
     f = ctx.hk_state / "known.json"
     entries = _entries(ctx)
     cur = {k: tree_size(p) for k, p in entries.items()}

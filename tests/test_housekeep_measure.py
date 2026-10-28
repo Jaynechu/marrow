@@ -85,6 +85,13 @@ def test_live_db_exempt_from_unruled_growth(tmp_path):
     assert measure.known(ctx)["todo"] == []
 
 
+def test_known_rejects_unsafe_dir_entries(tmp_path):
+    ctx = make_ctx(tmp_path, hk={"state_dirs": ["ok", "../x"]})
+    r = measure.known(ctx)
+    assert "state_dirs" in r["error"]
+    assert not (ctx.hk_state / "known.json").exists()
+
+
 def _plist(ctx, label, args, wd=None):
     spec = {"Label": label, "ProgramArguments": args}
     if wd:

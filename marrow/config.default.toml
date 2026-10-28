@@ -79,10 +79,11 @@ report_log_cap = 50
 cmd_timeout_s = 1800
 # Root holding the repos (each <repos_root>/<repo>/ with its own .venv).
 repos_root = "~/CC-Lab"
-# Expiry in days by newest mtime; expired = unlinked. manual/ under
-# [paths].backup_dir, drift = [paths].drift_backup_dir, state_dirs under
-# [paths].state_dir, snapshot_dirs under ~/.config/marrow. Stray *.bak* in
-# ~/.config/marrow move to backup/manual/.
+# Expiry in days by newest mtime; expired = unlinked (*.lock and sockets
+# kept). manual/ under [paths].backup_dir, drift = [paths].drift_backup_dir,
+# state_dirs under [paths].state_dir, snapshot_dirs under ~/.config/marrow
+# (plain dir names only). Stray *.bak* in ~/.config/marrow move to
+# backup/manual/ (taken name -> .<n> suffix).
 manual_backup_days = 30
 drift_backup_days = 30
 state_days = 30

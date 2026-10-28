@@ -1,7 +1,8 @@
 """File passes: manual/drift backup + state expiry, stray .bak moves, repo caches.
 
-Expiry is by newest mtime inside an entry and unlinks (no trash). Stray
-`*.bak*` files in the data dir move to backup/manual/ after that dir's expiry
+Expiry is by newest mtime inside an entry and unlinks (no trash); `*.lock`
+files and sockets are never expired. Stray `*.bak*` files in the data dir move
+to backup/manual/ (a taken name gets a `.<n>` suffix) after that dir's expiry
 ran, so a moved file survives at least until the next run.
 """
 from __future__ import annotations
@@ -11,7 +12,7 @@ import shutil
 import time
 from pathlib import Path
 
-from . import Ctx, latest_mtime, remove, result, tilde, tree_size
+from . import Ctx, latest_mtime, remove, result, tilde, tree_size, unsafe_dirs
 
 
 def _merge(*parts: dict) -> dict:
@@ -34,6 +35,8 @@ def expire(ctx: Ctx, root: Path, days: int) -> dict:
     lines: list[str] = []
     errors: list[str] = []
     for e in sorted(root.iterdir()):
+        if e.name.endswith(".lock") or e.is_socket():
+            continue
         try:
             if latest_mtime(e) >= cutoff:
                 continue
@@ -55,6 +58,9 @@ def drift_backups(ctx: Ctx) -> dict:
 
 
 def state_expiry(ctx: Ctx) -> dict:
+    bad = unsafe_dirs(ctx.hk)
+    if bad:
+        return result(error=bad)
     days = ctx.hk["state_days"]
     roots = [ctx.state_dir / d for d in ctx.hk["state_dirs"]]
     roots += [ctx.data_dir / d for d in ctx.hk["snapshot_dirs"]]
@@ -65,18 +71,18 @@ def stray_bak(ctx: Ctx) -> dict:
     dest_dir = ctx.backup_root / "manual"
     items = 0
     lines: list[str] = []
-    errors: list[str] = []
     for p in sorted(ctx.data_dir.glob("*.bak*")):
         dest = dest_dir / p.name
-        if dest.exists():
-            errors.append(f"{tilde(p, ctx.home)}: already in manual/")
-            continue
+        n = 0
+        while dest.exists():
+            n += 1
+            dest = dest_dir / f"{p.name}.{n}"
         if not ctx.dry_run:
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.move(str(p), str(dest))
         items += 1
         lines.append(f"{tilde(p, ctx.home)} -> {tilde(dest, ctx.home)}")
-    return result(items, 0, "; ".join(errors) or None, lines=lines)
+    return result(items, 0, lines=lines)
 
 
 def repo_caches(ctx: Ctx) -> dict:
