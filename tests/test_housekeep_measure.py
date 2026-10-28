@@ -103,7 +103,7 @@ def test_launchd_missing_program_opens_at_once(tmp_path):
 
 def test_launchd_missing_module_opens_at_once(tmp_path):
     py = _py(tmp_path)
-    run = FakeRun({(py, "-c"): lambda cmd: (1, "") if cmd[-1] == "cortex.pacemaker"
+    run = FakeRun({(py, "-B", "-c"): lambda cmd: (1, "") if cmd[-1] == "cortex.pacemaker"
                    else (0, "")})
     ctx = make_ctx(tmp_path, run=run)
     _plist(ctx, "com.cortex.pacemaker-tick", [py, "-m", "cortex.pacemaker"])

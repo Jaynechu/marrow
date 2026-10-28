@@ -3,6 +3,7 @@
 Pinned brew pythons keep their Cellar path (TCC/FDA is keyed on it): pins go
 first, and cleanup aborts if its plan still names a pinned Cellar dir. A
 changed brew triggers an import health probe per repo venv; no kickstart.
+The runner disables brew auto-update/auto-cleanup so both happen only here.
 Dry-run runs only `brew upgrade -n` and `brew cleanup -n`.
 """
 from __future__ import annotations
@@ -19,7 +20,8 @@ def _err(step: str, out: str, **extra) -> dict:
 
 def _items(out: str) -> list[str]:
     return [ln.strip() for ln in out.splitlines()
-            if ln.strip() and not ln.startswith(("==>", "Warning", "This operation"))]
+            if ln[:1].isalnum()
+            and not ln.startswith(("Warning", "Fetching", "This operation"))]
 
 
 def _pinned_hits(cleanup_plan: str, pinned: list[str]) -> list[str]:
@@ -37,7 +39,7 @@ def _health(ctx: Ctx) -> list[str]:
     bad = []
     for repo, mod in ctx.hk["health_imports"].items():
         py = ctx.repos_root / repo / ".venv" / "bin" / "python"
-        rc, _ = ctx.run([str(py), "-c", f"import {mod}"],
+        rc, _ = ctx.run([str(py), "-B", "-c", f"import {mod}"],
                         cwd=str(ctx.repos_root / repo))
         if rc != 0:
             bad.append(repo)

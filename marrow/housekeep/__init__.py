@@ -42,10 +42,13 @@ class Ctx:
 
 
 def make_runner(timeout_s: int) -> Runner:
+    env = {**os.environ, "HOMEBREW_NO_AUTO_UPDATE": "1",
+           "HOMEBREW_NO_INSTALL_CLEANUP": "1", "HOMEBREW_NO_ENV_HINTS": "1"}
+
     def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str]:
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=timeout_s, cwd=cwd)
+                               timeout=timeout_s, cwd=cwd, env=env)
         except FileNotFoundError as e:
             return 127, str(e)
         except subprocess.TimeoutExpired:

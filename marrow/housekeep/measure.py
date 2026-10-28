@@ -118,7 +118,7 @@ def _check_plist(ctx: Ctx, label: str, spec: dict) -> tuple | None:
         mod = args[args.index("-m") + 1]
         wd = spec.get("WorkingDirectory")
         cwd = wd if wd and Path(wd).is_dir() else None
-        rc, _ = ctx.run([prog, "-c", _PROBE, mod], cwd=cwd)
+        rc, _ = ctx.run([prog, "-B", "-c", _PROBE, mod], cwd=cwd)
         if rc != 0:
             return ("launchd", label, f"{label}: module {mod} not importable")
     return None

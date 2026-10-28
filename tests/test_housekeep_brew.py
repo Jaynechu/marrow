@@ -6,7 +6,8 @@ from datetime import date
 from _housekeep_shared import FakeRun, make_ctx
 from marrow.housekeep import brew
 
-_UP_N = ("==> Would upgrade 2 outdated packages:\n"
+_UP_N = ("✔︎ Bottle Manifest python@3.13 (3.13.18)\n"
+         "==> Would upgrade 2 outdated packages:\n"
          "python@3.13 3.13.13_1 -> 3.13.14\nripgrep 14.1 -> 14.2\n")
 _CLEAN_N = ("Would remove: /opt/homebrew/Cellar/ripgrep/14.0 (10 files, 4MB)\n"
             "This operation would free approximately 4MB of disk space.\n")
@@ -83,7 +84,7 @@ def test_no_change_skips_health(tmp_path):
     run = FakeRun()
     r = brew.brew(make_ctx(tmp_path, run=run))
     assert r["error"] is None
-    assert not any(c[1:2] == ("-c",) for c in run.calls)
+    assert not any(c[1:3] == ("-B", "-c") for c in run.calls)
 
 
 def test_change_runs_health_and_reports_failure(tmp_path):
@@ -93,8 +94,8 @@ def test_change_runs_health_and_reports_failure(tmp_path):
                    (syn_py,): (1, "ModuleNotFoundError")})
     ctx.run = run
     r = brew.brew(ctx)
-    probes = [c for c in run.calls if c[1:2] == ("-c",)]
-    assert {c[2] for c in probes} == {"import marrow", "import synapse_core",
+    probes = [c for c in run.calls if c[1:3] == ("-B", "-c")]
+    assert {c[3] for c in probes} == {"import marrow", "import synapse_core",
                                       "import cortex"}
     assert r["error"] == "health: import failed in synapse"
     assert r["todo"] == [("health", "synapse",
@@ -106,6 +107,22 @@ def test_step_failure_is_pass_error(tmp_path):
     run = FakeRun({("uv", "cache", "prune"): (2, "boom")})
     r = brew.uv(make_ctx(tmp_path, run=run))
     assert r["error"] == "uv cache prune: boom"
+
+
+def test_runner_disables_brew_auto_update_and_cleanup(monkeypatch):
+    import subprocess
+
+    from marrow import housekeep
+    seen = {}
+
+    def _fake(cmd, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+    monkeypatch.setattr(housekeep.subprocess, "run", _fake)
+    assert housekeep.make_runner(5)(["brew", "upgrade"]) == (0, "ok")
+    assert seen["env"]["HOMEBREW_NO_AUTO_UPDATE"] == "1"
+    assert seen["env"]["HOMEBREW_NO_INSTALL_CLEANUP"] == "1"
+    assert seen["timeout"] == 5
 
 
 def test_python_eol_window(tmp_path):
