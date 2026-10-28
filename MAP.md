@@ -6,7 +6,7 @@
 
 ## 0. Contents
 
-§1 system map+hooks · §2 write path · §3 read path · §4 storage+recall · §5 surface sync (§5.4 CLI+MCP) · §6 cortex bridge (tl/goals/wishlist/agent_guard) · §7 scheduled jobs · §8 alerts · §9 catchup/self-heal · §10 aging · §11 infra · §12 addons · §13 invariants+status · §14 sensors
+§1 system map+hooks · §2 write path · §3 read path · §4 storage+recall · §5 surface sync (§5.4 CLI+MCP) · §6 cortex bridge (tl/goals/wishlist/agent_guard) · §7 scheduled jobs · §8 alerts · §9 catchup/self-heal · §10 housekeep · §11 infra · §12 addons · §13 invariants+status · §14 sensors
 
 ## 1. System map
 
@@ -202,17 +202,17 @@ Three runtimes:
 
 - com.marrow.watcher — persistent, KeepAlive.
 - com.marrow.refresh — manual trigger only (RunAtLoad false, no schedule), `mw refresh --all` (daybrief + monitor + subpages).
-- com.marrow.db-backup 03:00 daily — VACUUM INTO local + iCloud offsite, keep 14 each.
-- com.marrow.aging Sun 12:00 weekly — cleanup passes (§10).
+- com.marrow.db-backup 03:00 daily — VACUUM INTO local + iCloud offsite, keep 14 each; weekly copy into backup/weekly/ when due.
+- com.marrow.housekeep 12:00 daily fire, weekly due (§10).
 - com.marrow.embedd — persistent shared embed service (§4.2), KeepAlive SuccessfulExit=false, gated by `[embedd].enabled`.
-- install.py `_ALL_PLISTS` sole provisioning source: aging/db-backup/embedd/refresh/watcher (+ sensors, gated). `_OBSOLETE_PLISTS` boots out + deletes retired dashboard-tick/daily-routine/daily-catchup on upgrade.
+- install.py `_ALL_PLISTS` sole provisioning source: housekeep/db-backup/embedd/refresh/watcher (+ sensors, gated). `_OBSOLETE_PLISTS` boots out + deletes retired dashboard-tick/daily-routine/daily-catchup/aging on upgrade.
 - cli.py install-launchd/uninstall-launchd path retired (was duplicate, listed dead goose-bites/jsonl-cleanup jobs).
 - MCP daemon has no plist (CC-spawned).
 
 ## 8. Alerts
 
-- `repo:add_alert(severity, type, fingerprint, message=, db=)` — dedup key (type, fingerprint, resolved=0); repeats bump hit_count/updated_at/message. Never raises: any DB failure appends the record to DATA_DIR/alerts-fallback.jsonl + stderr note, returns -1; drained by the session_start hook (truncate-then-replay, §9). resolve = acknowledge: recurrence re-inserts (anti-mute, by design). Surface: monitor.md ## Alerts (`monitor:render_alerts`, resolved=0); resolve via md-delete (reconcile_alerts) or `mw resolve <id>`; aging auto-resolves milestone_added >7d only.
-- `schedule:_log_fail` — cadence subprocess fails append to DATA_DIR/logs/cadence_fail.log; streak of 3 → one warn alert, message triaged by `schedule:_alert_message` (auth → restart-watcher-first checklist; TCC grants = per-process snapshot at start · timeout → not-auth · other → first err line). Streak resets on success.
+- `repo:add_alert(severity, type, fingerprint, message=, db=)` — dedup key (type, fingerprint, resolved=0); repeats bump hit_count/updated_at/message. Never raises: any DB failure appends the record to DATA_DIR/alerts-fallback.jsonl + stderr note, returns -1; drained by the session_start hook (truncate-then-replay, §9). resolve = acknowledge: recurrence re-inserts (anti-mute, by design). Surface: monitor.md ## Alerts (`monitor:render_alerts`, resolved=0); resolve via md-delete (reconcile_alerts) or `mw resolve <id>`.
+- `schedule:_log_fail` — cadence subprocess fails append to `[log].dir`/mw-jobs/cadence-fail.log; streak of 3 → one warn alert, message triaged by `schedule:_alert_message` (auth → restart-watcher-first checklist; TCC grants = per-process snapshot at start · timeout → not-auth · other → first err line). Streak resets on success.
 - Current contract + full call-site/falsing audit + fixes: see alert redesign archive. Batch A landed 06/11 (P5 unpark, digest-zero retry chain, fallback sink, aging finally-flush). Batch B/C landed 06/15 (stable fingerprints · reconcile_ref date-scoped · sync_loop 3-consecutive alert · watcher thread-start critical · overflow auto-resolve · offsite 30s retry · dangling path-absent gate). Remaining: wx death escalation + wx media failure alerts (synapse-wx side).
 
 ## 9. Catchup & self-heal
@@ -220,18 +220,22 @@ Three runtimes:
 - alerts-fallback drain: the SessionStart hook runs `_drain_fallback_sink` every session start — replays DATA_DIR/alerts-fallback.jsonl into the alerts table (truncate-then-replay; malformed lines dropped with stderr note), so an alert that failed to write during a DB outage lands on the next session.
 - dormant revive (§4.3).
 
-## 10. Aging (weekly, one txn, alerts flushed in finally)
+## 10. Housekeep (replaces aging: daily fire, weekly due, daily retry on failure)
 
-- milestone_added alerts: >7d → resolved (auto-confirm).
-- md_index tombstones >30d → DELETE.
-- ~/.claude/projects worktree shells → rmtree.
-- events vec window: timestamp < now-90d (`[recall].vec_window_days`, 0=off) → DELETE vec rows; exempt recall_count>0 OR affect importance ≥3; caps abort >25% (inert <100 rows) or >10k rows (critical alerts); backup gate: newest daily backup missing/>7d → skip + warn. Recovery: embed_pending re-embeds from intact events rows (vectors are derived data). pending_alerts flushed in `main`'s finally — survives audit INSERT failure (A-4, 06/11).
+- `marrow/housekeep/` package: `__main__.py` (due check, retry, one audit_log row/run `action=housekeep`), pass groups `db.py`/`files.py`/`brew.py`/`measure.py`, `report.py` (markdown render). Each pass isolated try/except.
+- Due: last full run ≥ `[housekeep].interval_days` (7) old; not due + prior run failed → next day retries only the failed passes, ok once they pass.
+- db.py: md_index tombstones >`md_tombstone_days`d → DELETE; ~/.claude/projects worktree shells idle >`worktree_shell_days`d → rmtree; events vec window (`[recall].vec_window_days`, 0=off) → DELETE vec rows, exempt recall_count>0 OR affect importance≥3, caps abort >25%/10k rows, backup gate (newest daily backup missing/stale → skip+warn); ct_collector_log/ct_activity row expiry. No milestone auto-resolve (confirm_milestone_alerts dropped, 0 rows).
+- files.py: backup/manual + backup/drift + state_dirs/snapshot_dirs expiry by mtime (`.lock`/sockets exempt); stray `*.bak*` → backup/manual/; repo `__pycache__`/`.pytest_cache` sweep under repos_root.
+- brew.py: pin → update → upgrade → cleanup → uv/pip/npm cache prune; anything changed → per-repo venv health import check; python EOL within `eol_warn_days` → report item.
+- measure.py: sizes recorded into the audit row + growth vs previous ok row; new/unruled-growth items tracked via state `housekeep/known.json`; launchd health (missing program/module, 2-run nonzero exit) via `housekeep/watch.json`; free disk < `disk_free_alert_gb` → alert `disk_low` (once until recovered).
+- Alerts: `housekeep_failed` once per `fail_alert_days` (3) consecutive failed days (full or retry); `disk_low` as above.
+- Report `[housekeep].report_path` (~/.config/marrow/housekeep-report.md): `## To do` open items (auto-closed when cleared), `## Log` newest-first capped `report_log_cap`; unchanged run leaves file untouched.
 
 ## 11. Infra
 
 - `llm:LLMClient.call(role, body, tier)` — claude CLI stream-json subprocess, OAuth, no API key. Tier cheap/mid/top → model via [tiers]. Isolation flags strip persona/MCP. 1 retry/provider; severity warn (more providers left) / critical (last); timeout 120s, SIGTERM→SIGKILL ladder; refusal: stop_reason + 22 fingerprints; cost → audit_log llm_call_cost. on_alert is caller-supplied — title.py passes none (its failures stay silent).
 - `popen_detach` — mandatory 4-flag combo (DEVNULL stdin, log-fd stdout/err, start_new_session, close_fds); _lazy variant: child self-redirects on first write, silent runs leave no log file.
-- backup: `backup:run` VACUUM INTO tmp → os.replace, offsite copy fail-soft (warn, local still lands); `repo:safe_backup_db` in-session copies pruned >7d.
+- backup: `backup:run` VACUUM INTO tmp → os.replace, offsite copy fail-soft (warn, local still lands); weekly copy into backup/weekly/ when newest weekly file ≥`weekly_days`(7) old, pruned to `weekly_keep`(13); `repo:safe_backup_db` snapshots to backup/manual/ via `snapshot_db`, expired by housekeep `manual_backup_days` (no own prune).
 - config: default.toml ← user config.toml deep-merge; paths.py reads [paths] from the same pair (default+user, no separate paths.toml), legacy key fallback (marrow_db→db, daybrief_md→daybrief). Key tables: [paths] [backup] [llm.*] [tiers] [embedding] [recall] [*_dedup] [subpages] [transcript] [turn_inject] [cortex*].
 - title: `title:summarize` detached per prompt (`python -m marrow.title`, isolated LLM call), ≥5 user turns, ≤8 units, tier cheap, audit-dedup.
 
