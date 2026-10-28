@@ -55,6 +55,9 @@ def test_long_runner_file_only(log_root, mod, name, sub, fname):
         assert h.baseFilename == str(log_root / sub / fname)
         assert h.backupCount == 9
         assert out.propagate is False
+        rec = logging.LogRecord(name, logging.INFO, "", 0, "m", None, None)
+        rec.created = 0
+        assert h.format(rec) == "1970-01-01T00:00:00Z INFO m"
         h.close()
     finally:
         lg.handlers[:] = saved

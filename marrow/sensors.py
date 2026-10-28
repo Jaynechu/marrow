@@ -14,6 +14,7 @@ import logging
 import logging.handlers
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -41,9 +42,10 @@ def _logger() -> logging.Logger:
         config.log_dir("mw-sensors") / "sensors.log", when="midnight",
         backupCount=config.log_keep_days(), encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)sZ %(levelname)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S",
-    ))
+    fmt = logging.Formatter("%(asctime)sZ %(levelname)s %(message)s",
+                            datefmt="%Y-%m-%dT%H:%M:%S")
+    fmt.converter = time.gmtime
+    handler.setFormatter(fmt)
     log.addHandler(handler)
     log.propagate = False
     return log
