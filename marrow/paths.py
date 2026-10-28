@@ -3,6 +3,8 @@
 Values come from the [paths] section of the config pair:
   repo config.default.toml (defaults) + ~/.config/marrow/config.toml (overrides).
 Read directly with tomllib here (no config import) to avoid a circular import.
+An empty db means <DATA_DIR>/marrow.db, as in config.load; other empty keys
+stay Path("").
 
 Usage:
     from marrow.paths import paths
@@ -28,17 +30,6 @@ _KEYS: dict[str, tuple[str, ...]] = {
     "dir_tree_md": ("dir_tree_md",),
     "state_dir": ("state_dir",),
 }
-
-_DEFAULTS = {
-    "marrow_db": "~/.config/marrow/marrow.db",
-    "ny_root": "",
-    "daybrief_md": "",
-    "drift_pending_dir": "~/.config/marrow/drift_pending",
-    "drift_backup_dir": "~/.config/marrow/backup/drift",
-    "dir_tree_md": "~/.config/marrow/dir_tree.md",
-    "state_dir": "~/.config/marrow/state",
-}
-
 
 @dataclass
 class Paths:
@@ -74,9 +65,7 @@ def load_paths(toml_path: str | Path | None = None) -> Paths:
                 val = merged[key]
                 break
         if not val:
-            val = _DEFAULTS[attr]
-        if not val:
-            return Path("")
+            return _DATA_DIR / "marrow.db" if attr == "marrow_db" else Path("")
         return Path(val).expanduser()
 
     return Paths(**{attr: _p(attr) for attr in _KEYS})

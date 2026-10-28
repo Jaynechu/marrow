@@ -74,7 +74,7 @@ def build_ctx(dry_run: bool) -> Ctx:
         drift_dir=Path(paths.drift_backup_dir),
         log_root=config.log_root(),
         repos_root=Path(hk["repos_root"]).expanduser(),
-        projects_dir=home / ".claude" / "projects",
+        projects_dir=Path(hk["projects_dir"]).expanduser(),
         launch_agents=home / "Library" / "LaunchAgents",
         home=home,
         report_path=Path(hk["report_path"]).expanduser(),

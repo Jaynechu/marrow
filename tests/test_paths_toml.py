@@ -1,19 +1,18 @@
 """Tests for marrow/paths.py — TOML loader + env override + regression smoke."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-import pytest
 
-from marrow.paths import load_paths, _DEFAULTS
+from marrow.paths import _DEFAULT_CONFIG, _read_paths_section, load_paths
 
 
 def test_load_default(tmp_path):
-    """When toml is absent (nonexistent path), fallback defaults are used and expanduser'd."""
+    """Without a user toml, config.default.toml values are used and expanduser'd."""
     p = load_paths(toml_path=tmp_path / "nonexistent.toml")
-    assert p.marrow_db == Path(_DEFAULTS["marrow_db"]).expanduser()
-    assert p.state_dir == Path(_DEFAULTS["state_dir"]).expanduser()
+    assert p.marrow_db == Path("~/.config/marrow/marrow.db").expanduser()
+    assert p.state_dir == Path(
+        _read_paths_section(_DEFAULT_CONFIG)["state_dir"]).expanduser()
     # ny_root and daybrief_md default to empty (user must configure)
     assert p.ny_root == Path("")
     assert p.daybrief_md == Path("")

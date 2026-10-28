@@ -17,12 +17,6 @@ import sqlite_vec
 from .. import storage, timeutil
 from . import Ctx, latest_mtime, result as pass_result
 
-_TOMBSTONE_WHERE = (
-    "tombstone_at IS NOT NULL "
-    "AND tombstone_at < strftime('%Y-%m-%dT%H:%M:%SZ','now', '-30 days')"
-)
-
-
 def connect(ctx: Ctx) -> sqlite3.Connection:
     if not ctx.dry_run:
         return storage.connect(ctx.db)
@@ -52,14 +46,16 @@ def _delete(conn: sqlite3.Connection, table: str, where: str,
     return conn.execute(f"DELETE FROM {table} WHERE {where}").rowcount or 0
 
 
-def prune_md_index_tombstones(conn: sqlite3.Connection,
+def prune_md_index_tombstones(conn: sqlite3.Connection, days: int,
                               dry_run: bool = False) -> int:
-    """DELETE md_index rows tombstoned more than 30 days ago.
+    """DELETE md_index rows tombstoned more than `days` days ago.
 
     Live rows and recent tombstones stay so the inserter's anti-resurrection
     guard still fires for blocks the user deleted recently.
     """
-    return _delete(conn, "md_index", _TOMBSTONE_WHERE, dry_run)
+    where = ("tombstone_at IS NOT NULL AND tombstone_at < "
+             f"strftime('%Y-%m-%dT%H:%M:%SZ','now', '-{int(days)} days')")
+    return _delete(conn, "md_index", where, dry_run)
 
 
 def prune_projects_worktrees(projects_dir: Path, idle_days: int,
@@ -89,10 +85,6 @@ def prune_projects_worktrees(projects_dir: Path, idle_days: int,
     return purged
 
 
-_VEC_EVICT_CAP_PCT = 0.25
-_VEC_EVICT_CAP_MIN = 100
-_VEC_EVICT_CAP_ABS = 10000
-_BACKUP_STALE_DAYS = 7
 _BACKUP_NAME_RE = re.compile(r"^marrow-\d{4}-\d{2}-\d{2}\.db$")
 
 
@@ -117,15 +109,21 @@ def evict_vec_window(
     *,
     window_days: int,
     backup_dir: str,
+    hk: dict,
     dry_run: bool = False,
 ) -> dict:
     """Delete out-of-window events_vec rows; events_vec_meta stays as tombstone.
 
     Exempt: affect-linked (importance>=3) or recall_count>0. Skipped when the
-    newest daily backup is missing or older than 7d; aborted above the 25% /
-    10000-row caps. window_days=0 disables. Returns evicted, exempted,
-    skipped, aborted, pending_alerts (problems the caller surfaces).
+    newest daily backup is missing or older than hk vec_backup_stale_days;
+    aborted above the hk vec_evict_cap_pct / vec_evict_cap_abs caps.
+    window_days=0 disables. Returns evicted, exempted, skipped, aborted,
+    pending_alerts (problems the caller surfaces).
     """
+    stale_days = int(hk["vec_backup_stale_days"])
+    cap_pct = float(hk["vec_evict_cap_pct"])
+    cap_min = int(hk["vec_evict_cap_min"])
+    cap_abs = int(hk["vec_evict_cap_abs"])
     result: dict = {
         "evicted": 0, "exempted": 0,
         "skipped": False, "aborted": False,
@@ -137,12 +135,12 @@ def evict_vec_window(
 
     newest = _newest_backup(backup_dir)
     today = timeutil.local_today()
-    if newest is None or (today - newest).days > _BACKUP_STALE_DAYS:
+    if newest is None or (today - newest).days > stale_days:
         age_str = str((today - newest).days) + "d" if newest else "missing"
         result["pending_alerts"].append({
             "severity": "warn", "fingerprint": "vec_evict_backup_stale",
             "message": (
-                f"vec_evict skipped: backup {age_str} (need ≤{_BACKUP_STALE_DAYS}d). "
+                f"vec_evict skipped: backup {age_str} (need ≤{stale_days}d). "
                 f"Run `python -m marrow.backup --apply` then retry."
             ),
         })
@@ -188,25 +186,25 @@ def evict_vec_window(
         return result
 
     total_vec = conn.execute("SELECT COUNT(*) FROM events_vec").fetchone()[0]
-    if (evict_count > _VEC_EVICT_CAP_MIN
+    if (evict_count > cap_min
             and total_vec > 0
-            and evict_count > total_vec * _VEC_EVICT_CAP_PCT):
+            and evict_count > total_vec * cap_pct):
         result["pending_alerts"].append({
             "severity": "critical", "fingerprint": "vec_evict_cap_pct",
             "message": (
                 f"vec_evict aborted: would evict {evict_count}/{total_vec} rows "
-                f"({evict_count/total_vec:.0%} > {_VEC_EVICT_CAP_PCT:.0%} cap). "
+                f"({evict_count/total_vec:.0%} > {cap_pct:.0%} cap). "
                 "Manual investigation required."
             ),
         })
         result["aborted"] = True
         return result
-    if evict_count > _VEC_EVICT_CAP_ABS:
+    if evict_count > cap_abs:
         result["pending_alerts"].append({
             "severity": "critical", "fingerprint": "vec_evict_cap_abs",
             "message": (
                 f"vec_evict aborted: would evict {evict_count} rows "
-                f"(> {_VEC_EVICT_CAP_ABS} abs cap). Manual investigation required."
+                f"(> {cap_abs} abs cap). Manual investigation required."
             ),
         })
         result["aborted"] = True
@@ -253,7 +251,8 @@ def ct_prune(ctx: Ctx) -> dict:
 
 def md_tombstones(ctx: Ctx) -> dict:
     return pass_result(_with_conn(
-        ctx, lambda c: prune_md_index_tombstones(c, ctx.dry_run)))
+        ctx, lambda c: prune_md_index_tombstones(
+            c, ctx.hk["md_tombstone_days"], ctx.dry_run)))
 
 
 def worktree_shells(ctx: Ctx) -> dict:
@@ -264,7 +263,8 @@ def worktree_shells(ctx: Ctx) -> dict:
 def vec_evict(ctx: Ctx) -> dict:
     r = _with_conn(ctx, lambda c: evict_vec_window(
         c, window_days=ctx.vec_window_days,
-        backup_dir=str(ctx.backup_root / "daily"), dry_run=ctx.dry_run))
+        backup_dir=str(ctx.backup_root / "daily"), hk=ctx.hk,
+        dry_run=ctx.dry_run))
     err = "; ".join(a["message"] for a in r["pending_alerts"]) or None
     return pass_result(r["evicted"], error=err, lines=[f"exempted={r['exempted']}"])
 

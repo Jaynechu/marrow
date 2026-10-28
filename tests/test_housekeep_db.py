@@ -33,7 +33,7 @@ def test_prune_md_index_tombstones_deletes_old_only(db):
                      ("old1", 40), ("old2", 120)):
         _tomb(db, bid, age)
     db.commit()
-    assert hdb.prune_md_index_tombstones(db) == 2
+    assert hdb.prune_md_index_tombstones(db, 30) == 2
     left = {r["block_id"] for r in db.execute("SELECT block_id FROM md_index")}
     assert left == {"boundary", "live", "recent"}
 
@@ -41,12 +41,12 @@ def test_prune_md_index_tombstones_deletes_old_only(db):
 def test_prune_md_index_tombstones_dry_run_counts_only(db):
     _tomb(db, "old", 40)
     db.commit()
-    assert hdb.prune_md_index_tombstones(db, dry_run=True) == 1
+    assert hdb.prune_md_index_tombstones(db, 30, dry_run=True) == 1
     assert db.execute("SELECT COUNT(*) FROM md_index").fetchone()[0] == 1
 
 
 def test_prune_md_index_tombstones_empty_noop(db):
-    assert hdb.prune_md_index_tombstones(db) == 0
+    assert hdb.prune_md_index_tombstones(db, 30) == 0
 
 
 def _slugs(root: Path, names: list[str], age_days: float = 30) -> None:

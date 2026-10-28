@@ -84,6 +84,5 @@ def test_purge_backup_lands_in_manual(tmp_path, monkeypatch):
 
 
 def test_drift_backup_default_under_backup_root():
-    from marrow.paths import _DEFAULTS, _read_paths_section, _DEFAULT_CONFIG
-    assert _DEFAULTS["drift_backup_dir"] == "~/.config/marrow/backup/drift"
+    from marrow.paths import _read_paths_section, _DEFAULT_CONFIG
     assert _read_paths_section(_DEFAULT_CONFIG)["drift_backup_dir"] == "~/.config/marrow/backup/drift"

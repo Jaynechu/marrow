@@ -47,7 +47,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from marrow import config, storage  # noqa: E402
-from marrow.housekeep.db import _BACKUP_STALE_DAYS, _newest_backup  # noqa: E402
+from marrow.housekeep.db import _newest_backup  # noqa: E402
 from marrow.transcript import _is_harness_row  # noqa: E402
 
 # Cheap prefilter for whole-row junk; the authoritative decision is made in
@@ -153,9 +153,10 @@ def main(argv: list[str] | None = None) -> int:
         backup_dir = str(config.backup_dir("daily"))
         newest = _newest_backup(backup_dir)
         today = date.today()
-        if newest is None or (today - newest).days > _BACKUP_STALE_DAYS:
+        stale_days = int(cfg["housekeep"]["vec_backup_stale_days"])
+        if newest is None or (today - newest).days > stale_days:
             age = f"{(today - newest).days}d" if newest else "missing"
-            print(f"REFUSING --apply: backup {age} (need ≤{_BACKUP_STALE_DAYS}d "
+            print(f"REFUSING --apply: backup {age} (need ≤{stale_days}d "
                   f"in {backup_dir}).\nRun `python -m marrow.backup --apply` first.")
             return 2
 

@@ -7,8 +7,11 @@ from datetime import date, timedelta
 
 import pytest
 
+from _housekeep_shared import default_hk
 from marrow import storage
 from marrow.housekeep import db as hdb
+
+HK = default_hk()
 
 
 @pytest.fixture()
@@ -65,8 +68,7 @@ def test_out_window_evicted_in_window_kept(db, fresh_backup):
     _ins_vec(conn, old)
     _ins_vec(conn, new)
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup
-    )
+        conn, window_days=90, backup_dir=fresh_backup, hk=HK)
     assert res["evicted"] == 1 and not res["skipped"] and not res["aborted"]
     assert _vec_ids(conn) == {new}
     # events rows untouched — FTS lane intact
@@ -80,8 +82,7 @@ def test_evicted_row_keeps_meta_tombstone(db, fresh_backup):
     old = _ins_event(conn, "old turn", age_days=100)
     _ins_vec(conn, old)
     hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup
-    )
+        conn, window_days=90, backup_dir=fresh_backup, hk=HK)
     assert conn.execute(
         "SELECT COUNT(*) FROM events_vec WHERE rowid=?", (old,)
     ).fetchone()[0] == 0
@@ -101,8 +102,7 @@ def test_exempt_affect_importance_link(db, fresh_backup):
         (old,),
     )
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup
-    )
+        conn, window_days=90, backup_dir=fresh_backup, hk=HK)
     assert res["evicted"] == 0 and res["exempted"] == 1
     assert _vec_ids(conn) == {old}
 
@@ -113,8 +113,7 @@ def test_exempt_recall_count(db, fresh_backup):
     _ins_vec(conn, old)
     conn.execute("UPDATE events SET recall_count=2 WHERE id=?", (old,))
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup
-    )
+        conn, window_days=90, backup_dir=fresh_backup, hk=HK)
     assert res["evicted"] == 0 and res["exempted"] == 1
     assert _vec_ids(conn) == {old}
 
@@ -130,21 +129,19 @@ def test_low_importance_link_not_exempt(db, fresh_backup):
         (old,),
     )
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup
-    )
+        conn, window_days=90, backup_dir=fresh_backup, hk=HK)
     assert res["evicted"] == 1
     assert _vec_ids(conn) == set()
 
 
-def test_cap_pct_aborts_with_critical_alert(db, fresh_backup, monkeypatch):
+def test_cap_pct_aborts_with_critical_alert(db, fresh_backup):
     conn, p = db
-    monkeypatch.setattr(hdb, "_VEC_EVICT_CAP_MIN", 0)
+    hk = {**HK, "vec_evict_cap_min": 0}
     for i in range(4):
         eid = _ins_event(conn, f"old {i}", age_days=100)
         _ins_vec(conn, eid)
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup
-    )
+        conn, window_days=90, backup_dir=fresh_backup, hk=hk)
     assert res["aborted"] and res["evicted"] == 0
     assert len(_vec_ids(conn)) == 4
     alerts = res["pending_alerts"]
@@ -153,9 +150,9 @@ def test_cap_pct_aborts_with_critical_alert(db, fresh_backup, monkeypatch):
     assert alerts[0]["severity"] == "critical"
 
 
-def test_cap_abs_aborts(db, fresh_backup, monkeypatch):
+def test_cap_abs_aborts(db, fresh_backup):
     conn, p = db
-    monkeypatch.setattr(hdb, "_VEC_EVICT_CAP_ABS", 3)
+    hk = {**HK, "vec_evict_cap_abs": 3}
     # 16 vec rows total, 4 old → 25% == pct cap boundary (not >), abs 4 > 3.
     for i in range(4):
         eid = _ins_event(conn, f"old {i}", age_days=100)
@@ -164,8 +161,7 @@ def test_cap_abs_aborts(db, fresh_backup, monkeypatch):
         eid = _ins_event(conn, f"new {i}", age_days=5)
         _ins_vec(conn, eid)
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup
-    )
+        conn, window_days=90, backup_dir=fresh_backup, hk=hk)
     assert res["aborted"] and len(_vec_ids(conn)) == 16
     alerts = res["pending_alerts"]
     assert any(a["fingerprint"] == "vec_evict_cap_abs" for a in alerts)
@@ -180,8 +176,7 @@ def test_stale_backup_skips_with_warn(db, tmp_path):
     stale = (date.today() - timedelta(days=8)).isoformat()
     (d / f"marrow-{stale}.db").touch()
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=str(d)
-    )
+        conn, window_days=90, backup_dir=str(d), hk=HK)
     assert res["skipped"] and res["evicted"] == 0
     assert _vec_ids(conn) == {old}
     alerts = res["pending_alerts"]
@@ -197,8 +192,7 @@ def test_missing_backup_skips(db, tmp_path):
     empty = tmp_path / "no-backups"
     empty.mkdir()
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=str(empty)
-    )
+        conn, window_days=90, backup_dir=str(empty), hk=HK)
     assert res["skipped"]
     assert _vec_ids(conn) == {old}
 
@@ -208,8 +202,7 @@ def test_dry_run_writes_nothing(db, fresh_backup):
     old = _ins_event(conn, "old turn", age_days=100)
     _ins_vec(conn, old)
     res = hdb.evict_vec_window(
-        conn, window_days=90, backup_dir=fresh_backup, dry_run=True
-    )
+        conn, window_days=90, backup_dir=fresh_backup, dry_run=True, hk=HK)
     assert res["evicted"] == 1  # would-evict count
     assert _vec_ids(conn) == {old}  # nothing deleted
 
@@ -219,8 +212,7 @@ def test_window_zero_disables(db, fresh_backup):
     old = _ins_event(conn, "ancient turn", age_days=400)
     _ins_vec(conn, old)
     res = hdb.evict_vec_window(
-        conn, window_days=0, backup_dir=fresh_backup
-    )
+        conn, window_days=0, backup_dir=fresh_backup, hk=HK)
     assert res == {"evicted": 0, "exempted": 0, "skipped": False,
                    "aborted": False, "pending_alerts": []}
     assert _vec_ids(conn) == {old}

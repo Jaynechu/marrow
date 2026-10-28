@@ -90,8 +90,20 @@ drift_backup_days = 30
 state_days = 30
 ct_collector_log_days = 30
 ct_activity_days = 90
-# ~/.claude/projects/*worktrees* slug dirs idle this long are removed.
+# md_index tombstones older than this are deleted (younger ones keep the
+# anti-resurrection guard).
+md_tombstone_days = 30
+# <projects_dir>/*worktrees* slug dirs idle worktree_shell_days are removed.
+projects_dir = "~/.claude/projects"
 worktree_shell_days = 7
+# Vec window eviction ([recall].vec_window_days): skipped when the newest daily
+# backup is older than vec_backup_stale_days; aborted when it would evict more
+# than vec_evict_cap_pct of rows (above vec_evict_cap_min rows) or more than
+# vec_evict_cap_abs rows.
+vec_backup_stale_days = 7
+vec_evict_cap_pct = 0.25
+vec_evict_cap_min = 100
+vec_evict_cap_abs = 10000
 state_dirs = ["backup_guard", "ct_cursor", "outbound", "presence", "recall_seen", "replay", "sticker_nudge", "tl_nudge", "tl_seen", "tl_silent", "turn_delta", "usage_watermark", "write_ledger"]
 snapshot_dirs = ["schedule-snapshots"]
 # Dirs removed under every repo in repos_root; exclude = dir names (or a/b
