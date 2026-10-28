@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     db = args.db or cfg["paths"]["db"]
 
     if args.apply:
-        backup_dir = cfg["paths"]["backup_dir"]
+        backup_dir = str(config.backup_dir("daily"))
         newest = _newest_backup(backup_dir)
         today = date.today()
         if newest is None or (today - newest).days > _BACKUP_STALE_DAYS:

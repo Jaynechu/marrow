@@ -188,3 +188,75 @@ def test_same_day_rerun_is_idempotent(tmp_path):
     backup.run(**kw)
     second = sorted(p.name for p in local.iterdir())
     assert first == second == ["marrow-2026-05-19.db"]
+
+
+# ── weekly copy (Sunday only, local only) ────────────────────────────────────
+
+def _weekly_kw(tmp_path, src, today):
+    return dict(
+        apply=True, db=str(src), local_dir=str(tmp_path / "daily"),
+        offsite_dir=str(tmp_path / "ic"), weekly_dir=str(tmp_path / "weekly"),
+        keep=14, weekly_keep=13, today=today, alert_db=str(src),
+    )
+
+
+def test_sunday_copies_daily_into_weekly(tmp_path):
+    src = tmp_path / "marrow.db"
+    _seed_db(src)
+    rep = backup.run(**_weekly_kw(tmp_path, src, "2026-11-01"))
+    daily = tmp_path / "daily" / "marrow-2026-11-01.db"
+    weekly = tmp_path / "weekly" / "marrow-2026-11-01.db"
+    assert rep["weekly_ok"] is True
+    assert weekly.read_bytes() == daily.read_bytes()
+    assert not (tmp_path / "ic" / "weekly").exists()
+
+
+def test_weekday_writes_no_weekly(tmp_path):
+    src = tmp_path / "marrow.db"
+    _seed_db(src)
+    rep = backup.run(**_weekly_kw(tmp_path, src, "2026-11-02"))
+    assert rep["weekly_ok"] is None
+    assert rep["weekly_would_write"] is None
+    assert not (tmp_path / "weekly").exists()
+
+
+def test_weekly_prunes_beyond_keep(tmp_path):
+    src = tmp_path / "marrow.db"
+    _seed_db(src)
+    weekly = tmp_path / "weekly"
+    weekly.mkdir()
+    for d in range(1, 21):
+        (weekly / f"marrow-2026-04-{d:02d}.db").write_text("old")
+    backup.run(**_weekly_kw(tmp_path, src, "2026-11-01"))
+    names = sorted(p.name for p in weekly.iterdir())
+    assert len(names) == 13
+    assert names[-1] == "marrow-2026-11-01.db"
+    assert "marrow-2026-04-08.db" not in names
+    assert "marrow-2026-04-09.db" in names
+
+
+def test_dry_run_sunday_plans_weekly_without_writing(tmp_path):
+    src = tmp_path / "marrow.db"
+    _seed_db(src)
+    kw = _weekly_kw(tmp_path, src, "2026-11-01")
+    kw["apply"] = False
+    rep = backup.run(**kw)
+    assert rep["weekly_would_write"] == str(tmp_path / "weekly" / "marrow-2026-11-01.db")
+    assert not (tmp_path / "weekly").exists()
+    assert not (tmp_path / "daily").exists()
+
+
+def test_default_dirs_resolve_under_backup_root(tmp_path, monkeypatch):
+    from marrow import config
+    real = config.load
+
+    def _load():
+        cfg = real()
+        cfg["paths"]["backup_dir"] = str(tmp_path / "bk")
+        return cfg
+
+    monkeypatch.setattr(config, "load", _load)
+    rep = backup.run(apply=False, today="2026-11-01")
+    assert rep["would_write"] == str(tmp_path / "bk" / "daily" / "marrow-2026-11-01.db")
+    assert rep["weekly_would_write"] == str(tmp_path / "bk" / "weekly" / "marrow-2026-11-01.db")
+    assert config.load()["backup"]["weekly_keep"] == 13

@@ -117,6 +117,10 @@ def db_path() -> str:
     return load()["paths"]["db"]
 
 
+def backup_dir(kind: str) -> Path:
+    return Path(load()["paths"]["backup_dir"]).expanduser() / kind
+
+
 def log_root() -> Path:
     return Path(load()["log"]["dir"]).expanduser()
 

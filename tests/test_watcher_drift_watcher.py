@@ -80,7 +80,8 @@ def test_watcher_has_drift_watcher_attribute(tmp_path, monkeypatch):
          patch("marrow.watcher.config.load", return_value={
              "paths": {
                  "db_pages": str(tmp_path / "db-pages"),
-             }
+             },
+             "log": {"dir": str(tmp_path / "Logs"), "keep_days": 14},
          }), \
          patch("marrow.watcher.MdIndex"):
         mock_init_db.return_value = MagicMock()
@@ -209,7 +210,8 @@ def test_drift_handler_scheduled_for_each_root(tmp_path, monkeypatch):
          patch("marrow.watcher.config.load", return_value={
              "paths": {
                  "db_pages": str(tmp_path / "db-pages"),
-             }
+             },
+             "log": {"dir": str(tmp_path / "Logs"), "keep_days": 14},
          }), \
          patch("marrow.watcher.MdIndex"), \
          patch("marrow.watcher.Observer", return_value=fake_observer):

@@ -9,10 +9,9 @@ from __future__ import annotations
 import shutil
 import subprocess
 
-from . import storage, timeutil
+from . import config, storage, timeutil
 
 NO_MATCH = "0 rows matched"
-_BACKUP_DIR = "/tmp"
 _LINES_CAP = 20
 
 
@@ -55,7 +54,9 @@ def _match_summary(conn, where: str, params: list) -> dict:
 
 def _backup(db: str, tag: str) -> str:
     ts = timeutil.utc_now().strftime("%Y%m%d-%H%M%S")
-    path = f"{_BACKUP_DIR}/marrow-backup-{tag}-{ts}.db"
+    d = config.backup_dir("manual")
+    d.mkdir(parents=True, exist_ok=True)
+    path = str(d / f"marrow-backup-{tag}-{ts}.db")
     shutil.copy2(str(db), path)
     return path
 

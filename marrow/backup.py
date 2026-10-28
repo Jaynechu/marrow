@@ -1,12 +1,13 @@
 """DESIGN net "DB never lost": daily atomic DB snapshot + iCloud offsite.
 
 Snapshot uses sqlite `VACUUM INTO` (consistent read of the live DB,
-no destructive lock) to a temp path, then atomic os.replace into the
-local backup dir as marrow-YYYY-MM-DD.db. The same snapshot is atomically
+no destructive lock) to a temp path, then atomic os.replace into
+backup/daily/ as marrow-YYYY-MM-DD.db. The same snapshot is atomically
 placed offsite (iCloud). Offsite unreachable never fails the local leg:
-the local dump still succeeds and a failure alert is raised. Conservative
-retention: keep the newest N daily dumps each side, prune the rest.
-Retention policy beyond a flat count is DESIGN-Pending — kept minimal.
+the local dump still succeeds and a failure alert is raised. On Sunday the
+daily file is also copied into backup/weekly/ (local only).
+Retention: newest [backup].keep daily dumps each side, newest
+[backup].weekly_keep weekly copies; the rest are pruned.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import re
 import sqlite3
 import tempfile
 import time
+from datetime import date
 from pathlib import Path
 
 from marrow import config, repo, timeutil
@@ -33,25 +35,33 @@ def _existing(d: Path) -> list[Path]:
     return sorted(p for p in d.iterdir() if _NAME_RE.match(p.name))
 
 
+def _is_sunday(today: str) -> bool:
+    return date.fromisoformat(today).weekday() == 6
+
+
 def plan(*, local_dir: str, keep: int, today: str,
-         offsite_dir: str | None = None) -> dict:
+         offsite_dir: str | None = None, weekly_dir: str | None = None,
+         weekly_keep: int = 0) -> dict:
     """Pure: what a run would write/prune. No filesystem mutation."""
     name = _snap_name(today)
 
-    def _prune_for(d: Path) -> list[Path]:
+    def _prune_for(d: Path, n_keep: int) -> list[Path]:
         names = {p.name for p in _existing(d)}
         names.add(name)
-        keep_set = sorted(names, reverse=True)[:keep]
+        keep_set = sorted(names, reverse=True)[:n_keep]
         return [d / n for n in sorted(names) if n not in keep_set]
 
     out = {
         "name": name,
         "would_write": str(Path(local_dir) / name),
-        "prune": _prune_for(Path(local_dir)),
+        "prune": _prune_for(Path(local_dir), keep),
     }
     if offsite_dir is not None:
         out["offsite_would_write"] = str(Path(offsite_dir) / name)
-        out["offsite_prune"] = _prune_for(Path(offsite_dir))
+        out["offsite_prune"] = _prune_for(Path(offsite_dir), keep)
+    if weekly_dir is not None and _is_sunday(today):
+        out["weekly_would_write"] = str(Path(weekly_dir) / name)
+        out["weekly_prune"] = _prune_for(Path(weekly_dir), weekly_keep)
     return out
 
 
@@ -98,21 +108,27 @@ def _prune(targets: list[Path]) -> None:
 
 def run(*, apply: bool = False, db: str | None = None,
         local_dir: str | None = None, offsite_dir: str | None = None,
-        keep: int | None = None, today: str | None = None,
+        weekly_dir: str | None = None, keep: int | None = None,
+        weekly_keep: int | None = None, today: str | None = None,
         alert_db: str | None = None) -> dict:
     cfg = config.load()
     db = db or cfg["paths"]["db"]
-    local_dir = local_dir or cfg["paths"]["backup_dir"]
+    local_dir = local_dir or str(config.backup_dir("daily"))
     offsite_dir = offsite_dir or cfg["paths"]["offsite_backup_dir"]
+    weekly_dir = weekly_dir or str(config.backup_dir("weekly"))
     keep = keep or int(cfg["backup"]["keep"])
+    weekly_keep = weekly_keep or int(cfg["backup"]["weekly_keep"])
     today = today or timeutil.local_today().isoformat()
     p = plan(local_dir=local_dir, keep=keep, today=today,
-             offsite_dir=offsite_dir)
+             offsite_dir=offsite_dir, weekly_dir=weekly_dir,
+             weekly_keep=weekly_keep)
     rep = {
         "applied": apply,
         "would_write": p["would_write"],
+        "weekly_would_write": p.get("weekly_would_write"),
         "local_ok": False,
         "offsite_ok": False,
+        "weekly_ok": None,
         "pruned": 0,
     }
     if not apply:
@@ -148,8 +164,18 @@ def run(*, apply: bool = False, db: str | None = None,
             source="backup.py", db=alert_db,
         )
 
+    if "weekly_would_write" in p:
+        try:
+            _place(local_file, Path(p["weekly_would_write"]))
+            rep["weekly_ok"] = True
+        except Exception:
+            rep["weekly_ok"] = False
+
     _prune(p["prune"])
     rep["pruned"] += len(p["prune"])
+    if rep["weekly_ok"]:
+        _prune(p["weekly_prune"])
+        rep["pruned"] += len(p["weekly_prune"])
     if rep["offsite_ok"]:
         _prune(p["offsite_prune"])
         rep["pruned"] += len(p["offsite_prune"])
@@ -171,14 +197,20 @@ def main(argv=None) -> int:
                          "(default: [backup].keep)")
     a = ap.parse_args(argv)
     rep = run(apply=a.apply, keep=a.keep or 0)
+    weekly = rep["weekly_would_write"]
     if not a.apply:
         print(f"[backup] would write {rep['would_write']} "
               f"(dry-run; --apply to execute)")
+        if weekly:
+            print(f"[backup] would copy weekly {weekly}")
     else:
         loc = "ok" if rep["local_ok"] else "FAILED"
         off = "ok" if rep["offsite_ok"] else "FAILED"
         print(f"[backup] local={loc} offsite={off} "
               f"pruned={rep['pruned']} -> {rep['would_write']}")
+        if rep["weekly_ok"] is not None:
+            wk = "ok" if rep["weekly_ok"] else "FAILED"
+            print(f"[backup] weekly={wk} -> {weekly}")
     return 0 if (not a.apply or rep["local_ok"]) else 1
 
 

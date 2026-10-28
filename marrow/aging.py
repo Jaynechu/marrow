@@ -270,7 +270,7 @@ def main(argv: list[str] | None = None) -> None:
     dry_run = not args.apply
 
     cfg = config.load()
-    backup_dir = cfg["paths"]["backup_dir"]
+    backup_dir = str(config.backup_dir("daily"))
     window_days = int(cfg["recall"]["vec_window_days"])
 
     conn = storage.init_db()

@@ -204,7 +204,7 @@ class _DriftHandler(FileSystemEventHandler):
 
     First gate: pre-enqueue noise filter (drift_sweep._path_excluded) drops
     `.git/`, `__pycache__/`, `.venv*`, `node_modules/`, `drift_pending/`,
-    `drift_backup/`, `logs/`, `archives/` events and atomic-write artefacts
+    `drift_backup/`, `drift/`, `logs/`, `archives/` events and atomic-write artefacts
     (`*.tmp.<N>.<hex>`, `.mrw.<token>`, `*.pyc.<N>`) BEFORE they reach
     DriftWatcher. Otherwise every git commit / pytest run / venv touch
     floods the batch and drowns real renames.

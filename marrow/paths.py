@@ -34,7 +34,7 @@ _DEFAULTS = {
     "ny_root": "",
     "daybrief_md": "",
     "drift_pending_dir": "~/.config/marrow/drift_pending",
-    "drift_backup_dir": "~/.config/marrow/drift_backup",
+    "drift_backup_dir": "~/.config/marrow/backup/drift",
     "dir_tree_md": "~/.config/marrow/dir_tree.md",
     "state_dir": "~/.config/marrow/state",
 }

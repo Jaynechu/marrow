@@ -133,7 +133,7 @@ SKIP_SCAN_EXTS = BINARY_EXTS | {
 # third-party app state, worktree copies).
 EXCLUDE_DIRS_SCAN = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
-    ".DS_Store", "logs", "archives", "archive", "drift_backup",
+    ".DS_Store", "logs", "archives", "archive", "drift_backup", "drift",
     "drift_pending",
     ".obsidian", ".pytest_cache", "raycast", "worktrees",
     ".build", "build", "dist", "DerivedData", ".swiftpm",
@@ -144,7 +144,7 @@ EXCLUDE_DIRS_SCAN = {
 # DriftWatcher. Catches editor/git/test/venv churn that floods the queue.
 NOISE_DIRS: set[str] = {
     ".git", "__pycache__", ".venv", "venv", "node_modules",
-    "drift_pending", "drift_backup", "logs", "archives", "archive",
+    "drift_pending", "drift_backup", "drift", "logs", "archives", "archive",
     ".obsidian", ".pytest_cache", "raycast", "worktrees",
     ".build", "build", "dist", "DerivedData", ".swiftpm",
 }
@@ -187,7 +187,7 @@ SAFE_AUTOAPPLY_EXTS: set[str] = {
 # Path-segment denylist for safe-classify: if the ref's file path includes
 # any of these parts (or matches a glob prefix), it is NOT safe to auto-apply.
 UNSAFE_PATH_PARTS: set[str] = {
-    ".git", "__pycache__", "drift_pending", "drift_backup",
+    ".git", "__pycache__", "drift_pending", "drift_backup", "drift",
 }
 UNSAFE_PATH_PREFIX_PARTS: tuple[str, ...] = (".bak", ".venv")
 

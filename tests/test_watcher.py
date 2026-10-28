@@ -127,7 +127,8 @@ def test_watcher_boot_reconcile_syncs(tmp_path, monkeypatch):
     def fake_load():
         return {"paths": {"db": str(db),
                           "db_pages": str(db_pages)},
-                "embedding": {"dim": 1024}, "backup": {"keep": 14}}
+                "embedding": {"dim": 1024}, "backup": {"keep": 14},
+                "log": {"dir": str(tmp_path / "Logs"), "keep_days": 14}}
 
     monkeypatch.setattr(config, "load", fake_load)
     w = Watcher()
@@ -149,7 +150,8 @@ def test_watcher_live_modify_triggers_sync(tmp_path, monkeypatch):
 
     def fake_load():
         return {"paths": {"db": str(db), "db_pages": str(db_pages)},
-                "embedding": {"dim": 1024}, "backup": {"keep": 14}}
+                "embedding": {"dim": 1024}, "backup": {"keep": 14},
+                "log": {"dir": str(tmp_path / "Logs"), "keep_days": 14}}
 
     monkeypatch.setattr(config, "load", fake_load)
 
@@ -237,7 +239,8 @@ def test_watchdog_roundtrip_delete_restore_add(tmp_path, monkeypatch):
 
     def fake_load():
         return {"paths": {"db": str(db), "db_pages": str(db_pages)},
-                "embedding": {"dim": 1024}, "backup": {"keep": 14}}
+                "embedding": {"dim": 1024}, "backup": {"keep": 14},
+                "log": {"dir": str(tmp_path / "Logs"), "keep_days": 14}}
 
     monkeypatch.setattr(config, "load", fake_load)
 
