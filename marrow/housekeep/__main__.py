@@ -15,12 +15,13 @@ import sys
 from datetime import date
 
 from .. import repo, storage, timeutil
-from . import Ctx, brew, build_ctx, db, files, fmt_size, result
+from . import Ctx, brew, build_ctx, db, files, fmt_size, measure, result
 
 GROUPS: dict[str, list] = {
     "db": db.PASSES,
     "files": files.PASSES,
     "brew": brew.PASSES,
+    "measure": measure.PASSES,
 }
 
 
@@ -90,8 +91,8 @@ def _audit_payload(results: dict[str, dict], ok: bool,
             n: {k: r.get(k) for k in ("items", "bytes_freed", "error")}
             for n, r in results.items()
         },
-        "sizes": next((r["sizes"] for r in results.values() if "sizes" in r),
-                      {}),
+        "sizes": {k: v for r in results.values()
+                  for k, v in r.get("sizes", {}).items()},
     }
     if only:
         payload["only"] = [only]

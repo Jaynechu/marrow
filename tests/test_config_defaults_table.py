@@ -35,6 +35,8 @@ _EXTERNAL_KEYS = {
     "cortex.breaker.trip_message",
 }
 
+_DATA_MAPS = {"housekeep.python_eol", "housekeep.health_imports"}
+
 
 def _py_files() -> list[Path]:
     return sorted(p for p in PKG.rglob("*.py") if "__pycache__" not in p.parts)
@@ -49,7 +51,7 @@ def _flat(data: dict, prefix: str = "") -> list[tuple[str, object]]:
     out: list[tuple[str, object]] = []
     for k, v in data.items():
         path = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict):
+        if isinstance(v, dict) and path not in _DATA_MAPS:
             out.extend(_flat(v, path))
         else:
             out.append((path, v))

@@ -99,6 +99,20 @@ brew_prune_days = 30
 python_eol = {"python@3.13" = "2029-10-31", "python@3.14" = "2030-10-31"}
 eol_warn_days = 183
 health_imports = {marrow = "marrow", synapse = "synapse_core", cortex = "cortex"}
+# Every run records measure_paths sizes in its audit row; growth_report_gb since
+# the last ok run -> To do. Entries of ~/.config/marrow, state/, backup/ and
+# <[log].dir>/<log_prefixes>* dirs are logged once when new; one outside every
+# expiry rule grown unruled_growth_mb past its first size -> To do. Plists with a
+# launchd_prefixes Label: missing program/module -> To do; non-zero exit on 2 runs
+# -> To do. launchd.log > launchd_log_report_mb -> To do. Free disk below
+# disk_free_alert_gb -> one disk_low alert until it recovers.
+growth_report_gb = 2
+unruled_growth_mb = 100
+launchd_prefixes = ["com.marrow.", "com.cortex.", "com.synapse", "com.cadence."]
+log_prefixes = ["mw-", "synapse-", "ct-", "cadence-"]
+disk_free_alert_gb = 50
+launchd_log_report_mb = 10
+measure_paths = ["~/.config/marrow", "~/.config/marrow/marrow.db", "~/.config/marrow/backup", "~/Library/Logs", "~/.claude", "~/.codex", "~/CC-Lab", "~/Library/Caches/Homebrew", "~/.npm", "~/.cache/uv", "~/Library/Caches/pip"]
 
 [sync]
 # Watcher md<->db sync loop. tick_s = md/db mtime comparison cadence;
