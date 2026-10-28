@@ -19,16 +19,14 @@ to the same local minute (single-message segments) are skipped — a single
 HH:MM is already correct there, not a bug. Rows whose events are gone
 (pruned) are skipped.
 
---apply backs up the DB to /tmp first (sqlite3 .backup), then writes in a
-single transaction. --dry-run only reads (no writes, safe to run anytime).
+--apply backs up the DB to backup/manual/ first (repo.safe_backup_db), then
+writes in a single transaction. --dry-run only reads (no writes, safe to run anytime).
 """
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import re
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
@@ -37,7 +35,7 @@ _REPO = Path(__file__).resolve().parent.parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from marrow import config, timeutil  # noqa: E402
+from marrow import config, repo, timeutil  # noqa: E402
 
 # Leading HH:MM not already followed by a "-HH:MM" range.
 _SINGLE_HHMM_RE = re.compile(r"^(\d{2}:\d{2})(?!-\d{2}:\d{2})")
@@ -145,10 +143,7 @@ def _print_preview(plan: list[dict]) -> None:
 
 
 def _backup_db(db: str) -> str:
-    ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    dest = f"/tmp/marrow_backfill_tl_range_{ts}.db"
-    subprocess.run(["sqlite3", db, f".backup {dest}"], check=True)
-    return dest
+    return str(repo.safe_backup_db("backfill-tl-range", Path(db)))
 
 
 def _apply(conn: sqlite3.Connection, plan: list[dict]) -> None:
@@ -168,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--dry-run", action="store_true",
                    help="preview only — no writes")
     g.add_argument("--apply", action="store_true",
-                   help="apply changes (backs up DB to /tmp first)")
+                   help="apply changes (backs up DB to backup/manual/ first)")
     ap.add_argument("--db", default=None,
                     help="db path (default: marrow config)")
     args = ap.parse_args(argv)

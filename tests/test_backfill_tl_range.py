@@ -211,3 +211,10 @@ def test_apply_is_idempotent_on_rerun(db_env):
     plan2 = bf._build_plan(conn)
     conn.close()
     assert plan2 == []  # already-range row is skipped entirely on rerun
+
+
+def test_backup_lands_in_manual_backup_dir(db_env, tmp_path):
+    dest = Path(bf._backup_db(db_env))
+    assert dest.parent == config.backup_dir("manual")
+    assert str(dest).startswith(str(tmp_path))
+    assert dest.name.startswith("marrow-before-backfill-tl-range-")
