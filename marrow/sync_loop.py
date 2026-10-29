@@ -1,8 +1,9 @@
 """Sync loop — periodic md↔db reconcile/render for subpages + daybrief + monitor.
 
 [sync].tick_s: for each target (subpage + daybrief.md + monitor.md), compare md mtime
-vs db mtime. md newer → reconcile; db newer → render. Race防御: re-check md
-mtime after reconcile; if it advanced, skip render this tick.
+vs db mtime. md newer → reconcile; db newer → render. A target settles once a
+render leaves md untouched; it is skipped until md mtime, db mtime or its
+optional stamp_fn value moves (stamp covers inputs no mtime tracks).
 
 Runs in its own thread (SQLite WAL handles concurrent reads). Boot tick
 fires immediately after _reconcile_boot to catch drift while watcher was
@@ -28,6 +29,10 @@ def _sync_tick_s() -> float:
 
 def _atlas_sweep_tick_s() -> float:
     return float(config.load()["sync"]["atlas_sweep_tick_s"])
+
+
+def _daybrief_refresh_s() -> float:
+    return float(config.load()["sync"]["daybrief_refresh_s"])
 
 
 # If md was touched within this window, skip render this tick — protects
@@ -131,7 +136,7 @@ _SUBPAGE_DB_SOURCES: dict[str, list[tuple[str, str]]] = {
 #     lines AND in-place tl edits (updated_at now bumped) within one tick.
 #   affect: ONLY open episodes (the "未解" rows timeline renders).
 # Usage / rate-limit kv is EXCLUDED on purpose — Status-zone freshness rides
-# collect_tick, not the 5s loop, so its per-render churn cannot defeat the gate.
+# the daybrief stamp_fn time bucket, so its churn cannot defeat the gate.
 _DAYBRIEF_DB_EXPRS: list[tuple[str, str, str | None]] = [
     ("session_digests", "ts", None),
     ("events", "COALESCE(updated_at, created_at)",
@@ -173,12 +178,14 @@ class SyncTarget:
         db_mtime_fn: Callable[[sqlite3.Connection], float | None],
         render_fn: Callable[[sqlite3.Connection], None],
         has_md_to_db: bool = True,
+        stamp_fn: Callable[[], object] | None = None,
     ) -> None:
         self.name = name
         self.md_path = md_path
         self.db_mtime_fn = db_mtime_fn
         self.render_fn = render_fn
         self.has_md_to_db = has_md_to_db
+        self.stamp_fn = stamp_fn
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +205,7 @@ class SyncLoop:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._consecutive_fails: dict[str, int] = {}
+        self._settled: dict[str, tuple] = {}
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -248,16 +256,22 @@ class SyncLoop:
         md_path = target.md_path
         conn = self._conn
 
-        # Step 1-2: md path + mtime
         try:
             md_mtime = Path(md_path).stat().st_mtime
         except FileNotFoundError:
             return  # file missing — skip this tick
 
-        # Step 3: db mtime
         db_mtime = target.db_mtime_fn(conn)
         if db_mtime is None:
             return  # no table / empty — skip
+
+        stamp = target.stamp_fn() if target.stamp_fn else None
+        key = (md_mtime, db_mtime, stamp)
+        prev = self._settled.get(target.name)
+        if prev == key:
+            return  # nothing moved since the last settled pass
+        stamp_moved = target.stamp_fn is not None and (
+            prev is None or prev[2] != stamp)
 
         log.debug("sync_loop %s md=%.3f db=%.3f", target.name, md_mtime, db_mtime)
 
@@ -265,9 +279,10 @@ class SyncLoop:
         user_active = (now - md_mtime) < USER_ACTIVE_WINDOW_S
 
         if md_mtime > db_mtime + _MTIME_EPSILON_S:
-            # Step 4: md newer → render (write_subpage owns reconcile internally).
+            # md newer → render (write_subpage owns reconcile internally).
             # has_md_to_db=False signals this target has no md→db direction; skip.
             if not target.has_md_to_db:
+                self._settled[target.name] = key
                 return
             # User-active guard: skip if md touched within USER_ACTIVE_WINDOW_S.
             # Prevents inserter force_sort_consistency bootstrap from
@@ -276,31 +291,33 @@ class SyncLoop:
                 log.debug("sync_loop %s skip md→db: md touched %.2fs ago (user typing)",
                           target.name, now - md_mtime)
                 return
-            target.render_fn(conn)
-            # Race防御: re-check md mtime after render
-            try:
-                md_mtime_after = Path(md_path).stat().st_mtime
-            except FileNotFoundError:
-                return
-            if md_mtime_after > md_mtime + 0.01:
-                log.debug("sync_loop %s md edited during render; next tick absorbs it",
-                          target.name)
+            self._render(target, md_mtime, key)
 
-        elif db_mtime > md_mtime:
-            # Step 5: db newer → render. No epsilon here — any db change
-            # must reflect in md within the next tick. The content-equality
-            # guard inside atomic_write swallows no-op renders so this
-            # cannot loop on "db_mtime tiny bit ahead but content identical".
-            # write_subpage's internal reconcile handles any md edit mid-tick.
-            # Same user-active guard: db→md render also goes through inserter
-            # which can bootstrap-rewrite on sort drift.
+        elif db_mtime > md_mtime or stamp_moved:
+            # db newer (no epsilon — any db change must reach md next tick) or
+            # a stamp input moved → render. Same user-active guard: db→md
+            # render also goes through inserter which can bootstrap-rewrite.
             if user_active:
                 log.debug("sync_loop %s skip db→md: md touched %.2fs ago (user typing)",
                           target.name, now - md_mtime)
                 return
-            target.render_fn(conn)
+            self._render(target, md_mtime, key)
 
-        # else: md_mtime ≥ db_mtime within md→db epsilon — skip
+        else:
+            # md ≥ db within md→db epsilon — nothing to do.
+            self._settled[target.name] = key
+
+    def _render(self, target: SyncTarget, md_mtime: float, key: tuple) -> None:
+        """Run render_fn; settle only when md came out untouched (atomic_write
+        skipped an identical write). A changed md — render output or a
+        concurrent user edit — stays unsettled so the next tick re-checks it."""
+        target.render_fn(self._conn)
+        try:
+            md_mtime_after = Path(target.md_path).stat().st_mtime
+        except FileNotFoundError:
+            return
+        if md_mtime_after == md_mtime:
+            self._settled[target.name] = key
 
 
 # ---------------------------------------------------------------------------
@@ -464,12 +481,19 @@ def build_targets(folder: str,
             from . import daybrief
             daybrief.update(c)
 
+        refresh_s = _daybrief_refresh_s()
+
+        def _daybrief_stamp() -> tuple:
+            from . import schedule
+            return (schedule.get_data_mtime(), int(time.time() // refresh_s))
+
         targets.append(SyncTarget(
             name="daybrief",
             md_path=daybrief_path,
             db_mtime_fn=_daybrief_db_mtime,
             render_fn=_daybrief_render,
             has_md_to_db=True,
+            stamp_fn=_daybrief_stamp,
         ))
 
     # Monitor target — alerts surface.

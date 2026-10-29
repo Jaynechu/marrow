@@ -143,6 +143,9 @@ measure_paths = ["~/.config/marrow", "~/.config/marrow/marrow.db", "~/.config/ma
 # atlas_sweep_tick_s = how often atlas_sweep_fs rescans the file tree.
 tick_s = 5.0
 atlas_sweep_tick_s = 60.0
+# daybrief.md re-render floor for zones no mtime tracks (date line, Status,
+# sleep line). Rem & Cal changes still land within one tick_s.
+daybrief_refresh_s = 60.0
 
 [drift]
 # Reference-matcher tuning for drift_sweep. All lists deep-merge onto the

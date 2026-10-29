@@ -134,7 +134,7 @@ def test_monitor_db_mtime_advances_on_resolve_only(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_sync_loop_tick_fires(tmp_path):
-    """Loop calls _process on each iteration (db newer → render path)."""
+    """Loop calls _process on each iteration (db keeps moving → render path)."""
     md = tmp_path / "t.md"
     md.write_text("# test")
     md_mtime = _backdate(md)
@@ -143,7 +143,7 @@ def test_sync_loop_tick_fires(tmp_path):
     db_mtime_base = md_mtime + 10.0  # db is newer → render path
 
     def db_fn(c):
-        return db_mtime_base
+        return db_mtime_base + len(calls)
 
     def render_fn(c):
         calls.append("render")
