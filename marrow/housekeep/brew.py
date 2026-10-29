@@ -15,8 +15,16 @@ from datetime import date
 from . import Ctx, report, result
 
 
+_NOISE = ("A complete log of this run can be found in",)
+
+
 def _err(step: str, out: str, **extra) -> dict:
-    tail = out.strip().splitlines()[-1] if out.strip() else "failed"
+    lines = [ln.strip() for ln in out.splitlines()
+             if ln.strip().removeprefix("npm error").strip()
+             and not any(n in ln for n in _NOISE)]
+    first = next((ln for ln in lines
+                  if ln.lower().startswith(("npm error", "error"))), None)
+    tail = first or (lines[-1] if lines else "failed")
     return result(error=f"{step}: {tail}", **extra)
 
 

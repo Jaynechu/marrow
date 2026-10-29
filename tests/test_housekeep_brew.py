@@ -120,6 +120,29 @@ def test_step_failure_is_pass_error(tmp_path):
     assert r["error"] == "uv cache prune: boom"
 
 
+_NPM_FAIL = (
+    "npm warn using --force Recommended protections disabled.\n"
+    "npm error code ENOTEMPTY\n"
+    "npm error syscall rmdir\n"
+    "npm error path /Users/x/.npm/_cacache/index-v5/3f\n"
+    "npm error errno -66\n"
+    "npm error\n"
+    "npm error A complete log of this run can be found in: "
+    "/Users/x/.npm/_logs/2026-10-29T01_12_41_800Z-debug-0.log\n")
+
+
+def test_npm_failure_keeps_first_real_error_line(tmp_path):
+    run = FakeRun({("npm", "cache", "clean"): (1, _NPM_FAIL)})
+    r = brew.npm(make_ctx(tmp_path, run=run))
+    assert r["error"] == "npm cache clean --force: npm error code ENOTEMPTY"
+
+
+def test_err_falls_back_to_last_non_noise_line():
+    out = "step one\nstep two\nnpm error\n"
+    assert brew._err("x", out)["error"] == "x: step two"
+    assert brew._err("x", "npm error\n")["error"] == "x: failed"
+
+
 def test_runner_disables_brew_auto_update_and_cleanup(monkeypatch):
     import subprocess
 
