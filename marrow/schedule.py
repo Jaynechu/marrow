@@ -300,6 +300,29 @@ def _render_calendar(cal_json: str, today_str: str) -> list[str]:
     return [line for _k, line in sorted(rows, key=lambda x: x[0])]
 
 
+_fetch_cache: dict = {}
+
+
+def _fetch(today: str, binary: str) -> list[str]:
+    """[cal, rem, done] cadence JSON. Reused while the Reminders/Calendar data
+    mtime and local date are unchanged. Only a fully successful fetch is
+    cached; a failed call falls back to the last good output for that slot
+    and leaves the cache key alone so the next call retries."""
+    key = (binary, today, get_data_mtime())
+    if _fetch_cache.get("key") == key:
+        return _fetch_cache["outs"]
+    fresh = [
+        _run_cadence(["cal", "read", today, "--json"], binary),
+        _run_cadence(["rem", "read", "--all"], binary),
+        _run_cadence(["rem", "read", "--done"], binary),
+    ]
+    if all(fresh):
+        _fetch_cache.update(key=key, outs=fresh)
+        return fresh
+    last = _fetch_cache.get("outs") or ["", "", ""]
+    return [f or old for f, old in zip(fresh, last)]
+
+
 def render_daily(cadence_bin: str | None = None) -> str:
     binary = cadence_bin or _cadence_bin()
     if not os.path.isfile(binary):
@@ -310,9 +333,7 @@ def render_daily(cadence_bin: str | None = None) -> str:
     day_name = now.strftime("%A")
     time_str = now.strftime("%H:%M")
 
-    cal_json = _run_cadence(["cal", "read", today, "--json"], binary)
-    rem_json = _run_cadence(["rem", "read", "--all"], binary)
-    done_json = _run_cadence(["rem", "read", "--done"], binary)
+    cal_json, rem_json, done_json = _fetch(today, binary)
 
     rem_lines = _render_reminders(rem_json, done_json, today)
     cal_lines = _render_calendar(cal_json, today)
