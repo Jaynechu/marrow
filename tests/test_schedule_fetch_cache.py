@@ -84,6 +84,15 @@ def test_failure_keeps_last_good_and_retries(env):
     assert len(env["calls"]) == 12
 
 
+def test_failure_after_rollover_drops_yesterday_cache(env):
+    schedule.render_daily(env["bin"])
+    env["now"] = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+    env["fail"] = {"cal read", "rem read --all", "rem read --done"}
+    out = schedule.render_daily(env["bin"])
+    assert "Pay rent" not in out and "Standup" not in out
+    assert schedule._fetch_cache["key"][1] == "2026-07-10"
+
+
 def test_failure_without_cache_renders_nothing(env):
     env["fail"] = {"cal read", "rem read --all", "rem read --done"}
     assert schedule.render_daily(env["bin"]) == ""

@@ -307,7 +307,8 @@ def _fetch(today: str, binary: str) -> list[str]:
     """[cal, rem, done] cadence JSON. Reused while the Reminders/Calendar data
     mtime and local date are unchanged. Only a fully successful fetch is
     cached; a failed call falls back to the last good output for that slot
-    and leaves the cache key alone so the next call retries."""
+    (same local date only) and leaves the cache key alone so the next call
+    retries."""
     key = (binary, today, get_data_mtime())
     if _fetch_cache.get("key") == key:
         return _fetch_cache["outs"]
@@ -319,7 +320,8 @@ def _fetch(today: str, binary: str) -> list[str]:
     if all(fresh):
         _fetch_cache.update(key=key, outs=fresh)
         return fresh
-    last = _fetch_cache.get("outs") or ["", "", ""]
+    same_day = (_fetch_cache.get("key") or (None, None))[1] == today
+    last = _fetch_cache["outs"] if same_day else ["", "", ""]
     return [f or old for f, old in zip(fresh, last)]
 
 
