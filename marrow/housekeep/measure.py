@@ -169,12 +169,12 @@ def disk(ctx: Ctx) -> dict:
     free = ctx.disk_free()
     limit = float(ctx.hk["disk_free_alert_gb"])
     low = free / _GB < limit
-    alerts = []
+    todo = []
     if low and not _watch(ctx).get("disk_low", False):
-        alerts.append({"severity": "warn", "type": "disk_low",
-                       "message": f"free disk {fmt_size(free)} < {limit:g} GB"})
+        todo.append(("disk", "free",
+                     f"free disk {fmt_size(free)} < {limit:g} GB"))
     _save_watch(ctx, "disk_low", low)
-    return result(sizes={"disk_free": free}, alerts=alerts,
+    return result(sizes={"disk_free": free}, todo=todo,
                   lines=[f"free {fmt_size(free)}"])
 
 

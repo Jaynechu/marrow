@@ -152,13 +152,14 @@ def test_launchd_dry_run_keeps_watch_state(tmp_path):
     assert not (ctx.hk_state / "watch.json").exists()
 
 
-def test_disk_low_alerts_once_until_recovered(tmp_path):
+def test_disk_low_reported_once_until_recovered(tmp_path):
     low = make_ctx(tmp_path, free=10 * _GB)
-    assert len(measure.disk(low)["alerts"]) == 1
-    assert measure.disk(low)["alerts"] == []
+    assert measure.disk(low)["todo"] == [
+        ("disk", "free", "free disk 10.0 GB < 50 GB")]
+    assert measure.disk(low)["todo"] == []
     ok = make_ctx(tmp_path, free=80 * _GB)
-    assert measure.disk(ok)["alerts"] == []
-    assert len(measure.disk(low)["alerts"]) == 1
+    assert measure.disk(ok)["todo"] == []
+    assert len(measure.disk(low)["todo"]) == 1
 
 
 def test_disk_size_lands_in_sizes(tmp_path):

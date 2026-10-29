@@ -2,9 +2,8 @@
 
 Pinned brew pythons keep their Cellar path (TCC/FDA is keyed on it): pins go
 first (formulae not installed are skipped), and cleanup aborts if its plan
-still names a pinned Cellar dir. A changed brew, or an open health To-do,
-triggers an import health probe per repo venv; an item closes only on a passing
-probe. No kickstart.
+still names a pinned Cellar dir. Every apply then runs an import health
+probe per repo venv. No kickstart.
 The runner disables brew auto-update/auto-cleanup so both happen only here.
 Dry-run runs only `brew upgrade -n` and `brew cleanup -n`.
 """
@@ -12,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from . import Ctx, report, result
+from . import Ctx, result
 
 
 _NOISE = ("A complete log of this run can be found in",)
@@ -56,7 +55,7 @@ def _health(ctx: Ctx) -> list[str]:
     return bad
 
 
-def _upgrade(ctx: Ctx, pinned: list[str], prune: str) -> tuple[dict, bool]:
+def _upgrade(ctx: Ctx, pinned: list[str], prune: str) -> dict:
     before = _versions(ctx)
     installed = {ln.split()[0] for ln in before.splitlines() if ln.strip()}
     for f in pinned:
@@ -64,23 +63,23 @@ def _upgrade(ctx: Ctx, pinned: list[str], prune: str) -> tuple[dict, bool]:
             continue
         rc, out = ctx.run(["brew", "pin", f])
         if rc != 0:
-            return _err(f"brew pin {f}", out), False
+            return _err(f"brew pin {f}", out)
     for cmd in (["brew", "update"], ["brew", "upgrade"]):
         rc, out = ctx.run(cmd)
         if rc != 0:
-            return _err(" ".join(cmd), out), _versions(ctx) != before
+            return _err(" ".join(cmd), out)
     changed = _versions(ctx) != before
     rc, plan = ctx.run(["brew", "cleanup", "-n", prune])
     if rc != 0:
-        return _err("brew cleanup -n", plan), changed
+        return _err("brew cleanup -n", plan)
     hits = _pinned_hits(plan, pinned)
     if hits:
         return result(error=f"cleanup skipped, plan names pinned Cellar: "
-                            f"{hits}"), changed
+                            f"{hits}")
     rc, out = ctx.run(["brew", "cleanup", prune])
     if rc != 0:
-        return _err("brew cleanup", out), changed
-    return result(len(_items(plan)), lines=[f"brew changed: {changed}"]), changed
+        return _err("brew cleanup", out)
+    return result(len(_items(plan)), lines=[f"brew changed: {changed}"])
 
 
 def brew(ctx: Ctx) -> dict:
@@ -100,9 +99,7 @@ def brew(ctx: Ctx) -> dict:
         lines.append(f"pinned at apply: {', '.join(pinned)}")
         err = f"cleanup plan names pinned Cellar: {hits}" if hits else None
         return result(len(ups) + len(clean), error=err, lines=lines)
-    r, changed = _upgrade(ctx, pinned, prune)
-    if not (changed or report.open_subjects(ctx, "health")):
-        return r
+    r = _upgrade(ctx, pinned, prune)
     bad = _health(ctx)
     if not bad:
         return r

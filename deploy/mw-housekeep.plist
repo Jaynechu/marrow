@@ -25,6 +25,7 @@
 
   <key>StartCalendarInterval</key>
   <dict>
+    <key>Weekday</key><integer>4</integer>
     <key>Hour</key><integer>12</integer>
     <key>Minute</key><integer>0</integer>
   </dict>

@@ -1,4 +1,4 @@
-"""housekeep orchestration: due check, audit row, retry streak alert, dry-run."""
+"""housekeep orchestration: audit row, run-failure streak alert, dry-run."""
 from __future__ import annotations
 
 import hashlib
@@ -28,13 +28,11 @@ def groups(monkeypatch):
     return g
 
 
-def _row(ctx, ok, days_ago, *, only=None, passes=None, retry=None, sizes=None):
+def _row(ctx, ok, days_ago, *, only=None, passes=None, sizes=None):
     ts = (date.today() - timedelta(days=days_ago)).isoformat() + "T02:00:00Z"
     payload = {"ok": ok, "passes": passes or {}, "sizes": sizes or {}}
     if only:
         payload["only"] = [only]
-    if retry is not None:
-        payload["retry"] = retry
     conn = storage.connect(ctx.db)
     with conn:
         conn.execute(
@@ -62,103 +60,53 @@ def _audit_rows(ctx):
         conn.close()
 
 
-def test_due_without_history(tmp_path):
+def _crash_report(monkeypatch):
+    def _boom(ctx, results):
+        raise OSError("report unwritable")
+    monkeypatch.setattr(hk.report, "update", _boom)
+
+
+def test_failed_pass_is_not_a_run_failure(tmp_path, groups):
+    groups["b"] = [("bad", _bad_pass)]
     ctx = make_ctx(tmp_path)
-    assert hk.is_due(ctx, hk.history(ctx))
+    _row(ctx, False, 7)
+    _row(ctx, False, 1)
+    assert hk.execute(ctx, None) == 0
+    rows = _audit_rows(ctx)
+    assert rows[-1]["ok"] is True and "error" not in rows[-1]
+    assert rows[-1]["passes"]["good"] == {"items": 1, "bytes_freed": 0,
+                                          "error": None}
+    assert rows[-1]["passes"]["bad"]["error"] == "boom"
+    assert _alerts(ctx) == 0
 
 
-def test_not_due_inside_interval_due_at_interval(tmp_path):
+def test_failed_pass_goes_to_report(tmp_path, groups):
+    groups["b"] = [("bad", _bad_pass)]
     ctx = make_ctx(tmp_path)
-    _row(ctx, True, 6)
-    assert not hk.is_due(ctx, hk.history(ctx))
-    _row(ctx, True, 7)
-    ctx2 = make_ctx(tmp_path, today=date.today() + timedelta(days=1))
-    assert hk.is_due(ctx2, hk.history(ctx2))
+    hk.execute(ctx, None)
+    assert "- failed: bad: boom\n" in ctx.report_path.read_text()
 
 
-def test_failed_run_retries_only_failed_passes(tmp_path, groups):
+def test_every_apply_is_a_full_run(tmp_path, groups):
     calls = []
-
-    def _flaky(ctx):
-        calls.append("flaky")
-        return result(1)
-    groups["a"].append(("flaky", _flaky))
+    groups["a"].append(("probe", lambda c: calls.append(1) or result()))
     ctx = make_ctx(tmp_path)
-    _row(ctx, True, 10)
-    _row(ctx, False, 1, passes={"good": {"error": None},
-                                "flaky": {"error": "x"}})
-    assert not hk.is_due(ctx, hk.history(ctx))
-    assert hk.execute(ctx, None, force=False) == 0
-    row = _audit_rows(ctx)[-1]
-    assert row["ok"] is True and row["retry"] == ["flaky"]
-    assert list(row["passes"]) == ["flaky"]
-    assert calls == ["flaky"]
-    hk.execute(ctx, None, force=False)
+    _row(ctx, True, 0)
+    hk.execute(ctx, None)
+    hk.execute(ctx, None)
+    assert calls == [1, 1]
     assert len(_audit_rows(ctx)) == 3
-
-
-def test_full_run_due_at_interval_even_while_retries_fail(tmp_path, groups):
-    ctx = make_ctx(tmp_path)
-    _row(ctx, False, 7, passes={"good": {"error": "x"}})
-    _row(ctx, False, 1, passes={"good": {"error": "x"}}, retry=["good"])
-    assert hk.is_due(ctx, hk.history(ctx))
-    hk.execute(ctx, None, force=False)
-    assert "retry" not in _audit_rows(ctx)[-1]
-
-
-def test_retry_failures_count_toward_streak(tmp_path, groups):
-    groups["a"] = [("bad", _bad_pass), ("good", _ok_pass)]
-    ctx = make_ctx(tmp_path)
-    _row(ctx, True, 20)
-    _row(ctx, False, 2, passes={"bad": {"error": "boom"}, "good": {"error": None}})
-    _row(ctx, False, 1, passes={"bad": {"error": "boom"}}, retry=["bad"])
-    assert hk.execute(ctx, None, force=False) == 1
-    assert _audit_rows(ctx)[-1]["retry"] == ["bad"]
-    assert _alerts(ctx) == 1
 
 
 def test_growth_baseline_is_last_full_run_sizes(tmp_path, groups):
     seen = {}
     groups["a"] = [("probe", lambda c: seen.update(c.prev_sizes) or result())]
     ctx = make_ctx(tmp_path)
-    _row(ctx, True, 20, sizes={"x": 1})
-    _row(ctx, False, 9, passes={"good": {"error": "x"}}, sizes={"x": 2})
-    _row(ctx, True, 8, passes={"good": {"error": None}}, retry=["good"])
-    hk.execute(ctx, None, force=False)
+    _row(ctx, True, 14, sizes={"x": 1})
+    _row(ctx, True, 7, sizes={"x": 2})
+    _row(ctx, True, 1, only="files", sizes={"x": 3})
+    hk.execute(ctx, None)
     assert seen == {"x": 2}
-
-
-def test_partial_only_runs_ignored_by_due_check(tmp_path):
-    ctx = make_ctx(tmp_path)
-    _row(ctx, True, 1, only="files")
-    assert hk.is_due(ctx, hk.history(ctx))
-
-
-def test_not_due_run_does_nothing(tmp_path, groups, capsys):
-    ctx = make_ctx(tmp_path)
-    _row(ctx, True, 2)
-    assert hk.execute(ctx, None, force=False) == 0
-    assert "not due" in capsys.readouterr().out
-    assert len(_audit_rows(ctx)) == 1
-
-
-def test_apply_writes_one_audit_row(tmp_path, groups):
-    ctx = make_ctx(tmp_path)
-    groups["b"] = [("bad", _bad_pass)]
-    assert hk.execute(ctx, None, force=False) == 1
-    rows = _audit_rows(ctx)
-    assert len(rows) == 1
-    assert rows[0]["ok"] is False
-    assert rows[0]["passes"]["good"] == {"items": 1, "bytes_freed": 0, "error": None}
-    assert rows[0]["passes"]["bad"]["error"] == "boom"
-
-
-def test_apply_writes_report_with_failed_item(tmp_path, groups):
-    groups["b"] = [("bad", _bad_pass)]
-    ctx = make_ctx(tmp_path)
-    hk.execute(ctx, None, force=True)
-    text = ctx.report_path.read_text()
-    assert f"- [{date.today().isoformat()}] failed: bad: boom" in text
 
 
 def test_raising_pass_isolated(tmp_path, groups):
@@ -166,37 +114,57 @@ def test_raising_pass_isolated(tmp_path, groups):
         raise RuntimeError("kaput")
     groups["a"].insert(0, ("raiser", _raise))
     ctx = make_ctx(tmp_path)
-    hk.execute(ctx, None, force=True)
+    assert hk.execute(ctx, None) == 0
     row = _audit_rows(ctx)[0]
+    assert row["ok"] is True
     assert row["passes"]["raiser"]["error"] == "RuntimeError: kaput"
     assert row["passes"]["good"]["error"] is None
 
 
-def test_streak_alerts_once_on_third_failed_day(tmp_path, groups):
-    groups["a"] = [("bad", _bad_pass)]
+def test_crashed_run_records_failed_row(tmp_path, groups, monkeypatch, capsys):
+    _crash_report(monkeypatch)
     ctx = make_ctx(tmp_path)
-    _row(ctx, True, 20)
-    _row(ctx, False, 2)
-    assert _alerts(ctx) == 0
-    hk.execute(ctx, None, force=True)
-    assert _alerts(ctx) == 0
-    _row(ctx, False, 1)
-    hk.execute(ctx, None, force=True)
-    assert _alerts(ctx) == 1
-    hk.execute(ctx, None, force=True)
-    assert _alerts(ctx) == 1
+    assert hk.execute(ctx, None) == 1
+    row = _audit_rows(ctx)[0]
+    assert row["ok"] is False
+    assert row["error"] == "OSError: report unwritable"
+    assert row["passes"]["good"]["error"] is None
+    assert "run failed: OSError" in capsys.readouterr().err
 
 
-def test_streak_needs_distinct_days(tmp_path, groups):
-    groups["a"] = [("bad", _bad_pass)]
+def test_crash_outside_passes_records_failed_row(tmp_path, groups, monkeypatch):
+    def _boom(ctx, groups):
+        raise RuntimeError("no groups")
+    monkeypatch.setattr(hk, "run_passes", _boom)
     ctx = make_ctx(tmp_path)
-    for _ in range(4):
-        hk.execute(ctx, None, force=True)
+    assert hk.execute(ctx, None) == 1
+    assert _audit_rows(ctx)[0] == {"ok": False, "passes": {}, "sizes": {},
+                                   "error": "RuntimeError: no groups"}
+
+
+def test_alert_on_second_failed_run_in_a_row_only(tmp_path, groups, monkeypatch):
+    _crash_report(monkeypatch)
+    ctx = make_ctx(tmp_path)
+    _row(ctx, True, 14)
+    hk.execute(ctx, None)
+    assert _alerts(ctx) == 0
+    hk.execute(ctx, None)
+    assert _alerts(ctx) == 1
+    hk.execute(ctx, None)
+    assert _alerts(ctx) == 1
+
+
+def test_ok_run_between_failures_resets_streak(tmp_path, groups, monkeypatch):
+    ctx = make_ctx(tmp_path)
+    _row(ctx, False, 14)
+    _row(ctx, True, 7)
+    _crash_report(monkeypatch)
+    hk.execute(ctx, None)
     assert _alerts(ctx) == 0
 
 
-def test_new_streak_after_ok_alerts_again(tmp_path, groups):
-    groups["a"] = [("bad", _bad_pass)]
+def test_new_streak_after_ok_alerts_again(tmp_path, groups, monkeypatch):
+    _crash_report(monkeypatch)
     ctx = make_ctx(tmp_path)
     conn = storage.connect(ctx.db)
     with conn:
@@ -204,21 +172,19 @@ def test_new_streak_after_ok_alerts_again(tmp_path, groups):
             "INSERT INTO alerts (severity, type, fingerprint, message, resolved, "
             "created_at) VALUES ('warn', 'housekeep_failed', 'housekeep_failed', "
             "'old', 1, ?)",
-            ((date.today() - timedelta(days=9)).isoformat() + "T02:00:00Z",))
+            ((date.today() - timedelta(days=30)).isoformat() + "T02:00:00Z",))
     conn.close()
-    _row(ctx, True, 8)
-    _row(ctx, False, 2)
-    _row(ctx, False, 1)
-    hk.execute(ctx, None, force=True)
+    _row(ctx, True, 14)
+    _row(ctx, False, 7)
+    hk.execute(ctx, None)
     assert _alerts(ctx) == 2
 
 
-def test_only_run_never_alerts(tmp_path, groups):
-    groups["a"] = [("bad", _bad_pass)]
+def test_only_run_never_alerts(tmp_path, groups, monkeypatch):
+    _crash_report(monkeypatch)
     ctx = make_ctx(tmp_path)
-    _row(ctx, False, 2)
-    _row(ctx, False, 1)
-    hk.execute(ctx, "a", force=True)
+    _row(ctx, False, 7)
+    hk.execute(ctx, "a")
     assert _alerts(ctx) == 0
     assert _audit_rows(ctx)[-1]["only"] == ["a"]
 
@@ -240,14 +206,14 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
     (ctx.data_dir / "x.bak").write_text("b")
     (ctx.repos_root / "r" / "__pycache__").mkdir(parents=True)
     before = _tree_digest(tmp_path)
-    assert hk.execute(ctx, None, force=True) == 0
+    assert hk.execute(ctx, None) == 0
     assert _tree_digest(tmp_path) == before
     assert not ctx.report_path.exists()
     assert set(run.calls) == {("brew", "upgrade", "-n"),
                               ("brew", "cleanup", "-n", "--prune=30"),
                               ("launchctl", "list")}
     out = capsys.readouterr().out
-    assert "(dry-run)" in out and "would open" in out
+    assert "(dry-run)" in out and "would add" in out
 
 
 def test_main_dry_run_uses_ctx(tmp_path, monkeypatch, groups, capsys):
@@ -258,7 +224,7 @@ def test_main_dry_run_uses_ctx(tmp_path, monkeypatch, groups, capsys):
         seen["dry_run"] = dry_run
         return ctx
     monkeypatch.setattr(hk, "build_ctx", _build)
-    assert hk.main(["--dry-run", "--force"]) == 0
+    assert hk.main(["--dry-run"]) == 0
     assert seen == {"dry_run": True}
     assert "good: items=1" in capsys.readouterr().out
     assert _audit_rows(ctx) == []

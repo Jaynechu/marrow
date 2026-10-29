@@ -91,11 +91,11 @@ def _changing_versions():
     return ans
 
 
-def test_no_change_skips_health(tmp_path):
+def test_health_probed_without_brew_change(tmp_path):
     run = FakeRun()
     r = brew.brew(make_ctx(tmp_path, run=run))
-    assert r["error"] is None
-    assert not any(c[1:3] == ("-B", "-c") for c in run.calls)
+    assert r["error"] is None and not r.get("todo")
+    assert any(c[1:3] == ("-B", "-c") for c in run.calls)
 
 
 def test_change_runs_health_and_reports_failure(tmp_path):
@@ -166,36 +166,8 @@ def test_python_eol_window(tmp_path):
     assert brew.python_eol(make_ctx(tmp_path, today=date(2026, 10, 29)))["todo"] == []
 
 
-def _open_health(ctx, *repos):
-    from marrow.housekeep import write_json
-    write_json(ctx.hk_state / "report.json", {"log": [], "items": {
-        f"health:{r}": {"kind": "health", "detail": "x", "owner": "brew",
-                        "date": "2026-10-01"} for r in repos}})
-
-
-def test_open_health_item_reprobes_without_brew_change(tmp_path):
+def test_step_failure_still_probes_health(tmp_path):
     ctx = make_ctx(tmp_path)
-    _open_health(ctx, "synapse")
-    syn_py = str(ctx.repos_root / "synapse" / ".venv" / "bin" / "python")
-    ctx.run = FakeRun({(syn_py,): (1, "ModuleNotFoundError")})
-    r = brew.brew(ctx)
-    assert r["error"] == "health: import failed in synapse"
-    assert [t[:2] for t in r["todo"]] == [("health", "synapse")]
-
-
-def test_open_health_item_passing_probe_clears(tmp_path):
-    ctx = make_ctx(tmp_path)
-    _open_health(ctx, "synapse")
-    run = FakeRun()
-    ctx.run = run
-    r = brew.brew(ctx)
-    assert r["error"] is None and not r.get("todo")
-    assert any(c[1:3] == ("-B", "-c") for c in run.calls)
-
-
-def test_step_failure_still_probes_open_health(tmp_path):
-    ctx = make_ctx(tmp_path)
-    _open_health(ctx, "synapse")
     syn_py = str(ctx.repos_root / "synapse" / ".venv" / "bin" / "python")
     ctx.run = FakeRun({("brew", "update"): (1, "network down"),
                        (syn_py,): (1, "ModuleNotFoundError")})

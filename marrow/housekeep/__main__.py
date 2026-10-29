@@ -1,11 +1,10 @@
-"""python -m marrow.housekeep — weekly maintenance, fired daily by launchd.
+"""python -m marrow.housekeep — weekly maintenance, fired weekly by launchd.
 
-A full run is due when the last full run is at least
-[housekeep].interval_days old. Until then, a day after a failed run reruns
-only the passes that failed in it (a retry run, ok once they pass). Each pass
-is isolated. --apply writes one audit_log row (action=housekeep, JSON {ok,
-passes, sizes[, retry]}) and updates the report file; fail_alert_days failed
-days in a row (full or retry) raise one housekeep_failed alert per streak.
+Each pass is isolated: a failing pass is a report finding, not a run failure.
+A run fails only when it crashes outside the passes or the report cannot be
+written. --apply writes one audit_log row (action=housekeep, JSON {ok, passes,
+sizes[, error]}) and appends new findings to the report file; fail_alert_runs
+failed runs in a row raise one housekeep_failed alert per streak.
 --dry-run writes nothing.
 """
 from __future__ import annotations
@@ -14,9 +13,8 @@ import argparse
 import fcntl
 import json
 import sys
-from datetime import date
 
-from .. import repo, storage, timeutil
+from .. import repo, storage
 from . import Ctx, brew, build_ctx, db, files, fmt_size, measure, report, result
 
 GROUPS: dict[str, list] = {
@@ -28,7 +26,7 @@ GROUPS: dict[str, list] = {
 
 
 def history(ctx: Ctx) -> list[dict]:
-    """Full and retry audit rows, newest first, each with local `date`."""
+    """Audit rows of full runs, newest first."""
     conn = db.connect(ctx)
     try:
         rows = conn.execute(
@@ -47,7 +45,6 @@ def history(ctx: Ctx) -> list[dict]:
         if s.get("only"):
             continue
         s["occurred_at"] = r["occurred_at"]
-        s["date"] = timeutil.utc_iso_to_local_date(r["occurred_at"])
         out.append(s)
     return out
 
@@ -56,42 +53,20 @@ def last_ok(hist: list[dict]) -> dict | None:
     return next((h for h in hist if h.get("ok")), None)
 
 
-def last_full(hist: list[dict]) -> dict | None:
-    return next((h for h in hist if "retry" not in h), None)
-
-
-def is_due(ctx: Ctx, hist: list[dict]) -> bool:
-    full = last_full(hist)
-    if full is None:
-        return True
-    age = (ctx.today - date.fromisoformat(full["date"])).days
-    return age >= int(ctx.hk["interval_days"])
-
-
-def retry_passes(hist: list[dict]) -> list[str] | None:
-    """Passes that failed in the newest run, or None when it was ok."""
-    if not hist or hist[0].get("ok"):
-        return None
-    return [n for n, p in hist[0].get("passes", {}).items() if p.get("error")]
-
-
 def fail_streak(hist: list[dict]) -> int:
-    """Distinct local days with a failed run since the last ok one."""
-    days: set[str] = set()
+    """Failed runs in a row since the last ok one."""
+    n = 0
     for h in hist:
         if h.get("ok"):
             break
-        days.add(h["date"])
-    return len(days)
+        n += 1
+    return n
 
 
-def run_passes(ctx: Ctx, groups: list[str],
-               names: list[str] | None = None) -> dict[str, dict]:
+def run_passes(ctx: Ctx, groups: list[str]) -> dict[str, dict]:
     results: dict[str, dict] = {}
     for g in groups:
         for name, fn in GROUPS[g]:
-            if names is not None and name not in names:
-                continue
             try:
                 results[name] = fn(ctx)
             except Exception as e:  # noqa: BLE001
@@ -99,10 +74,10 @@ def run_passes(ctx: Ctx, groups: list[str],
     return results
 
 
-def _audit_payload(results: dict[str, dict], ok: bool,
-                   only: str | None, retry: list[str] | None) -> dict:
+def _audit_payload(results: dict[str, dict], error: str | None,
+                   only: str | None) -> dict:
     payload: dict = {
-        "ok": ok,
+        "ok": error is None,
         "passes": {
             n: {k: r.get(k) for k in ("items", "bytes_freed", "error")}
             for n, r in results.items()
@@ -110,32 +85,32 @@ def _audit_payload(results: dict[str, dict], ok: bool,
         "sizes": {k: v for r in results.values()
                   for k, v in r.get("sizes", {}).items()},
     }
+    if error:
+        payload["error"] = error
     if only:
         payload["only"] = [only]
-    if retry is not None:
-        payload["retry"] = retry
     return payload
 
 
-def record(ctx: Ctx, results: dict[str, dict], ok: bool,
-           only: str | None, retry: list[str] | None) -> None:
+def record(ctx: Ctx, results: dict[str, dict], error: str | None,
+           only: str | None) -> None:
     conn = storage.connect(ctx.db)
     try:
         with conn:
             conn.execute(
                 "INSERT INTO audit_log (target_table, target_id, action, summary) "
                 "VALUES ('housekeep', NULL, 'housekeep', ?)",
-                (json.dumps(_audit_payload(results, ok, only, retry),
+                (json.dumps(_audit_payload(results, error, only),
                             sort_keys=True),),
             )
     finally:
         conn.close()
 
 
-def maybe_alert_streak(ctx: Ctx, failed: list[str]) -> bool:
+def maybe_alert_streak(ctx: Ctx, error: str) -> bool:
     hist = history(ctx)
     n = fail_streak(hist)
-    if n < int(ctx.hk["fail_alert_days"]):
+    if n < int(ctx.hk["fail_alert_runs"]):
         return False
     ok = last_ok(hist)
     since = ok["occurred_at"] if ok else ""
@@ -150,8 +125,7 @@ def maybe_alert_streak(ctx: Ctx, failed: list[str]) -> bool:
         return False
     repo.add_alert(
         "warn", "housekeep_failed", "housekeep_failed", source="housekeep",
-        message=(f"housekeep failed {n} days in a row: {', '.join(failed)}. "
-                 f"See {ctx.report_path}"),
+        message=f"housekeep run failed {n} times in a row: {error}",
         db=ctx.db)
     return True
 
@@ -170,44 +144,30 @@ def _print(ctx: Ctx, results: dict[str, dict]) -> None:
                 print(f"    {d}")
 
 
-def execute(ctx: Ctx, only: str | None, force: bool) -> int:
-    hist = history(ctx)
-    retry = None
-    if not force and not is_due(ctx, hist):
-        retry = None if only else retry_passes(hist)
-        if retry is None:
-            print(f"[housekeep] not due (last full run "
-                  f"{last_full(hist)['date']})")
-            return 0
-        print(f"[housekeep] retry: {', '.join(retry) or '(report only)'}")
-    ctx.prev_sizes = next((h["sizes"] for h in hist
-                           if "retry" not in h and h.get("sizes")), {})
-    results = run_passes(ctx, [only] if only else list(GROUPS), retry)
+def execute(ctx: Ctx, only: str | None) -> int:
+    results: dict[str, dict] = {}
+    error = None
     try:
-        rep = report.update(ctx, results)
+        ctx.prev_sizes = next((h["sizes"] for h in history(ctx)
+                               if h.get("sizes")), {})
+        results.update(run_passes(ctx, [only] if only else list(GROUPS)))
+        _print(ctx, results)
+        added = report.update(ctx, results)
+        verb = "would add" if ctx.dry_run else "added"
+        print(f"[housekeep] report: {verb} {len(added)}"
+              + (f" to {ctx.report_path}" if added else ""))
+        if ctx.dry_run:
+            for f in added:
+                print(f"    {f}")
     except Exception as e:  # noqa: BLE001
-        rep = None
-        results["report"] = result(error=f"{type(e).__name__}: {e}")
-    failed = [n for n, r in results.items() if r.get("error")]
-    ok = not failed
-    _print(ctx, results)
-    if rep:
-        verb = "would " if ctx.dry_run else ""
-        print(f"[housekeep] report: {verb}open {len(rep['opened'])}, "
-              f"{verb}close {len(rep['closed'])}"
-              + (f"; {verb}write {ctx.report_path}" if rep["wrote"] else ""))
-        if ctx.dry_run and rep["line"]:
-            print(f"    {rep['line']}")
+        error = f"{type(e).__name__}: {e}"
+        print(f"[housekeep] run failed: {error}", file=sys.stderr)
     if ctx.dry_run:
-        return 0
-    record(ctx, results, ok, only, retry)
-    if not ok and not only:
-        maybe_alert_streak(ctx, failed)
-    for r in results.values():
-        for a in r.get("alerts", []):
-            repo.add_alert(a["severity"], a["type"], a["type"],
-                           source="housekeep", message=a["message"], db=ctx.db)
-    return 0 if ok else 1
+        return 0 if error is None else 1
+    record(ctx, results, error, only)
+    if error and not only:
+        maybe_alert_streak(ctx, error)
+    return 0 if error is None else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -220,12 +180,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="list what a run would do, write nothing (default)")
     ap.add_argument("--only", choices=sorted(GROUPS),
                     help="run one pass group")
-    ap.add_argument("--force", action="store_true",
-                    help="full run even when not due")
     a = ap.parse_args(argv)
     ctx = build_ctx(dry_run=not a.apply)
     if ctx.dry_run:
-        return execute(ctx, a.only, a.force)
+        return execute(ctx, a.only)
     ctx.hk_state.mkdir(parents=True, exist_ok=True)
     with open(ctx.hk_state / "run.lock", "w") as lock:
         try:
@@ -233,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             print("[housekeep] another run holds the lock", file=sys.stderr)
             return 0
-        return execute(ctx, a.only, a.force)
+        return execute(ctx, a.only)
 
 
 if __name__ == "__main__":

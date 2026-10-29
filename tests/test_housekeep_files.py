@@ -122,7 +122,7 @@ def test_expiry_keeps_old_lock_with_dotted_sibling(tmp_path):
     d = ctx.state_dir / "replay"
     marker = _file(d / "k2.json", 60)
     lock = _file(d / "k2.lock", 60, "")
-    r = files.state_expiry(ctx)
+    files.state_expiry(ctx)
     assert not marker.exists()
     assert lock.exists()
 

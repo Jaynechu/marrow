@@ -1,4 +1,4 @@
-"""housekeep report file: keyed To do, auto-close, Log only on change, untouched otherwise."""
+"""housekeep report file: append-only new findings, hand edits never rewritten."""
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -16,101 +16,71 @@ def _ctx(tmp_path, day=0, **kw):
     return make_ctx(tmp_path, today=date(2026, 11, 1) + timedelta(days=day), **kw)
 
 
-def test_first_run_creates_file_without_log_line(tmp_path):
+def test_nothing_found_writes_no_file(tmp_path):
     ctx = _ctx(tmp_path)
-    rep = report.update(ctx, {"sizes": result(1)})
-    assert rep["wrote"] and rep["line"] is None
-    assert ctx.report_path.read_text() == "# Housekeep report\n\n## To do\n\n## Log\n"
+    assert report.update(ctx, {"sizes": result(1)}) == []
+    assert not ctx.report_path.exists()
 
 
-def test_no_change_run_leaves_file_byte_identical(tmp_path):
+def test_first_findings_create_file(tmp_path):
+    ctx = _ctx(tmp_path)
+    added = report.update(ctx, _launchd("com.marrow.x"))
+    assert added == ["launchd: com.marrow.x: program missing /x"]
+    assert ctx.report_path.read_text() == (
+        "# Housekeep report\n\n## 2026-11-01\n"
+        "- launchd: com.marrow.x: program missing /x\n")
+
+
+def test_persisting_finding_not_duplicated(tmp_path):
     ctx = _ctx(tmp_path)
     report.update(ctx, _launchd("com.marrow.x"))
     before = ctx.report_path.read_bytes()
     mtime = ctx.report_path.stat().st_mtime_ns
-    rep = report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x"))
-    assert rep == {"opened": [], "closed": [], "line": None, "wrote": False}
+    assert report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x")) == []
     assert ctx.report_path.read_bytes() == before
     assert ctx.report_path.stat().st_mtime_ns == mtime
 
 
-def test_detail_change_on_open_item_keeps_file_and_state(tmp_path):
-    def _growth(n):
-        return {"sizes": result(todo=[("growth", "~/x", f"~/x now {n} GB")])}
-    ctx = _ctx(tmp_path)
-    report.update(ctx, _growth(3))
-    before = ctx.report_path.read_bytes()
-    state = (ctx.hk_state / "report.json").read_bytes()
-    rep = report.update(_ctx(tmp_path, 1), _growth(4))
-    assert rep["wrote"] is False
-    assert ctx.report_path.read_bytes() == before
-    assert (ctx.hk_state / "report.json").read_bytes() == state
-    assert "~/x now 3 GB" in before.decode()
-
-
-def test_open_then_close_logs_once_each(tmp_path):
+def test_new_run_appends_only_new_findings(tmp_path):
     report.update(_ctx(tmp_path), _launchd("com.marrow.x"))
-    report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x"))
-    report.update(_ctx(tmp_path, 14), _launchd())
-    report.update(_ctx(tmp_path, 21), _launchd())
-    text = _ctx(tmp_path).report_path.read_text()
-    assert text == (
-        "# Housekeep report\n\n## To do\n\n## Log\n"
-        "- 2026-11-15 closed: launchd com.marrow.x\n"
-        "- 2026-11-01 opened: launchd com.marrow.x\n")
+    report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x", "com.marrow.y"))
+    assert _ctx(tmp_path).report_path.read_text() == (
+        "# Housekeep report\n\n## 2026-11-01\n"
+        "- launchd: com.marrow.x: program missing /x\n"
+        "\n## 2026-11-08\n"
+        "- launchd: com.marrow.y: program missing /x\n")
 
 
-def test_open_item_line_format(tmp_path):
+def test_hand_edits_kept_and_deleted_finding_comes_back(tmp_path):
     ctx = _ctx(tmp_path)
-    report.update(ctx, _launchd("com.cortex.gone"))
-    lines = ctx.report_path.read_text().splitlines()
-    assert "- [2026-11-01] launchd: com.cortex.gone: program missing /x" in lines
+    report.update(ctx, _launchd("com.marrow.x", "com.marrow.y"))
+    edited = "# Mine\n- launchd: com.marrow.y: program missing /x (handling)"
+    ctx.report_path.write_text(edited)
+    added = report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x",
+                                                      "com.marrow.y"))
+    assert added == ["launchd: com.marrow.x: program missing /x"]
+    assert ctx.report_path.read_text() == (
+        edited + "\n\n## 2026-11-08\n"
+        "- launchd: com.marrow.x: program missing /x\n")
 
 
-def test_failed_pass_opens_failed_item_and_logs_each_failed_run(tmp_path):
-    bad = {"stray_bak": result(error="disk full")}
-    report.update(_ctx(tmp_path), bad)
-    rep = report.update(_ctx(tmp_path, 1), bad)
-    assert rep["opened"] == [] and rep["line"] == "- 2026-11-02 failed: stray_bak"
-    rep = report.update(_ctx(tmp_path, 2), {"stray_bak": result()})
-    assert rep["closed"] == ["failed:stray_bak"]
-    text = _ctx(tmp_path).report_path.read_text()
-    assert "- 2026-11-01 opened: failed stray_bak; failed: stray_bak" in text
-
-
-def test_items_of_passes_not_run_stay_open(tmp_path):
-    report.update(_ctx(tmp_path), _launchd("com.marrow.x"))
-    rep = report.update(_ctx(tmp_path, 1), {"repo_caches": result(3)})
-    assert rep["closed"] == []
-    assert "launchd: com.marrow.x" in _ctx(tmp_path).report_path.read_text()
-
-
-def test_new_items_logged_but_never_todo(tmp_path):
-    rep = report.update(_ctx(tmp_path), {"known": result(1, new=["~/x (5 B)"])})
-    assert rep["line"] == "- 2026-11-01 new: ~/x (5 B)"
-    assert "## To do\n\n## Log" in _ctx(tmp_path).report_path.read_text()
+def test_failed_and_new_are_findings(tmp_path):
+    added = report.update(_ctx(tmp_path), {
+        "npm": result(error="npm cache clean --force: npm error code EACCES"),
+        "known": result(1, new=["~/x (5 B)"])})
+    assert added == ["failed: npm: npm cache clean --force: npm error code EACCES",
+                     "new: ~/x (5 B)"]
 
 
 def test_health_error_not_duplicated_as_failed(tmp_path):
     r = result(error="health: import failed in synapse", error_reported=True,
                todo=[("health", "synapse", "synapse venv import failed")])
-    rep = report.update(_ctx(tmp_path), {"brew": r})
-    assert rep["opened"] == ["health:synapse"]
+    assert report.update(_ctx(tmp_path), {"brew": r}) == [
+        "health: synapse venv import failed"]
 
 
-def test_log_capped(tmp_path):
-    for d in range(5):
-        report.update(_ctx(tmp_path, d, hk={"report_log_cap": 3}),
-                      {"known": result(1, new=[f"~/n{d} (1 B)"])})
-    log = _ctx(tmp_path).report_path.read_text().split("## Log\n")[1]
-    assert log.splitlines() == ["- 2026-11-05 new: ~/n4 (1 B)",
-                                "- 2026-11-04 new: ~/n3 (1 B)",
-                                "- 2026-11-03 new: ~/n2 (1 B)"]
-
-
-def test_dry_run_writes_neither_file_nor_state(tmp_path):
+def test_dry_run_writes_nothing(tmp_path):
     ctx = _ctx(tmp_path, dry_run=True)
-    rep = report.update(ctx, _launchd("com.marrow.x"))
-    assert rep["opened"] == ["launchd:com.marrow.x"] and rep["wrote"]
+    assert report.update(ctx, _launchd("com.marrow.x")) == [
+        "launchd: com.marrow.x: program missing /x"]
     assert not ctx.report_path.exists()
-    assert not (ctx.hk_state / "report.json").exists()
