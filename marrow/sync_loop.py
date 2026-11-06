@@ -111,9 +111,9 @@ def _max_any(conn: sqlite3.Connection,
 # Mapping from subpage key → (table, updated_at_col) pairs.
 # Only tables with a reliable timestamp column included.
 _SUBPAGE_DB_SOURCES: dict[str, list[tuple[str, str]]] = {
-    "profile":   [("entities", "created_at")],
+    "profile":   [("entities", "created_at"), ("entities", "updated_at")],
     "milestone": [("milestones", "updated_at")],
-    "memes":     [("memes", "created_at")],
+    "memes":     [("memes", "created_at"), ("memes", "updated_at")],
     "stickers":  [("stickers", "updated_at")],
     "wallet":    [],  # no table yet
     "study":     [("tasks", "updated_at")],
