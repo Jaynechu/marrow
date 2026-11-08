@@ -152,7 +152,7 @@ def execute(ctx: Ctx, only: str | None) -> int:
                                if h.get("sizes")), {})
         results.update(run_passes(ctx, [only] if only else list(GROUPS)))
         _print(ctx, results)
-        added = report.update(ctx, results)
+        added = report.update(ctx, results, full=only is None)
         verb = "would add" if ctx.dry_run else "added"
         print(f"[housekeep] report: {verb} {len(added)}"
               + (f" to {ctx.report_path}" if added else ""))

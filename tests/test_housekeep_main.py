@@ -61,7 +61,7 @@ def _audit_rows(ctx):
 
 
 def _crash_report(monkeypatch):
-    def _boom(ctx, results):
+    def _boom(ctx, results, full=True):
         raise OSError("report unwritable")
     monkeypatch.setattr(hk.report, "update", _boom)
 
@@ -85,6 +85,18 @@ def test_failed_pass_goes_to_report(tmp_path, groups):
     ctx = make_ctx(tmp_path)
     hk.execute(ctx, None)
     assert "- failed: bad: boom\n" in ctx.report_path.read_text()
+
+
+def test_clean_full_run_writes_completed_line(tmp_path, groups):
+    ctx = make_ctx(tmp_path)
+    hk.execute(ctx, None)
+    assert "Cleanup completed, no new issues" in ctx.report_path.read_text()
+
+
+def test_clean_only_run_writes_nothing(tmp_path, groups):
+    ctx = make_ctx(tmp_path)
+    hk.execute(ctx, "a")
+    assert not ctx.report_path.exists()
 
 
 def test_every_apply_is_a_full_run(tmp_path, groups):

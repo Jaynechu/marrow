@@ -18,8 +18,50 @@ def _ctx(tmp_path, day=0, **kw):
 
 def test_nothing_found_writes_no_file(tmp_path):
     ctx = _ctx(tmp_path)
-    assert report.update(ctx, {"sizes": result(1)}) == []
+    assert report.update(ctx, {"sizes": result(1)}, full=False) == []
     assert not ctx.report_path.exists()
+
+
+def test_clean_full_run_writes_dated_line(tmp_path):
+    ctx = _ctx(tmp_path)
+    assert report.update(ctx, {"a": result(1, bytes_freed=512),
+                                "b": result(2, bytes_freed=1536)}) == []
+    assert ctx.report_path.read_text() == (
+        "# Housekeep report\n\n"
+        "## 2026-11-01 — Cleanup completed, no new issues (freed 2.0 KB)\n")
+
+
+def test_clean_full_run_appends_after_existing_content(tmp_path):
+    ctx = _ctx(tmp_path)
+    report.update(ctx, _launchd("com.marrow.x"))
+    assert report.update(_ctx(tmp_path, 7), {"a": result(1)}) == []
+    assert ctx.report_path.read_text() == (
+        "# Housekeep report\n\n## 2026-11-01\n"
+        "- launchd: com.marrow.x: program missing /x\n"
+        "\n## 2026-11-08 — Cleanup completed, no new issues (freed 0 B)\n")
+
+
+def test_repeat_finding_only_writes_clean_line(tmp_path):
+    ctx = _ctx(tmp_path)
+    report.update(ctx, _launchd("com.marrow.x"))
+    added = report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x"))
+    assert added == []
+    assert "Cleanup completed, no new issues" in ctx.report_path.read_text()
+
+
+def test_only_run_with_no_new_findings_writes_nothing(tmp_path):
+    ctx = _ctx(tmp_path)
+    assert report.update(ctx, {"a": result(1)}, full=False) == []
+    assert not ctx.report_path.exists()
+
+
+def test_only_run_with_new_findings_unaffected(tmp_path):
+    ctx = _ctx(tmp_path)
+    added = report.update(ctx, _launchd("com.marrow.x"), full=False)
+    assert added == ["launchd: com.marrow.x: program missing /x"]
+    assert ctx.report_path.read_text() == (
+        "# Housekeep report\n\n## 2026-11-01\n"
+        "- launchd: com.marrow.x: program missing /x\n")
 
 
 def test_first_findings_create_file(tmp_path):
@@ -35,10 +77,9 @@ def test_persisting_finding_not_duplicated(tmp_path):
     ctx = _ctx(tmp_path)
     report.update(ctx, _launchd("com.marrow.x"))
     before = ctx.report_path.read_bytes()
-    mtime = ctx.report_path.stat().st_mtime_ns
-    assert report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x")) == []
+    assert report.update(_ctx(tmp_path, 7), _launchd("com.marrow.x"),
+                         full=False) == []
     assert ctx.report_path.read_bytes() == before
-    assert ctx.report_path.stat().st_mtime_ns == mtime
 
 
 def test_new_run_appends_only_new_findings(tmp_path):
